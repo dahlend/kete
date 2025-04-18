@@ -406,19 +406,19 @@ Initial Release
   Along with many helpful interfaces to web tools such as JPL Horizons or IPAC's IRSA.
 
 
-[Unreleased]: https://github.com/IPAC-SW/kete/tree/main
-[1.0.7]: https://github.com/IPAC-SW/kete/releases/tag/v1.0.7
-[1.0.6]: https://github.com/IPAC-SW/kete/releases/tag/v1.0.6
-[1.0.5]: https://github.com/IPAC-SW/kete/releases/tag/v1.0.5
-[1.0.4]: https://github.com/IPAC-SW/kete/releases/tag/v1.0.4
-[1.0.3]: https://github.com/IPAC-SW/kete/releases/tag/v1.0.3
-[1.0.2]: https://github.com/IPAC-SW/kete/releases/tag/v1.0.2
-[1.0.1]: https://github.com/IPAC-SW/kete/releases/tag/v1.0.1
-[1.0.0]: https://github.com/IPAC-SW/kete/releases/tag/v1.0.0
-[0.3.0]: https://github.com/IPAC-SW/kete/releases/tag/v0.3.0
-[0.2.5]: https://github.com/IPAC-SW/kete/releases/tag/v0.2.5
-[0.2.4]: https://github.com/IPAC-SW/kete/releases/tag/v0.2.4
-[0.2.3]: https://github.com/IPAC-SW/kete/releases/tag/v0.2.3
-[0.2.2]: https://github.com/IPAC-SW/kete/releases/tag/v0.2.2
-[0.2.1]: https://github.com/IPAC-SW/kete/releases/tag/v0.2.1
-[0.2.0]: https://github.com/IPAC-SW/kete/releases/tag/v0.2.0
+[Unreleased]: https://github.com/dahlend/kete/tree/main
+[1.0.7]: https://github.com/dahlend/kete/releases/tag/v1.0.7
+[1.0.6]: https://github.com/dahlend/kete/releases/tag/v1.0.6
+[1.0.5]: https://github.com/dahlend/kete/releases/tag/v1.0.5
+[1.0.4]: https://github.com/dahlend/kete/releases/tag/v1.0.4
+[1.0.3]: https://github.com/dahlend/kete/releases/tag/v1.0.3
+[1.0.2]: https://github.com/dahlend/kete/releases/tag/v1.0.2
+[1.0.1]: https://github.com/dahlend/kete/releases/tag/v1.0.1
+[1.0.0]: https://github.com/dahlend/kete/releases/tag/v1.0.0
+[0.3.0]: https://github.com/dahlend/kete/releases/tag/v0.3.0
+[0.2.5]: https://github.com/dahlend/kete/releases/tag/v0.2.5
+[0.2.4]: https://github.com/dahlend/kete/releases/tag/v0.2.4
+[0.2.3]: https://github.com/dahlend/kete/releases/tag/v0.2.3
+[0.2.2]: https://github.com/dahlend/kete/releases/tag/v0.2.2
+[0.2.1]: https://github.com/dahlend/kete/releases/tag/v0.2.1
+[0.2.0]: https://github.com/dahlend/kete/releases/tag/v0.2.0

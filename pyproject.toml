@@ -3,8 +3,7 @@ name = "kete"
 version = "1.0.8"
 description = "Kete Asteroid Survey Tools"
 readme = "README.md"
-authors = [{name = "Dar Dahlen", email = "ddahlen@ipac.caltech.edu"},
-           {name = "Joe Masiero", email = "jmasiero@ipac.caltech.edu"},
+authors = [{name = "Dar Dahlen", email = "dardahlen@gmail.com"},
           ]
 license = {text = "BSD"}
 requires-python = ">=3.9"
@@ -19,7 +18,7 @@ dependencies = ["astropy>=5.3.4",
                 ]
 
 [project.urls]
-homepage = "https://github.com/IPAC-SW/kete"
+homepage = "https://github.com/dahlend/kete"
 
 [build-system]
 requires = ["maturin>=1.0",
