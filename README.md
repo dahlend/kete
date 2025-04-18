@@ -7,10 +7,12 @@ The repository for Kete, Solar System Survey Simulation Software.
 'Kete' comes from ancient greek mythology, meaning sea monsters, and is the root word
 for Cetaceans (Whales).
 
-## Note:
+## Licensing:
 
-Original maintainer (Dar Dahlen) is beginning a PhD and will no longer be performing
-maintenance, as he is no longer affiliated with CalTech.
+The original version of this repo was developed at Caltech IPAC. This is a fork of that repo
+where the work will continue as a personal project. Work done while at IPAC is of course owned
+by Caltech, but all future work will have well marked as owned by Dar Dahlen & future contributors.
+License will remain as BSD-3 Clause to simplify things.
 
 ## Introduction
 
