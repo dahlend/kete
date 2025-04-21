@@ -1,4 +1,4 @@
-//! Managment of the cached files
+//! Management of the cached files
 //!
 //! kete saves files in a cache directory, which by default exists in the
 //! home directory of the user. This can be changed by setting the KETE_CACHE_DIR
