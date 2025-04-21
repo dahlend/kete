@@ -22,7 +22,7 @@ pub enum Error {
     DAFLimits(String),
 
     /// Attempting to load or convert to/from an Frame of reference which is not known.
-    UnknownFrame(usize),
+    UnknownFrame(i32),
 
     /// Error related to IO.
     IOError(String),

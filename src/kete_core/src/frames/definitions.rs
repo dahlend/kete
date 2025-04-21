@@ -31,16 +31,16 @@ pub enum Frame {
     Galactic,
 
     /// Unknown is to allow SPK files to be loaded with other frames.
-    Unknown(usize),
+    Unknown(i32),
 
     /// Non-inertial frame as defined by rotations from the ecliptic frame.
     ///
-    /// - isize value represents the frame identifier.
+    /// - i32 value represents the frame identifier.
     /// - array of 6 floats represent the euler angles and their derivatives to move to
     ///   this frame from the ecliptic frame.
     ///
     /// Rotation is done with a ZXZ set of chained rotations.
-    EclipticNonInertial(isize, [f64; 6]),
+    EclipticNonInertial(i32, [f64; 6]),
     // Other non inertial frames will require multi-step conversions
 }
 
@@ -64,7 +64,7 @@ impl From<i32> for Frame {
             2 => Frame::Ecliptic,
             3 => Frame::FK4,
             4 => Frame::Galactic,
-            i => Frame::Unknown(i as usize),
+            i => Frame::Unknown(i),
         }
     }
 }

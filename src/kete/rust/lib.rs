@@ -129,6 +129,7 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(spice::pck_load_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::pck_earth_frame_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::pck_state_to_earth, m)?)?;
+    m.add_function(wrap_pyfunction!(spice::pck_loaded_objects_py, m)?)?;
 
     m.add_function(wrap_pyfunction!(spice::daf_header_info_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::obs_codes, m)?)?;

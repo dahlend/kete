@@ -98,3 +98,12 @@ pub fn pck_state_to_earth(state: PyState) -> PyResult<(f64, f64, f64)> {
 pub fn pck_reset_py() {
     LOADED_PCK.write().unwrap().reset()
 }
+
+/// Return a list of all loaded objects in the PCK singleton.
+/// This is a list of the center NAIF IDs of the segments.
+#[pyfunction]
+#[pyo3(name = "pck_loaded")]
+pub fn pck_loaded_objects_py() -> Vec<i32> {
+    let loaded = LOADED_PCK.read().unwrap();
+    loaded.loaded_objects()
+}
