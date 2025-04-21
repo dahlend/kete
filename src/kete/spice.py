@@ -247,15 +247,13 @@ def kernel_reload(
 
     if include_planets:
         _download_core_files()
-        cache_files = glob.glob(os.path.join(cache_path(), "kernels/core", "*.bsp"))
-        _core.spk_load(cache_files)
+        _core.spk_load_core()
 
         cache_files = glob.glob(os.path.join(cache_path(), "kernels", "*.bpc"))
         _core.pck_load(cache_files)
 
     if include_cache:
-        cache_files = glob.glob(os.path.join(cache_path(), "kernels", "*.bsp"))
-        _core.spk_load(cache_files)
+        _core.spk_load_cache()
 
     if filenames:
         _core.spk_load(filenames)
