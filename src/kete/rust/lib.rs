@@ -139,5 +139,7 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fitting::ks_test_py, m)?)?;
     m.add_function(wrap_pyfunction!(fitting::fit_chi2_py, m)?)?;
 
+    m.add_function(wrap_pyfunction!(kete_core::cache::cache_path, m)?)?;
+
     Ok(())
 }

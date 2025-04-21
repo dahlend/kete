@@ -25,7 +25,7 @@ use crate::errors::{Error, KeteResult};
 ///
 /// If the KETE_CACHE_DIR environment variable is not set, it
 /// creates a directory in the home directory of the user.
-pub fn get_cache_dir() -> KeteResult<PathBuf> {
+pub fn cache_dir() -> KeteResult<PathBuf> {
     env::var("KETE_CACHE_DIR")
         .map(|env_path| {
             let path = PathBuf::from(env_path);
@@ -47,4 +47,20 @@ pub fn get_cache_dir() -> KeteResult<PathBuf> {
             }
             Ok(path)
         })
+}
+
+#[cfg_attr(feature = "pyo3", pyo3::pyfunction(signature = (sub_path = "")))]
+/// The absolute location of the cache folder.
+///
+/// The cache folder contains files which are downloaded during use of kete and
+/// are not required for basic function.
+///
+/// This will create the folder if it does not exist.
+pub fn cache_path(sub_path: &str) -> KeteResult<String> {
+    let mut path = cache_dir()?;
+    path.push(sub_path);
+    if !path.exists() {
+        std::fs::create_dir_all(&path)?;
+    }
+    Ok(path.to_string_lossy().to_string())
 }

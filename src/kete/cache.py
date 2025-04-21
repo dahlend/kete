@@ -8,61 +8,14 @@ import urllib
 import os
 import shutil
 from urllib3.util.retry import Retry
+from ._core import cache_path
 
-CACHE_DIR = os.getenv("KETE_CACHE_DIR", "~/.kete/")
-"""
-Cache directory location is set by this global variable.
-
-By default this puts cache information into the home directory under a hidden
-folder.
-
-This may be either set by the environmental variable `KETE_CACHE_DIR` or
-by changing this variable after importing kete.
-"""
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "cache_path",
-    "get_cache_size",
 ]
-
-
-def cache_path(subfolder=""):
-    """
-    Helper function to return the absolute location of the cache folder.
-
-    The cache folder contains files which are downloaded during use of kete and
-    are not required for basic function.
-    """
-    path = os.path.abspath(os.path.expanduser(os.path.expandvars(CACHE_DIR)))
-    path = os.path.join(path, subfolder)
-    if not os.path.isdir(path):
-        logger.info("Cache folder does not exist, creating it now. (%s)", path)
-        os.makedirs(path)
-    return path
-
-
-def cache_ls(subfolder=""):
-    """List the contents of the kete cache directory"""
-    path = os.path.join(cache_path(), subfolder)
-    if not os.path.isdir(path):
-        return ValueError(f"({path} is not a directory.)")
-    return sorted(os.listdir(path))
-
-
-def get_cache_size():
-    """
-    Return the total size of the cache directory in MB.
-    """
-    return (
-        sum(
-            os.path.getsize(os.path.join(dirpath, filename))
-            for dirpath, _, filenames in os.walk(cache_path())
-            for filename in filenames
-        )
-        / 1024**2
-    )
 
 
 def _zip_existing(path):
