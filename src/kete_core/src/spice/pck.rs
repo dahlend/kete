@@ -6,9 +6,11 @@
 //! will only be the read case.
 //!
 use std::collections::HashSet;
+use std::fs;
 
 use super::daf::{DAFType, DafFile};
 use super::pck_segments::PckSegment;
+use crate::cache::cache_path;
 use crate::errors::{Error, KeteResult};
 use crate::frames::Frame;
 use crossbeam::sync::ShardedLock;
@@ -69,6 +71,37 @@ impl PckCollection {
         let loaded: HashSet<i32> = self.segments.iter().map(|x| x.center_id).collect();
         loaded.into_iter().collect()
     }
+
+    /// Load the core files.
+    pub fn load_core(&mut self) -> KeteResult<()> {
+        let cache = cache_path("kernels/core")?;
+        self.load_directory(cache)?;
+        Ok(())
+    }
+
+    /// Load files in the cache directory.
+    pub fn load_cache(&mut self) -> KeteResult<()> {
+        let cache = cache_path("kernels")?;
+        self.load_directory(cache)?;
+        Ok(())
+    }
+
+    /// Load all PCK files from a directory.
+    pub fn load_directory(&mut self, directory: String) -> KeteResult<()> {
+        fs::read_dir(&directory)?.for_each(|entry| {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_file() {
+                let filename = path.to_str().unwrap();
+                if filename.to_lowercase().ends_with(".bpc") {
+                    if let Err(err) = self.load_file(filename) {
+                        eprintln!("Failed to load PCK file {}: {}", filename, err);
+                    }
+                }
+            }
+        });
+        Ok(())
+    }
 }
 
 lazy_static! {
@@ -76,6 +109,8 @@ lazy_static! {
     /// This is a RwLock protected PCKCollection, and must be `.try_read().unwrapped()` for any
     /// read-only cases.
     pub static ref LOADED_PCK: PckSingleton = {
-        ShardedLock::new(PckCollection::default())
+        let mut singleton =PckCollection::default();
+        let _ = singleton.load_core();
+        ShardedLock::new(singleton)
     };
 }
