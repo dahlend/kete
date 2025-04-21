@@ -20,6 +20,7 @@
 //!
 use super::daf::DafFile;
 use super::{spk_segments::*, DAFType};
+use crate::cache::cache_path;
 use crate::errors::Error;
 use crate::frames::Frame;
 use crate::prelude::KeteResult;
@@ -27,6 +28,7 @@ use crate::state::State;
 use lazy_static::lazy_static;
 use pathfinding::prelude::dijkstra;
 use std::collections::{HashMap, HashSet};
+use std::fs;
 
 use crossbeam::sync::ShardedLock;
 
@@ -330,6 +332,37 @@ impl SpkCollection {
     pub fn reset(&mut self) {
         *self = SpkCollection::default();
     }
+
+    /// Load the core files.
+    pub fn load_core(&mut self) -> KeteResult<()> {
+        let cache = cache_path("kernels/core")?;
+        self.load_directory(cache)?;
+        Ok(())
+    }
+
+    /// Load files in the cache directory.
+    pub fn load_cache(&mut self) -> KeteResult<()> {
+        let cache = cache_path("kernels")?;
+        self.load_directory(cache)?;
+        Ok(())
+    }
+
+    /// Load all SPK files from a directory.
+    pub fn load_directory(&mut self, directory: String) -> KeteResult<()> {
+        fs::read_dir(&directory)?.for_each(|entry| {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_file() {
+                let filename = path.to_str().unwrap();
+                if filename.to_lowercase().ends_with(".bsp") {
+                    if let Err(err) = self.load_file(filename) {
+                        eprintln!("Failed to load SPK file {}: {}", filename, err);
+                    }
+                }
+            }
+        });
+        Ok(())
+    }
 }
 
 lazy_static! {
@@ -337,6 +370,8 @@ lazy_static! {
     /// This is a RwLock protected SPKCollection, and must be `.try_read().unwrapped()` for any
     /// read-only cases.
     pub static ref LOADED_SPK: SpkSingleton = {
-        ShardedLock::new(SpkCollection::default())
+        let mut singleton = SpkCollection::default();
+        let _ = singleton.load_core();
+        ShardedLock::new(singleton)
     };
 }
