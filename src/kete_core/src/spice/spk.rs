@@ -237,7 +237,7 @@ impl SpkCollection {
     ///
     /// These mappings are used to be able to change the center ID from whatever is saved in
     /// the spks to any possible combination.
-    pub fn build_cache(&mut self) {
+    fn build_mapping(&mut self) {
         static PRECACHE: &[i64] = &[0, 10, 399];
 
         let mut nodes: HashMap<i64, HashSet<(i64, i64)>> = HashMap::new();
@@ -324,7 +324,7 @@ impl SpkCollection {
                     .push(segment);
             }
         }
-        self.build_cache();
+        self.build_mapping();
         Ok(())
     }
 

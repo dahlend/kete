@@ -20,7 +20,6 @@ pub fn spk_load_py(py: Python<'_>, filenames: Vec<String>) -> PyResult<()> {
             eprintln!("{} failed to load. {}", filename, err);
         }
     }
-    (*singleton).build_cache();
     Ok(())
 }
 
@@ -62,6 +61,20 @@ pub fn spk_get_name_from_id_py(id: i64) -> String {
 #[pyo3(name = "spk_reset")]
 pub fn spk_reset_py() {
     LOADED_SPK.write().unwrap().reset()
+}
+
+/// Reload the core SPK files.
+#[pyfunction]
+#[pyo3(name = "spk_load_core")]
+pub fn spk_load_core_py() {
+    LOADED_SPK.write().unwrap().load_core().unwrap()
+}
+
+/// Reload the cache SPK files.
+#[pyfunction]
+#[pyo3(name = "spk_load_cache")]
+pub fn spk_load_cache_py() {
+    LOADED_SPK.write().unwrap().load_cache().unwrap()
 }
 
 /// Calculate the state of a given object in the target frame.
