@@ -30,6 +30,7 @@
     unused_results
 )]
 
+pub mod cache;
 pub mod constants;
 pub mod elements;
 pub mod errors;
