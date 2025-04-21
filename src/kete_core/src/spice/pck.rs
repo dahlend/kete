@@ -109,7 +109,7 @@ lazy_static! {
     /// This is a RwLock protected PCKCollection, and must be `.try_read().unwrapped()` for any
     /// read-only cases.
     pub static ref LOADED_PCK: PckSingleton = {
-        let mut singleton =PckCollection::default();
+        let mut singleton = PckCollection::default();
         let _ = singleton.load_core();
         ShardedLock::new(singleton)
     };
