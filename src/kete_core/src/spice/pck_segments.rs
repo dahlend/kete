@@ -50,7 +50,7 @@ impl From<PckSegmentType> for DafArray {
 #[derive(Debug)]
 pub struct PckSegment {
     /// The reference center NAIF ID for the central body in this Segment.
-    pub center_id: isize,
+    pub center_id: i32,
 
     /// [`Frame`] of reference for this Segment.
     pub ref_frame: Frame,
@@ -74,14 +74,14 @@ impl TryFrom<DafArray> for PckSegment {
         let jd_start = spice_jds_to_jd(summary_floats[0]);
         let jd_end = spice_jds_to_jd(summary_floats[1]);
 
-        let center_id = summary_ints[0] as isize;
+        let center_id = summary_ints[0];
         let frame_id = summary_ints[1];
         let segment_type = summary_ints[2];
 
         let ref_frame = match frame_id {
             1 => Frame::Equatorial, // J2000
             17 => Frame::Ecliptic,  // ECLIPJ2000
-            _ => Frame::Unknown(frame_id as usize),
+            _ => Frame::Unknown(frame_id),
         };
 
         let segment = PckSegmentType::from_array(segment_type, array)?;

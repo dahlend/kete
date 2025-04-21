@@ -370,6 +370,7 @@ def fetch_spice_kernel(
     exact_name: bool = False,
     update_cache: bool = False,
     apparition_year: Optional[int] = None,
+    cache_dir: str = "kernels",
 ):
     """
     Download a SPICE kernel from JPL Horizons and save it directly into the Cache.
@@ -400,6 +401,9 @@ def fetch_spice_kernel(
         specified year. If this is not provided, then default to the most recent
         epoch of orbit fit. Ex: `apparition_year=1980` will return the closest
         epoch before 1980.
+    cache_dir:
+        The directory in the cache where the file will be saved. This is used to
+        separate the planet SPICE kernels from the other cache files.
     """
 
     if not isinstance(jd_start, Time):
@@ -430,7 +434,7 @@ def fetch_spice_kernel(
 
     spk_id = int(name_dat.json()["object"]["spkid"])
 
-    dir_path = os.path.join(cache_path(), "kernels")
+    dir_path = os.path.join(cache_path(), cache_dir)
 
     if apparition_year is not None:
         filename = os.path.join(dir_path, f"{spk_id}_epoch_{apparition_year}.bsp")

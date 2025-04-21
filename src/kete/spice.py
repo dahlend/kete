@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import Union, Optional
 from collections import namedtuple
+import requests
 import glob
 import os
 import numpy as np
@@ -185,6 +186,9 @@ def loaded_objects() -> list[tuple[str, int]]:
     Return the name of all objects which are currently loaded in the SPICE kernels.
     """
     objects = _core.spk_loaded()
+    if len(objects) == 0:
+        kernel_reload()
+        objects = _core.spk_loaded()
     return [(_core.spk_get_name_from_id(o), o) for o in objects]
 
 
@@ -217,7 +221,7 @@ def kernel_fetch_from_url(url, force_download: bool = False):
 
 
 def kernel_reload(
-    filenames: Optional[list[str]] = None, include_cache=False, include_preload=True
+    filenames: Optional[list[str]] = None, include_cache=False, include_planets=True
 ):
     """
     Load the specified spice kernels into memory, this resets the currently loaded
@@ -233,22 +237,82 @@ def kernel_reload(
     include_cache:
         This decides if all of the files contained within the kete cache should
         be loaded in addition to the specified files.
-    include_preload:
-        Should the DE440 and asteroid kernels be loaded. If this is not loaded it
-        will likely need to be loaded manually, intended for more advanced usage.
+    include_planets:
+        This decides if the default planetary kernels should be loaded in
+        addition. This includes the de440s, the WISE kernel, and 5 largest main
+        belt asteroids. If these files are not present, they will be downloaded.
     """
-    _core.spk_reset(include_preload)
+    _core.spk_reset()
     _core.pck_reset()
 
-    if include_cache:
-        cache_files = glob.glob(os.path.join(cache_path(), "kernels", "**.bsp"))
+    if include_planets:
+        _download_core_files()
+        cache_files = glob.glob(os.path.join(cache_path(), "kernels/core", "*.bsp"))
         _core.spk_load(cache_files)
 
-        cache_files = glob.glob(os.path.join(cache_path(), "kernels", "**.bpc"))
+        cache_files = glob.glob(os.path.join(cache_path(), "kernels", "*.bpc"))
         _core.pck_load(cache_files)
+
+    if include_cache:
+        cache_files = glob.glob(os.path.join(cache_path(), "kernels", "*.bsp"))
+        _core.spk_load(cache_files)
 
     if filenames:
         _core.spk_load(filenames)
+
+
+def _download_core_files():
+    """
+    Download the core files required for the default planetary kernels.
+
+    This includes the de440s, the WISE kernel, and 5 largest main belt asteroids.
+    """
+    cache_files = glob.glob(os.path.join(cache_path(), "kernels/core", "**.bsp"))
+
+    # required files:
+    de440 = "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de440s.bsp"
+    wise = "https://github.com/Caltech-IPAC/kete/raw/refs/heads/main/src/kete_core/data/wise.bsp"
+
+    if not any(["de440s.bsp" in file for file in cache_files]):
+        # Cannot find the de440s file, so download it
+        download_file(de440, subfolder="kernels/core")
+    if not any(["wise.bsp" in file for file in cache_files]):
+        # Cannot find the wise file, so download it
+        download_file(wise, subfolder="kernels/core")
+
+    required_asteroids = [1, 2, 4, 10, 704]
+    for asteroid in required_asteroids:
+        expected_name = f"{asteroid}.bsp"
+        if not any([expected_name in file for file in cache_files]):
+            from .horizons import fetch_spice_kernel
+
+            fetch_spice_kernel(
+                asteroid,
+                jd_start=Time.from_ymd(1900, 1, 1).jd,
+                jd_end=Time.from_ymd(2100, 1, 1).jd,
+                cache_dir="kernels/core",
+            )
+
+    # Look for PCK files
+    cache_files = glob.glob(os.path.join(cache_path(), "kernels", "*.bpc"))
+    if not any(["combined.bsp" in file for file in cache_files]):
+        pck_path = "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/pck/"
+
+        # cannot find the combined file, so download it
+        # first we download the index page and parse it for the filename
+        res = requests.get(pck_path)
+        res.raise_for_status()
+        filename = [
+            x for x in res.content.decode().split('"') if "combined.bpc" in x[-12:]
+        ]
+        # if parsing was successful, download the file
+        if len(filename) == 0:
+            raise ValueError(
+                "Failed to find Earth orientation file on NAIF website, please"
+                "submit a github issue! NAIF may have moved filenames or location."
+            )
+        pck_path = pck_path + filename[0]
+        download_file(pck_path, subfolder="kernels")
 
 
 def kernel_header_comments(filename: str):
@@ -346,6 +410,9 @@ def earth_pos_to_ecliptic(
     State
         Returns the equatorial state of the target in AU and AU/days.
     """
+    if len(_core.pck_loaded()) == 0:
+        kernel_reload()
+
     jd = _validate_time(jd)
     pos = _core.wgs_lat_lon_to_ecef(geodetic_lat, geodetic_lon, height_above_surface)
     pos = np.array(pos) / AU_KM

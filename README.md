@@ -4,6 +4,7 @@
 [![DOI](https://zenodo.org/badge/787588564.svg)](https://zenodo.org/badge/latestdoi/787588564)
 
 The repository for Kete, Solar System Survey Simulation Software.
+
 'Kete' comes from ancient greek mythology, meaning sea monsters, and is the root word
 for Cetaceans (Whales).
 

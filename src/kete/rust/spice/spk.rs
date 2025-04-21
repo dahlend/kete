@@ -57,11 +57,11 @@ pub fn spk_get_name_from_id_py(id: i64) -> String {
     try_name_from_id(id).unwrap_or(id.to_string())
 }
 
-/// Reset the contents of the SPK shared memory to the default set of SPK kernels.
+/// Reset the contents of the SPK shared memory.
 #[pyfunction]
-#[pyo3(name = "spk_reset", signature = (include_preload=true))]
-pub fn spk_reset_py(include_preload: bool) {
-    LOADED_SPK.write().unwrap().reset(include_preload)
+#[pyo3(name = "spk_reset")]
+pub fn spk_reset_py() {
+    LOADED_SPK.write().unwrap().reset()
 }
 
 /// Calculate the state of a given object in the target frame.
