@@ -5,16 +5,6 @@
 
 The repository for Kete, Solar System Survey Simulation Software.
 
-'Kete' comes from ancient greek mythology, meaning sea monsters, and is the root word
-for Cetaceans (Whales).
-
-## Licensing:
-
-The original version of this repo was developed at Caltech IPAC. This is a fork of that repo
-where the work will continue as a personal project. Work done while at IPAC is of course owned
-by Caltech, but all future work will be marked as owned by Dar Dahlen & future contributors.
-License will remain as BSD-3 Clause to simplify things.
-
 ## Introduction
 
 The kete tools are intended to enable the simulation of all-sky surveys of minor
@@ -44,7 +34,8 @@ magnitude limit for the specific frame, then the object will flash light grey.
 This took about 50 minutes on a desktop computer to compute, and about 40 minutes
 to generate the movie.
 
-
+Kete can be used to answer many questions, for example, identifying all known asteroids
+inside of a [given image](https://dahlend.github.io/kete/tutorials/kona.html).
 
 
 ## Installation
@@ -55,28 +46,19 @@ Kete may be installed using pip:
 pip install kete
 ```
 
-## Installation - From Source
+## Name
 
-If kete is built from source, the rust compiler must be installed. Installation
-instructions may be found here: 
+'Kete' comes from ancient greek mythology, meaning sea monsters, and is the root word
+for Cetaceans (Whales).
 
-https://www.rust-lang.org/learn/get-started
+## Licensing:
 
-Ensure that your Python is up to date, this code runs on Python 3.9+.
-``` bash
-python --version
-```
-
-Ensure that your pip is up to date, this should be at least version `22.0.0`.
-``` bash
-pip --version
-```
-
-This can be updated using:
-``` bash
-python -m pip install "pip>=22.0.0" --upgrade
-pip install setuptools --upgrade
-```
+The original version of this code was developed while the original author (Dar Dahlen)
+was working at Caltech IPAC. I have since left Caltech and moved to Germany for a PhD.
+This is a fork of that repo where the work will continue as a personal project during
+my PhD. Work done while at IPAC is of course owned by Caltech, but all future work will
+be marked as owned by Dar Dahlen & future contributors.
+License will remain as BSD-3 Clause to simplify things.
 
 ### Units and Reference Frame
 
@@ -101,7 +83,35 @@ environment variable `KETE_CACHE_DIR`. The default directory is `~/.kete/`.
 export KETE_CACHE_DIR="~/.kete/"
 ```
 
+# Developer information:
+
+Information below is aimed for developers, and is not necessary for end users.
+
+## Installation - From Source
+
+If kete is built from source, the rust compiler must be installed. Installation
+instructions may be found here: 
+
+https://www.rust-lang.org/learn/get-started
+
+Ensure that your Python is up to date, this code runs on Python 3.9+.
+``` bash
+python --version
+```
+
+Ensure that your pip is up to date, this should be at least version `22.0.0`.
+``` bash
+pip --version
+```
+
+This can be updated using:
+``` bash
+python -m pip install "pip>=22.0.0" --upgrade
+pip install setuptools --upgrade
+```
+
 ### Development
+
 If you plan on doing development, it is recommended to install with the following:
 ``` bash
 pip install '.[dev]'
