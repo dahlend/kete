@@ -1,7 +1,8 @@
 # Kete
 
 ![Github Actions](https://github.com/dahlend/kete/actions/workflows/test-lint.yml/badge.svg?branch=main)
-[![DOI](https://zenodo.org/badge/787588564.svg)](https://zenodo.org/badge/latestdoi/787588564)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.15259732.svg)](https://doi.org/10.5281/zenodo.15259732)
+
 
 The repository for Kete, Solar System Survey Simulation Software.
 
