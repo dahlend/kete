@@ -8,6 +8,7 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+  workflow_dispatch:
 
 env:
   KETE_CACHE_DIR: ${{ github.workspace }}/docs/data
