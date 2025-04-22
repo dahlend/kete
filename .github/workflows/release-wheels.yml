@@ -50,7 +50,7 @@ jobs:
           path: ~/.kete
           # These files are valid long term, and are not expected to change
           # between runs. So there is no need to a changing name.
-        key: kete-cache
+          key: kete-cache
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Set up Python
