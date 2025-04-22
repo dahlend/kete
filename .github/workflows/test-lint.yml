@@ -10,7 +10,6 @@ on:
     branches: [ "main" ]
 
 env:
-  KETE_CACHE_DIR: ${{ github.workspace }}/docs/data
   RUSTFLAGS: "-D warnings"
   RUSTDOCFLAGS: "-D warnings"
 
@@ -26,24 +25,27 @@ jobs:
       fail-fast: false
     steps:
     - uses: actions/checkout@v4
+    - name: Cache downloaded files
+      id: cache-kete
+      uses: actions/cache@v4
+      env:
+        cache-name: cache-kete
       with:
-        lfs: true
+        # kete stores all files in `~/.kete/` by default
+        path: ~/.kete
+        # These files are valid long term, and are not expected to change
+        # between runs. So there is no need to a changing name.
+        key: kete-cache
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: "3.11"
-    - name: Test with cargo
-      run: |
-        cargo test
-    - name: Cargo Docs
-      run: |
-        cargo doc
+        python-version: "3.13"
     - name: Install dependencies
       run: |
-        python3 -m pip install --upgrade pip setuptools black mypy types-requests numpy
-    - name: Black Formatting
+        python3 -m pip install --upgrade pip setuptools ruff mypy types-requests numpy
+    - name: Ruff Formatting
       run: |
-        python3 -m black . --check
+        python3 -m ruff check
     - name: Lint with mypy
       run: |
         python3 -m mypy src/kete/
@@ -55,6 +57,12 @@ jobs:
     - name: Test with pytest
       run: |
         python3 -m pytest --cov-report term-missing --cov=kete
+    - name: Test with cargo
+      run: |
+        cargo test
+    - name: Cargo Docs
+      run: |
+        cargo doc
 
     # Build documentation and push artifact
     - name: Build Docs
