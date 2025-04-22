@@ -7,7 +7,7 @@
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = "kete"
-copyright = "2025, Caltech IPAC"
+copyright = "2025, Dar Dahlen"
 author = "Dar Dahlen"
 
 # -- General configuration ---------------------------------------------------
