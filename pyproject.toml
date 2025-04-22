@@ -1,6 +1,6 @@
 [project]
 name = "kete"
-version = "1.0.8"
+version = "1.1.0"
 description = "Kete Asteroid Survey Tools"
 readme = "README.md"
 authors = [{name = "Dar Dahlen", email = "dardahlen@gmail.com"},
