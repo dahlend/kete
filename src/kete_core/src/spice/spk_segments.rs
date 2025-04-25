@@ -118,7 +118,7 @@ impl TryFrom<DafArray> for SpkSegment {
         let ref_frame = match frame_num {
             17 => Frame::Ecliptic,
             1 => Frame::Equatorial,
-            i => Frame::Unknown(i),
+            i => Frame::Unknown(i as isize),
         };
 
         let segment = SpkSegmentType::from_array(segment_type, value)?;

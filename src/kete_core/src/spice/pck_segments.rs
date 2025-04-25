@@ -81,7 +81,7 @@ impl TryFrom<DafArray> for PckSegment {
         let ref_frame = match frame_id {
             1 => Frame::Equatorial, // J2000
             17 => Frame::Ecliptic,  // ECLIPJ2000
-            _ => Frame::Unknown(frame_id),
+            _ => Frame::Unknown(frame_id as isize),
         };
 
         let segment = PckSegmentType::from_array(segment_type, array)?;
@@ -182,7 +182,7 @@ impl PckSegmentType2 {
         let w = w.rem_euclid(std::f64::consts::TAU);
 
         Ok(Frame::EclipticNonInertial(
-            segment.center_id,
+            segment.center_id as isize,
             [
                 ra,
                 dec,

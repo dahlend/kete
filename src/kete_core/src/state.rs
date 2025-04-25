@@ -176,7 +176,7 @@ impl State {
                 new_pos = galactic_to_ecliptic(&self.pos.into()).into();
                 new_vel = galactic_to_ecliptic(&self.vel.into()).into();
             }
-            Frame::Unknown(id) => return Err(Error::UnknownFrame(id)),
+            Frame::Unknown(id) => return Err(Error::UnknownFrame(id as i32)),
         }
 
         // new_pos and new_vel are now in ecliptic.
@@ -203,7 +203,7 @@ impl State {
                 self.pos = ecliptic_to_galactic(&new_pos.into()).into();
                 self.vel = ecliptic_to_galactic(&new_vel.into()).into();
             }
-            Frame::Unknown(id) => return Err(Error::UnknownFrame(id)),
+            Frame::Unknown(id) => return Err(Error::UnknownFrame(id as i32)),
         }
         self.frame = target_frame;
         Ok(())

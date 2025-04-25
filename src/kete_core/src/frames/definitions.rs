@@ -31,7 +31,7 @@ pub enum Frame {
     Galactic,
 
     /// Unknown is to allow SPK files to be loaded with other frames.
-    Unknown(i32),
+    Unknown(isize),
 
     /// Non-inertial frame as defined by rotations from the ecliptic frame.
     ///
@@ -40,7 +40,7 @@ pub enum Frame {
     ///   this frame from the ecliptic frame.
     ///
     /// Rotation is done with a ZXZ set of chained rotations.
-    EclipticNonInertial(i32, [f64; 6]),
+    EclipticNonInertial(isize, [f64; 6]),
     // Other non inertial frames will require multi-step conversions
 }
 
@@ -64,7 +64,7 @@ impl From<i32> for Frame {
             2 => Frame::Ecliptic,
             3 => Frame::FK4,
             4 => Frame::Galactic,
-            i => Frame::Unknown(i),
+            i => Frame::Unknown(i as isize),
         }
     }
 }
@@ -92,7 +92,7 @@ impl Frame {
             Frame::Galactic => {
                 vec = galactic_to_ecliptic(&vec);
             }
-            Frame::Unknown(id) =>  Err(Error::UnknownFrame(*id))?,
+            Frame::Unknown(id) =>  Err(Error::UnknownFrame(*id as i32))?,
         }
 
         // new_vec is now in ecliptic.
@@ -112,7 +112,7 @@ impl Frame {
             Frame::Galactic => {
                 vec = ecliptic_to_galactic(&vec);
             }
-            Frame::Unknown(id) =>  Err(Error::UnknownFrame(id))?,
+            Frame::Unknown(id) =>  Err(Error::UnknownFrame(id as i32))?,
         }
         Ok(vec)
     }
