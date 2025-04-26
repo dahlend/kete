@@ -96,7 +96,7 @@ pub fn spk_load_cache_py() {
 pub fn spk_state_py(id: i64, jd: PyTime, center: i64, frame: PyFrames) -> PyResult<PyState> {
     let jd = jd.jd();
     let spk = &LOADED_SPK.try_read().unwrap();
-    let mut state = spk.try_get_state(id, jd, center, frame.into())?;
+    let mut state = spk.try_get_state_with_center(id, jd, center, frame.into())?;
     let _ = state.try_naif_id_to_name();
     Ok(PyState(state))
 }
@@ -116,5 +116,5 @@ pub fn spk_state_py(id: i64, jd: PyTime, center: i64, frame: PyFrames) -> PyResu
 pub fn spk_raw_state_py(id: i64, jd: PyTime) -> PyResult<PyState> {
     let jd = jd.jd();
     let spk = &LOADED_SPK.try_read().unwrap();
-    Ok(PyState(spk.try_get_raw_state(id, jd)?))
+    Ok(PyState(spk.try_get_state(id, jd)?))
 }

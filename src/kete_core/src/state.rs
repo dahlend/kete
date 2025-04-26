@@ -20,12 +20,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
 
 use crate::errors::{Error, KeteResult};
-use crate::frames::{
-    ecliptic_to_equatorial, ecliptic_to_fk4, ecliptic_to_galactic, equatorial_to_ecliptic,
-    fk4_to_ecliptic, galactic_to_ecliptic, inertial_to_noninertial, noninertial_to_inertial, Frame,
-};
+use crate::frames::{InertialFrame, Vector};
 use crate::spice;
-use nalgebra::Vector3;
 
 /// Designation for an object.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Hash, Eq)]
@@ -41,7 +37,7 @@ pub enum Desig {
 
     /// NAIF id for the object.
     /// These are used by SPICE kernels for identification.
-    Naif(i64),
+    Naif(i32),
 
     /// No id assigned.
     Empty,
@@ -72,8 +68,11 @@ impl Display for Desig {
 /// coordinate frame and a center point.
 ///
 /// This state object assumes no uncertainty in its values.
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct State {
+#[derive(Debug, Serialize, Clone, Deserialize, PartialEq)]
+pub struct State<T>
+where
+    T: InertialFrame,
+{
     /// Designation number which corresponds to the object.
     pub desig: Desig,
 
@@ -81,36 +80,25 @@ pub struct State {
     pub jd: f64,
 
     /// Position of the object with respect to the center_id object, units of AU.
-    pub pos: [f64; 3],
+    pub pos: Vector<T>,
 
     /// Velocity of the object with respect to the center_id object, units of AU/Day.
-    pub vel: [f64; 3],
-
-    /// Coordinate frame of the object.
-    pub frame: Frame,
+    pub vel: Vector<T>,
 
     /// Position and velocity are given with respect to the specified center_id.
     /// The only privileged center ID is the Solar System Barycenter 0.
-    pub center_id: i64,
+    pub center_id: i32,
 }
 
-impl State {
+impl<T: InertialFrame> State<T> {
     /// Construct a new State object.
     #[inline(always)]
-    pub fn new(
-        desig: Desig,
-        jd: f64,
-        pos: Vector3<f64>,
-        vel: Vector3<f64>,
-        frame: Frame,
-        center_id: i64,
-    ) -> Self {
+    pub fn new(desig: Desig, jd: f64, pos: Vector<T>, vel: Vector<T>, center_id: i32) -> Self {
         State {
             desig,
             jd,
-            pos: pos.into(),
-            vel: vel.into(),
-            frame,
+            pos,
+            vel,
             center_id,
         }
     }
@@ -119,94 +107,13 @@ impl State {
     /// remaining data. This is primarily useful as a place holder when propagation
     /// has failed and the object needs to be recorded still.
     #[inline(always)]
-    pub fn new_nan(desig: Desig, jd: f64, frame: Frame, center_id: i64) -> Self {
-        Self::new(
-            desig,
-            jd,
-            [f64::NAN, f64::NAN, f64::NAN].into(),
-            [f64::NAN, f64::NAN, f64::NAN].into(),
-            frame,
-            center_id,
-        )
+    pub fn new_nan(desig: Desig, jd: f64, center_id: i32) -> Self {
+        Self::new(desig, jd, Vector::new_nan(), Vector::new_nan(), center_id)
     }
 
     /// Are all values finite.
     pub fn is_finite(&self) -> bool {
-        !(self.pos.iter().any(|x| !x.is_finite())
-            || self.vel.iter().any(|x| !x.is_finite())
-            || !self.jd.is_finite())
-    }
-
-    /// Mutate the current state from its current [`Frame`] to the new target [`Frame`].
-    ///
-    /// # Arguments
-    ///
-    /// * `target_frame` - Target frame from the [`Frame`] enum.
-    #[inline(always)]
-    pub fn try_change_frame_mut(&mut self, target_frame: Frame) -> KeteResult<()> {
-        if self.frame == target_frame {
-            return Ok(());
-        }
-
-        // All states are moved from the input frame into the ecliptic frame, then from
-        // the ecliptic to the final frame. This reduces the amount of code required.
-
-        let new_pos: [f64; 3];
-        let new_vel: [f64; 3];
-        match self.frame {
-            Frame::Equatorial => {
-                new_pos = equatorial_to_ecliptic(&self.pos.into()).into();
-                new_vel = equatorial_to_ecliptic(&self.vel.into()).into();
-            }
-            Frame::Ecliptic => {
-                new_pos = self.pos;
-                new_vel = self.vel;
-            }
-            Frame::EclipticNonInertial(_, frame_angles) => {
-                let (p, v) =
-                    noninertial_to_inertial(&frame_angles, &self.pos.into(), &self.vel.into());
-                new_pos = p.into();
-                new_vel = v.into()
-            }
-            Frame::FK4 => {
-                new_pos = fk4_to_ecliptic(&self.pos.into()).into();
-                new_vel = fk4_to_ecliptic(&self.vel.into()).into();
-            }
-            Frame::Galactic => {
-                new_pos = galactic_to_ecliptic(&self.pos.into()).into();
-                new_vel = galactic_to_ecliptic(&self.vel.into()).into();
-            }
-            Frame::Unknown(id) => return Err(Error::UnknownFrame(id as i32)),
-        }
-
-        // new_pos and new_vel are now in ecliptic.
-        match target_frame {
-            Frame::Equatorial => {
-                self.pos = ecliptic_to_equatorial(&new_pos.into()).into();
-                self.vel = ecliptic_to_equatorial(&new_vel.into()).into();
-            }
-            Frame::Ecliptic => {
-                self.pos = new_pos;
-                self.vel = new_vel;
-            }
-            Frame::EclipticNonInertial(_, frame_angles) => {
-                let (p, v) =
-                    inertial_to_noninertial(&frame_angles, &new_pos.into(), &new_vel.into());
-                self.pos = p.into();
-                self.vel = v.into();
-            }
-            Frame::FK4 => {
-                self.pos = ecliptic_to_fk4(&new_pos.into()).into();
-                self.vel = ecliptic_to_fk4(&new_vel.into()).into();
-            }
-            Frame::Galactic => {
-                self.pos = ecliptic_to_galactic(&new_pos.into()).into();
-                self.vel = ecliptic_to_galactic(&new_vel.into()).into();
-            }
-            Frame::Unknown(id) => return Err(Error::UnknownFrame(id as i32)),
-        }
-        self.frame = target_frame;
-        Ok(())
+        self.pos.is_finite() & self.vel.is_finite() & self.jd.is_finite()
     }
 
     /// Trade the center ID and ID values, and flip the direction of the position and
@@ -215,10 +122,8 @@ impl State {
     pub fn try_flip_center_id(&mut self) -> KeteResult<()> {
         if let Desig::Naif(mut id) = self.desig {
             (id, self.center_id) = (self.center_id, id);
-            for i in 0..3 {
-                self.pos[i] = -self.pos[i];
-                self.vel[i] = -self.vel[i];
-            }
+            self.pos = -self.pos;
+            self.vel = -self.vel;
             self.desig = Desig::Naif(id);
             return Ok(());
         }
@@ -265,18 +170,10 @@ impl State {
             state.try_flip_center_id()?;
         }
 
-        // Now they match, and we know the center id will change, update target frame
-        // if necessary.
-        if self.frame != state.frame {
-            state.try_change_frame_mut(self.frame)?;
-        }
-
         // Now the state is where it is supposed to be, update as required.
         self.center_id = state.center_id;
-        for i in 0..3 {
-            self.pos[i] += state.pos[i];
-            self.vel[i] += state.vel[i];
-        }
+        self.pos += &state.pos;
+        self.vel += &state.vel;
         Ok(())
     }
 
@@ -289,43 +186,58 @@ impl State {
             None
         }
     }
+
+    /// Convert the state into a new frame.
+    #[inline(always)]
+    pub fn into_frame<B: InertialFrame>(self) -> State<B> {
+        let pos = self.pos.into_frame::<B>();
+        let vel = self.vel.into_frame::<B>();
+
+        State {
+            desig: self.desig,
+            jd: self.jd,
+            pos,
+            vel,
+            center_id: self.center_id,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
 
+    use crate::frames::{Ecliptic, Equatorial};
+
     use super::*;
 
     #[test]
     fn flip_center() {
-        let mut a = State::new(
+        let mut a = State::<Equatorial>::new(
             Desig::Naif(1),
             0.0,
             [1.0, 0.0, 0.0].into(),
             [0.0, 1.0, 0.0].into(),
-            Frame::Ecliptic,
             0,
         );
         a.try_flip_center_id().unwrap();
 
         assert!(a.center_id == 1);
-        assert!(a.pos == [-1.0, 0.0, 0.0]);
-        assert!(a.vel == [0.0, -1.0, 0.0]);
+        assert!(a.pos.raw == [-1.0, 0.0, 0.0]);
+        assert!(a.vel.raw == [0.0, -1.0, 0.0]);
     }
 
     #[test]
     fn nan_finite() {
-        let a = State::new(
+        let a = State::<Equatorial>::new(
             Desig::Naif(1),
             0.0,
             [1.0, 0.0, 0.0].into(),
             [0.0, 1.0, 0.0].into(),
-            Frame::Ecliptic,
             0,
         );
         assert!(a.is_finite());
 
-        let b = State::new_nan(Desig::Empty, 0.0, Frame::Ecliptic, 1000);
+        let b = State::<Equatorial>::new_nan(Desig::Empty, 0.0, 1000);
         assert!(!b.is_finite())
     }
 
@@ -340,12 +252,11 @@ mod tests {
 
     #[test]
     fn naif_name_resolution() {
-        let mut a = State::new(
+        let mut a = State::<Ecliptic>::new(
             Desig::Naif(1),
             0.0,
             [1.0, 0.0, 0.0].into(),
             [0.0, 1.0, 0.0].into(),
-            Frame::Ecliptic,
             0,
         );
         assert!(a.try_naif_id_to_name().is_some());
@@ -355,71 +266,22 @@ mod tests {
     }
 
     #[test]
-    fn frame_roundtrip() {
-        let mut state = State::new(
-            Desig::Naif(1),
-            0.0,
-            [1.0, 0.0, 0.0].into(),
-            [1.0, 0.0, 0.0].into(),
-            Frame::Ecliptic,
-            0,
-        );
-
-        assert!(state.try_change_frame_mut(Frame::Unknown(10000)).is_err());
-
-        let non_inerial = Frame::EclipticNonInertial(123, [1.0, 1.2, 1.4, 1.1, 1.3, 1.5]);
-
-        for frame_a in vec![
-            Frame::Ecliptic,
-            Frame::Equatorial,
-            Frame::FK4,
-            Frame::Galactic,
-            non_inerial,
-        ] {
-            let mut test_state = state.clone();
-            test_state.try_change_frame_mut(frame_a).unwrap();
-            let pos_exp = &test_state.pos;
-            let vel_exp = &test_state.vel;
-            for frame_b in vec![
-                Frame::Ecliptic,
-                Frame::Equatorial,
-                Frame::FK4,
-                Frame::Galactic,
-                non_inerial,
-            ] {
-                let mut test_state_b = test_state.clone();
-                test_state_b.try_change_frame_mut(frame_b).unwrap();
-                test_state_b.try_change_frame_mut(frame_a).unwrap();
-                let pos = &test_state_b.pos;
-                let vel = &test_state_b.vel;
-                assert!((pos[0] - pos_exp[0]).abs() < 10.0 * f64::EPSILON);
-                assert!((pos[1] - pos_exp[1]).abs() < 10.0 * f64::EPSILON);
-                assert!((pos[2] - pos_exp[2]).abs() < 10.0 * f64::EPSILON);
-                assert!((vel[0] - vel_exp[0]).abs() < 10.0 * f64::EPSILON);
-                assert!((vel[1] - vel_exp[1]).abs() < 10.0 * f64::EPSILON);
-                assert!((vel[2] - vel_exp[2]).abs() < 10.0 * f64::EPSILON);
-            }
-        }
-    }
-    #[test]
     fn change_center() {
-        let mut a = State::new(
+        let mut a = State::<Ecliptic>::new(
             Desig::Naif(1),
             0.0,
             [1.0, 0.0, 0.0].into(),
             [1.0, 0.0, 0.0].into(),
-            Frame::Ecliptic,
             0,
         );
-        let b = State::new(
+        let b = State::<Equatorial>::new(
             Desig::Naif(3),
             0.0,
             [0.0, 1.0, 0.0].into(),
             [0.0, 1.0, 0.0].into(),
-            Frame::Equatorial,
             0,
         );
-        a.try_change_center(b).unwrap();
+        a.try_change_center(b.into_frame()).unwrap();
 
         assert!(a.center_id == 3);
         assert!(a.pos[0] == 1.0);
@@ -428,34 +290,31 @@ mod tests {
         assert!(a.vel[0] == 1.0);
 
         // try cases which cause errors
-        let diff_jd = State::new(
+        let diff_jd = State::<Equatorial>::new(
             Desig::Naif(3),
             1.0,
             [0.0, 1.0, 0.0].into(),
             [0.0, 1.0, 0.0].into(),
-            Frame::Equatorial,
             0,
         );
-        assert!(a.try_change_center(diff_jd).is_err());
+        assert!(a.try_change_center(diff_jd.into_frame()).is_err());
 
-        let not_naif_id = State::new(
+        let not_naif_id = State::<Equatorial>::new(
             Desig::Empty,
             0.0,
             [0.0, 1.0, 0.0].into(),
             [0.0, 1.0, 0.0].into(),
-            Frame::Equatorial,
             0,
         );
-        assert!(a.try_change_center(not_naif_id).is_err());
+        assert!(a.try_change_center(not_naif_id.into_frame()).is_err());
 
-        let no_matching_id = State::new(
+        let no_matching_id = State::<Equatorial>::new(
             Desig::Naif(2),
             0.0,
             [0.0, 1.0, 0.0].into(),
             [0.0, 1.0, 0.0].into(),
-            Frame::Equatorial,
             1000000000,
         );
-        assert!(a.try_change_center(no_matching_id).is_err());
+        assert!(a.try_change_center(no_matching_id.into_frame()).is_err());
     }
 }

@@ -9,8 +9,7 @@
 //! These summary records contain the location information for all the contents
 //! of the DAF file.
 //!
-use super::pck_segments::PckSegment;
-use super::spk_segments::SpkSegment;
+
 use crate::io::bytes::{
     bytes_to_f64, bytes_to_f64_vec, bytes_to_i32, bytes_to_i32_vec, bytes_to_string,
     read_bytes_exact, read_f64_vec, read_str,
@@ -22,9 +21,11 @@ use std::io::{Cursor, Read, Seek};
 use std::ops::Index;
 use std::slice::SliceIndex;
 
+use super::jd_to_spice_jd;
+
 /// DAF Files can contain multiple different types of data.
 /// This list contains the supported formats.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DAFType {
     /// SPK files are planetary and satellite ephemeris data.
     Spk,
@@ -33,7 +34,7 @@ pub enum DAFType {
     Pck,
 
     /// An unrecognized DAF type.
-    Unrecognized(String),
+    Unrecognized([u8; 3]),
 }
 
 impl From<&str> for DAFType {
@@ -41,50 +42,7 @@ impl From<&str> for DAFType {
         match &magic.to_uppercase()[4..7] {
             "SPK" => DAFType::Spk,
             "PCK" => DAFType::Pck,
-            other => DAFType::Unrecognized(other.into()),
-        }
-    }
-}
-/// DAF Files can contain multiple different types of data.
-/// This list contains the supported formats.
-#[derive(Debug)]
-pub enum DafSegments {
-    /// SPK files are planetary and satellite ephemeris data.
-    Spk(SpkSegment),
-
-    /// PCK Files are planetary and satellite orientation data.
-    Pck(PckSegment),
-}
-
-impl TryFrom<DafSegments> for SpkSegment {
-    type Error = Error;
-
-    fn try_from(value: DafSegments) -> Result<Self, Self::Error> {
-        if let DafSegments::Spk(seg) = value {
-            Ok(seg)
-        } else {
-            Err(Error::ValueError("Not an SPK segment.".into()))
-        }
-    }
-}
-
-impl TryFrom<DafSegments> for PckSegment {
-    type Error = Error;
-
-    fn try_from(value: DafSegments) -> Result<Self, Self::Error> {
-        if let DafSegments::Pck(seg) = value {
-            Ok(seg)
-        } else {
-            Err(Error::ValueError("Not a PCK segment.".into()))
-        }
-    }
-}
-
-impl From<DafSegments> for DafArray {
-    fn from(value: DafSegments) -> DafArray {
-        match value {
-            DafSegments::Pck(seg) => seg.into(),
-            DafSegments::Spk(seg) => seg.into(),
+            other => DAFType::Unrecognized(other.as_bytes().try_into().unwrap()),
         }
     }
 }
@@ -133,8 +91,8 @@ pub struct DafFile {
     /// Each record is trimmed to 1000 chars, as that is what SPKs use internally.
     pub comments: String,
 
-    /// DAF segments
-    pub segments: Vec<DafSegments>,
+    /// DAF Arrays contained within this file.
+    pub arrays: Vec<DafArray>,
 }
 
 impl DafFile {
@@ -195,7 +153,7 @@ impl DafFile {
             first_free,
             ftp_validation_str,
             comments: comments.join(""),
-            segments: Vec::new(),
+            arrays: Vec::new(),
         };
 
         daf.try_load_segments(&mut buffer)?;
@@ -241,21 +199,14 @@ impl DafFile {
                     self.little_endian,
                 )?;
 
-                match self.daf_type {
-                    DAFType::Spk => {
-                        let array =
-                            DafArray::try_load_spk_array(file, floats, ints, self.little_endian)?;
-                        let seg = DafSegments::Spk(array.try_into()?);
-                        self.segments.push(seg);
-                    }
-                    DAFType::Pck => {
-                        let array =
-                            DafArray::try_load_pck_array(file, floats, ints, self.little_endian)?;
-                        let seg = DafSegments::Pck(array.try_into()?);
-                        self.segments.push(seg);
-                    }
-                    _ => panic!(),
-                }
+                let array = DafArray::try_load_array(
+                    file,
+                    floats,
+                    ints,
+                    self.daf_type,
+                    self.little_endian,
+                )?;
+                self.arrays.push(array);
             }
         }
         Ok(())
@@ -275,6 +226,9 @@ pub struct DafArray {
 
     /// Data contained within the array.
     pub data: Box<[f64]>,
+
+    /// The type of DAF array.
+    pub daf_type: DAFType,
 }
 
 impl Debug for DafArray {
@@ -284,59 +238,29 @@ impl Debug for DafArray {
 }
 
 impl DafArray {
-    /// Try to load an SPK array from summary data
-    pub fn try_load_spk_array<T: Read + Seek>(
-        buffer: &mut T,
-        summary_floats: Box<[f64]>,
-        summary_ints: Box<[i32]>,
-        little_endian: bool,
-    ) -> KeteResult<Self> {
-        if summary_floats.len() != 2 || summary_ints.len() != 6 {
-            Err(Error::IOError("SPK File incorrectly Formatted.".into()))?;
-        }
-        let array_start = summary_ints[4] as u64;
-        let array_end = summary_ints[5] as u64;
-        Self::try_load_array(
-            buffer,
-            summary_floats,
-            summary_ints,
-            array_start,
-            array_end,
-            little_endian,
-        )
-    }
-
-    /// Try to load an PCK array from summary data
-    pub fn try_load_pck_array<T: Read + Seek>(
-        buffer: &mut T,
-        summary_floats: Box<[f64]>,
-        summary_ints: Box<[i32]>,
-        little_endian: bool,
-    ) -> KeteResult<Self> {
-        if summary_floats.len() != 2 || summary_ints.len() != 5 {
-            Err(Error::IOError("PCK File incorrectly Formatted.".into()))?;
-        }
-        let array_start = summary_ints[3] as u64;
-        let array_end = summary_ints[4] as u64;
-        Self::try_load_array(
-            buffer,
-            summary_floats,
-            summary_ints,
-            array_start,
-            array_end,
-            little_endian,
-        )
-    }
-
-    /// Load array from file
+    /// Try to load an DAF array from summary data
     pub fn try_load_array<T: Read + Seek>(
         buffer: &mut T,
         summary_floats: Box<[f64]>,
         summary_ints: Box<[i32]>,
-        array_start: u64,
-        array_end: u64,
+        daf_type: DAFType,
         little_endian: bool,
     ) -> KeteResult<Self> {
+        let n_ints = summary_ints.len();
+        if n_ints < 2 {
+            Err(Error::IOError("DAF File incorrectly Formatted.".into()))?;
+        }
+
+        // From DAF documentation:
+        // "The initial and final addresses of an array are always the values of the
+        //  final two integer components of the summary for the array. "
+        let array_start = summary_ints[n_ints - 2] as u64;
+        let array_end = summary_ints[n_ints - 1] as u64;
+
+        if array_end < array_start {
+            Err(Error::IOError("DAF File incorrectly Formatted.".into()))?;
+        }
+
         let _ = buffer.seek(std::io::SeekFrom::Start(8 * (array_start - 1)))?;
 
         let n_floats = (array_end - array_start + 1) as usize;
@@ -347,6 +271,7 @@ impl DafArray {
             data,
             summary_floats,
             summary_ints,
+            daf_type,
         })
     }
 
@@ -369,5 +294,140 @@ where
 
     fn index(&self, idx: Idx) -> &Self::Output {
         self.data.index(idx)
+    }
+}
+
+/// DAF Array of SPK data.
+/// This is a wrapper around the DafArray which is specific to SPK data.
+///
+#[derive(Debug)]
+pub struct SpkArray {
+    /// The internal representation of the DAF array.
+    pub daf: DafArray,
+
+    /// JD Time in spice units of seconds from J2000.
+    pub jds_start: f64,
+
+    /// JD Time in spice units of seconds from J2000.
+    pub jds_end: f64,
+
+    /// The reference NAIF ID for the object in this Array.
+    pub object_id: i32,
+
+    /// The reference center NAIF ID for the central body in this Array.
+    pub center_id: i32,
+
+    /// The spice frame ID of the array.
+    pub frame_id: i32,
+
+    /// The spice segment type.
+    pub segment_type: i32,
+}
+
+impl SpkArray {
+    /// Is the specified JD within the range of this array.
+    pub fn contains(&self, jd: f64) -> bool {
+        let jds = jd_to_spice_jd(jd);
+        (jds >= self.jds_start) && (jds <= self.jds_end)
+    }
+}
+
+impl TryFrom<DafArray> for SpkArray {
+    type Error = Error;
+
+    fn try_from(array: DafArray) -> Result<Self, Self::Error> {
+        if array.daf_type != DAFType::Spk {
+            Err(Error::IOError("DAF Array is not a SPK array.".into()))?;
+        }
+
+        if array.summary_floats.len() != 2 {
+            Err(Error::IOError(
+                "DAF Array is not a SPK array. Summary of array is incorrectly formatted, incorrect number of floats.".into(),
+            ))?;
+        }
+
+        if array.summary_ints.len() != 6 {
+            Err(Error::IOError("DAF Array is not a SPK array. Summary of array is incorrectly formatted, incorrect number of ints.".into()))?;
+        }
+
+        let jds_start = array.summary_floats[0];
+        let jds_end = array.summary_floats[1];
+
+        // The last two integers in the summary are the start and end of the array.
+        let object_id = array.summary_ints[0];
+        let center_id = array.summary_ints[1];
+        let frame_id = array.summary_ints[2];
+        let segment_type = array.summary_ints[3];
+
+        Ok(SpkArray {
+            daf: array,
+            jds_start,
+            jds_end,
+            object_id,
+            center_id,
+            frame_id,
+            segment_type,
+        })
+    }
+}
+
+#[derive(Debug)]
+
+/// DAF Array of PCK data.
+/// This is a wrapper around the DafArray which is specific to PCK data.
+pub struct PckArray {
+    /// The internal representation of the DAF array.
+    pub daf: DafArray,
+
+    /// JD Time in spice units of seconds from J2000.
+    pub jds_start: f64,
+
+    /// JD Time in spice units of seconds from J2000.
+    pub jds_end: f64,
+
+    /// The reference center NAIF ID for the central body in this Array.
+    pub center_id: i32,
+
+    /// The spice frame ID of the array.
+    pub frame_id: i32,
+
+    /// The spice segment type.
+    pub segment_type: i32,
+}
+
+impl TryFrom<DafArray> for PckArray {
+    type Error = Error;
+
+    fn try_from(array: DafArray) -> Result<Self, Self::Error> {
+        if array.daf_type != DAFType::Pck {
+            Err(Error::IOError("DAF Array is not a PCK array.".into()))?;
+        }
+
+        if array.summary_floats.len() != 2 {
+            Err(Error::IOError(
+                "DAF Array is not a PCK array. Summary of array is incorrectly formatted, incorrect number of floats.".into(),
+            ))?;
+        }
+
+        if array.summary_ints.len() != 5 {
+            Err(Error::IOError("DAF Array is not a PCK array. Summary of array is incorrectly formatted, incorrect number of ints.".into()))?;
+        }
+
+        let jds_start = array.summary_floats[0];
+        let jds_end = array.summary_floats[1];
+
+        // The last two integers in the summary are the start and end of the array.
+        let center_id = array.summary_ints[0];
+        let frame_id = array.summary_ints[1];
+        let segment_type = array.summary_ints[2];
+
+        Ok(PckArray {
+            daf: array,
+            jds_start,
+            jds_end,
+            center_id,
+            frame_id,
+            segment_type,
+        })
     }
 }

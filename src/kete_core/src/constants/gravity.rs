@@ -1,6 +1,6 @@
 use nalgebra::Vector3;
 
-use crate::frames;
+use crate::frames::{Ecliptic, InertialFrame};
 
 use super::{AU_KM, C_AU_PER_DAY_INV_SQUARED};
 
@@ -156,7 +156,7 @@ pub const SIMPLE_PLANETS: &[GravParams] = &[
 #[derive(Debug, Clone, Copy)]
 pub struct GravParams {
     /// Associated NAIF id
-    pub naif_id: i64,
+    pub naif_id: i32,
 
     /// Mass of the object in GMS
     pub mass: f64,
@@ -187,8 +187,8 @@ impl GravParams {
                 apply_gr_correction(accel, rel_pos, rel_vel, &mass);
 
                 // J2 correction
-                let rel_pos_eclip = frames::equatorial_to_ecliptic(rel_pos);
-                *accel += frames::ecliptic_to_equatorial(&j2_correction(
+                let rel_pos_eclip = Ecliptic::from_equatorial(*rel_pos);
+                *accel += Ecliptic::to_equatorial(j2_correction(
                     &rel_pos_eclip,
                     &radius,
                     &JUPITER_J2,
@@ -202,13 +202,9 @@ impl GravParams {
                 apply_gr_correction(accel, rel_pos, rel_vel, &mass);
 
                 // J2 correction
-                let rel_pos_eclip = frames::equatorial_to_ecliptic(rel_pos);
-                *accel += frames::ecliptic_to_equatorial(&j2_correction(
-                    &rel_pos_eclip,
-                    &radius,
-                    &SUN_J2,
-                    &mass,
-                ));
+                let rel_pos_eclip = Ecliptic::from_equatorial(*rel_pos);
+                *accel +=
+                    Ecliptic::to_equatorial(j2_correction(&rel_pos_eclip, &radius, &SUN_J2, &mass));
             }
             399 => *accel += j2_correction(rel_pos, &self.radius, &EARTH_J2, &mass),
             _ => (),

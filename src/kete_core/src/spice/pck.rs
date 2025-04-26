@@ -10,9 +10,10 @@ use std::fs;
 
 use super::daf::{DAFType, DafFile};
 use super::pck_segments::PckSegment;
+use super::PckArray;
 use crate::cache::cache_path;
 use crate::errors::{Error, KeteResult};
-use crate::frames::Frame;
+use crate::frames::EclipticNonInertial;
 use crossbeam::sync::ShardedLock;
 use lazy_static::lazy_static;
 
@@ -20,7 +21,7 @@ use lazy_static::lazy_static;
 #[derive(Debug, Default)]
 pub struct PckCollection {
     /// Collection of PCK file information
-    pub segments: Vec<PckSegment>,
+    segments: Vec<PckSegment>,
 }
 
 /// Define the PCK singleton structure.
@@ -37,20 +38,22 @@ impl PckCollection {
                 filename
             )))?;
         }
-        self.segments.extend(
-            file.segments
-                .into_iter()
-                .map(|x| x.try_into().expect("Failed to load PCK")),
-        );
+
+        for array in file.arrays {
+            let pck_array: PckArray = array.try_into()?;
+            let segment: PckSegment = pck_array.try_into()?;
+            self.segments.push(segment);
+        }
         Ok(())
     }
 
     /// Get the raw orientation from the loaded PCK files.
     /// This orientation will have the frame of what was originally present in the file.
-    pub fn try_get_orientation(&self, id: i32, jd: f64) -> KeteResult<Frame> {
+    pub fn try_get_orientation(&self, id: i32, jd: f64) -> KeteResult<EclipticNonInertial> {
         for segment in self.segments.iter() {
-            if id == segment.center_id && segment.contains(jd) {
-                return segment.try_get_orientation(jd);
+            let frame = segment.try_get_orientation(id, jd);
+            if frame.is_ok() {
+                return frame;
             }
         }
 
@@ -68,7 +71,11 @@ impl PckCollection {
     /// Return a list of all loaded segments in the PCK singleton.
     /// This is a list of the center NAIF IDs of the segments.
     pub fn loaded_objects(&self) -> Vec<i32> {
-        let loaded: HashSet<i32> = self.segments.iter().map(|x| x.center_id).collect();
+        let loaded: HashSet<i32> = self
+            .segments
+            .iter()
+            .map(|x| x.pck_array().center_id)
+            .collect();
         loaded.into_iter().collect()
     }
 
