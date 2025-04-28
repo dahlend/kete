@@ -70,10 +70,11 @@ impl PckSegment {
         if jds < arr_ref.jds_start || jds > arr_ref.jds_end {
             Err(Error::DAFLimits("JD is not present in this record.".into()))?;
         }
-        if arr_ref.frame_id != 3000 {
-            Err(Error::ValueError(
-                "Non ecltiptic frames are not supported for PCK queries.".into(),
-            ))?;
+        if arr_ref.frame_id != 17 {
+            Err(Error::ValueError(format!(
+                "PCK frame ID {} is not supported. Only 17 (Ecliptic) is supported.",
+                arr_ref.frame_id
+            )))?;
         }
 
         match &self {
@@ -105,7 +106,7 @@ impl PckSegmentType2 {
     }
 
     /// Return the stored orientation, along with the rate of change of the orientation.
-    fn try_get_orientation(&self, jd: f64) -> KeteResult<EclipticNonInertial> {
+    fn try_get_orientation(&self, jds: f64) -> KeteResult<EclipticNonInertial> {
         // Records in the segment contain information about the central position of the
         // north pole, as well as the position of the prime meridian. These values for
         // type 2 segments are stored as chebyshev polynomials of the first kind, in
@@ -119,13 +120,12 @@ impl PckSegmentType2 {
         //
         // Rate of change for each of these values can be calculated by using the
         // derivative of chebyshev of the first kind, which is done below.
-        let jd = jd_to_spice_jd(jd);
         let jds_start = self.array.jds_start;
-        let record_index = ((jd - jds_start) / self.jd_step).floor() as usize;
+        let record_index = ((jds - jds_start) / self.jd_step).floor() as usize;
         let record = self.get_record(record_index);
         let t_mid = record[0];
         let t_step = record[1];
-        let t = (jd - t_mid) / t_step;
+        let t = (jds - t_mid) / t_step;
 
         let ra_coef = &record[2..(self.n_coef + 2)];
         let dec_coef = &record[(self.n_coef + 2)..(2 * self.n_coef + 2)];

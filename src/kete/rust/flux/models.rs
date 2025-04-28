@@ -353,8 +353,8 @@ impl PyNeatmParams {
             .into_par_iter()
             .zip(sun2obs_vecs)
             .map(|(sun2obj, sun2obs)| {
-                let sun2obj = sun2obj.into_vec(PyFrames::Ecliptic);
-                let sun2obs = sun2obs.into_vec(PyFrames::Ecliptic);
+                let sun2obj = sun2obj.into_vector(PyFrames::Ecliptic).into();
+                let sun2obs = sun2obs.into_vector(PyFrames::Ecliptic).into();
 
                 self.0
                     .apparent_total_flux(&sun2obj, &sun2obs)
@@ -669,8 +669,8 @@ impl PyFrmParams {
             .into_par_iter()
             .zip(sun2obs_vecs)
             .map(|(sun2obj, sun2obs)| {
-                let sun2obj = sun2obj.into_vec(PyFrames::Ecliptic);
-                let sun2obs = sun2obs.into_vec(PyFrames::Ecliptic);
+                let sun2obj = sun2obj.into_vector(PyFrames::Ecliptic).into();
+                let sun2obs = sun2obs.into_vector(PyFrames::Ecliptic).into();
 
                 self.0
                     .apparent_total_flux(&sun2obj, &sun2obs)

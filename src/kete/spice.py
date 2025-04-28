@@ -248,9 +248,7 @@ def kernel_reload(
     if include_planets:
         _download_core_files()
         _core.spk_load_core()
-
-        cache_files = glob.glob(os.path.join(cache_path(), "kernels", "*.bpc"))
-        _core.pck_load(cache_files)
+        _core.pck_load_core()
 
     if include_cache:
         _core.spk_load_cache()
@@ -310,7 +308,7 @@ def _download_core_files():
                 "submit a github issue! NAIF may have moved filenames or location."
             )
         pck_path = pck_path + filename[0]
-        download_file(pck_path, subfolder="kernels")
+        download_file(pck_path, subfolder="kernels/core")
 
 
 def kernel_header_comments(filename: str):

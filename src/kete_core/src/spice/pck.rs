@@ -33,7 +33,7 @@ impl PckCollection {
     pub fn load_file(&mut self, filename: &str) -> KeteResult<()> {
         let file = DafFile::from_file(filename)?;
         if !matches!(file.daf_type, DAFType::Pck) {
-            Err(Error::IOError(format!(
+            return Err(Error::IOError(format!(
                 "File {:?} is not a PCK formatted file.",
                 filename
             )))?;
@@ -51,9 +51,9 @@ impl PckCollection {
     /// This orientation will have the frame of what was originally present in the file.
     pub fn try_get_orientation(&self, id: i32, jd: f64) -> KeteResult<EclipticNonInertial> {
         for segment in self.segments.iter() {
-            let frame = segment.try_get_orientation(id, jd);
-            if frame.is_ok() {
-                return frame;
+            let array = segment.pck_array();
+            if (array.center_id == id) & array.contains(jd) {
+                return segment.try_get_orientation(id, jd);
             }
         }
 

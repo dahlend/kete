@@ -221,9 +221,11 @@ mod tests {
         );
         a.try_flip_center_id().unwrap();
 
+        let pos: [f64; 3] = a.pos.into();
+        let vel: [f64; 3] = a.vel.into();
         assert!(a.center_id == 1);
-        assert!(a.pos.raw == [-1.0, 0.0, 0.0]);
-        assert!(a.vel.raw == [0.0, -1.0, 0.0]);
+        assert!(pos == [-1.0, 0.0, 0.0]);
+        assert!(vel == [0.0, -1.0, 0.0]);
     }
 
     #[test]

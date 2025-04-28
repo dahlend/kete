@@ -5,7 +5,7 @@
 
 use crate::errors::Error;
 use crate::fitting::newton_raphson;
-use crate::frames::{Ecliptic, InertialFrame};
+use crate::frames::InertialFrame;
 use crate::prelude::CometElements;
 use crate::state::State;
 use crate::{constants::*, prelude::KeteResult};
@@ -348,10 +348,10 @@ impl<T: InertialFrame> CostFunction for MoidCost<T> {
 
 /// Compute the MOID between two states in au.
 /// MOID = Minimum Orbital Intersection Distance
-pub fn moid(mut state_a: State<Ecliptic>, mut state_b: State<Ecliptic>) -> KeteResult<f64> {
-    let elements_a = CometElements::from_state(&state_a);
+pub fn moid<T: InertialFrame>(mut state_a: State<T>, mut state_b: State<T>) -> KeteResult<f64> {
+    let elements_a = CometElements::from_state(&state_a.clone().into_frame());
     state_a = propagate_two_body(&state_a, elements_a.peri_time)?;
-    let elements_b = CometElements::from_state(&state_b);
+    let elements_b = CometElements::from_state(&state_b.clone().into_frame());
     state_b = propagate_two_body(&state_b, elements_b.peri_time)?;
 
     const N_STEPS: i32 = 50;

@@ -1,4 +1,4 @@
-use kete_core::spice::{try_name_from_id, LOADED_SPK};
+use kete_core::spice::{try_name_from_id, LOADED_PCK, LOADED_SPK};
 use pyo3::{pyfunction, PyResult, Python};
 
 use crate::frame::PyFrames;
@@ -25,25 +25,21 @@ pub fn spk_load_py(py: Python<'_>, filenames: Vec<String>) -> PyResult<()> {
 
 /// Return all loaded SPK info on the specified NAIF ID.
 /// Loaded info contains:
-/// (JD_start, JD_end, Center Naif ID, Frame, SPK Segment type ID)
+/// (JD_start, JD_end, Center Naif ID, Frame ID, SPK Segment type ID)
 #[pyfunction]
 #[pyo3(name = "spk_available_info")]
-pub fn spk_available_info_py(naif_id: i64) -> Vec<(f64, f64, i64, PyFrames, i32)> {
+pub fn spk_available_info_py(naif_id: i32) -> Vec<(f64, f64, i32, i32, i32)> {
     let singleton = &LOADED_SPK.try_read().unwrap();
-    singleton
-        .available_info(naif_id)
-        .into_iter()
-        .map(|(s, e, c, frame, ty)| (s, e, c, frame.into(), ty))
-        .collect()
+    singleton.available_info(naif_id)
 }
 
 /// Return a list of all NAIF IDs currently loaded in the SPK shared memory singleton.
 #[pyfunction]
 #[pyo3(name = "spk_loaded")]
-pub fn spk_loaded_objects_py() -> Vec<i64> {
+pub fn spk_loaded_objects_py() -> Vec<i32> {
     let spk = &LOADED_SPK.try_read().unwrap();
     let loaded = spk.loaded_objects(false);
-    let mut loaded: Vec<i64> = loaded.into_iter().collect();
+    let mut loaded: Vec<_> = loaded.into_iter().collect();
     loaded.sort();
     loaded
 }
@@ -52,7 +48,7 @@ pub fn spk_loaded_objects_py() -> Vec<i64> {
 /// If the name is not found, this just returns a string the the NAIF ID.
 #[pyfunction]
 #[pyo3(name = "spk_get_name_from_id")]
-pub fn spk_get_name_from_id_py(id: i64) -> String {
+pub fn spk_get_name_from_id_py(id: i32) -> String {
     try_name_from_id(id).unwrap_or(id.to_string())
 }
 
@@ -68,6 +64,13 @@ pub fn spk_reset_py() {
 #[pyo3(name = "spk_load_core")]
 pub fn spk_load_core_py() {
     LOADED_SPK.write().unwrap().load_core().unwrap()
+}
+
+/// Reload the core PCK files.
+#[pyfunction]
+#[pyo3(name = "pck_load_core")]
+pub fn pck_load_core_py() {
+    LOADED_PCK.write().unwrap().load_core().unwrap()
 }
 
 /// Reload the cache SPK files.
@@ -93,17 +96,18 @@ pub fn spk_load_cache_py() {
 ///     Frame of reference for the state.
 #[pyfunction]
 #[pyo3(name = "spk_state")]
-pub fn spk_state_py(id: i64, jd: PyTime, center: i64, frame: PyFrames) -> PyResult<PyState> {
+pub fn spk_state_py(id: i32, jd: PyTime, center: i32, frame: PyFrames) -> PyResult<PyState> {
     let jd = jd.jd();
     let spk = &LOADED_SPK.try_read().unwrap();
-    let mut state = spk.try_get_state_with_center(id, jd, center, frame.into())?;
+    let mut state = spk.try_get_state_with_center(id, jd, center)?;
     let _ = state.try_naif_id_to_name();
-    Ok(PyState(state))
+    Ok(PyState { raw: state, frame })
 }
 
 /// Return the raw state of an object as encoded in the SPK Kernels.
 ///
-/// This does not change frames or center points.
+/// This does not change center point, but all states are returned in
+/// the Equatorial frame.
 ///
 /// Parameters
 /// ----------
@@ -113,8 +117,11 @@ pub fn spk_state_py(id: i64, jd: PyTime, center: i64, frame: PyFrames) -> PyResu
 ///     Time (JD) in TDB scaled time.
 #[pyfunction]
 #[pyo3(name = "spk_raw_state")]
-pub fn spk_raw_state_py(id: i64, jd: PyTime) -> PyResult<PyState> {
+pub fn spk_raw_state_py(id: i32, jd: PyTime) -> PyResult<PyState> {
     let jd = jd.jd();
     let spk = &LOADED_SPK.try_read().unwrap();
-    Ok(PyState(spk.try_get_state(id, jd)?))
+    Ok(PyState {
+        raw: spk.try_get_state(id, jd)?,
+        frame: PyFrames::Equatorial,
+    })
 }

@@ -29,14 +29,13 @@ use crate::{nongrav::PyNonGravModel, time::PyTime};
 pub fn moid_py(state_a: PyState, state_b: Option<PyState>) -> PyResult<f64> {
     let state_b =
         state_b
-            .map(|x| x.0)
+            .map(|x| x.raw)
             .unwrap_or(LOADED_SPK.read().unwrap().try_get_state_with_center(
                 399,
-                state_a.0.jd,
+                state_a.raw.jd,
                 10,
-                state_a.0.frame,
             )?);
-    Ok(moid(state_a.0, state_b)?)
+    Ok(moid(state_a.raw, state_b)?)
 }
 
 /// Propagate the provided :class:`~kete.State` using N body mechanics to the
@@ -80,7 +79,6 @@ pub fn propagation_n_body_spk_py(
     suppress_errors: bool,
     suppress_impact_errors: bool,
 ) -> PyResult<Vec<PyState>> {
-    let states: Vec<State> = states.into_iter().map(|x| x.0).collect();
     let non_gravs = non_gravs.unwrap_or(vec![None; states.len()]);
 
     if states.len() != non_gravs.len() {
@@ -109,7 +107,10 @@ pub fn propagation_n_body_spk_py(
             .into_par_iter()
             .map(|(state, model)| {
                 let model = model.map(|x| x.0);
-                let center = state.center_id;
+                let center = state.center_id();
+                let frame = state.frame;
+                let state = state.raw;
+                let desig = state.desig.clone();
 
                 // if the input has a NAN in it, skip the propagation entirely and return
                 // the nans.
@@ -117,12 +118,11 @@ pub fn propagation_n_body_spk_py(
                     if !suppress_errors {
                         Err(Error::ValueError("Input state contains NaNs.".into()))?;
                     };
-                    return Ok(State::new_nan(state.desig, jd, state.frame, center).into());
+                    return Ok(Into::<PyState>::into(State::new_nan(desig, jd, center))
+                        .change_frame(frame));
                 }
-                let desig = state.desig.clone();
-                let frame = state.frame;
                 match propagation::propagate_n_body_spk(state, jd, include_asteroids, model) {
-                    Ok(state) => Ok(state.into()),
+                    Ok(state) => Ok(Into::<PyState>::into(state).change_frame(frame)),
                     Err(er) => {
                         if !suppress_errors {
                             Err(er)?
@@ -139,7 +139,8 @@ pub fn propagation_n_body_spk_py(
                                     );
                                 }
                             };
-                            Ok(State::new_nan(desig, jd, frame, center).into())
+                            Ok(Into::<PyState>::into(State::new_nan(desig, jd, center))
+                                .change_frame(frame))
                         }
                     }
                 }
@@ -209,9 +210,9 @@ pub fn propagation_n_body_py(
     non_gravs: Option<Vec<Option<PyNonGravModel>>>,
     batch_size: usize,
 ) -> PyResult<(Vec<PyState>, Vec<PyState>)> {
-    let states: Vec<State> = states.into_iter().map(|x| x.0).collect();
-    let planet_states: Option<Vec<State>> =
-        planet_states.map(|s| s.into_iter().map(|x| x.0).collect());
+    let states: Vec<_> = states.into_iter().map(|x| x.raw).collect();
+    let planet_states: Option<Vec<_>> =
+        planet_states.map(|s| s.into_iter().map(|x| x.raw).collect());
 
     let non_gravs = non_gravs.unwrap_or(vec![None; states.len()]);
     let non_gravs: Vec<Option<NonGravModel>> =
@@ -224,7 +225,7 @@ pub fn propagation_n_body_py(
         .collect_vec()
         .par_chunks(batch_size)
         .map(|chunk| {
-            let (chunk_state, chunk_nongrav): (Vec<State>, Vec<Option<NonGravModel>>) =
+            let (chunk_state, chunk_nongrav): (Vec<_>, Vec<Option<NonGravModel>>) =
                 chunk.iter().cloned().unzip();
 
             propagation::propagate_n_body_vec(chunk_state, jd, planet_states.clone(), chunk_nongrav)

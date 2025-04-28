@@ -122,7 +122,7 @@ pub fn fov_checks_py(
 ///     Collection of Field of Views to check.
 #[pyfunction]
 #[pyo3(name = "fov_spk_check")]
-pub fn fov_spk_checks_py(obj_ids: Vec<i64>, fovs: FOVListLike) -> Vec<PySimultaneousStates> {
+pub fn fov_spk_checks_py(obj_ids: Vec<i32>, fovs: FOVListLike) -> Vec<PySimultaneousStates> {
     let fovs = fovs.into_sorted_vec_fov();
 
     fovs.into_par_iter()
@@ -168,7 +168,7 @@ pub fn fov_static_checks_py(
     let fovs = fovs.into_sorted_vec_fov();
     let pos: Vec<_> = pos
         .into_iter()
-        .map(|p| p.into_vec(crate::frame::PyFrames::Ecliptic))
+        .map(|p| p.into_vector(crate::frame::PyFrames::Ecliptic))
         .collect();
 
     fovs.into_par_iter()

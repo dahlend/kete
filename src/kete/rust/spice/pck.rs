@@ -1,8 +1,9 @@
-use kete_core::frames::ecef_to_geodetic_lat_lon;
+use kete_core::frames::{ecef_to_geodetic_lat_lon, NonInertialFrame};
 use kete_core::spice::{LOADED_PCK, LOADED_SPK};
 use kete_core::{constants, prelude::*};
 use pyo3::{pyfunction, PyResult};
 
+use crate::frame::PyFrames;
 use crate::state::PyState;
 
 /// Load all specified files into the PCK shared memory singleton.
@@ -41,7 +42,7 @@ pub fn pck_load_py(filenames: Vec<String>) -> PyResult<()> {
 pub fn pck_earth_frame_py(
     pos: [f64; 3],
     jd: f64,
-    new_center: i64,
+    new_center: i32,
     name: Option<String>,
 ) -> PyResult<PyState> {
     let desig = {
@@ -53,12 +54,17 @@ pub fn pck_earth_frame_py(
     let pcks = LOADED_PCK.try_read().unwrap();
     let frame = pcks.try_get_orientation(3000, jd)?;
 
-    let mut state = State::new(desig, jd, pos.into(), [0.0, 0.0, 0.0].into(), frame, 399);
-    state.try_change_frame_mut(Frame::Ecliptic)?;
+    let (pos, vel) = frame.to_equatorial(pos.into(), [0.0, 0.0, 0.0].into());
+
+    let mut state: State<Equatorial> = State::new(desig, jd, pos.into(), vel.into(), 399);
 
     let spks = &LOADED_SPK.try_read().unwrap();
     spks.try_change_center(&mut state, new_center)?;
-    Ok(PyState(state))
+
+    Ok(PyState {
+        raw: state,
+        frame: PyFrames::Ecliptic,
+    })
 }
 
 /// Convert a [`State`] to the Earth's surface lat/lon/height on the WGS84 reference.
@@ -77,12 +83,11 @@ pub fn pck_earth_frame_py(
 #[pyo3(name = "state_to_earth_pos")]
 pub fn pck_state_to_earth(state: PyState) -> PyResult<(f64, f64, f64)> {
     let pcks = LOADED_PCK.try_read().unwrap();
-    let state = state.change_center(399)?.as_ecliptic()?;
-    let frame = pcks.try_get_orientation(3000, state.jd())?;
-    let mut state = state.0;
+    let state = state.change_center(399)?.raw;
+    let frame = pcks.try_get_orientation(3000, state.jd)?;
 
-    state.try_change_frame_mut(frame)?;
-    let [x, y, z] = state.pos;
+    let (pos, _) = frame.from_equatorial(state.pos.into(), state.vel.into());
+    let [x, y, z] = pos.into();
     let (lat, lon, height) = ecef_to_geodetic_lat_lon(
         x * constants::AU_KM,
         y * constants::AU_KM,

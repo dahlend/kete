@@ -10,7 +10,7 @@ use std::ops::{Add, AddAssign, Div, Index, IndexMut, Mul, Neg, Sub, SubAssign};
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
 pub struct Vector<T: InertialFrame> {
     /// Julian Date
-    pub raw: [f64; 3],
+    raw: [f64; 3],
 
     /// PhantomData is used here as the scale is only a record keeping convenience.
     frame: PhantomData<T>,
@@ -178,6 +178,12 @@ impl<T: InertialFrame> From<[f64; 3]> for Vector<T> {
     }
 }
 
+impl<T: InertialFrame> From<Vector<T>> for [f64; 3] {
+    fn from(value: Vector<T>) -> Self {
+        value.raw
+    }
+}
+
 impl<T: InertialFrame> From<Vector3<f64>> for Vector<T> {
     fn from(value: Vector3<f64>) -> Self {
         Vector::new(value.into())
@@ -187,12 +193,6 @@ impl<T: InertialFrame> From<Vector3<f64>> for Vector<T> {
 impl<T: InertialFrame> From<Vector<T>> for Vector3<f64> {
     fn from(value: Vector<T>) -> Self {
         value.raw.into()
-    }
-}
-
-impl<T: InertialFrame> From<Vector<T>> for [f64; 3] {
-    fn from(value: Vector<T>) -> Self {
-        value.raw
     }
 }
 

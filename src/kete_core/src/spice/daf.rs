@@ -156,7 +156,7 @@ impl DafFile {
             arrays: Vec::new(),
         };
 
-        daf.try_load_segments(&mut buffer)?;
+        daf.try_load_arrays(&mut buffer)?;
         Ok(daf)
     }
 
@@ -173,7 +173,7 @@ impl DafFile {
     /// These are tuples containing a series of f64s and i32s along with arrays of data.
     /// The meaning of these values depends on the particular implementation of the DAF.
     ///
-    pub fn try_load_segments<T: Read + Seek>(&mut self, file: &mut T) -> KeteResult<()> {
+    pub fn try_load_arrays<T: Read + Seek>(&mut self, file: &mut T) -> KeteResult<()> {
         let summary_size = self.n_doubles + (self.n_ints + 1) / 2;
 
         let mut next_idx = self.init_summary_record_index;
@@ -393,6 +393,14 @@ pub struct PckArray {
 
     /// The spice segment type.
     pub segment_type: i32,
+}
+
+impl PckArray {
+    /// Is the specified JD within the range of this array.
+    pub fn contains(&self, jd: f64) -> bool {
+        let jds = jd_to_spice_jd(jd);
+        (jds >= self.jds_start) && (jds <= self.jds_end)
+    }
 }
 
 impl TryFrom<DafArray> for PckArray {
