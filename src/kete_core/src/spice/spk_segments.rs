@@ -16,7 +16,7 @@ use super::{interpolation::*, SpkArray};
 use super::{jd_to_spice_jd, spice_jd_to_jd};
 use crate::constants::AU_KM;
 use crate::errors::Error;
-use crate::frames::{Ecliptic, Equatorial, InertialFrame};
+use crate::frames::{Ecliptic, Equatorial, Galactic, InertialFrame, FK4};
 use crate::prelude::{Desig, KeteResult};
 use crate::state::State;
 use crate::time::scales::TDB;
@@ -100,6 +100,22 @@ impl SpkSegment {
 
         match arr_ref.frame_id {
             1 => Ok(State::<Equatorial>::new(
+                Desig::Naif(arr_ref.object_id),
+                jd,
+                pos.into(),
+                vel.into(),
+                arr_ref.center_id,
+            )
+            .into_frame()),
+            3 => Ok(State::<FK4>::new(
+                Desig::Naif(arr_ref.object_id),
+                jd,
+                pos.into(),
+                vel.into(),
+                arr_ref.center_id,
+            )
+            .into_frame()),
+            13 => Ok(State::<Galactic>::new(
                 Desig::Naif(arr_ref.object_id),
                 jd,
                 pos.into(),

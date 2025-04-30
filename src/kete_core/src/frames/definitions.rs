@@ -105,6 +105,8 @@ impl NonInertialFrame for EclipticNonInertial {
         pos: Vector3<f64>,
         vel: Vector3<f64>,
     ) -> (Vector3<f64>, Vector3<f64>) {
+        let pos = ECLIPTIC_EQUATORIAL_ROT.inverse_transform_vector(&pos);
+        let vel = ECLIPTIC_EQUATORIAL_ROT.inverse_transform_vector(&vel);
         let (rot_p, rot_dp) = noninertial_rotation(&self.0);
 
         // compute the ecliptic position and velocity
@@ -112,10 +114,7 @@ impl NonInertialFrame for EclipticNonInertial {
         let new_vel = rot_dp.transpose() * pos + rot_p.transpose() * vel;
 
         // convert from equatorial
-        (
-            ECLIPTIC_EQUATORIAL_ROT.inverse_transform_vector(&new_pos),
-            ECLIPTIC_EQUATORIAL_ROT.inverse_transform_vector(&new_vel),
-        )
+        (new_pos, new_vel)
     }
 
     fn to_equatorial(&self, pos: Vector3<f64>, vel: Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
@@ -283,48 +282,49 @@ pub fn noninertial_rotation(frame_angles: &[f64; 6]) -> (Matrix3<f64>, Matrix3<f
     ((r_z1 * r_x * r_z0).into(), dr_dt)
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use crate::frames::*;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-//     #[test]
-//     fn test_ecliptic_rot_roundtrip() {
-//         let vec = ecliptic_to_equatorial(&[1.0, 2.0, 3.0].into());
-//         let vec_return = equatorial_to_ecliptic(&vec);
-//         assert!((1.0 - vec_return[0]).abs() <= 10.0 * f64::EPSILON);
-//         assert!((2.0 - vec_return[1]).abs() <= 10.0 * f64::EPSILON);
-//         assert!((3.0 - vec_return[2]).abs() <= 10.0 * f64::EPSILON);
-//     }
-//     #[test]
-//     fn test_fk4_roundtrip() {
-//         let vec = ecliptic_to_fk4(&[1.0, 2.0, 3.0].into());
-//         let vec_return = fk4_to_ecliptic(&vec);
-//         assert!((1.0 - vec_return[0]).abs() <= 10.0 * f64::EPSILON);
-//         assert!((2.0 - vec_return[1]).abs() <= 10.0 * f64::EPSILON);
-//         assert!((3.0 - vec_return[2]).abs() <= 10.0 * f64::EPSILON);
-//     }
-//     #[test]
-//     fn test_galactic_rot_roundtrip() {
-//         let vec = ecliptic_to_galactic(&[1.0, 2.0, 3.0].into());
-//         let vec_return = galactic_to_ecliptic(&vec);
-//         assert!((1.0 - vec_return[0]).abs() <= 10.0 * f64::EPSILON);
-//         assert!((2.0 - vec_return[1]).abs() <= 10.0 * f64::EPSILON);
-//         assert!((3.0 - vec_return[2]).abs() <= 10.0 * f64::EPSILON);
-//     }
+    #[test]
+    fn test_ecliptic_rot_roundtrip() {
+        let vec = Ecliptic::to_equatorial([1.0, 2.0, 3.0].into());
+        let vec_return = Ecliptic::from_equatorial(vec);
+        assert!((1.0 - vec_return[0]).abs() <= 10.0 * f64::EPSILON);
+        assert!((2.0 - vec_return[1]).abs() <= 10.0 * f64::EPSILON);
+        assert!((3.0 - vec_return[2]).abs() <= 10.0 * f64::EPSILON);
+    }
+    #[test]
+    fn test_fk4_roundtrip() {
+        let vec = FK4::to_equatorial([1.0, 2.0, 3.0].into());
+        let vec_return = FK4::from_equatorial(vec);
+        assert!((1.0 - vec_return[0]).abs() <= 10.0 * f64::EPSILON);
+        assert!((2.0 - vec_return[1]).abs() <= 10.0 * f64::EPSILON);
+        assert!((3.0 - vec_return[2]).abs() <= 10.0 * f64::EPSILON);
+    }
+    #[test]
+    fn test_galactic_rot_roundtrip() {
+        let vec = Galactic::to_equatorial([1.0, 2.0, 3.0].into());
+        let vec_return = Galactic::from_equatorial(vec);
+        assert!((1.0 - vec_return[0]).abs() <= 10.0 * f64::EPSILON);
+        assert!((2.0 - vec_return[1]).abs() <= 10.0 * f64::EPSILON);
+        assert!((3.0 - vec_return[2]).abs() <= 10.0 * f64::EPSILON);
+    }
 
-//     #[test]
-//     fn test_noninertial_rot_roundtrip() {
-//         let angles = [0.11, 0.21, 0.31, 0.41, 0.51, 0.61];
-//         let pos = [1.0, 2.0, 3.0].into();
-//         let vel = [0.1, 0.2, 0.3].into();
-//         let (r_pos, r_vel) = inertial_to_noninertial(&angles, &pos, &vel);
-//         let (pos_return, vel_return) = noninertial_to_inertial(&angles, &r_pos, &r_vel);
+    #[test]
+    fn test_noninertial_rot_roundtrip() {
+        let angles = [0.11, 0.21, 0.31, 0.41, 0.51, 0.61];
+        let pos = [1.0, 2.0, 3.0].into();
+        let vel = [0.1, 0.2, 0.3].into();
+        let frame = EclipticNonInertial(angles);
+        let (r_pos, r_vel) = frame.to_equatorial(pos, vel);
+        let (pos_return, vel_return) = frame.from_equatorial(r_pos, r_vel);
 
-//         assert!((1.0 - pos_return[0]).abs() <= 10.0 * f64::EPSILON);
-//         assert!((2.0 - pos_return[1]).abs() <= 10.0 * f64::EPSILON);
-//         assert!((3.0 - pos_return[2]).abs() <= 10.0 * f64::EPSILON);
-//         assert!((0.1 - vel_return[0]).abs() <= 10.0 * f64::EPSILON);
-//         assert!((0.2 - vel_return[1]).abs() <= 10.0 * f64::EPSILON);
-//         assert!((0.3 - vel_return[2]).abs() <= 10.0 * f64::EPSILON);
-//     }
-// }
+        assert!((1.0 - pos_return[0]).abs() <= 10.0 * f64::EPSILON);
+        assert!((2.0 - pos_return[1]).abs() <= 10.0 * f64::EPSILON);
+        assert!((3.0 - pos_return[2]).abs() <= 10.0 * f64::EPSILON);
+        assert!((0.1 - vel_return[0]).abs() <= 10.0 * f64::EPSILON);
+        assert!((0.2 - vel_return[1]).abs() <= 10.0 * f64::EPSILON);
+        assert!((0.3 - vel_return[2]).abs() <= 10.0 * f64::EPSILON);
+    }
+}

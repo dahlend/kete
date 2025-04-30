@@ -7,7 +7,7 @@ use std::marker::PhantomData;
 use std::ops::{Add, AddAssign, Div, Index, IndexMut, Mul, Neg, Sub, SubAssign};
 
 /// Vector with frame information.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 pub struct Vector<T: InertialFrame> {
     /// Julian Date
     raw: [f64; 3],
@@ -18,6 +18,7 @@ pub struct Vector<T: InertialFrame> {
 
 impl<T: InertialFrame> Vector<T> {
     /// New Vector
+    #[inline(always)]
     pub fn new(vec: [f64; 3]) -> Self {
         Vector::<T> {
             raw: vec,
@@ -26,6 +27,7 @@ impl<T: InertialFrame> Vector<T> {
     }
 
     /// New Vector of NANs
+    #[inline(always)]
     pub fn new_nan() -> Self {
         Vector::<T> {
             raw: [f64::NAN, f64::NAN, f64::NAN],
@@ -34,11 +36,13 @@ impl<T: InertialFrame> Vector<T> {
     }
 
     /// Are all element of the vector finite.
+    #[inline(always)]
     pub fn is_finite(&self) -> bool {
         self.raw.iter().all(|x| x.is_finite())
     }
 
     /// Convert Vector from one frame to another.
+    #[inline(always)]
     pub fn into_frame<Target: InertialFrame>(self) -> Vector<Target> {
         let vec = T::convert::<Target>(self.into());
         Vector::<Target>::new(vec.into())
@@ -51,6 +55,7 @@ impl<T: InertialFrame> Vector<T> {
     /// * `rotation_vec` - The single vector around which to rotate the vectors.
     /// * `angle` - The angle in radians to rotate the vectors.
     ///
+    #[inline(always)]
     pub fn rotate_around(self, rotation_vec: Vector<T>, angle: f64) -> Self {
         let rot =
             Rotation3::from_axis_angle(&UnitVector3::new_normalize(rotation_vec.into()), angle);
@@ -58,6 +63,7 @@ impl<T: InertialFrame> Vector<T> {
     }
 
     /// Dot product between two vectors
+    #[inline(always)]
     pub fn dot(&self, other: &Vector<T>) -> f64 {
         self.raw
             .iter()
@@ -67,6 +73,7 @@ impl<T: InertialFrame> Vector<T> {
     }
 
     /// Cross product between two vectors
+    #[inline(always)]
     pub fn cross(&self, other: &Vector<T>) -> Vector<T> {
         Vector3::from(self.raw)
             .cross(&Vector3::from(other.raw))
@@ -74,21 +81,25 @@ impl<T: InertialFrame> Vector<T> {
     }
 
     /// Squared euclidean length.
+    #[inline(always)]
     pub fn norm_squared(&self) -> f64 {
         self.raw.iter().map(|a| a.powi(2)).sum()
     }
 
     /// The euclidean length of the vector.
+    #[inline(always)]
     pub fn norm(&self) -> f64 {
         self.raw.iter().map(|a| a.powi(2)).sum::<f64>().sqrt()
     }
 
     /// THe angle betweeen two vectors in radians.
+    #[inline(always)]
     pub fn angle(&self, other: &Self) -> f64 {
         Vector3::from(self.raw).angle(&Vector3::from(other.raw))
     }
 
     /// Create a new vector of unit length in the same direction as this vector.
+    #[inline(always)]
     pub fn normalize(&self) -> Self {
         self / self.norm()
     }
@@ -96,24 +107,27 @@ impl<T: InertialFrame> Vector<T> {
     /// Create a unit vector from polar spherical theta and phi angles in radians.
     ///
     /// <https://en.wikipedia.org/wiki/Spherical_coordinate_system#Cartesian_coordinates>
+    #[inline(always)]
     pub fn from_polar_spherical(theta: f64, phi: f64) -> Self {
         let (theta_sin, theta_cos) = theta.sin_cos();
         let (phi_sin, phi_cos) = phi.sin_cos();
         [theta_sin * phi_cos, theta_sin * phi_sin, theta_cos].into()
     }
 
-    /// Convert a unit vector to polar spherical coordinates.
+    /// Convert a vector to polar spherical coordinates.
     ///
     /// <https://en.wikipedia.org/wiki/Spherical_coordinate_system#Cartesian_coordinates>
     pub fn to_polar_spherical(&self) -> (f64, f64) {
-        let theta = self.raw[2].acos();
-        let phi = self.raw[1].atan2(self.raw[0]) % TAU;
+        let vec = self.normalize();
+        let theta = vec.raw[2].acos();
+        let phi = vec.raw[1].atan2(vec.raw[0]) % TAU;
         (theta, phi)
     }
 }
 
 impl Vector<Ecliptic> {
     /// Create a unit vector from latitude and longitude in units of radians.
+    #[inline(always)]
     pub fn from_lat_lon(lat: f64, lon: f64) -> Self {
         Self::from_polar_spherical(PI / 2.0 - lat, lon)
     }
@@ -121,6 +135,7 @@ impl Vector<Ecliptic> {
     /// Convert a unit vector to latitude and longitude.
     ///
     /// Input vector needs to be in the [`Frame::Ecliptic`] frame.
+    #[inline(always)]
     pub fn to_lat_lon(self) -> (f64, f64) {
         let (mut lat, mut lon) = self.to_polar_spherical();
         if lat > PI {
@@ -133,6 +148,7 @@ impl Vector<Ecliptic> {
 
 impl Vector<Equatorial> {
     /// Create a unit vector from ra and dec in units of radians.
+    #[inline(always)]
     pub fn from_ra_dec(ra: f64, dec: f64) -> Self {
         Self::from_polar_spherical(PI / 2.0 - dec, ra)
     }
@@ -140,6 +156,7 @@ impl Vector<Equatorial> {
     /// Convert a unit vector to ra and dec.
     ///
     /// Input vector needs to be in the [`Frame::Equatorial`] frame.
+    #[inline(always)]
     pub fn to_ra_dec(self) -> (f64, f64) {
         let (mut dec, mut ra) = self.to_polar_spherical();
         if dec > PI {
@@ -152,12 +169,14 @@ impl Vector<Equatorial> {
 
 impl<T: InertialFrame> Index<usize> for Vector<T> {
     type Output = f64;
+    #[inline(always)]
     fn index(&self, index: usize) -> &Self::Output {
         &self.raw[index]
     }
 }
 
 impl<T: InertialFrame> IndexMut<usize> for Vector<T> {
+    #[inline(always)]
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         &mut self.raw[index]
     }
@@ -167,36 +186,42 @@ impl<T: InertialFrame> IntoIterator for Vector<T> {
     type Item = f64;
     type IntoIter = std::array::IntoIter<Self::Item, 3>;
 
+    #[inline(always)]
     fn into_iter(self) -> Self::IntoIter {
         self.raw.into_iter()
     }
 }
 
 impl<T: InertialFrame> From<[f64; 3]> for Vector<T> {
+    #[inline(always)]
     fn from(value: [f64; 3]) -> Self {
         Vector::new(value)
     }
 }
 
 impl<T: InertialFrame> From<Vector<T>> for [f64; 3] {
+    #[inline(always)]
     fn from(value: Vector<T>) -> Self {
         value.raw
     }
 }
 
 impl<T: InertialFrame> From<Vector3<f64>> for Vector<T> {
+    #[inline(always)]
     fn from(value: Vector3<f64>) -> Self {
         Vector::new(value.into())
     }
 }
 
 impl<T: InertialFrame> From<Vector<T>> for Vector3<f64> {
+    #[inline(always)]
     fn from(value: Vector<T>) -> Self {
         value.raw.into()
     }
 }
 
 impl<T: InertialFrame> From<Vector<T>> for Vec<f64> {
+    #[inline(always)]
     fn from(value: Vector<T>) -> Self {
         value.raw.into()
     }
@@ -204,6 +229,7 @@ impl<T: InertialFrame> From<Vector<T>> for Vec<f64> {
 
 impl<T: InertialFrame> Sub<&Vector<T>> for Vector<T> {
     type Output = Vector<T>;
+    #[inline(always)]
     fn sub(mut self, rhs: &Vector<T>) -> Self::Output {
         (0..3).for_each(|i| self.raw[i] -= rhs.raw[i]);
         self
@@ -212,6 +238,7 @@ impl<T: InertialFrame> Sub<&Vector<T>> for Vector<T> {
 
 impl<T: InertialFrame> Sub<&Vector<T>> for &Vector<T> {
     type Output = Vector<T>;
+    #[inline(always)]
     fn sub(self, rhs: &Vector<T>) -> Self::Output {
         let mut raw = self.raw;
         (0..3).for_each(|i| raw[i] -= rhs.raw[i]);
@@ -221,6 +248,7 @@ impl<T: InertialFrame> Sub<&Vector<T>> for &Vector<T> {
 
 impl<T: InertialFrame> Sub<Vector<T>> for Vector<T> {
     type Output = Vector<T>;
+    #[inline(always)]
     fn sub(mut self, rhs: Vector<T>) -> Self::Output {
         (0..3).for_each(|i| self.raw[i] -= rhs.raw[i]);
         self
@@ -229,6 +257,7 @@ impl<T: InertialFrame> Sub<Vector<T>> for Vector<T> {
 
 impl<T: InertialFrame> Sub<Vector<T>> for &Vector<T> {
     type Output = Vector<T>;
+    #[inline(always)]
     fn sub(self, rhs: Vector<T>) -> Self::Output {
         let mut raw = self.raw;
         (0..3).for_each(|i| raw[i] -= rhs.raw[i]);
@@ -237,12 +266,14 @@ impl<T: InertialFrame> Sub<Vector<T>> for &Vector<T> {
 }
 
 impl<T: InertialFrame> AddAssign<&Vector<T>> for Vector<T> {
+    #[inline(always)]
     fn add_assign(&mut self, rhs: &Vector<T>) {
         (0..3).for_each(|i| self.raw[i] += rhs.raw[i]);
     }
 }
 
 impl<T: InertialFrame> SubAssign<&Vector<T>> for Vector<T> {
+    #[inline(always)]
     fn sub_assign(&mut self, rhs: &Vector<T>) {
         (0..3).for_each(|i| self.raw[i] -= rhs.raw[i]);
     }
@@ -250,6 +281,7 @@ impl<T: InertialFrame> SubAssign<&Vector<T>> for Vector<T> {
 
 impl<T: InertialFrame> Add<Vector<T>> for Vector<T> {
     type Output = Vector<T>;
+    #[inline(always)]
     fn add(mut self, rhs: Vector<T>) -> Self::Output {
         (0..3).for_each(|i| self.raw[i] += rhs.raw[i]);
         self
@@ -258,6 +290,7 @@ impl<T: InertialFrame> Add<Vector<T>> for Vector<T> {
 
 impl<T: InertialFrame> Add<&Vector<T>> for Vector<T> {
     type Output = Vector<T>;
+    #[inline(always)]
     fn add(mut self, rhs: &Vector<T>) -> Self::Output {
         (0..3).for_each(|i| self.raw[i] += rhs.raw[i]);
         self
@@ -266,6 +299,7 @@ impl<T: InertialFrame> Add<&Vector<T>> for Vector<T> {
 
 impl<T: InertialFrame> Add<&Vector<T>> for &Vector<T> {
     type Output = Vector<T>;
+    #[inline(always)]
     fn add(self, rhs: &Vector<T>) -> Self::Output {
         let mut vec = self.raw;
         (0..3).for_each(|i| vec[i] += rhs.raw[i]);
@@ -275,6 +309,7 @@ impl<T: InertialFrame> Add<&Vector<T>> for &Vector<T> {
 
 impl<T: InertialFrame> Add<Vector<T>> for &Vector<T> {
     type Output = Vector<T>;
+    #[inline(always)]
     fn add(self, rhs: Vector<T>) -> Self::Output {
         let mut vec = self.raw;
         (0..3).for_each(|i| vec[i] += rhs.raw[i]);
@@ -284,6 +319,7 @@ impl<T: InertialFrame> Add<Vector<T>> for &Vector<T> {
 
 impl<T: InertialFrame> Div<f64> for Vector<T> {
     type Output = Vector<T>;
+    #[inline(always)]
     fn div(mut self, rhs: f64) -> Self::Output {
         (0..3).for_each(|i| self.raw[i] /= rhs);
         self
@@ -292,6 +328,7 @@ impl<T: InertialFrame> Div<f64> for Vector<T> {
 
 impl<T: InertialFrame> Div<f64> for &Vector<T> {
     type Output = Vector<T>;
+    #[inline(always)]
     fn div(self, rhs: f64) -> Self::Output {
         let mut vec = self.raw;
         (0..3).for_each(|i| vec[i] /= rhs);
@@ -301,6 +338,7 @@ impl<T: InertialFrame> Div<f64> for &Vector<T> {
 
 impl<T: InertialFrame> Mul<f64> for Vector<T> {
     type Output = Vector<T>;
+    #[inline(always)]
     fn mul(mut self, rhs: f64) -> Self::Output {
         (0..3).for_each(|i| self.raw[i] *= rhs);
         self
@@ -309,6 +347,7 @@ impl<T: InertialFrame> Mul<f64> for Vector<T> {
 
 impl<T: InertialFrame> Mul<f64> for &Vector<T> {
     type Output = Vector<T>;
+    #[inline(always)]
     fn mul(self, rhs: f64) -> Self::Output {
         let mut vec = self.raw;
         (0..3).for_each(|i| vec[i] *= rhs);
@@ -318,6 +357,7 @@ impl<T: InertialFrame> Mul<f64> for &Vector<T> {
 
 impl<T: InertialFrame> Mul<Vector<T>> for f64 {
     type Output = Vector<T>;
+    #[inline(always)]
     fn mul(self, mut rhs: Vector<T>) -> Self::Output {
         (0..3).for_each(|i| rhs.raw[i] *= self);
         rhs
@@ -326,6 +366,7 @@ impl<T: InertialFrame> Mul<Vector<T>> for f64 {
 
 impl<T: InertialFrame> Mul<&Vector<T>> for f64 {
     type Output = Vector<T>;
+    #[inline(always)]
     fn mul(self, rhs: &Vector<T>) -> Self::Output {
         let mut vec = rhs.raw;
         (0..3).for_each(|i| vec[i] *= self);
@@ -335,6 +376,7 @@ impl<T: InertialFrame> Mul<&Vector<T>> for f64 {
 
 impl<T: InertialFrame> Neg for &Vector<T> {
     type Output = Vector<T>;
+    #[inline(always)]
     fn neg(self) -> Self::Output {
         let mut vec = self.raw;
         (0..3).for_each(|i| vec[i] = -vec[i]);
@@ -344,9 +386,41 @@ impl<T: InertialFrame> Neg for &Vector<T> {
 
 impl<T: InertialFrame> Neg for Vector<T> {
     type Output = Vector<T>;
+    #[inline(always)]
     fn neg(self) -> Self::Output {
         let mut vec = self.raw;
         (0..3).for_each(|i| vec[i] = -vec[i]);
         vec.into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::frames::{Galactic, FK4};
+
+    use super::*;
+
+    #[test]
+    fn test_frame_change() {
+        let a = Vector::<Equatorial>::new([1.0, 2.0, 7.0]);
+        let b = a.into_frame::<Ecliptic>();
+        let c = b.into_frame::<Galactic>();
+        let d = c.into_frame::<FK4>();
+        let a_new = d.into_frame::<Equatorial>();
+        assert!((a - a_new).norm() < f64::EPSILON * 20.0);
+        assert!((b - a_new.into_frame()).norm() < f64::EPSILON * 20.0);
+        assert!((c - a_new.into_frame()).norm() < f64::EPSILON * 20.0);
+        assert!((d - a_new.into_frame()).norm() < f64::EPSILON * 20.0);
+    }
+
+    #[test]
+    fn test_normalize() {
+        let a = Vector::<Equatorial>::new([1.0, -2.0, 2.0]);
+        let a_expected: Vector<_> = [1.0 / 3.0, -2.0 / 3.0, 2.0 / 3.0].into();
+        let a_norm = a.normalize();
+
+        assert!((a_norm - a_expected).norm() < f64::EPSILON * 10.0);
+        assert!((a.norm() - 3.0).abs() < f64::EPSILON * 10.0);
+        assert!((a.norm_squared() - 9.0).abs() < f64::EPSILON * 10.0);
     }
 }

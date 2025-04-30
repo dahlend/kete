@@ -21,7 +21,7 @@ pub trait FovLike: Sync + Sized {
     fn observer(&self) -> &State<Equatorial>;
 
     /// Is the specified vector contained within this FOVLike object.
-    /// A ['Contains'] is returned for each sky patch.
+    /// A [`Contains`] is returned for each sky patch.
     fn contains(&self, obs_to_obj: &Vector<Equatorial>) -> (usize, Contains);
 
     /// Number of sky patches contained within this FOV.
