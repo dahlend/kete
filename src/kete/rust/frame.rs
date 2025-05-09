@@ -14,34 +14,6 @@ pub enum PyFrames {
     Galactic,
     /// FK4 Frame
     FK4,
-    /// Undefined Frame
-    Undefined,
-}
-
-/// Provide a mapping from the python mapping above to the backend frames
-impl From<PyFrames> for Frame {
-    fn from(value: PyFrames) -> Self {
-        match value {
-            PyFrames::Ecliptic => Frame::Ecliptic,
-            PyFrames::Equatorial => Frame::Equatorial,
-            PyFrames::Galactic => Frame::Galactic,
-            PyFrames::FK4 => Frame::FK4,
-            PyFrames::Undefined => Frame::Unknown(0),
-        }
-    }
-}
-
-/// Provide a mapping from the python mapping above to the backend frames
-impl From<Frame> for PyFrames {
-    fn from(value: Frame) -> Self {
-        match value {
-            Frame::Ecliptic => PyFrames::Ecliptic,
-            Frame::Equatorial => PyFrames::Equatorial,
-            Frame::FK4 => PyFrames::FK4,
-            Frame::Galactic => PyFrames::Galactic,
-            _ => PyFrames::Undefined,
-        }
-    }
 }
 
 /// Compute a ECEF position from WCS84 Geodetic latitude/longitude/height.

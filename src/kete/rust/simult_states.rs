@@ -6,8 +6,8 @@ use pyo3::exceptions;
 use pyo3::prelude::*;
 use pyo3::{pyclass, pymethods, PyResult};
 
-use crate::vector::{Vector, VectorLike};
-use crate::{fovs::AllowedFOV, frame::PyFrames, state::PyState};
+use crate::vector::PyVector;
+use crate::{fovs::AllowedFOV, state::PyState};
 
 /// Representation of a collection of [`State`] at a single point in time.
 ///
@@ -67,7 +67,7 @@ impl PySimultaneousStates {
     #[new]
     #[pyo3(signature = (states, fov=None))]
     pub fn new(states: Vec<PyState>, fov: Option<AllowedFOV>) -> PyResult<Self> {
-        let states: Vec<_> = states.into_iter().map(|x| x.0).collect();
+        let states: Vec<_> = states.into_iter().map(|x| x.raw).collect();
         let fov = fov.map(|x| x.unwrap());
         Ok(
             SimultaneousStates::new_exact(states, fov)
@@ -95,14 +95,8 @@ impl PySimultaneousStates {
 
     /// The reference center NAIF ID for this state.
     #[getter]
-    pub fn center_id(&self) -> i64 {
+    pub fn center_id(&self) -> i32 {
         self.0.center_id
-    }
-
-    /// Coordinate Frame.
-    #[getter]
-    pub fn frame(&self) -> PyFrames {
-        self.0.frame.into()
     }
 
     /// Load a single SimultaneousStates from a file.
@@ -164,7 +158,7 @@ impl PySimultaneousStates {
     /// If a FOV is present, calculate all vectors from the observer position to the
     /// position of the objects.
     #[getter]
-    pub fn obs_vecs(&self) -> PyResult<Vec<Vector>> {
+    pub fn obs_vecs(&self) -> PyResult<Vec<PyVector>> {
         let fov = self
             .fov()
             .ok_or(PyErr::new::<exceptions::PyValueError, _>(
@@ -175,9 +169,8 @@ impl PySimultaneousStates {
 
         let mut vecs = Vec::with_capacity(self.__len__());
         for state in &self.0.states {
-            let diff = Vector::new(state.pos, state.frame.into())
-                .__sub__(VectorLike::Vec(Vector::new(obs.pos, obs.frame.into())));
-            vecs.push(diff);
+            let diff = state.pos - obs.pos;
+            vecs.push(diff.into());
         }
         Ok(vecs)
     }

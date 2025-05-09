@@ -1,15 +1,15 @@
 //! Python support for kepler orbit calculations
 use itertools::Itertools;
+use kete_core::frames::{Equatorial, Vector};
 use kete_core::state::State;
 use kete_core::{constants, propagation};
-use nalgebra::Vector3;
 use pyo3::{exceptions, PyErr};
 use pyo3::{pyfunction, PyResult};
 use rayon::prelude::*;
 
 use crate::state::PyState;
 use crate::time::PyTime;
-use crate::vector::Vector;
+use crate::vector::PyVector;
 
 /// Solve kepler's equation for the Eccentric Anomaly.
 ///
@@ -70,39 +70,41 @@ pub fn compute_eccentric_anomaly_py(
 pub fn propagation_kepler_py(
     states: Vec<PyState>,
     jd: PyTime,
-    observer_pos: Option<Vector>,
+    observer_pos: Option<PyVector>,
 ) -> Vec<PyState> {
     let jd = jd.jd();
     states
         .par_iter()
         .map(|state| {
             let center = state.center_id();
+            let frame = state.frame();
 
             let Some(state) = state.change_center(10).ok() else {
-                return State::new_nan(state.0.desig.clone(), jd, state.0.frame, center).into();
+                let nan_state: PyState = State::new_nan(state.raw.desig.clone(), jd, center).into();
+                return nan_state.change_frame(frame);
             };
 
-            let Some(mut new_state) = propagation::propagate_two_body(&state.0, jd).ok() else {
-                return State::new_nan(state.0.desig.clone(), jd, state.0.frame, center).into();
+            let Some(mut new_state) = propagation::propagate_two_body(&state.raw, jd).ok() else {
+                let nan_state: PyState = State::new_nan(state.raw.desig.clone(), jd, center).into();
+                return nan_state.change_frame(frame);
             };
 
             if let Some(observer_pos) = &observer_pos {
-                let observer_pos = Vector3::<f64>::from(observer_pos.raw);
-                let delay =
-                    -(Vector3::from(new_state.pos) - observer_pos).norm() / constants::C_AU_PER_DAY;
-
+                let observer_pos: Vector<Equatorial> = observer_pos.clone().into();
+                let delay = -(new_state.pos - observer_pos).norm() / constants::C_AU_PER_DAY;
+                dbg!(&delay);
                 new_state = match propagation::propagate_two_body(&new_state, new_state.jd + delay)
                 {
                     Ok(state) => state,
-                    Err(_) => {
-                        return State::new_nan(state.0.desig.clone(), jd, state.0.frame, center)
-                            .into()
-                    }
+                    Err(_) => State::new_nan(state.raw.desig.clone(), jd, center),
                 };
             }
-            PyState(new_state).change_center(center).unwrap_or(
-                State::new_nan(state.0.desig.clone(), jd, state.0.frame, state.0.center_id).into(),
-            )
+            let new_pystate: PyState = new_state.into();
+
+            new_pystate
+                .change_frame(frame)
+                .change_center(center)
+                .unwrap_or(State::new_nan(state.raw.desig, jd, state.raw.center_id).into())
         })
         .collect()
 }

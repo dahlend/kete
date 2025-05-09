@@ -19,20 +19,14 @@ pub enum FOVListLike {
 
 impl FOVListLike {
     /// Convert to a vector of kete core fovs.
-    /// Frames will always be ecliptic
+    /// Frames will always be Equatorial
     pub fn into_sorted_vec_fov(self) -> Vec<kete_core::fov::FOV> {
         let mut fovs = match self {
             FOVListLike::Vec(v) => v,
             FOVListLike::FOVList(list) => list.0,
         };
         fovs.sort_by(|a, b| a.jd().total_cmp(&b.jd()));
-        fovs.into_iter()
-            .map(|fov| {
-                let mut f = fov.unwrap();
-                f.try_frame_change_mut(Frame::Ecliptic).unwrap();
-                f
-            })
-            .collect()
+        fovs.into_iter().map(|fov| fov.unwrap()).collect()
     }
 }
 

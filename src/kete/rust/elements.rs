@@ -69,7 +69,6 @@ impl PyCometElements {
     ) -> Self {
         Self(elements::CometElements {
             desig: prelude::Desig::Name(desig),
-            frame: prelude::Frame::Ecliptic,
             epoch,
             eccentricity,
             inclination: inclination.to_radians(),
@@ -87,8 +86,8 @@ impl PyCometElements {
     /// State :
     ///     State Object.
     #[staticmethod]
-    pub fn from_state(state: &PyState) -> Self {
-        Self(elements::CometElements::from_state(&state.0))
+    pub fn from_state(state: PyState) -> Self {
+        Self(elements::CometElements::from_state(&state.raw.into_frame()))
     }
 
     /// Epoch of the elements in JD.
@@ -168,7 +167,7 @@ impl PyCometElements {
     /// Convert the orbital elements into a cartesian State.
     #[getter]
     pub fn state(&self) -> PyResult<PyState> {
-        Ok(self.0.try_to_state()?.into())
+        Ok(self.0.try_to_state()?.into_frame().into())
     }
 
     /// Eccentric Anomaly in degrees.

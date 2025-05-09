@@ -19,10 +19,10 @@
 //!
 //!
 use super::daf::DafFile;
-use super::{spk_segments::*, DAFType};
+use super::{spice_jd_to_jd, spk_segments::SpkSegment, DAFType, SpkArray};
 use crate::cache::cache_path;
 use crate::errors::Error;
-use crate::frames::Frame;
+use crate::frames::InertialFrame;
 use crate::prelude::KeteResult;
 use crate::state::State;
 use lazy_static::lazy_static;
@@ -45,13 +45,13 @@ pub struct SpkCollection {
     planet_segments: Vec<SpkSegment>,
 
     /// Collection of SPK Segment information.
-    segments: HashMap<i64, Vec<SpkSegment>>,
+    segments: HashMap<i32, Vec<SpkSegment>>,
 
     /// Cache for the pathfinding algorithm between different segments.
-    map_cache: HashMap<(i64, i64), Vec<i64>>,
+    map_cache: HashMap<(i32, i32), Vec<i32>>,
 
     /// Map from object id to all connected pairs.
-    nodes: HashMap<i64, HashSet<(i64, i64)>>,
+    nodes: HashMap<i32, HashSet<(i32, i32)>>,
 }
 
 /// Define the SPK singleton structure.
@@ -62,15 +62,15 @@ impl SpkCollection {
     /// This state will have the center and frame of whatever was originally loaded
     /// into the file.
     #[inline(always)]
-    pub fn try_get_raw_state(&self, id: i64, jd: f64) -> KeteResult<State> {
+    pub fn try_get_state<T: InertialFrame>(&self, id: i32, jd: f64) -> KeteResult<State<T>> {
         for segment in self.planet_segments.iter() {
-            if segment.obj_id == id && segment.contains(jd) {
+            if segment.spk_array().object_id == id && segment.spk_array().contains(jd) {
                 return segment.try_get_state(jd);
             }
         }
         if let Some(segments) = self.segments.get(&id) {
             for segment in segments.iter() {
-                if segment.contains(jd) {
+                if segment.spk_array().contains(jd) {
                     return segment.try_get_state(jd);
                 }
             }
@@ -84,40 +84,46 @@ impl SpkCollection {
     /// Load a state from the file, then attempt to change the center to the center id
     /// specified.
     #[inline(always)]
-    pub fn try_get_state(&self, id: i64, jd: f64, center: i64, frame: Frame) -> KeteResult<State> {
-        let mut state = self.try_get_raw_state(id, jd)?;
+    pub fn try_get_state_with_center<T: InertialFrame>(
+        &self,
+        id: i32,
+        jd: f64,
+        center: i32,
+    ) -> KeteResult<State<T>> {
+        let mut state = self.try_get_state(id, jd)?;
         if state.center_id != center {
             self.try_change_center(&mut state, center)?;
-        }
-        if state.frame != frame {
-            state.try_change_frame_mut(frame)?;
         }
         Ok(state)
     }
 
     /// Use the data loaded in the SPKs to change the center ID of the provided state.
-    pub fn try_change_center(&self, state: &mut State, new_center: i64) -> KeteResult<()> {
+    pub fn try_change_center<T: InertialFrame>(
+        &self,
+        state: &mut State<T>,
+        new_center: i32,
+    ) -> KeteResult<()> {
         match (state.center_id, new_center) {
             (a, b) if a == b => (),
             (i, 0) if i <= 10 => {
-                state.try_change_center(self.try_get_raw_state(i, state.jd)?)?;
+                state.try_change_center(self.try_get_state(i, state.jd)?)?;
             }
             (0, 10) => {
-                let next = self.try_get_raw_state(10, state.jd)?;
+                let next = self.try_get_state(10, state.jd)?;
                 state.try_change_center(next)?;
             }
             (i, 10) if i < 10 => {
-                state.try_change_center(self.try_get_raw_state(i, state.jd)?)?;
-                state.try_change_center(self.try_get_raw_state(10, state.jd)?)?;
+                state.try_change_center(self.try_get_state(i, state.jd)?)?;
+                state.try_change_center(self.try_get_state(10, state.jd)?)?;
             }
             (10, i) if (i > 1) & (i < 10) => {
-                state.try_change_center(self.try_get_raw_state(10, state.jd)?)?;
-                state.try_change_center(self.try_get_raw_state(i, state.jd)?)?;
+                state.try_change_center(self.try_get_state(10, state.jd)?)?;
+                state.try_change_center(self.try_get_state(i, state.jd)?)?;
             }
             _ => {
                 let path = self.find_path(state.center_id, new_center)?;
                 for intermediate in path {
-                    let next = self.try_get_raw_state(intermediate, state.jd)?;
+                    let next = self.try_get_state(intermediate, state.jd)?;
                     state.try_change_center(next)?;
                 }
             }
@@ -126,30 +132,34 @@ impl SpkCollection {
     }
 
     /// For a given NAIF ID, return all increments of time which are currently loaded.
-    pub fn available_info(&self, id: i64) -> Vec<(f64, f64, i64, Frame, i32)> {
-        let mut segment_info = Vec::<(f64, f64, i64, Frame, i32)>::new();
+    pub fn available_info(&self, id: i32) -> Vec<(f64, f64, i32, i32, i32)> {
+        let mut segment_info = Vec::<(f64, f64, i32, i32, i32)>::new();
         if let Some(segments) = self.segments.get(&id) {
             for segment in segments.iter() {
-                let jd_range = segment.jd_range();
+                let spk_array_ref = segment.spk_array();
+                let jds_start = spk_array_ref.jds_start;
+                let jds_end = spk_array_ref.jds_end;
                 segment_info.push((
-                    jd_range.0,
-                    jd_range.1,
-                    segment.center_id,
-                    segment.ref_frame,
-                    segment.segment_type,
+                    spice_jd_to_jd(jds_start),
+                    spice_jd_to_jd(jds_end),
+                    spk_array_ref.center_id,
+                    spk_array_ref.frame_id,
+                    spk_array_ref.segment_type,
                 ));
             }
         }
 
         self.planet_segments.iter().for_each(|segment| {
-            if segment.obj_id == id {
-                let jd_range = segment.jd_range();
+            let spk_array_ref = segment.spk_array();
+            if spk_array_ref.object_id == id {
+                let jds_start = spk_array_ref.jds_start;
+                let jds_end = spk_array_ref.jds_end;
                 segment_info.push((
-                    jd_range.0,
-                    jd_range.1,
-                    segment.center_id,
-                    segment.ref_frame,
-                    segment.segment_type,
+                    spice_jd_to_jd(jds_start),
+                    spice_jd_to_jd(jds_end),
+                    spk_array_ref.center_id,
+                    spk_array_ref.frame_id,
+                    spk_array_ref.segment_type,
                 ));
             }
         });
@@ -159,7 +169,7 @@ impl SpkCollection {
 
         segment_info.sort_by(|a, b| (a.0).total_cmp(&b.0));
 
-        let mut avail_times = Vec::<(f64, f64, i64, Frame, i32)>::new();
+        let mut avail_times = Vec::<(f64, f64, i32, i32, i32)>::new();
 
         let mut cur_segment = segment_info[0];
         for segment in segment_info.iter().skip(1) {
@@ -183,13 +193,13 @@ impl SpkCollection {
     /// included in the loaded objects set, as 0 is a privileged position at the
     /// barycenter of the solar system. It is not typically defined in relation to
     /// anything else.
-    pub fn loaded_objects(&self, include_centers: bool) -> HashSet<i64> {
+    pub fn loaded_objects(&self, include_centers: bool) -> HashSet<i32> {
         let mut found = HashSet::new();
 
         self.planet_segments.iter().for_each(|x| {
-            let _ = found.insert(x.obj_id);
+            let _ = found.insert(x.spk_array().object_id);
             if include_centers {
-                let _ = found.insert(x.center_id);
+                let _ = found.insert(x.spk_array().center_id);
             };
         });
 
@@ -197,7 +207,7 @@ impl SpkCollection {
             let _ = found.insert(*obj_id);
             if include_centers {
                 segs.iter().for_each(|seg| {
-                    let _ = found.insert(seg.center_id);
+                    let _ = found.insert(seg.spk_array().center_id);
                 });
             }
         });
@@ -207,7 +217,7 @@ impl SpkCollection {
     /// Given a NAIF ID, and a target NAIF ID, find the intermediate SPICE Segments
     /// which need to be loaded to find a path from one object to the other.
     /// Use Dijkstra plus the known segments to calculate a path.
-    fn find_path(&self, start: i64, goal: i64) -> KeteResult<Vec<i64>> {
+    fn find_path(&self, start: i32, goal: i32) -> KeteResult<Vec<i32>> {
         // first we check to see if the cache contains the lookup we need.
         if let Some(path) = self.map_cache.get(&(start, goal)) {
             return Ok(path.clone());
@@ -216,10 +226,10 @@ impl SpkCollection {
         // not in the cache, manually compute
         let nodes = &self.nodes;
         let result = dijkstra(
-            &(start, i64::MIN),
+            &(start, i32::MIN),
             |&current| match nodes.get(&current.0) {
-                Some(set) => set.iter().map(|p| (*p, 1_i64)).collect(),
-                None => Vec::<((i64, i64), i64)>::new(),
+                Some(set) => set.iter().map(|p| (*p, 1_i32)).collect(),
+                None => Vec::<((i32, i32), i32)>::new(),
             },
             |&p| p.0 == goal,
         );
@@ -238,30 +248,31 @@ impl SpkCollection {
     /// These mappings are used to be able to change the center ID from whatever is saved in
     /// the spks to any possible combination.
     fn build_mapping(&mut self) {
-        static PRECACHE: &[i64] = &[0, 10, 399];
+        static PRECACHE: &[i32] = &[0, 10, 399];
 
-        let mut nodes: HashMap<i64, HashSet<(i64, i64)>> = HashMap::new();
+        let mut nodes: HashMap<i32, HashSet<(i32, i32)>> = HashMap::new();
 
-        fn update_nodes(segment: &SpkSegment, nodes: &mut HashMap<i64, HashSet<(i64, i64)>>) {
-            if let std::collections::hash_map::Entry::Vacant(e) = nodes.entry(segment.obj_id) {
+        fn update_nodes(segment: &SpkSegment, nodes: &mut HashMap<i32, HashSet<(i32, i32)>>) {
+            let array_ref = segment.spk_array();
+            if let std::collections::hash_map::Entry::Vacant(e) = nodes.entry(array_ref.object_id) {
                 let mut set = HashSet::new();
-                let _ = set.insert((segment.center_id, segment.obj_id));
+                let _ = set.insert((array_ref.center_id, array_ref.object_id));
                 let _ = e.insert(set);
             } else {
                 let _ = nodes
-                    .get_mut(&segment.obj_id)
+                    .get_mut(&array_ref.object_id)
                     .unwrap()
-                    .insert((segment.center_id, segment.obj_id));
+                    .insert((array_ref.center_id, array_ref.object_id));
             }
-            if let std::collections::hash_map::Entry::Vacant(e) = nodes.entry(segment.center_id) {
+            if let std::collections::hash_map::Entry::Vacant(e) = nodes.entry(array_ref.center_id) {
                 let mut set = HashSet::new();
-                let _ = set.insert((segment.obj_id, segment.obj_id));
+                let _ = set.insert((array_ref.object_id, array_ref.object_id));
                 let _ = e.insert(set);
             } else {
                 let _ = nodes
-                    .get_mut(&segment.center_id)
+                    .get_mut(&array_ref.center_id)
                     .unwrap()
-                    .insert((segment.obj_id, segment.obj_id));
+                    .insert((array_ref.object_id, array_ref.object_id));
             }
         }
 
@@ -284,16 +295,16 @@ impl SpkCollection {
                 }
 
                 let result = dijkstra(
-                    &(start, -100_i64),
+                    &(start, -100_i32),
                     |&current| match nodes.get(&current.0) {
-                        Some(set) => set.iter().map(|p| (*p, 1_i64)).collect(),
-                        None => Vec::<((i64, i64), i64)>::new(),
+                        Some(set) => set.iter().map(|p| (*p, 1_i32)).collect(),
+                        None => Vec::<((i32, i32), i32)>::new(),
                     },
                     |&p| p.0 == goal,
                 );
 
                 if let Some((v, _)) = result {
-                    let v: Vec<i64> = v.iter().skip(1).map(|x| x.1).collect();
+                    let v: Vec<i32> = v.iter().skip(1).map(|x| x.1).collect();
                     let _ = self.map_cache.insert(key, v);
                 }
             }
@@ -313,15 +324,15 @@ impl SpkCollection {
                 filename
             )))?;
         }
-        for segment in file.segments {
-            let segment: SpkSegment = segment.try_into()?;
-            if (segment.obj_id >= 0) && (segment.obj_id <= 1000) {
-                self.planet_segments.push(segment);
+        for daf_array in file.arrays {
+            let segment: SpkArray = daf_array.try_into()?;
+            if (segment.object_id >= 0) && (segment.object_id <= 1000) {
+                self.planet_segments.push(segment.try_into()?);
             } else {
                 self.segments
-                    .entry(segment.obj_id)
+                    .entry(segment.object_id)
                     .or_default()
-                    .push(segment);
+                    .push(segment.try_into()?);
             }
         }
         self.build_mapping();

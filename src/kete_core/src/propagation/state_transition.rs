@@ -1,4 +1,5 @@
 use crate::constants::GMS_SQRT;
+use crate::frames::Equatorial;
 use crate::prelude::{KeteResult, State};
 use crate::propagation::{central_accel, central_accel_grad, CentralAccelMeta, RK45Integrator};
 use nalgebra::{Const, Matrix6, SVector, Vector3, U1, U6};
@@ -50,7 +51,7 @@ fn stm_ivp_eqn(
 ///
 /// This uses a Runge-Kutta 4/5 algorithm.
 pub fn compute_state_transition(
-    state: &mut State,
+    state: &mut State<Equatorial>,
     jd: f64,
     central_mass: f64,
 ) -> ([[f64; 3]; 2], Matrix6<f64>) {

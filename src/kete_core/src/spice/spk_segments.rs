@@ -12,11 +12,11 @@
 //!
 //! There is a lot of repetition in this file, as many of the segment types have very
 //! similar internal structures.
-use super::interpolation::*;
-use super::{jd_to_spice_jd, spice_jds_to_jd, DafArray};
+use super::{interpolation::*, SpkArray};
+use super::{jd_to_spice_jd, spice_jd_to_jd};
 use crate::constants::AU_KM;
 use crate::errors::Error;
-use crate::frames::Frame;
+use crate::frames::{Ecliptic, Equatorial, Galactic, InertialFrame, FK4};
 use crate::prelude::{Desig, KeteResult};
 use crate::state::State;
 use crate::time::scales::TDB;
@@ -26,7 +26,7 @@ use sgp4::{julian_years_since_j2000, Constants, Geopotential, MinutesSinceEpoch,
 use std::fmt::Debug;
 
 #[derive(Debug)]
-pub enum SpkSegmentType {
+pub(in crate::spice) enum SpkSegment {
     Type1(SpkSegmentType1),
     Type2(SpkSegmentType2),
     Type3(SpkSegmentType3),
@@ -37,18 +37,19 @@ pub enum SpkSegmentType {
     Type21(SpkSegmentType21),
 }
 
-impl SpkSegmentType {
-    /// Create a Segment from a DafArray, the segment type must be specified.
-    pub fn from_array(segment_type: i32, array: DafArray) -> KeteResult<Self> {
-        match segment_type {
-            1 => Ok(SpkSegmentType::Type1(array.into())),
-            2 => Ok(SpkSegmentType::Type2(array.into())),
-            3 => Ok(SpkSegmentType::Type3(array.into())),
-            9 => Ok(SpkSegmentType::Type9(array.into())),
-            13 => Ok(SpkSegmentType::Type13(array.into())),
-            10 => Ok(SpkSegmentType::Type10(array.into())),
-            18 => Ok(SpkSegmentType::Type18(array.into())),
-            21 => Ok(SpkSegmentType::Type21(array.into())),
+impl TryFrom<SpkArray> for SpkSegment {
+    type Error = Error;
+
+    fn try_from(array: SpkArray) -> Result<Self, Self::Error> {
+        match array.segment_type {
+            1 => Ok(SpkSegment::Type1(array.into())),
+            2 => Ok(SpkSegment::Type2(array.try_into()?)),
+            3 => Ok(SpkSegment::Type3(array.try_into()?)),
+            9 => Ok(SpkSegment::Type9(array.into())),
+            10 => Ok(SpkSegment::Type10(array.try_into()?)),
+            13 => Ok(SpkSegment::Type13(array.into())),
+            18 => Ok(SpkSegment::Type18(array.try_into()?)),
+            21 => Ok(SpkSegment::Type21(array.into())),
             v => Err(Error::IOError(format!(
                 "SPK Segment type {:?} not supported.",
                 v
@@ -57,123 +58,84 @@ impl SpkSegmentType {
     }
 }
 
-impl From<SpkSegmentType> for DafArray {
-    fn from(value: SpkSegmentType) -> Self {
-        match value {
-            SpkSegmentType::Type1(seg) => seg.array,
-            SpkSegmentType::Type2(seg) => seg.array,
-            SpkSegmentType::Type3(seg) => seg.array,
-            SpkSegmentType::Type9(seg) => seg.array,
-            SpkSegmentType::Type10(seg) => seg.array.array,
-            SpkSegmentType::Type13(seg) => seg.array,
-            SpkSegmentType::Type18(seg) => seg.array,
-            SpkSegmentType::Type21(seg) => seg.array,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct SpkSegment {
-    /// The NAIF ID of the object recorded in this Segment.
-    pub obj_id: i64,
-
-    /// Start time of the segment.
-    pub jd_start: f64,
-
-    /// End time of the segment.
-    pub jd_end: f64,
-
-    /// The reference center NAIF ID for the position/velocity in this Segment.
-    pub center_id: i64,
-
-    /// [`Frame`] of reference for this Segment.
-    pub ref_frame: Frame,
-
-    /// Number which defines the segment type as defined by the DAF standard.
-    pub segment_type: i32,
-
-    /// Internal data representation.
-    segment: SpkSegmentType,
-}
-
-impl From<SpkSegment> for DafArray {
-    fn from(value: SpkSegment) -> Self {
-        value.segment.into()
-    }
-}
-
-impl TryFrom<DafArray> for SpkSegment {
-    type Error = Error;
-
-    fn try_from(value: DafArray) -> KeteResult<SpkSegment> {
-        let summary_floats = &value.summary_floats;
-        let summary_ints = &value.summary_ints;
-        let jd_start = spice_jds_to_jd(summary_floats[0]);
-        let jd_end = spice_jds_to_jd(summary_floats[1]);
-        let obj_id = summary_ints[0] as i64;
-        let center_id = summary_ints[1] as i64;
-        let frame_num = summary_ints[2];
-        let segment_type = summary_ints[3];
-
-        let ref_frame = match frame_num {
-            17 => Frame::Ecliptic,
-            1 => Frame::Equatorial,
-            i => Frame::Unknown(i),
-        };
-
-        let segment = SpkSegmentType::from_array(segment_type, value)?;
-
-        Ok(SpkSegment {
-            obj_id,
-            jd_start,
-            jd_end,
-            center_id,
-            ref_frame,
-            segment_type,
-            segment,
-        })
-    }
-}
-
 impl SpkSegment {
-    pub fn jd_range(&self) -> (f64, f64) {
-        (self.jd_start, self.jd_end)
-    }
-
-    pub fn contains(&self, jd: f64) -> bool {
-        (jd >= self.jd_start) && (jd <= self.jd_end)
+    pub fn spk_array(&self) -> &SpkArray {
+        match self {
+            SpkSegment::Type1(v) => &v.array,
+            SpkSegment::Type2(v) => &v.array,
+            SpkSegment::Type3(v) => &v.array,
+            SpkSegment::Type9(v) => &v.array,
+            SpkSegment::Type10(v) => &v.array.array,
+            SpkSegment::Type13(v) => &v.array,
+            SpkSegment::Type18(v) => &v.array,
+            SpkSegment::Type21(v) => &v.array,
+        }
     }
 
     /// Return the [`State`] object at the specified JD. If the requested time is
     /// not within the available range, this will fail.
     #[inline(always)]
-    pub fn try_get_state(&self, jd: f64) -> KeteResult<State> {
+    pub fn try_get_state<T: InertialFrame>(&self, jd: f64) -> KeteResult<State<T>> {
+        let arr_ref = self.spk_array();
+
+        let jds = jd_to_spice_jd(jd);
+
         // this is faster than calling contains, probably because the || instead of &&
-        if jd < self.jd_start || jd > self.jd_end {
+        if jds < arr_ref.jds_start || jds > arr_ref.jds_end {
             return Err(Error::DAFLimits(
                 "JD is not present in this record.".to_string(),
             ));
         }
 
-        let (pos, vel) = match &self.segment {
-            SpkSegmentType::Type1(v) => v.try_get_pos_vel(self, jd)?,
-            SpkSegmentType::Type2(v) => v.try_get_pos_vel(self, jd)?,
-            SpkSegmentType::Type3(v) => v.try_get_pos_vel(self, jd)?,
-            SpkSegmentType::Type9(v) => v.try_get_pos_vel(self, jd)?,
-            SpkSegmentType::Type10(v) => v.try_get_pos_vel(self, jd)?,
-            SpkSegmentType::Type13(v) => v.try_get_pos_vel(self, jd)?,
-            SpkSegmentType::Type18(v) => v.try_get_pos_vel(self, jd)?,
-            SpkSegmentType::Type21(v) => v.try_get_pos_vel(self, jd)?,
+        let (pos, vel) = match &self {
+            SpkSegment::Type1(v) => v.try_get_pos_vel(jds)?,
+            SpkSegment::Type2(v) => v.try_get_pos_vel(jds)?,
+            SpkSegment::Type3(v) => v.try_get_pos_vel(jds)?,
+            SpkSegment::Type9(v) => v.try_get_pos_vel(jds)?,
+            SpkSegment::Type10(v) => v.try_get_pos_vel(jds)?,
+            SpkSegment::Type13(v) => v.try_get_pos_vel(jds)?,
+            SpkSegment::Type18(v) => v.try_get_pos_vel(jds)?,
+            SpkSegment::Type21(v) => v.try_get_pos_vel(jds)?,
         };
 
-        Ok(State::new(
-            Desig::Naif(self.obj_id),
-            jd,
-            pos.into(),
-            vel.into(),
-            self.ref_frame,
-            self.center_id,
-        ))
+        match arr_ref.frame_id {
+            1 => Ok(State::<Equatorial>::new(
+                Desig::Naif(arr_ref.object_id),
+                jd,
+                pos.into(),
+                vel.into(),
+                arr_ref.center_id,
+            )
+            .into_frame()),
+            3 => Ok(State::<FK4>::new(
+                Desig::Naif(arr_ref.object_id),
+                jd,
+                pos.into(),
+                vel.into(),
+                arr_ref.center_id,
+            )
+            .into_frame()),
+            13 => Ok(State::<Galactic>::new(
+                Desig::Naif(arr_ref.object_id),
+                jd,
+                pos.into(),
+                vel.into(),
+                arr_ref.center_id,
+            )
+            .into_frame()),
+            17 => Ok(State::<Ecliptic>::new(
+                Desig::Naif(arr_ref.object_id),
+                jd,
+                pos.into(),
+                vel.into(),
+                arr_ref.center_id,
+            )
+            .into_frame()),
+            _ => Err(Error::ValueError(format!(
+                "Frame {:?} not supported. Please submit a github issue! Please include the SPK file!",
+                arr_ref.frame_id
+            )))?,
+        }
     }
 }
 
@@ -182,8 +144,8 @@ impl SpkSegment {
 /// <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/spk.html#Type%201:%20Modified%20Difference%20Arrays>
 ///
 #[derive(Debug)]
-pub struct SpkSegmentType1 {
-    array: DafArray,
+pub(in crate::spice) struct SpkSegmentType1 {
+    array: SpkArray,
 
     n_records: usize,
 }
@@ -191,20 +153,21 @@ pub struct SpkSegmentType1 {
 impl SpkSegmentType1 {
     #[inline(always)]
     fn get_record(&self, idx: usize) -> &[f64] {
-        unsafe { self.array.data.get_unchecked(idx * 71..(idx + 1) * 71) }
+        unsafe { self.array.daf.data.get_unchecked(idx * 71..(idx + 1) * 71) }
     }
 
     #[inline(always)]
     fn get_times(&self) -> &[f64] {
         unsafe {
             self.array
+                .daf
                 .data
                 .get_unchecked(self.n_records * 71..(self.n_records * 72))
         }
     }
 
     #[inline(always)]
-    fn try_get_pos_vel(&self, _: &SpkSegment, jd: f64) -> KeteResult<([f64; 3], [f64; 3])> {
+    fn try_get_pos_vel(&self, jds: f64) -> KeteResult<([f64; 3], [f64; 3])> {
         // Records are laid out as so:
         //
         // Size      Description
@@ -219,10 +182,9 @@ impl SpkSegmentType1 {
         // we need to find the first record which has a time greater than or equal
         // to the target jd.
 
-        let jd = jd_to_spice_jd(jd);
         let start_idx = self
             .get_times()
-            .binary_search_by(|probe| probe.total_cmp(&jd))
+            .binary_search_by(|probe| probe.total_cmp(&jds))
             .unwrap_or_else(|c| c);
 
         let record = self.get_record(start_idx);
@@ -238,7 +200,7 @@ impl SpkSegmentType1 {
         let kq = &record[68..71];
 
         // in the spice code ref_time is in seconds from j2000
-        let dt = jd - ref_time;
+        let dt = jds - ref_time;
 
         let mut fc = [0.0; 15];
         let mut wc = [0.0; 15];
@@ -300,9 +262,9 @@ impl SpkSegmentType1 {
     }
 }
 
-impl From<DafArray> for SpkSegmentType1 {
-    fn from(array: DafArray) -> Self {
-        let n_records = array[array.len() - 1] as usize;
+impl From<SpkArray> for SpkSegmentType1 {
+    fn from(array: SpkArray) -> Self {
+        let n_records = array.daf[array.daf.len() - 1] as usize;
 
         SpkSegmentType1 { array, n_records }
     }
@@ -313,9 +275,9 @@ impl From<DafArray> for SpkSegmentType1 {
 /// <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/spk.html#Type%202:%20Chebyshev%20position%20only>
 ///
 #[derive(Debug)]
-pub struct SpkSegmentType2 {
-    array: DafArray,
-    jd_step: f64,
+pub(in crate::spice) struct SpkSegmentType2 {
+    array: SpkArray,
+    jds_step: f64,
     n_coef: usize,
     record_len: usize,
 }
@@ -338,6 +300,7 @@ impl SpkSegmentType2 {
         unsafe {
             let vals = self
                 .array
+                .daf
                 .data
                 .get_unchecked(idx * self.record_len..(idx + 1) * self.record_len);
 
@@ -352,15 +315,14 @@ impl SpkSegmentType2 {
     }
 
     #[inline(always)]
-    fn try_get_pos_vel(&self, segment: &SpkSegment, jd: f64) -> KeteResult<([f64; 3], [f64; 3])> {
-        let jd = jd_to_spice_jd(jd);
-        let jd_start = jd_to_spice_jd(segment.jd_start);
-        let record_index = ((jd - jd_start) / self.jd_step).floor() as usize;
+    fn try_get_pos_vel(&self, jds: f64) -> KeteResult<([f64; 3], [f64; 3])> {
+        let jds_start = self.array.jds_start;
+        let record_index = ((jds - jds_start) / self.jds_step).floor() as usize;
         let record = self.get_record(record_index);
 
         let t_step = record.t_step;
 
-        let t = (jd - record.t_mid) / t_step;
+        let t = (jds - record.t_mid) / t_step;
 
         let t_step_scaled = 86400.0 / t_step / AU_KM;
 
@@ -376,23 +338,25 @@ impl SpkSegmentType2 {
     }
 }
 
-impl From<DafArray> for SpkSegmentType2 {
-    fn from(array: DafArray) -> Self {
-        let record_len = array[array.len() - 2] as usize;
-        let jd_step = array[array.len() - 3];
+impl TryFrom<SpkArray> for SpkSegmentType2 {
+    type Error = Error;
+
+    fn try_from(array: SpkArray) -> Result<Self, Self::Error> {
+        let record_len = array.daf[array.daf.len() - 2] as usize;
+        let jds_step = array.daf[array.daf.len() - 3];
 
         let n_coef = (record_len - 2) / 3;
 
         if 3 * n_coef + 2 != record_len {
-            panic!("File incorrectly formatted, found number of Chebyshev coefficients doesn't match expected");
+            return Err(Error::ValueError("File incorrectly formatted, found number of Chebyshev coefficients doesn't match expected".into()));
         }
 
-        SpkSegmentType2 {
+        Ok(SpkSegmentType2 {
             array,
             n_coef,
             record_len,
-            jd_step,
-        }
+            jds_step,
+        })
     }
 }
 
@@ -401,9 +365,9 @@ impl From<DafArray> for SpkSegmentType2 {
 /// <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/FORTRAN/req/spk.html#Type%203:%20Chebyshev%20position%20and%20velocity>
 ///
 #[derive(Debug)]
-pub struct SpkSegmentType3 {
-    array: DafArray,
-    jd_step: f64,
+pub(in crate::spice) struct SpkSegmentType3 {
+    array: SpkArray,
+    jds_step: f64,
     n_coef: usize,
     record_len: usize,
 }
@@ -430,6 +394,7 @@ impl SpkSegmentType3 {
         unsafe {
             let vals = self
                 .array
+                .daf
                 .data
                 .get_unchecked(idx * self.record_len..(idx + 1) * self.record_len);
 
@@ -447,15 +412,14 @@ impl SpkSegmentType3 {
     }
 
     #[inline(always)]
-    fn try_get_pos_vel(&self, segment: &SpkSegment, jd: f64) -> KeteResult<([f64; 3], [f64; 3])> {
-        let jd = jd_to_spice_jd(jd);
-        let jd_start = jd_to_spice_jd(segment.jd_start);
-        let record_index = ((jd - jd_start) / self.jd_step).floor() as usize;
+    fn try_get_pos_vel(&self, jds: f64) -> KeteResult<([f64; 3], [f64; 3])> {
+        let jds_start = self.array.jds_start;
+        let record_index = ((jds - jds_start) / self.jds_step).floor() as usize;
         let record = self.get_record(record_index);
 
         let t_step = record.t_step;
 
-        let t = (jd - record.t_mid) / t_step;
+        let t = (jds - record.t_mid) / t_step;
 
         let t_scaled = 86400.0 / AU_KM;
 
@@ -468,23 +432,24 @@ impl SpkSegmentType3 {
     }
 }
 
-impl From<DafArray> for SpkSegmentType3 {
-    fn from(array: DafArray) -> Self {
-        let record_len = array[array.len() - 2] as usize;
-        let jd_step = array[array.len() - 3];
+impl TryFrom<SpkArray> for SpkSegmentType3 {
+    type Error = Error;
+    fn try_from(array: SpkArray) -> KeteResult<Self> {
+        let record_len = array.daf[array.daf.len() - 2] as usize;
+        let jds_step = array.daf[array.daf.len() - 3];
 
         let n_coef = (record_len - 2) / 6;
 
         if 6 * n_coef + 2 != record_len {
-            panic!("File incorrectly formatted, found number of Chebyshev coefficients doesn't match expected");
+            return Err(Error::ValueError("File incorrectly formatted, found number of Chebyshev coefficients doesn't match expected".into()));
         }
 
-        SpkSegmentType3 {
+        Ok(SpkSegmentType3 {
             array,
             n_coef,
             record_len,
-            jd_step,
-        }
+            jds_step,
+        })
     }
 }
 
@@ -497,16 +462,16 @@ impl From<DafArray> for SpkSegmentType3 {
 /// them using Lagrange interpolation.
 /// <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/FORTRAN/req/spk.html#Type%209:%20Lagrange%20Interpolation%20---%20Unequal%20Time%20Steps>
 #[derive(Debug)]
-pub struct SpkSegmentType9 {
-    array: DafArray,
+pub(in crate::spice) struct SpkSegmentType9 {
+    array: SpkArray,
     poly_degree: usize,
     n_records: usize,
 }
 
-impl From<DafArray> for SpkSegmentType9 {
-    fn from(array: DafArray) -> Self {
-        let n_records = array[array.len() - 1] as usize;
-        let poly_degree = array[array.len() - 2] as usize;
+impl From<SpkArray> for SpkSegmentType9 {
+    fn from(array: SpkArray) -> Self {
+        let n_records = array.daf[array.daf.len() - 1] as usize;
+        let poly_degree = array.daf[array.daf.len() - 2] as usize;
 
         Self {
             array,
@@ -528,7 +493,7 @@ impl SpkSegmentType9 {
     #[inline(always)]
     fn get_record(&self, idx: usize) -> Type9RecordView {
         unsafe {
-            let rec = self.array.data.get_unchecked(idx * 6..(idx + 1) * 6);
+            let rec = self.array.daf.data.get_unchecked(idx * 6..(idx + 1) * 6);
             Type9RecordView {
                 pos: rec[0..3].try_into().unwrap(),
                 vel: rec[3..6].try_into().unwrap(),
@@ -540,20 +505,20 @@ impl SpkSegmentType9 {
     fn get_times(&self) -> &[f64] {
         unsafe {
             self.array
+                .daf
                 .data
                 .get_unchecked(self.n_records * 6..self.n_records * 7)
         }
     }
 
     #[inline(always)]
-    fn try_get_pos_vel(&self, _: &SpkSegment, jd: f64) -> KeteResult<([f64; 3], [f64; 3])> {
-        let jd = jd_to_spice_jd(jd);
+    fn try_get_pos_vel(&self, jds: f64) -> KeteResult<([f64; 3], [f64; 3])> {
         let times = self.get_times();
         let window_size = self.poly_degree + 1;
-        let start_idx: isize = match times.binary_search_by(|probe| probe.total_cmp(&jd)) {
+        let start_idx: isize = match times.binary_search_by(|probe| probe.total_cmp(&jds)) {
             Ok(c) => c as isize - (window_size as isize) / 2,
             Err(c) => {
-                if (jd - times[c - 1]).abs() < (jd - times[c]).abs() {
+                if (jds - times[c - 1]).abs() < (jds - times[c]).abs() {
                     c as isize - 1 - window_size as isize / 2
                 } else {
                     c as isize - window_size as isize / 2
@@ -571,8 +536,9 @@ impl SpkSegmentType9 {
             let mut dp: Box<[f64]> = (0..window_size)
                 .map(|i| self.get_record(i + start_idx).vel[idx])
                 .collect();
-            let p = lagrange_interpolation(&times[start_idx..start_idx + window_size], &mut p, jd);
-            let v = lagrange_interpolation(&times[start_idx..start_idx + window_size], &mut dp, jd);
+            let p = lagrange_interpolation(&times[start_idx..start_idx + window_size], &mut p, jds);
+            let v =
+                lagrange_interpolation(&times[start_idx..start_idx + window_size], &mut dp, jds);
             pos[idx] = p / AU_KM;
             vel[idx] = v / AU_KM * 86400.;
         }
@@ -586,7 +552,7 @@ impl SpkSegmentType9 {
 /// <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/spk.html#Type%2010:%20Space%20Command%20Two-Line%20Elements>
 ///
 #[derive(Debug)]
-pub struct SpkSegmentType10 {
+pub(in crate::spice) struct SpkSegmentType10 {
     /// Generic Segments are a collection of a few different directories:
     /// `Packets` are where Type 10 stores the TLE values.
     /// `Packet Directory` is unused.
@@ -614,7 +580,7 @@ impl SpkSegmentType10 {
             *rec;
 
         let epoch = julian_years_since_j2000(
-            &Time::<TDB>::new(spice_jds_to_jd(epoch))
+            &Time::<TDB>::new(spice_jd_to_jd(epoch))
                 .utc()
                 .to_datetime()
                 .unwrap()
@@ -643,7 +609,7 @@ impl SpkSegmentType10 {
     }
 
     #[inline(always)]
-    fn try_get_pos_vel(&self, _: &SpkSegment, jd: f64) -> KeteResult<([f64; 3], [f64; 3])> {
+    fn try_get_pos_vel(&self, jds: f64) -> KeteResult<([f64; 3], [f64; 3])> {
         // TODO: this does not yet implement the interpolation between two neighboring states
         // which is present in the cSPICE implementation.
         // This currently matches the cspice implementation to within about 20km, where the error
@@ -654,14 +620,13 @@ impl SpkSegmentType10 {
         // Much of this error may be fixed by applying a small linear offset to time which
         // causes about a 3 second offset in 2024 vs a 0 second offset in 2000.
         // See #66 for more details.
-        let jd = jd_to_spice_jd(jd);
         let times = self.get_times();
-        let idx: usize = match times.binary_search_by(|probe| probe.total_cmp(&jd)) {
+        let idx: usize = match times.binary_search_by(|probe| probe.total_cmp(&jds)) {
             Ok(c) => c,
             Err(c) => {
                 if c == 0 {
                     c
-                } else if c == times.len() || (jd - times[c - 1]).abs() < (jd - times[c]).abs() {
+                } else if c == times.len() || (jds - times[c - 1]).abs() < (jds - times[c]).abs() {
                     c - 1
                 } else {
                     c
@@ -671,7 +636,7 @@ impl SpkSegmentType10 {
         let epoch = times[idx];
         let record = self.get_record(idx);
         let prediction = record
-            .propagate(MinutesSinceEpoch((jd - epoch) / 60.0))
+            .propagate(MinutesSinceEpoch((jds - epoch) / 60.0))
             .unwrap();
 
         let [x, y, z] = prediction.position;
@@ -684,9 +649,10 @@ impl SpkSegmentType10 {
     }
 }
 
-impl From<DafArray> for SpkSegmentType10 {
-    fn from(array: DafArray) -> Self {
-        let array: GenericSegment = array.try_into().unwrap();
+impl TryFrom<SpkArray> for SpkSegmentType10 {
+    type Error = Error;
+    fn try_from(array: SpkArray) -> KeteResult<Self> {
+        let array: GenericSegment = array.try_into()?;
         let constants = array.constants();
         let geopotential = Geopotential {
             j2: constants[0],
@@ -696,10 +662,10 @@ impl From<DafArray> for SpkSegmentType10 {
             ae: constants[6],
         };
 
-        SpkSegmentType10 {
+        Ok(SpkSegmentType10 {
             array,
             geopotential,
-        }
+        })
     }
 }
 
@@ -712,16 +678,16 @@ impl From<DafArray> for SpkSegmentType10 {
 /// them using hermite interpolation.
 /// <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/spk.html#Type%2013:%20Hermite%20Interpolation%20---%20Unequal%20Time%20Steps>
 #[derive(Debug)]
-pub struct SpkSegmentType13 {
-    array: DafArray,
+pub(in crate::spice) struct SpkSegmentType13 {
+    array: SpkArray,
     window_size: usize,
     n_records: usize,
 }
 
-impl From<DafArray> for SpkSegmentType13 {
-    fn from(array: DafArray) -> Self {
-        let n_records = array[array.len() - 1] as usize;
-        let window_size = array[array.len() - 2] as usize;
+impl From<SpkArray> for SpkSegmentType13 {
+    fn from(array: SpkArray) -> Self {
+        let n_records = array.daf[array.daf.len() - 1] as usize;
+        let window_size = array.daf[array.daf.len() - 2] as usize;
 
         Self {
             array,
@@ -743,7 +709,7 @@ impl SpkSegmentType13 {
     #[inline(always)]
     fn get_record(&self, idx: usize) -> Type13RecordView {
         unsafe {
-            let rec = self.array.data.get_unchecked(idx * 6..(idx + 1) * 6);
+            let rec = self.array.daf.data.get_unchecked(idx * 6..(idx + 1) * 6);
             Type13RecordView {
                 pos: rec[0..3].try_into().unwrap(),
                 vel: rec[3..6].try_into().unwrap(),
@@ -755,19 +721,19 @@ impl SpkSegmentType13 {
     fn get_times(&self) -> &[f64] {
         unsafe {
             self.array
+                .daf
                 .data
                 .get_unchecked(self.n_records * 6..self.n_records * 7)
         }
     }
 
     #[inline(always)]
-    fn try_get_pos_vel(&self, _: &SpkSegment, jd: f64) -> KeteResult<([f64; 3], [f64; 3])> {
-        let jd = jd_to_spice_jd(jd);
+    fn try_get_pos_vel(&self, jds: f64) -> KeteResult<([f64; 3], [f64; 3])> {
         let times = self.get_times();
-        let start_idx: isize = match times.binary_search_by(|probe| probe.total_cmp(&jd)) {
+        let start_idx: isize = match times.binary_search_by(|probe| probe.total_cmp(&jds)) {
             Ok(c) => c as isize - (self.window_size as isize) / 2,
             Err(c) => {
-                if (jd - times[c - 1]).abs() < (jd - times[c]).abs() {
+                if (jds - times[c - 1]).abs() < (jds - times[c]).abs() {
                     c as isize - 1 - self.window_size as isize / 2
                 } else {
                     c as isize - self.window_size as isize / 2
@@ -786,8 +752,12 @@ impl SpkSegmentType13 {
             let dp: Box<[f64]> = (0..self.window_size)
                 .map(|i| self.get_record(i + start_idx).vel[idx])
                 .collect();
-            let (p, v) =
-                hermite_interpolation(&times[start_idx..start_idx + self.window_size], &p, &dp, jd);
+            let (p, v) = hermite_interpolation(
+                &times[start_idx..start_idx + self.window_size],
+                &p,
+                &dp,
+                jds,
+            );
             pos[idx] = p / AU_KM;
             vel[idx] = v / AU_KM * 86400.;
         }
@@ -810,36 +780,39 @@ impl SpkSegmentType13 {
 ///
 /// <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/FORTRAN/req/spk.html#Type%2018:%20ESOC/DDID%20Hermite/Lagrange%20Interpolation>
 #[derive(Debug)]
-pub struct SpkSegmentType18 {
-    array: DafArray,
+pub(in crate::spice) struct SpkSegmentType18 {
+    array: SpkArray,
     subtype: usize,
     window_size: usize,
     n_records: usize,
     record_size: usize,
 }
 
-impl From<DafArray> for SpkSegmentType18 {
-    fn from(array: DafArray) -> Self {
-        let n_records = array[array.len() - 1] as usize;
-        let window_size = array[array.len() - 2] as usize;
-        let subtype = array[array.len() - 3] as usize;
+impl TryFrom<SpkArray> for SpkSegmentType18 {
+    type Error = Error;
+    fn try_from(array: SpkArray) -> KeteResult<Self> {
+        let n_records = array.daf[array.daf.len() - 1] as usize;
+        let window_size = array.daf[array.daf.len() - 2] as usize;
+        let subtype = array.daf[array.daf.len() - 3] as usize;
         let record_size = {
             if subtype == 0 {
                 12
             } else if subtype == 1 {
                 6
             } else {
-                panic!("Spk Segment Type 12 only supports subtype of 0 or 1")
+                return Err(Error::ValueError(
+                    "Spk Segment Type 12 only supports subtype of 0 or 1".into(),
+                ));
             }
         };
 
-        SpkSegmentType18 {
+        Ok(SpkSegmentType18 {
             array,
             subtype,
             window_size,
             n_records,
             record_size,
-        }
+        })
     }
 }
 
@@ -857,6 +830,7 @@ impl SpkSegmentType18 {
         unsafe {
             let rec = self
                 .array
+                .daf
                 .data
                 .get_unchecked(idx * self.record_size..(idx + 1) * self.record_size);
             Type18RecordView {
@@ -869,20 +843,19 @@ impl SpkSegmentType18 {
     #[inline(always)]
     fn get_times(&self) -> &[f64] {
         unsafe {
-            self.array.data.get_unchecked(
+            self.array.daf.data.get_unchecked(
                 self.n_records * self.record_size..self.n_records * (self.record_size + 1),
             )
         }
     }
 
     #[inline(always)]
-    fn try_get_pos_vel(&self, _: &SpkSegment, jd: f64) -> KeteResult<([f64; 3], [f64; 3])> {
-        let jd = jd_to_spice_jd(jd);
+    fn try_get_pos_vel(&self, jds: f64) -> KeteResult<([f64; 3], [f64; 3])> {
         let times = self.get_times();
-        let start_idx: isize = match times.binary_search_by(|probe| probe.total_cmp(&jd)) {
+        let start_idx: isize = match times.binary_search_by(|probe| probe.total_cmp(&jds)) {
             Ok(c) => c as isize - (self.window_size as isize) / 2,
             Err(c) => {
-                if (jd - times[c - 1]).abs() < (jd - times[c]).abs() {
+                if (jds - times[c - 1]).abs() < (jds - times[c]).abs() {
                     c as isize - 1 - self.window_size as isize / 2
                 } else {
                     c as isize - self.window_size as isize / 2
@@ -907,7 +880,7 @@ impl SpkSegmentType18 {
                         &times[start_idx..start_idx + self.window_size],
                         &p,
                         &dp,
-                        jd,
+                        jds,
                     );
                     pos[idx] = p / AU_KM;
 
@@ -921,7 +894,7 @@ impl SpkSegmentType18 {
                         &times[start_idx..start_idx + self.window_size],
                         &p,
                         &dp,
-                        jd,
+                        jds,
                     );
                     vel[idx] = v / AU_KM * 86400.;
                 }
@@ -937,12 +910,12 @@ impl SpkSegmentType18 {
                     let p = lagrange_interpolation(
                         &times[start_idx..start_idx + self.window_size],
                         &mut p,
-                        jd,
+                        jds,
                     );
                     let v = lagrange_interpolation(
                         &times[start_idx..start_idx + self.window_size],
                         &mut dp,
-                        jd,
+                        jds,
                     );
                     pos[idx] = p / AU_KM;
                     vel[idx] = v / AU_KM * 86400.;
@@ -961,17 +934,17 @@ impl SpkSegmentType18 {
 /// <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/spk.html#Type%2021:%20Extended%20Modified%20Difference%20Arrays>
 ///
 #[derive(Debug)]
-pub struct SpkSegmentType21 {
-    array: DafArray,
+pub(in crate::spice) struct SpkSegmentType21 {
+    array: SpkArray,
     n_coef: usize,
     n_records: usize,
     record_len: usize,
 }
 
-impl From<DafArray> for SpkSegmentType21 {
-    fn from(array: DafArray) -> Self {
-        let n_records = array[array.len() - 1] as usize;
-        let n_coef = array[array.len() - 2] as usize;
+impl From<SpkArray> for SpkSegmentType21 {
+    fn from(array: SpkArray) -> Self {
+        let n_records = array.daf[array.daf.len() - 1] as usize;
+        let n_coef = array.daf[array.daf.len() - 2] as usize;
 
         let record_len = 4 * n_coef + 11;
 
@@ -989,6 +962,7 @@ impl SpkSegmentType21 {
     fn get_record(&self, idx: usize) -> &[f64] {
         unsafe {
             self.array
+                .daf
                 .data
                 .get_unchecked(idx * self.record_len..(idx + 1) * self.record_len)
         }
@@ -997,14 +971,14 @@ impl SpkSegmentType21 {
     #[inline(always)]
     fn get_times(&self) -> &[f64] {
         unsafe {
-            self.array.data.get_unchecked(
+            self.array.daf.data.get_unchecked(
                 self.n_records * self.record_len..self.n_records * (self.record_len + 1),
             )
         }
     }
 
     #[inline(always)]
-    fn try_get_pos_vel(&self, _: &SpkSegment, jd: f64) -> KeteResult<([f64; 3], [f64; 3])> {
+    fn try_get_pos_vel(&self, jds: f64) -> KeteResult<([f64; 3], [f64; 3])> {
         // Records are laid out as so:
         //
         // Size      Description
@@ -1020,10 +994,9 @@ impl SpkSegmentType21 {
         // we need to find the first record which has a time greater than or equal
         // to the target jd.
 
-        let jd = jd_to_spice_jd(jd);
         let start_idx = self
             .get_times()
-            .binary_search_by(|probe| probe.total_cmp(&jd))
+            .binary_search_by(|probe| probe.total_cmp(&jds))
             .unwrap_or_else(|c| c);
 
         let record = self.get_record(start_idx);
@@ -1039,7 +1012,7 @@ impl SpkSegmentType21 {
         let kq = &record[4 * self.n_coef + 8..4 * self.n_coef + 11];
 
         // in the spice code ref_time is in seconds from j2000
-        let dt = jd - ref_time;
+        let dt = jds - ref_time;
 
         let mut fc = Vec::<f64>::with_capacity(self.n_coef);
         let mut wc = Vec::<f64>::with_capacity(self.n_coef);
@@ -1107,8 +1080,8 @@ impl SpkSegmentType21 {
 #[derive(Debug)]
 #[allow(dead_code)]
 struct GenericSegment {
-    /// Underlying DAF array
-    array: DafArray,
+    /// Underlying Spk array
+    array: SpkArray,
 
     /// Number of metadata value stored in this segment.
     n_meta: usize,
@@ -1162,6 +1135,7 @@ impl GenericSegment {
     fn constants(&self) -> &[f64] {
         unsafe {
             self.array
+                .daf
                 .data
                 .get_unchecked(self.const_addr..self.const_addr + self.n_consts)
         }
@@ -1170,6 +1144,7 @@ impl GenericSegment {
     fn peak_packet(&self) -> &[f64] {
         unsafe {
             self.array
+                .daf
                 .data
                 .get_unchecked(self.packet_addr - 3..self.packet_addr + 7)
         }
@@ -1179,6 +1154,7 @@ impl GenericSegment {
     fn get_reference_items(&self) -> &[f64] {
         unsafe {
             self.array
+                .daf
                 .data
                 .get_unchecked(self.ref_items_addr..self.ref_items_addr + self.n_ref_items)
         }
@@ -1187,6 +1163,7 @@ impl GenericSegment {
     fn get_packet<const T: usize>(&self, idx: usize) -> &[f64; T] {
         unsafe {
             self.array
+                .daf
                 .data
                 .get_unchecked(self.packet_addr + T * idx..self.packet_addr + T * (idx + 1))
                 .try_into()
@@ -1195,14 +1172,14 @@ impl GenericSegment {
     }
 }
 
-impl TryFrom<DafArray> for GenericSegment {
+impl TryFrom<SpkArray> for GenericSegment {
     type Error = Error;
 
-    fn try_from(array: DafArray) -> KeteResult<Self> {
+    fn try_from(array: SpkArray) -> KeteResult<Self> {
         // The very last value of this array is an int (cast to f64) which indicates the number
         // of meta-data values.
 
-        let n_meta = array[array.len() - 1] as usize;
+        let n_meta = array.daf[array.daf.len() - 1] as usize;
 
         if n_meta < 15 {
             Err(Error::IOError(
@@ -1225,8 +1202,9 @@ impl TryFrom<DafArray> for GenericSegment {
             packet_addr,
             n_packets,
         ) = array
+            .daf
             .data
-            .get(array.len() - n_meta..array.len() - 1)
+            .get(array.daf.len() - n_meta..array.daf.len() - 1)
             .unwrap()
             .iter()
             .map(|x| *x as usize)
@@ -1234,8 +1212,9 @@ impl TryFrom<DafArray> for GenericSegment {
             .unwrap();
 
         let (res_addr, n_reserved) = array
+            .daf
             .data
-            .get(array.len() - n_meta..array.len() - 1)
+            .get(array.daf.len() - n_meta..array.daf.len() - 1)
             .unwrap()
             .iter()
             .map(|x| *x as usize)

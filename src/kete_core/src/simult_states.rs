@@ -2,9 +2,9 @@
 //! These primarily exist to allow for easy read/write to binary formats.
 
 use crate::fov::FOV;
-use crate::frames::to_lat_lon;
+use crate::frames::{Equatorial, Vector};
 use crate::io::FileIO;
-use crate::prelude::{Error, Frame, KeteResult, State};
+use crate::prelude::{Error, KeteResult, State};
 use nalgebra::Vector3;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
@@ -13,16 +13,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SimultaneousStates {
     /// Collection of states
-    pub states: Vec<State>,
+    pub states: Vec<State<Equatorial>>,
 
     /// Common JD time of all states
     pub jd: f64,
 
     /// Center ID of all states.
-    pub center_id: i64,
-
-    /// Frame of reference for all states.
-    pub frame: Frame,
+    pub center_id: i32,
 
     /// An optional field of view.
     pub fov: Option<FOV>,
@@ -34,45 +31,36 @@ impl SimultaneousStates {
     /// Create a new Exact SimultaneousStates
     /// Simultaneous States occur at the same JD, which is defined by either the time
     /// in the optional fov, or the time of the first state.
-    pub fn new_exact(mut states: Vec<State>, fov: Option<FOV>) -> KeteResult<Self> {
+    pub fn new_exact(states: Vec<State<Equatorial>>, fov: Option<FOV>) -> KeteResult<Self> {
         if states.is_empty() {
             return Err(Error::ValueError(
                 "SimultaneousStates must contain at least one state.".into(),
             ));
         }
-        let (mut jd, frame, center_id) = {
+        let (mut jd, center_id) = {
             let first = states.first().unwrap();
-            (first.jd, first.frame, first.center_id)
+            (first.jd, first.center_id)
         };
 
         if let Some(f) = &fov {
             jd = f.observer().jd
         }
 
-        if !states
-            .iter_mut()
-            .map(|state| state.try_change_frame_mut(frame))
-            .all(|x| x.is_ok())
-        {
-            return Err(Error::ValueError("Failed to change frames".into()));
-        };
-        if !states
-            .iter_mut()
-            .all(|state: &mut State| state.center_id == center_id)
-        {
+        if states.iter().any(|state| state.center_id != center_id) {
             return Err(Error::ValueError("Center IDs do not match expected".into()));
         };
-        if fov.is_none() && states.iter_mut().any(|state: &mut State| state.jd != jd) {
+
+        if fov.is_none() && states.iter().any(|state| state.jd != jd) {
             return Err(Error::ValueError(
                 "Epoch JDs do not match expected, this is only allowed if there is an associated FOV."
                     .into(),
             ));
         };
+
         Ok(SimultaneousStates {
             states,
             jd,
             center_id,
-            frame,
             fov,
         })
     }
@@ -91,20 +79,18 @@ impl SimultaneousStates {
         }
         let fov = self.fov.as_ref().unwrap();
 
-        let mut obs = fov.observer().clone();
-        obs.try_change_frame_mut(Frame::Equatorial)?;
+        let obs = fov.observer();
 
-        let obs_pos = Vector3::from(obs.pos);
-        let obs_vel = Vector3::from(obs.vel);
+        let obs_pos = obs.pos;
+        let obs_vel = obs.vel;
 
         Ok(self
             .states
             .par_iter()
             .map(|state| {
-                let mut state = state.clone();
-                state.try_change_frame_mut(Frame::Equatorial).unwrap();
-                let pos_diff = Vector3::from(state.pos) - obs_pos;
-                let vel_diff = Vector3::from(state.vel) - obs_vel;
+                let state = state.clone();
+                let pos_diff: Vector3<f64> = (state.pos - obs_pos).into();
+                let vel_diff: Vector3<f64> = (state.vel - obs_vel).into();
 
                 let d_ra = (pos_diff.x * vel_diff.y - pos_diff.y * vel_diff.x)
                     / (pos_diff.x.powi(2) + pos_diff.y.powi(2));
@@ -112,7 +98,9 @@ impl SimultaneousStates {
 
                 let d_dec = (vel_diff.z - pos_diff.z * pos_diff.dot(&vel_diff) / r2)
                     / (r2 - pos_diff.z.powi(2)).sqrt();
-                let (dec, ra) = to_lat_lon(pos_diff[0], pos_diff[1], pos_diff[2]);
+
+                let vec: Vector<Equatorial> = pos_diff.into();
+                let (ra, dec) = vec.to_ra_dec();
 
                 [ra, dec, d_ra * dec.cos(), d_dec]
             })

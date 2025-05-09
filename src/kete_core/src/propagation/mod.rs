@@ -5,7 +5,7 @@
 
 use crate::constants::{MASSES, PLANETS, SIMPLE_PLANETS};
 use crate::errors::Error;
-use crate::frames::Frame;
+use crate::frames::Equatorial;
 use crate::prelude::{Desig, KeteResult};
 use crate::spice::LOADED_SPK;
 use crate::state::State;
@@ -49,35 +49,32 @@ pub fn propagate_two_body_radau(dt: f64, pos: &[f64; 3], vel: &[f64; 3]) -> ([f6
 ///
 /// This is a very poor approximation over more than a few minutes/hours, however it
 /// is very fast.
-pub fn propagate_linear(state: &State, jd_final: f64) -> KeteResult<State> {
+pub fn propagate_linear(state: &State<Equatorial>, jd_final: f64) -> KeteResult<State<Equatorial>> {
     let dt = jd_final - state.jd;
     let mut pos: Vector3<f64> = state.pos.into();
     pos.iter_mut()
-        .zip(&state.vel)
+        .zip(state.vel)
         .for_each(|(p, v)| *p += v * dt);
 
     Ok(State::new(
         state.desig.to_owned(),
         jd_final,
-        pos,
-        state.vel.into(),
-        state.frame,
+        pos.into(),
+        state.vel,
         state.center_id,
     ))
 }
 
 /// Propagate an object using full N-Body physics with the Radau 15th order integrator.
 pub fn propagate_n_body_spk(
-    mut state: State,
+    mut state: State<Equatorial>,
     jd_final: f64,
     include_extended: bool,
     non_grav_model: Option<NonGravModel>,
-) -> KeteResult<State> {
+) -> KeteResult<State<Equatorial>> {
     let center = state.center_id;
-    let frame = state.frame;
     let spk = &LOADED_SPK.try_read().unwrap();
     spk.try_change_center(&mut state, 0)?;
-    state.try_change_frame_mut(Frame::Equatorial)?;
 
     let mass_list = {
         if include_extended {
@@ -104,16 +101,8 @@ pub fn propagate_n_body_spk(
         )?
     };
 
-    let mut new_state = State::new(
-        state.desig.to_owned(),
-        jd_final,
-        pos,
-        vel,
-        Frame::Equatorial,
-        0,
-    );
+    let mut new_state = State::new(state.desig.to_owned(), jd_final, pos.into(), vel.into(), 0);
     spk.try_change_center(&mut new_state, center)?;
-    new_state.try_change_frame_mut(frame)?;
     Ok(new_state)
 }
 
@@ -123,7 +112,7 @@ pub fn propagate_n_body_spk(
 ///
 /// It is *strongly recommended* to use the `kepler.rs` code for this, as
 /// it will be much more computationally efficient.
-pub fn propagation_central(state: &State, jd_final: f64) -> KeteResult<[[f64; 3]; 2]> {
+pub fn propagation_central(state: &State<Equatorial>, jd_final: f64) -> KeteResult<[[f64; 3]; 2]> {
     let pos: Vector3<f64> = state.pos.into();
     let vel: Vector3<f64> = state.vel.into();
     let (pos, vel, _meta) = RadauIntegrator::integrate(
@@ -139,12 +128,13 @@ pub fn propagation_central(state: &State, jd_final: f64) -> KeteResult<[[f64; 3]
 
 /// Propagate using n-body mechanics but skipping SPK queries.
 /// This will propagate all planets and the Moon, so it may vary from SPK states slightly.
+#[allow(clippy::type_complexity)]
 pub fn propagate_n_body_vec(
-    states: Vec<State>,
+    states: Vec<State<Equatorial>>,
     jd_final: f64,
-    planet_states: Option<Vec<State>>,
+    planet_states: Option<Vec<State<Equatorial>>>,
     non_gravs: Vec<Option<NonGravModel>>,
-) -> KeteResult<(Vec<State>, Vec<State>)> {
+) -> KeteResult<(Vec<State<Equatorial>>, Vec<State<Equatorial>>)> {
     if states.is_empty() {
         Err(Error::ValueError(
             "State vector is empty, propagation cannot continue".into(),
@@ -168,7 +158,7 @@ pub fn propagate_n_body_vec(
         let mut planet_states = Vec::with_capacity(SIMPLE_PLANETS.len());
         for obj in SIMPLE_PLANETS.iter() {
             let planet = spk
-                .try_get_state(obj.naif_id, jd_init, 10, Frame::Equatorial)
+                .try_get_state_with_center::<Equatorial>(obj.naif_id, jd_init, 10)
                 .expect("Failed to find state for the provided initial jd");
             planet_states.push(planet);
         }
@@ -191,8 +181,7 @@ pub fn propagate_n_body_vec(
         desigs.push(planet_state.desig);
     }
 
-    for mut state in states.into_iter() {
-        state.try_change_frame_mut(Frame::Equatorial)?;
+    for state in states.into_iter() {
         if jd_init != state.jd {
             Err(Error::ValueError(
                 "All input states must have the same JD".into(),
@@ -225,11 +214,11 @@ pub fn propagate_n_body_vec(
     };
     let sun_pos = pos.fixed_rows::<3>(0);
     let sun_vel = vel.fixed_rows::<3>(0);
-    let mut all_states: Vec<State> = Vec::new();
+    let mut all_states: Vec<State<_>> = Vec::new();
     for (idx, desig) in desigs.into_iter().enumerate() {
         let pos = pos.fixed_rows::<3>(idx * 3) - sun_pos;
         let vel = vel.fixed_rows::<3>(idx * 3) - sun_vel;
-        let state = State::new(desig, jd_final, pos, vel, Frame::Equatorial, 10);
+        let state = State::new(desig, jd_final, pos.into(), vel.into(), 10);
         all_states.push(state);
     }
     let final_states = all_states.split_off(SIMPLE_PLANETS.len());

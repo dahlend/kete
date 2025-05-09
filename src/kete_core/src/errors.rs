@@ -28,7 +28,7 @@ pub enum Error {
     IOError(String),
 
     /// Propagator detected an impact.
-    Impact(i64, f64),
+    Impact(i32, f64),
 }
 
 impl error::Error for Error {}

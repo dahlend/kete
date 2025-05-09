@@ -58,7 +58,7 @@ pub mod vector;
 fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<frame::PyFrames>()?;
     m.add_class::<PyState>()?;
-    m.add_class::<vector::Vector>()?;
+    m.add_class::<vector::PyVector>()?;
     m.add_class::<elements::PyCometElements>()?;
     m.add_class::<simult_states::PySimultaneousStates>()?;
     m.add_class::<nongrav::PyNonGravModel>()?;
@@ -132,6 +132,7 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(spice::pck_earth_frame_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::pck_state_to_earth, m)?)?;
     m.add_function(wrap_pyfunction!(spice::pck_loaded_objects_py, m)?)?;
+    m.add_function(wrap_pyfunction!(spice::pck_load_core_py, m)?)?;
 
     m.add_function(wrap_pyfunction!(spice::daf_header_info_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::obs_codes, m)?)?;

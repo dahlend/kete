@@ -142,7 +142,6 @@ impl HorizonsProperties {
                     "No longitude of ascending node defined".into(),
                 ))?
                 .to_radians(),
-            frame: prelude::Frame::Ecliptic,
         }))
     }
 
