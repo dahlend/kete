@@ -9,6 +9,7 @@ use crate::frames::InertialFrame;
 use crate::prelude::CometElements;
 use crate::state::State;
 use crate::{constants::*, prelude::KeteResult};
+use argmin::core::{CostFunction, Error as ArgminErr, Executor};
 use argmin::solver::neldermead::NelderMead;
 use core::f64;
 use nalgebra::{ComplexField, Vector3};
@@ -324,7 +325,6 @@ pub fn propagate_two_body<T: InertialFrame>(
     ))
 }
 
-use argmin::core::{CostFunction, Error as ArgminErr, Executor};
 struct MoidCost<T: InertialFrame> {
     state_a: State<T>,
 
