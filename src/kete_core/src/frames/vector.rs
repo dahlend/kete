@@ -7,12 +7,13 @@ use std::marker::PhantomData;
 use std::ops::{Add, AddAssign, Div, Index, IndexMut, Mul, Neg, Sub, SubAssign};
 
 /// Vector with frame information.
+/// All vectors are 3D vectors in an inertial frame.
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 pub struct Vector<T: InertialFrame> {
-    /// Julian Date
+    /// Underlying vector data.
     raw: [f64; 3],
 
-    /// PhantomData is used here as the scale is only a record keeping convenience.
+    /// PhantomData is used here to keep track of the frame type.
     frame: PhantomData<T>,
 }
 
