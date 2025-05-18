@@ -8,6 +8,7 @@ from functools import lru_cache
 from typing import Optional, Union
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 
 from astropy.io import fits
 
@@ -540,35 +541,39 @@ def fetch_WISE_fovs(phase):
     """
     phase = MISSION_PHASES[phase]
     dir_path = os.path.join(cache_path(), "fovs")
-    filename = os.path.join(dir_path, f"wise_{phase.name}_fovs.bin")
+    filename = os.path.join(dir_path, f"wise_{phase.name}_fovs.parquet")
 
     if not os.path.isdir(dir_path):
         os.makedirs(dir_path)
     if os.path.isfile(filename):
-        return FOVList.load(filename)
+        res = pd.read_parquet(filename)
 
-    table = phase.frame_meta_table
-    cols = [
-        "scan_id",
-        "frame_num",
-        "mjd",
-        "w1ra1",
-        "w1ra2",
-        "w1ra3",
-        "w1ra4",
-        "w1dec1",
-        "w1dec2",
-        "w1dec3",
-        "w1dec4",
-        "crota",
-    ]
-    mjd_start = Time(phase.jd_start).mjd
-    mjd_end = Time(phase.jd_end).mjd
+    if not os.path.isfile(filename):
+        table = phase.frame_meta_table
+        cols = [
+            "scan_id",
+            "frame_num",
+            "qual_frame",
+            "mjd",
+            "w1ra1",
+            "w1ra2",
+            "w1ra3",
+            "w1ra4",
+            "w1dec1",
+            "w1dec2",
+            "w1dec3",
+            "w1dec4",
+            "crota",
+        ]
+        mjd_start = Time(phase.jd_start).mjd
+        mjd_end = Time(phase.jd_end).mjd
 
-    res = query_irsa_tap(
-        f"SELECT {', '.join(cols)} FROM {table} "
-        f"WHERE mjd >= {mjd_start} and mjd < {mjd_end}"
-    )
+        res = query_irsa_tap(
+            f"SELECT {', '.join(cols)} FROM {table} "
+            f"WHERE mjd >= {mjd_start} and mjd < {mjd_end}"
+        )
+
+        res.to_parquet(filename, index=False)
 
     jd = [Time.from_mjd(mjd, scaling="utc").jd for mjd in list(res.mjd)]
     res["jd"] = jd
@@ -607,5 +612,4 @@ def fetch_WISE_fovs(phase):
         fovs.append(fov)
     fovs = FOVList(fovs)
     fovs.sort()
-    fovs.save(filename)
     return fovs
