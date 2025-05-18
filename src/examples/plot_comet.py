@@ -172,7 +172,7 @@ def plot_synchrone(
 # Plot the final results
 plt.figure(dpi=200)
 frame = kete.ztf.fetch_frame(vis.fov)
-wcs = kete.irsa.plot_fits_image(frame, percentiles=None)
+wcs = kete.plot.plot_fits_image(frame, percentiles=None)
 plt.title("Comet NEOWISE - C/2020 F3\n")
 
 # plot syndynes

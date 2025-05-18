@@ -1,5 +1,5 @@
 """
-Useful conversion functions between various physical values or representations.
+Conversion functions between various physical values or representations.
 """
 
 from __future__ import annotations
@@ -7,9 +7,10 @@ import logging
 from typing import Union
 import numpy as np
 from numpy.typing import NDArray
+
 from . import _core
 from . import constants
-from ._core import compute_obliquity, earth_precession_rotation
+from ._core import compute_obliquity, earth_precession_rotation, CometElements
 
 __all__ = [
     "bin_data",
@@ -23,6 +24,7 @@ __all__ = [
     "compute_obliquity",
     "compute_semi_major",
     "compute_tisserand",
+    "table_to_states",
     "dec_degrees_to_dms",
     "dec_dms_to_degrees",
     "earth_precession_rotation",
@@ -398,3 +400,45 @@ def mag_to_flux(mag: float, zero_point=3631) -> float:
         Flux in Jy where the magnitude is zero.
     """
     return 10 ** (mag / -2.5) * zero_point
+
+
+def table_to_states(orbit_dataframe):
+    """
+    Given a dataframe provided by :func:`fetch_known_orbit_data` above, load all states.
+
+
+    .. testcode::
+        :skipif: True
+
+        import kete
+
+        # Load all MPC orbits
+        orbits = kete.mpc.fetch_known_orbit_data()
+
+        # Subset the table to be only NEOs
+        neos = kete.population.neo(orbits.peri_dist, orbits.ecc)
+        neo_subset = orbits[neos]
+
+        # load the state object from this table
+        state = kete.mpc.table_to_states(neo_subset)
+
+    Parameters
+    ----------
+    orbit_dataframe:
+        Pandas Dataframe as provided by the fetch_known_orbit_data function.
+    """
+    states = []
+    for item in orbit_dataframe.itertuples():
+        states.append(
+            CometElements(
+                str(item.desig),
+                item.epoch,
+                item.ecc,
+                item.incl,
+                item.peri_dist,
+                item.peri_arg,
+                item.peri_time,
+                item.lon_node,
+            ).state
+        )
+    return states

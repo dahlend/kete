@@ -167,10 +167,10 @@ Note again this is only showing the first 20 of 181.
 .. code-block:: python
 
     plt.figure(dpi=300)
-    wcs = kete.irsa.plot_fits_image(frame, cmap='grey')
+    wcs = kete.plot.plot_fits_image(frame, cmap='grey')
     for state in list(visible_obj)[:n_show]:
         vec = (state.pos - visible_obj.fov.observer.pos).as_equatorial
-        kete.irsa.annotate_plot(wcs, vec.ra, vec.dec, state.desig, px_gap=10, length=10)
+        kete.plot.annotate_plot(wcs, vec.ra, vec.dec, state.desig, px_gap=10, length=10)
     plt.xlabel("RA")
     plt.ylabel("DEC")
     plt.title(f"NEOWISE Frame on Ecliptic\n{kete.Time(time_jd).iso}");

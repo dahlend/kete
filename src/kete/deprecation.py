@@ -9,7 +9,6 @@ def deprecated(deprecated_version, additional_msg=None):
     additional_msg = "" if additional_msg is None else " " + str(additional_msg)
 
     def decorate(func):
-
         @functools.wraps(func)
         def wrapped(*args, **kwargs):
             warnings.warn(

@@ -77,7 +77,7 @@ First we load a FITs file, and grab frame information from its header.
     fov = kete.fov.RectangleFOV.from_wcs(wcs, earth)
 
     # Plot the frame
-    kete.irsa.plot_fits_image(frame)
+    kete.plot.plot_fits_image(frame)
     plt.title("Dec 6 1950 - Palomar Mountain")
     plt.tight_layout()
     plt.savefig("data/full_frame.png")
@@ -184,10 +184,10 @@ the glass plate itself so not visible.
 
 .. code-block:: python
 
-    wcs = kete.irsa.plot_fits_image(frame, percentiles=(40, 99))
+    wcs = kete.plot.plot_fits_image(frame, percentiles=(40, 99))
     for idx in range(len(vis)):
         vec = vis.obs_vecs[idx]
-        kete.irsa.annotate_plot(wcs, vec, style='o', px_gap=10, text=vis[idx].desig)
+        kete.plot.annotate_plot(wcs, vec, style='o', px_gap=10, text=vis[idx].desig)
     
     plt.title("Dec 6 1950 - Annotated")
     plt.savefig("data/full_frame_annotated.png")
@@ -208,14 +208,14 @@ position causes the alignment to match within the width of the blur.
 
 .. code-block:: python
 
-    wcs = kete.irsa.plot_fits_image(frame, percentiles=(30, 99.9))
-    kete.irsa.annotate_plot(wcs,
+    wcs = kete.plot.plot_fits_image(frame, percentiles=(30, 99.9))
+    kete.plot.annotate_plot(wcs,
                             vis.obs_vecs[1],
                             style='L',
                             px_gap=5,
                             length=10,
                             text="    " + vis[1].desig)
-    kete.irsa.zoom_plot(wcs, vis.obs_vecs[1])
+    kete.plot.zoom_plot(wcs, vis.obs_vecs[1])
     plt.title(f"Dec 6 1950 - Annotated Zoom");
     plt.savefig("data/full_frame_annotated_zoom.png")
     plt.close()
