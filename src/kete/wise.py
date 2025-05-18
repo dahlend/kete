@@ -547,8 +547,7 @@ def fetch_WISE_fovs(phase):
         os.makedirs(dir_path)
     if os.path.isfile(filename):
         res = pd.read_parquet(filename)
-
-    if not os.path.isfile(filename):
+    else:
         table = phase.frame_meta_table
         cols = [
             "scan_id",
@@ -579,7 +578,7 @@ def fetch_WISE_fovs(phase):
     res["jd"] = jd
 
     fovs = []
-    for _, row in res.iterrows():
+    for row in res.itertuples():
         state = spice.get_state("WISE", row.jd)
 
         # Each band has a slightly different size on sky.
@@ -590,7 +589,10 @@ def fetch_WISE_fovs(phase):
         corners = []
         for i in range(4):
             corners.append(
-                Vector.from_ra_dec(row[f"w1ra{i + 1}"], row[f"w1dec{i + 1}"])
+                Vector.from_ra_dec(
+                    getattr(row, f"w1ra{i + 1}"),
+                    getattr(row, f"w1dec{i + 1}"),
+                )
             )
 
         pointing = np.mean(corners, axis=0)
