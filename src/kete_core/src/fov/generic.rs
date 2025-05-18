@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{Contains, FovLike, OnSkyRectangle, SkyPatch, SphericalCone, FOV};
 use crate::{
+    errors::{Error, KeteResult},
     frames::{Equatorial, Vector},
     state::State,
 };
@@ -17,7 +18,7 @@ pub struct GenericRectangle {
     observer: State<Equatorial>,
 
     /// Patch of sky
-    pub patch: OnSkyRectangle,
+    patch: OnSkyRectangle,
 
     /// Rotation of the FOV.
     pub rotation: f64,
@@ -86,6 +87,16 @@ impl FovLike for GenericRectangle {
     fn n_patches(&self) -> usize {
         1
     }
+
+    #[inline]
+    fn pointing(&self) -> KeteResult<Vector<Equatorial>> {
+        Ok(self.patch.pointing())
+    }
+
+    #[inline]
+    fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
+        Ok(self.patch.corners().into())
+    }
 }
 
 /// Generic rectangular FOV
@@ -123,6 +134,20 @@ impl FovLike for OmniDirectional {
     #[inline]
     fn n_patches(&self) -> usize {
         1
+    }
+
+    #[inline]
+    fn pointing(&self) -> KeteResult<Vector<Equatorial>> {
+        Err(Error::ValueError(
+            "OmniDirectional FOV does not have a pointing vector.".into(),
+        ))
+    }
+
+    #[inline]
+    fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
+        Err(Error::ValueError(
+            "OmniDirectional FOV does not have corners.".into(),
+        ))
     }
 }
 
@@ -171,6 +196,18 @@ impl FovLike for GenericCone {
     #[inline]
     fn n_patches(&self) -> usize {
         1
+    }
+
+    #[inline]
+    fn pointing(&self) -> KeteResult<Vector<Equatorial>> {
+        Ok(self.patch.pointing())
+    }
+
+    #[inline]
+    fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
+        Err(Error::ValueError(
+            "GenericCone does not have corners.".into(),
+        ))
     }
 }
 

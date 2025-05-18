@@ -50,6 +50,7 @@ where
         }
     }
 }
+
 pub(crate) fn deserialize<'de, D, T, const N: usize>(deserializer: D) -> Result<[T; N], D::Error>
 where
     D: Deserializer<'de>,

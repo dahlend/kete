@@ -1,5 +1,4 @@
 //! # WISE Fov definitions.
-use core::f64;
 
 use super::{Contains, FovLike, OnSkyRectangle, SkyPatch, FOV};
 use crate::prelude::*;
@@ -13,10 +12,7 @@ pub struct WiseCmos {
     observer: State<Equatorial>,
 
     /// Patch of sky
-    pub patch: OnSkyRectangle,
-
-    /// Rotation of the FOV.
-    pub rotation: f64,
+    patch: OnSkyRectangle,
 
     /// Frame number of the fov
     pub frame_num: u64,
@@ -39,7 +35,6 @@ impl WiseCmos {
             patch,
             observer,
             frame_num,
-            rotation,
             scan_id,
         }
     }
@@ -56,7 +51,6 @@ impl WiseCmos {
             patch,
             observer,
             frame_num,
-            rotation: f64::NAN,
             scan_id,
         }
     }
@@ -84,5 +78,15 @@ impl FovLike for WiseCmos {
     #[inline]
     fn n_patches(&self) -> usize {
         1
+    }
+
+    #[inline]
+    fn pointing(&self) -> KeteResult<Vector<Equatorial>> {
+        Ok(self.patch.pointing())
+    }
+
+    #[inline]
+    fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
+        Ok(self.patch.corners().into())
     }
 }

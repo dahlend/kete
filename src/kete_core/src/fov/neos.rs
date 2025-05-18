@@ -12,7 +12,7 @@ pub struct NeosCmos {
     observer: State<Equatorial>,
 
     /// Patch of sky
-    pub patch: OnSkyRectangle,
+    patch: OnSkyRectangle,
 
     /// Rotation of the FOV.
     pub rotation: f64,
@@ -97,6 +97,16 @@ impl FovLike for NeosCmos {
     #[inline]
     fn n_patches(&self) -> usize {
         1
+    }
+
+    #[inline]
+    fn pointing(&self) -> KeteResult<Vector<Equatorial>> {
+        Ok(self.patch.pointing())
+    }
+
+    #[inline]
+    fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
+        Ok(self.patch.corners().into())
     }
 }
 
@@ -354,5 +364,23 @@ impl FovLike for NeosVisit {
 
     fn n_patches(&self) -> usize {
         4
+    }
+
+    #[inline]
+    fn pointing(&self) -> KeteResult<Vector<Equatorial>> {
+        let mut pointing = Vector::new([0.0; 3]);
+        self.chips
+            .iter()
+            .for_each(|chip| pointing += &chip.patch.pointing());
+        Ok(pointing.normalize())
+    }
+
+    #[inline]
+    fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
+        let mut corners = Vec::with_capacity(4 * 4);
+        for chip in self.chips.iter() {
+            corners.extend(chip.patch.corners());
+        }
+        Ok(corners)
     }
 }

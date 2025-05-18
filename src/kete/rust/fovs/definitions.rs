@@ -353,7 +353,7 @@ impl PyWiseCmos {
     /// Direction that the observer is looking.
     #[getter]
     pub fn pointing(&self) -> PyVector {
-        self.0.patch.pointing().into()
+        self.0.pointing().unwrap().into()
     }
 
     /// WISE Frame number.
@@ -368,18 +368,12 @@ impl PyWiseCmos {
         self.0.scan_id.to_string()
     }
 
-    /// Rotation angle of the FOV in degrees.
-    #[getter]
-    pub fn rotation(&self) -> f64 {
-        self.0.rotation.to_degrees()
-    }
-
     /// Corners of this FOV.
     #[getter]
     pub fn corners(&self) -> Vec<PyVector> {
         self.0
-            .patch
             .corners()
+            .unwrap()
             .into_iter()
             .map(|x| x.into())
             .collect()
@@ -387,9 +381,8 @@ impl PyWiseCmos {
 
     fn __repr__(&self) -> String {
         format!(
-            "WiseCmos(pointing={}, rotation={}, observer={}, frame_num={}, scan_id={:?})",
+            "WiseCmos(pointing={}, observer={}, frame_num={}, scan_id={:?})",
             self.pointing().__repr__(),
-            self.rotation(),
             self.observer().__repr__(),
             self.frame_num(),
             self.scan_id()
@@ -450,7 +443,7 @@ impl PyGenericRectangle {
     /// Average center of the FOV.
     #[getter]
     pub fn pointing(&self) -> PyVector {
-        self.0.patch.pointing().into()
+        self.0.pointing().unwrap().into()
     }
 
     /// The longitudinal width of the FOV.
@@ -469,8 +462,8 @@ impl PyGenericRectangle {
     #[getter]
     pub fn corners(&self) -> Vec<PyVector> {
         self.0
-            .patch
             .corners()
+            .unwrap()
             .into_iter()
             .map(|x| x.into())
             .collect()
@@ -608,7 +601,7 @@ impl PyNeosCmos {
     /// Direction that the observer is looking.
     #[getter]
     pub fn pointing(&self) -> PyVector {
-        self.0.patch.pointing().into()
+        self.0.pointing().unwrap().into()
     }
 
     /// Metadata about where this FOV is in the Survey.
@@ -669,8 +662,8 @@ impl PyNeosCmos {
     #[getter]
     pub fn corners(&self) -> Vec<PyVector> {
         self.0
-            .patch
             .corners()
+            .unwrap()
             .into_iter()
             .map(|x| x.into())
             .collect()
@@ -907,7 +900,7 @@ impl PyZtfCcdQuad {
     /// Direction that the observer is looking.
     #[getter]
     pub fn pointing(&self) -> PyVector {
-        self.0.patch.pointing().into()
+        self.0.pointing().unwrap().into()
     }
 
     /// Metadata about where this FOV is in the Survey.
@@ -956,8 +949,8 @@ impl PyZtfCcdQuad {
     #[getter]
     pub fn corners(&self) -> Vec<PyVector> {
         self.0
-            .patch
             .corners()
+            .unwrap()
             .into_iter()
             .map(|x| x.into())
             .collect()

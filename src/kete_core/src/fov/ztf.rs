@@ -11,7 +11,7 @@ pub struct ZtfCcdQuad {
     observer: State<Equatorial>,
 
     /// Patch of sky
-    pub patch: OnSkyRectangle,
+    patch: OnSkyRectangle,
 
     /// Field ID
     pub field: u32,
@@ -91,6 +91,16 @@ impl FovLike for ZtfCcdQuad {
     #[inline]
     fn n_patches(&self) -> usize {
         1
+    }
+
+    #[inline]
+    fn pointing(&self) -> KeteResult<Vector<Equatorial>> {
+        Ok(self.patch.pointing())
+    }
+
+    #[inline]
+    fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
+        Ok(self.patch.corners().into())
     }
 }
 
@@ -179,5 +189,32 @@ impl FovLike for ZtfField {
 
     fn n_patches(&self) -> usize {
         self.ccd_quads.len()
+    }
+
+    #[inline]
+    fn pointing(&self) -> KeteResult<Vector<Equatorial>> {
+        if self.ccd_quads.is_empty() {
+            Err(Error::ValueError("ZtfField has no ccd quads".into()))
+        } else {
+            // return the average pointing of all ccd quads
+            Ok(self
+                .ccd_quads
+                .iter()
+                .fold(Vector::new([0.0; 3]), |acc, x| acc + x.pointing().unwrap()))
+        }
+    }
+
+    #[inline]
+    fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
+        if self.ccd_quads.is_empty() {
+            Err(Error::ValueError("ZtfField has no ccd quads".into()))
+        } else {
+            // return all the corners of all ccd quads
+            Ok(self
+                .ccd_quads
+                .iter()
+                .flat_map(|x| x.corners().unwrap())
+                .collect())
+        }
     }
 }

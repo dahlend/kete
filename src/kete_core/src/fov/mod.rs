@@ -22,6 +22,15 @@ use crate::{frames::Vector, prelude::*};
 /// Many of these exist solely to carry additional metadata.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum FOV {
+    /// Omni-Directional FOV.
+    OmniDirectional(OmniDirectional),
+
+    /// Generic cone FOV without any additional metadata.
+    GenericCone(GenericCone),
+
+    /// Generic rectangle FOV without any additional metadata.
+    GenericRectangle(GenericRectangle),
+
     /// WISE or NEOWISE FOV.
     Wise(WiseCmos),
 
@@ -31,20 +40,11 @@ pub enum FOV {
     /// ZTF Single Quad of single CCD FOV.
     ZtfCcdQuad(ZtfCcdQuad),
 
-    /// Generic cone FOV without any additional metadata.
-    GenericCone(GenericCone),
-
-    /// Generic rectangle FOV without any additional metadata.
-    GenericRectangle(GenericRectangle),
-
     /// Full ZTF field of up to 64 individual files.
     ZtfField(ZtfField),
 
     /// NEOS Visit.
     NeosVisit(NeosVisit),
-
-    /// Omni-Directional FOV.
-    OmniDirectional(OmniDirectional),
 }
 
 impl FOV {

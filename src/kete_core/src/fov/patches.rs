@@ -1,4 +1,4 @@
-//! Basic Geometric shapes on a sphere (typically the celestial sphere)
+//! Basic Geometric shapes on the surface of a sphere
 
 use crate::{
     frames::{Equatorial, Vector},

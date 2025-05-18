@@ -27,6 +27,12 @@ pub trait FovLike: Sync + Sized {
     /// Number of sky patches contained within this FOV.
     fn n_patches(&self) -> usize;
 
+    /// Get the pointing vector of the FOV.
+    fn pointing(&self) -> KeteResult<Vector<Equatorial>>;
+
+    /// Get the corners of the FOV.
+    fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>>;
+
     /// Check if a static source is visible. This assumes the vector passed in is at an
     /// infinite distance from the observer.
     #[inline]
