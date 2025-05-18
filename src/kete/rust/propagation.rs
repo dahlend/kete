@@ -105,6 +105,7 @@ pub fn propagation_n_body_spk_py(
         let mut proc_chunk = chunk
             .to_owned()
             .into_par_iter()
+            .with_min_len(10)
             .map(|(state, model)| {
                 let model = model.map(|x| x.0);
                 let center = state.center_id();

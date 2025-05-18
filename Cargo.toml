@@ -18,7 +18,7 @@ sgp4 = "2.2.0"
 
 # bincode is pinned to ensure backward compatability with saved files, all updates to
 # this version need to be validated that they are forward compatable.
-bincode = {version = "2.0.0-rc.3", features=["derive", "serde"]}
+bincode = {version = "2.0.1", features=["derive", "serde"]}
 
 [lib]
 name = "_core"

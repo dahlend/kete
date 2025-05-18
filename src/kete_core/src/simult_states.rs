@@ -6,7 +6,7 @@ use crate::frames::{Equatorial, Vector};
 use crate::io::FileIO;
 use crate::prelude::{Error, KeteResult, State};
 use nalgebra::Vector3;
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 
 /// Collection of [`State`] at the same time.
@@ -87,6 +87,7 @@ impl SimultaneousStates {
         Ok(self
             .states
             .par_iter()
+            .with_min_len(100)
             .map(|state| {
                 let state = state.clone();
                 let pos_diff: Vector3<f64> = (state.pos - obs_pos).into();
