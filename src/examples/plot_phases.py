@@ -16,7 +16,7 @@ neos = kete.population.neo(orbits.peri_dist, orbits.ecc)
 neo_subset = orbits[neos]
 
 # Convert the dataframe to States
-neos = kete.mpc.table_to_states(neo_subset)
+neos = kete.conversion.table_to_states(neo_subset)
 
 # Note that some of the objects will have NAN positions, which is result of
 # them hitting the earth after discovery.

@@ -19,7 +19,6 @@ pub fn compute_stm_py(
         jd_start.jd(),
         [state[0], state[1], state[2]].into(),
         [state[3], state[4], state[5]].into(),
-        Frame::Ecliptic,
         10,
     );
 

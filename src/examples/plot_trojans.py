@@ -12,7 +12,7 @@ orbs = kete.mpc.fetch_known_orbit_data()
 subset = orbs[kete.population.jup_trojan(orbs.peri_dist, orbs.ecc)]
 
 # Construct the states and propagate them to a common epoch
-states = kete.mpc.table_to_states(subset)
+states = kete.conversion.table_to_states(subset)
 states = kete.propagate_n_body(states, states[0].jd)
 
 # Where is jupiter?

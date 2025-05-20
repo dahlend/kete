@@ -7,6 +7,7 @@ import logging
 from functools import lru_cache
 from collections import defaultdict
 from astropy.io import fits
+import pandas as pd
 
 from .cache import download_file, cache_path
 from .fov import ZtfCcdQuad, ZtfField, FOVList
@@ -44,45 +45,45 @@ def fetch_ZTF_fovs(year: int):
         raise ValueError("Year must only be in the range 2018-2024")
     cache_dir = cache_path()
     dir_path = os.path.join(cache_dir, "fovs")
-    filename = os.path.join(dir_path, f"ztf_fields_{year}.bin")
+    filename = os.path.join(dir_path, f"ztf_fields_{year}.parquet")
 
     if not os.path.isdir(dir_path):
         os.makedirs(dir_path)
     if os.path.isfile(filename):
-        return FOVList.load(filename)
+        irsa_query = pd.read_parquet(filename)
+    else:
+        table = "ztf.ztf_current_meta_sci"
+        cols = [
+            "field",
+            "filefracday",
+            "ccdid",
+            "filtercode",
+            "imgtypecode",
+            "qid",
+            "obsdate",
+            "maglimit",
+            "fid",
+            "ra",
+            "dec",
+            "ra1",
+            "dec1",
+            "ra2",
+            "dec2",
+            "ra3",
+            "dec3",
+            "ra4",
+            "dec4",
+        ]
+        jd_start = Time.from_ymd(year, 1, 1).jd
+        jd_end = Time.from_ymd(year + 1, 1, 1).jd
 
-    table = "ztf.ztf_current_meta_sci"
-    cols = [
-        "field",
-        "filefracday",
-        "ccdid",
-        "filtercode",
-        "imgtypecode",
-        "qid",
-        "obsdate",
-        "maglimit",
-        "fid",
-        "ra",
-        "dec",
-        "ra1",
-        "dec1",
-        "ra2",
-        "dec2",
-        "ra3",
-        "dec3",
-        "ra4",
-        "dec4",
-    ]
-    jd_start = Time.from_ymd(year, 1, 1).jd
-    jd_end = Time.from_ymd(year + 1, 1, 1).jd
+        irsa_query = query_irsa_tap(
+            f"SELECT {', '.join(cols)} FROM {table} "
+            f"WHERE obsjd between {jd_start} and {jd_end}",
+            verbose=True,
+        )
+        irsa_query.to_parquet(filename, index=False)
 
-    irsa_query = query_irsa_tap(
-        f"SELECT {', '.join(cols)} FROM {table} "
-        f"WHERE obsjd between {jd_start} and {jd_end}",
-        verbose=True,
-    )
-
-    # Exposures are 30 seconds
     jds = [Time.from_iso(x + ":00").jd for x in irsa_query["obsdate"]]
     obs_info = find_obs_code("ZTF")
 
@@ -127,7 +128,7 @@ def fetch_ZTF_fovs(year: int):
 
     # finally save and return the result
     fov_list = FOVList(final_fovs)
-    fov_list.save(filename)
+    fov_list.sort()
     return fov_list
 
 

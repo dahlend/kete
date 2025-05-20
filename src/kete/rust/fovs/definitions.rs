@@ -1,10 +1,10 @@
 use kete_core::fov::{self};
 use kete_core::fov::{FovLike, SkyPatch};
-use nalgebra::Vector3;
+use kete_core::frames::Vector;
 use pyo3::{exceptions, prelude::*};
 
 use crate::vector::VectorLike;
-use crate::{state::PyState, vector::Vector};
+use crate::{state::PyState, vector::PyVector};
 
 /// Field of view of a WISE CMOS chip.
 /// Since all WISE CMOS see the same patch of sky, there is no differentiation
@@ -310,12 +310,11 @@ impl PyWiseCmos {
         scan_id: String,
     ) -> Self {
         let pointing = pointing.into_vector(observer.frame());
-        let pointing = pointing.raw.into();
         let scan_id = scan_id.into();
         PyWiseCmos(fov::WiseCmos::new(
             pointing,
             rotation.to_radians(),
-            observer.0,
+            observer.raw,
             frame_num,
             scan_id,
         ))
@@ -329,10 +328,13 @@ impl PyWiseCmos {
         frame_num: u64,
         scan_id: String,
     ) -> Self {
-        let corners: [Vector3<f64>; 4] = corners.map(|x| x.into_vec(observer.frame()));
+        let corners: [Vector<_>; 4] = corners.map(|x| x.into_vector(observer.frame()));
         let scan_id = scan_id.into();
         PyWiseCmos(fov::WiseCmos::from_corners(
-            corners, observer.0, frame_num, scan_id,
+            corners,
+            observer.raw,
+            frame_num,
+            scan_id,
         ))
     }
 
@@ -350,9 +352,8 @@ impl PyWiseCmos {
 
     /// Direction that the observer is looking.
     #[getter]
-    pub fn pointing(&self) -> Vector {
-        let pointing = self.0.patch.pointing().into_inner().into();
-        Vector::new(pointing, self.0.patch.frame.into())
+    pub fn pointing(&self) -> PyVector {
+        self.0.pointing().unwrap().into()
     }
 
     /// WISE Frame number.
@@ -367,28 +368,21 @@ impl PyWiseCmos {
         self.0.scan_id.to_string()
     }
 
-    /// Rotation angle of the FOV in degrees.
-    #[getter]
-    pub fn rotation(&self) -> f64 {
-        self.0.rotation.to_degrees()
-    }
-
     /// Corners of this FOV.
     #[getter]
-    pub fn corners(&self) -> Vec<Vector> {
+    pub fn corners(&self) -> Vec<PyVector> {
         self.0
-            .patch
             .corners()
+            .unwrap()
             .into_iter()
-            .map(|x| Vector::new(x.into(), self.0.patch.frame.into()))
+            .map(|x| x.into())
             .collect()
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "WiseCmos(pointing={}, rotation={}, observer={}, frame_num={}, scan_id={:?})",
+            "WiseCmos(pointing={}, observer={}, frame_num={}, scan_id={:?})",
             self.pointing().__repr__(),
-            self.rotation(),
             self.observer().__repr__(),
             self.frame_num(),
             self.scan_id()
@@ -409,11 +403,11 @@ impl PyGenericRectangle {
     ) -> Self {
         let pointing = pointing.into_vector(observer.frame());
         PyGenericRectangle(fov::GenericRectangle::new(
-            pointing.raw.into(),
+            pointing,
             rotation.to_radians(),
             lon_width.to_radians(),
             lat_width.to_radians(),
-            observer.0,
+            observer.raw,
         ))
     }
 
@@ -428,8 +422,9 @@ impl PyGenericRectangle {
     ///     The observer as a State, this defines the time and position of the observer.
     #[staticmethod]
     pub fn from_corners(corners: [VectorLike; 4], observer: PyState) -> Self {
-        let corners: [Vector3<f64>; 4] = corners.map(|x| x.into_vec(observer.frame()));
-        PyGenericRectangle(fov::GenericRectangle::from_corners(corners, observer.0))
+        let corners: [Vector<_>; 4] =
+            corners.map(|x| x.into_vector(crate::frame::PyFrames::Equatorial));
+        PyGenericRectangle(fov::GenericRectangle::from_corners(corners, observer.raw))
     }
 
     /// The observer State.
@@ -447,11 +442,8 @@ impl PyGenericRectangle {
     /// Direction that the observer is looking.
     /// Average center of the FOV.
     #[getter]
-    pub fn pointing(&self) -> Vector {
-        Vector::new(
-            self.0.patch.pointing().into_inner().into(),
-            self.0.observer().frame.into(),
-        )
+    pub fn pointing(&self) -> PyVector {
+        self.0.pointing().unwrap().into()
     }
 
     /// The longitudinal width of the FOV.
@@ -468,12 +460,12 @@ impl PyGenericRectangle {
 
     /// Corners of this FOV.
     #[getter]
-    pub fn corners(&self) -> Vec<Vector> {
+    pub fn corners(&self) -> Vec<PyVector> {
         self.0
-            .patch
             .corners()
+            .unwrap()
             .into_iter()
-            .map(|x| Vector::new(x.into(), self.0.patch.frame.into()))
+            .map(|x| x.into())
             .collect()
     }
 
@@ -495,9 +487,9 @@ impl PyGenericCone {
     pub fn new(pointing: VectorLike, angle: f64, observer: PyState) -> Self {
         let pointing = pointing.into_vector(observer.frame());
         PyGenericCone(fov::GenericCone::new(
-            pointing.raw.into(),
+            pointing,
             angle.to_radians(),
-            observer.0,
+            observer.raw,
         ))
     }
 
@@ -515,11 +507,8 @@ impl PyGenericCone {
 
     /// Direction that the observer is looking.
     #[getter]
-    pub fn pointing(&self) -> Vector {
-        Vector::new(
-            self.0.patch.pointing().into_inner().into(),
-            self.0.observer().frame.into(),
-        )
+    pub fn pointing(&self) -> PyVector {
+        self.0.patch.pointing().into()
     }
 
     /// The longitudinal width of the FOV.
@@ -543,7 +532,7 @@ impl PyOmniDirectional {
     #[new]
     #[allow(missing_docs)]
     pub fn new(observer: PyState) -> Self {
-        PyOmniDirectional(fov::OmniDirectional::new(observer.0))
+        PyOmniDirectional(fov::OmniDirectional::new(observer.raw))
     }
 
     /// The observer State.
@@ -582,11 +571,10 @@ impl PyNeosCmos {
         band: u8,
     ) -> Self {
         let pointing = pointing.into_vector(observer.frame());
-        let pointing = pointing.raw.into();
         PyNeosCmos(fov::NeosCmos::new(
             pointing,
             rotation.to_radians(),
-            observer.0,
+            observer.raw,
             side_id,
             stack_id,
             quad_id,
@@ -612,11 +600,8 @@ impl PyNeosCmos {
 
     /// Direction that the observer is looking.
     #[getter]
-    pub fn pointing(&self) -> Vector {
-        Vector::new(
-            self.0.patch.pointing().into_inner().into(),
-            self.0.observer().frame.into(),
-        )
+    pub fn pointing(&self) -> PyVector {
+        self.0.pointing().unwrap().into()
     }
 
     /// Metadata about where this FOV is in the Survey.
@@ -675,12 +660,12 @@ impl PyNeosCmos {
 
     /// Corners of this FOV
     #[getter]
-    pub fn corners(&self) -> Vec<Vector> {
+    pub fn corners(&self) -> Vec<PyVector> {
         self.0
-            .patch
             .corners()
+            .unwrap()
             .into_iter()
-            .map(|x| Vector::new(x.into(), self.0.patch.frame.into()))
+            .map(|x| x.into())
             .collect()
     }
 
@@ -722,8 +707,7 @@ impl PyNeosVisit {
         band: u8,
     ) -> Self {
         let pointing = pointing.into_vector(crate::frame::PyFrames::Equatorial);
-        let pointing = pointing.raw.into();
-        let observer = observer.as_equatorial().unwrap().0;
+        let observer = observer.raw;
         PyNeosVisit(fov::NeosVisit::from_pointing(
             x_width.to_radians(),
             y_width.to_radians(),
@@ -749,8 +733,8 @@ impl PyNeosVisit {
 
     /// Direction that the observer is looking.
     #[getter]
-    pub fn pointing(&self) -> Vector {
-        Vector::new(self.0.pointing().into(), self.0.observer().frame.into())
+    pub fn pointing(&self) -> PyVector {
+        self.0.pointing().into()
     }
 
     /// JD of the observer location.
@@ -877,13 +861,13 @@ impl PyZtfCcdQuad {
     ) -> Self {
         let corners = corners
             .into_iter()
-            .map(|v| v.into_vector(observer.frame()).raw.into())
+            .map(|v| v.into_vector(observer.frame()))
             .collect::<Vec<_>>()
             .try_into()
             .unwrap();
         PyZtfCcdQuad(fov::ZtfCcdQuad::new(
             corners,
-            observer.0,
+            observer.raw,
             field,
             filefracday,
             ccdid,
@@ -915,11 +899,8 @@ impl PyZtfCcdQuad {
 
     /// Direction that the observer is looking.
     #[getter]
-    pub fn pointing(&self) -> Vector {
-        Vector::new(
-            self.0.patch.pointing().into_inner().into(),
-            self.0.observer().frame.into(),
-        )
+    pub fn pointing(&self) -> PyVector {
+        self.0.pointing().unwrap().into()
     }
 
     /// Metadata about where this FOV is in the Survey.
@@ -966,12 +947,12 @@ impl PyZtfCcdQuad {
 
     /// Corners of this FOV
     #[getter]
-    pub fn corners(&self) -> Vec<Vector> {
+    pub fn corners(&self) -> Vec<PyVector> {
         self.0
-            .patch
             .corners()
+            .unwrap()
             .into_iter()
-            .map(|x| Vector::new(x.into(), self.0.patch.frame.into()))
+            .map(|x| x.into())
             .collect()
     }
 

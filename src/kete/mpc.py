@@ -6,10 +6,11 @@ import pandas as pd
 import numpy as np
 
 
-from . import conversion, constants
+from . import conversion, constants, deprecation
 from .time import Time
-from .vector import Vector, Frames, CometElements
+from .vector import Vector, Frames
 from .cache import download_json
+from .conversion import table_to_states
 
 from . import _core
 
@@ -22,7 +23,6 @@ __all__ = [
     "fetch_known_orbit_data",
     "fetch_known_comet_orbit_data",
     "find_obs_code",
-    "table_to_states",
     "unpack_permanent_designation",
     "pack_permanent_designation",
     "unpack_provisional_designation",
@@ -33,6 +33,13 @@ __all__ = [
     "pack_comet_designation",
     "normalize_names",
 ]
+
+table_to_states = deprecation.rename(
+    table_to_states,
+    "1.2.0",
+    old_name="table_to_states",
+    additional_msg="Use `kete.conversion.table_to_states` instead.",
+)
 
 _mpc_hex = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
@@ -753,48 +760,6 @@ def mpc_known_orbit_filtered(filt):
     orbs = fetch_known_orbit_data()
     orbs.fillna(value=np.nan)
     return orbs[filt(orbs.peri_dist, orbs.ecc, orbs.h_mag)]
-
-
-def table_to_states(orbit_dataframe):
-    """
-    Given a dataframe provided by :func:`fetch_known_orbit_data` above, load all states.
-
-
-    .. testcode::
-        :skipif: True
-
-        import kete
-
-        # Load all MPC orbits
-        orbits = kete.mpc.fetch_known_orbit_data()
-
-        # Subset the table to be only NEOs
-        neos = kete.population.neo(orbits.peri_dist, orbits.ecc)
-        neo_subset = orbits[neos]
-
-        # load the state object from this table
-        state = kete.mpc.table_to_states(neo_subset)
-
-    Parameters
-    ----------
-    orbit_dataframe:
-        Pandas Dataframe as provided by the fetch_known_orbit_data function.
-    """
-    states = []
-    for item in orbit_dataframe.itertuples():
-        states.append(
-            CometElements(
-                str(item.desig),
-                item.epoch,
-                item.ecc,
-                item.incl,
-                item.peri_dist,
-                item.peri_arg,
-                item.peri_time,
-                item.lon_node,
-            ).state
-        )
-    return states
 
 
 def int_to_roman(num: int):

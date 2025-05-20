@@ -21,7 +21,7 @@ all_orbits = kete.mpc.fetch_known_orbit_data()
 neos = all_orbits[kete.population.neo(all_orbits.peri_dist, all_orbits.ecc)]
 
 # convert the catalog to States
-states = kete.mpc.table_to_states(neos)
+states = kete.conversion.table_to_states(neos)
 
 # propagate the states to the start date, this may take several seconds.
 # If this is NEOs, there will be several impacts of old small objects which hit

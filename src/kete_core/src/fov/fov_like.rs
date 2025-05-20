@@ -2,10 +2,10 @@
 //! This trait defines field of view checks for portions of the sky.
 
 use super::*;
-use nalgebra::Vector3;
 use rayon::prelude::*;
 
 use crate::constants::C_AU_PER_DAY_INV;
+use crate::frames::Vector;
 use crate::prelude::*;
 
 /// Field of View like objects.
@@ -18,34 +18,37 @@ pub trait FovLike: Sync + Sized {
     fn get_fov(&self, index: usize) -> FOV;
 
     /// Position of the observer.
-    fn observer(&self) -> &State;
+    fn observer(&self) -> &State<Equatorial>;
 
     /// Is the specified vector contained within this FOVLike object.
-    /// A ['Contains'] is returned for each sky patch.
-    fn contains(&self, obs_to_obj: &Vector3<f64>) -> (usize, Contains);
+    /// A [`Contains`] is returned for each sky patch.
+    fn contains(&self, obs_to_obj: &Vector<Equatorial>) -> (usize, Contains);
 
     /// Number of sky patches contained within this FOV.
     fn n_patches(&self) -> usize;
 
-    /// Change the target frame to the new frame.
-    fn try_frame_change_mut(&mut self, new_frame: Frame) -> KeteResult<()>;
+    /// Get the pointing vector of the FOV.
+    fn pointing(&self) -> KeteResult<Vector<Equatorial>>;
+
+    /// Get the corners of the FOV.
+    fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>>;
 
     /// Check if a static source is visible. This assumes the vector passed in is at an
     /// infinite distance from the observer.
     #[inline]
-    fn check_static(&self, pos: &Vector3<f64>) -> (usize, Contains) {
+    fn check_static(&self, pos: &Vector<Equatorial>) -> (usize, Contains) {
         self.contains(pos)
     }
 
     /// Assuming the object undergoes linear motion, check to see if it is within the
     /// field of view.
     #[inline]
-    fn check_linear(&self, state: &State) -> (usize, Contains, State) {
-        let pos: Vector3<_> = state.pos.into();
-        let vel = state.vel.into();
+    fn check_linear(&self, state: &State<Equatorial>) -> (usize, Contains, State<Equatorial>) {
+        let pos = state.pos;
+        let vel = state.vel;
         let obs = self.observer();
 
-        let obs_pos: Vector3<_> = obs.pos.into();
+        let obs_pos = obs.pos;
 
         let rel_pos = pos - obs_pos;
 
@@ -59,7 +62,6 @@ pub trait FovLike: Sync + Sized {
             obs.jd + dt,
             new_pos,
             vel,
-            obs.frame,
             obs.center_id,
         );
         (idx, contains, new_state)
@@ -68,17 +70,20 @@ pub trait FovLike: Sync + Sized {
     /// Assuming the object undergoes two-body motion, check to see if it is within the
     /// field of view.
     #[inline]
-    fn check_two_body(&self, state: &State) -> KeteResult<(usize, Contains, State)> {
+    fn check_two_body(
+        &self,
+        state: &State<Equatorial>,
+    ) -> KeteResult<(usize, Contains, State<Equatorial>)> {
         let obs = self.observer();
-        let obs_pos: Vector3<_> = obs.pos.into();
+        let obs_pos = obs.pos;
 
         // bring state up to observer time.
         let final_state = propagate_two_body(state, obs.jd)?;
 
         // correct for light delay
-        let dt = -(Vector3::from(final_state.pos) - obs_pos).norm() * C_AU_PER_DAY_INV;
+        let dt = -(final_state.pos - obs_pos).norm() * C_AU_PER_DAY_INV;
         let final_state = propagate_two_body(&final_state, obs.jd + dt)?;
-        let rel_pos = Vector3::from(final_state.pos) - obs_pos;
+        let rel_pos = final_state.pos - obs_pos;
 
         let (idx, contains) = self.contains(&rel_pos);
         Ok((idx, contains, final_state))
@@ -89,18 +94,18 @@ pub trait FovLike: Sync + Sized {
     #[inline]
     fn check_n_body(
         &self,
-        state: &State,
+        state: &State<Equatorial>,
         include_asteroids: bool,
-    ) -> KeteResult<(usize, Contains, State)> {
+    ) -> KeteResult<(usize, Contains, State<Equatorial>)> {
         let obs = self.observer();
-        let obs_pos = Vector3::from(obs.pos);
+        let obs_pos = obs.pos;
 
         let exact_state = propagate_n_body_spk(state.clone(), obs.jd, include_asteroids, None)?;
 
         // correct for light delay
-        let dt = -(Vector3::from(exact_state.pos) - obs_pos).norm() * C_AU_PER_DAY_INV;
+        let dt = -(exact_state.pos - obs_pos).norm() * C_AU_PER_DAY_INV;
         let final_state = propagate_two_body(&exact_state, obs.jd + dt)?;
-        let rel_pos = Vector3::from(final_state.pos) - obs_pos;
+        let rel_pos = final_state.pos - obs_pos;
 
         let (idx, contains) = self.contains(&rel_pos);
 
@@ -133,20 +138,18 @@ pub trait FovLike: Sync + Sized {
     ///
     fn check_visible(
         &self,
-        states: &[State],
+        states: &[State<Equatorial>],
         dt_limit: f64,
         include_asteroids: bool,
     ) -> Vec<Option<SimultaneousStates>> {
         let obs_state = self.observer();
 
-        let final_states: Vec<(usize, State)> = states
+        let final_states: Vec<(usize, State<Equatorial>)> = states
             .iter()
-            .filter_map(|state: &State| {
+            .filter_map(|state: &State<_>| {
                 // assuming linear motion, how far can the object have moved relative
                 // to the observer? Then add a factor of 2 for safety
-                let max_dist = (Vector3::from(state.vel) - Vector3::from(obs_state.vel)).norm()
-                    * dt_limit
-                    * 2.0;
+                let max_dist = (state.vel - obs_state.vel).norm() * dt_limit * 2.0;
 
                 if (state.jd - obs_state.jd).abs() < dt_limit {
                     let (_, contains, _) = self.check_linear(state);
@@ -177,7 +180,7 @@ pub trait FovLike: Sync + Sized {
             })
             .collect();
 
-        let mut detector_states = vec![Vec::<State>::new(); self.n_patches()];
+        let mut detector_states = vec![Vec::<State<_>>::new(); self.n_patches()];
         for (idx, state) in final_states.into_iter() {
             detector_states[idx].push(state)
         }
@@ -193,16 +196,16 @@ pub trait FovLike: Sync + Sized {
 
     /// Given an object ID, attempt to load the object from the SPKs.
     /// This will fail silently if the object is not found.
-    fn check_spks(&self, obj_ids: &[i64]) -> Vec<Option<SimultaneousStates>> {
+    fn check_spks(&self, obj_ids: &[i32]) -> Vec<Option<SimultaneousStates>> {
         let obs = self.observer();
         let spk = &LOADED_SPK.try_read().unwrap();
 
-        let mut visible: Vec<Vec<State>> = vec![Vec::new(); self.n_patches()];
+        let mut visible: Vec<Vec<State<_>>> = vec![Vec::new(); self.n_patches()];
 
         let states: Vec<_> = obj_ids
             .into_par_iter()
             .filter_map(|&obj_id| {
-                match spk.try_get_state(obj_id, obs.jd, obs.center_id, obs.frame) {
+                match spk.try_get_state_with_center(obj_id, obs.jd, obs.center_id) {
                     Ok(state) => match self.check_two_body(&state) {
                         Ok((idx, Contains::Inside, state)) => Some((idx, state)),
                         _ => None,
@@ -227,7 +230,7 @@ pub trait FovLike: Sync + Sized {
 
     /// Given a collection of static positions, return the index of the input vector
     /// which was visible.
-    fn check_statics(&self, pos: &[Vector3<f64>]) -> Vec<Option<(Vec<usize>, FOV)>> {
+    fn check_statics(&self, pos: &[Vector<Equatorial>]) -> Vec<Option<(Vec<usize>, FOV)>> {
         let mut visible: Vec<Vec<usize>> = vec![Vec::new(); self.n_patches()];
 
         pos.iter().enumerate().for_each(|(vec_idx, p)| {

@@ -482,7 +482,7 @@ def fetch_known_orbit_data(update_cache=False):
     the contents of this file are returned by default.
 
     The constructed pandas table may be turned into states using the
-    :func:`~kete.mpc.table_to_states` function.
+    :func:`~kete.conversion.table_to_states` function.
 
     Parameters
     ==========

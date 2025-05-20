@@ -5,9 +5,11 @@
 
 use crate::errors::Error;
 use crate::fitting::newton_raphson;
+use crate::frames::InertialFrame;
 use crate::prelude::CometElements;
 use crate::state::State;
 use crate::{constants::*, prelude::KeteResult};
+use argmin::core::{CostFunction, Error as ArgminErr, Executor};
 use argmin::solver::neldermead::NelderMead;
 use core::f64;
 use nalgebra::{ComplexField, Vector3};
@@ -303,7 +305,10 @@ pub fn analytic_2_body(
 /// recommended to use a center of the Sun (10) for this computation.
 ///
 /// This is the fastest method for getting a relatively good estimate of the orbits.
-pub fn propagate_two_body(state: &State, jd_final: f64) -> KeteResult<State> {
+pub fn propagate_two_body<T: InertialFrame>(
+    state: &State<T>,
+    jd_final: f64,
+) -> KeteResult<State<T>> {
     let (pos, vel) = analytic_2_body(
         jd_final - state.jd,
         &state.pos.into(),
@@ -314,21 +319,19 @@ pub fn propagate_two_body(state: &State, jd_final: f64) -> KeteResult<State> {
     Ok(State::new(
         state.desig.to_owned(),
         jd_final,
-        pos,
-        vel,
-        state.frame,
+        pos.into(),
+        vel.into(),
         state.center_id,
     ))
 }
 
-use argmin::core::{CostFunction, Error as ArgminErr, Executor};
-struct MoidCost {
-    state_a: State,
+struct MoidCost<T: InertialFrame> {
+    state_a: State<T>,
 
-    state_b: State,
+    state_b: State<T>,
 }
 
-impl CostFunction for MoidCost {
+impl<T: InertialFrame> CostFunction for MoidCost<T> {
     type Param = Vec<f64>;
     type Output = f64;
 
@@ -345,13 +348,10 @@ impl CostFunction for MoidCost {
 
 /// Compute the MOID between two states in au.
 /// MOID = Minimum Orbital Intersection Distance
-pub fn moid(mut state_a: State, mut state_b: State) -> KeteResult<f64> {
-    state_a.try_change_frame_mut(crate::frames::Frame::Ecliptic)?;
-    state_b.try_change_frame_mut(crate::frames::Frame::Ecliptic)?;
-
-    let elements_a = CometElements::from_state(&state_a);
+pub fn moid<T: InertialFrame>(mut state_a: State<T>, mut state_b: State<T>) -> KeteResult<f64> {
+    let elements_a = CometElements::from_state(&state_a.clone().into_frame());
     state_a = propagate_two_body(&state_a, elements_a.peri_time)?;
-    let elements_b = CometElements::from_state(&state_b);
+    let elements_b = CometElements::from_state(&state_b.clone().into_frame());
     state_b = propagate_two_body(&state_b, elements_b.peri_time)?;
 
     const N_STEPS: i32 = 50;
@@ -365,8 +365,8 @@ pub fn moid(mut state_a: State, mut state_b: State) -> KeteResult<f64> {
         _ => 300.0 / N_STEPS as f64,
     };
 
-    let mut states_b: Vec<State> = Vec::with_capacity(N_STEPS as usize);
-    let mut states_a: Vec<State> = Vec::with_capacity(N_STEPS as usize);
+    let mut states_b: Vec<State<_>> = Vec::with_capacity(N_STEPS as usize);
+    let mut states_a: Vec<State<_>> = Vec::with_capacity(N_STEPS as usize);
 
     for idx in (-N_STEPS)..N_STEPS {
         states_a.push(propagate_two_body(

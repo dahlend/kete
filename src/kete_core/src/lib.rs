@@ -54,7 +54,7 @@ pub mod prelude {
         black_body_flux, frm_facet_temperature, lambertian_flux, neatm_facet_temperature,
         CometMKParams, FrmParams, HGParams, NeatmParams,
     };
-    pub use crate::frames::Frame;
+    pub use crate::frames::{Ecliptic, EclipticNonInertial, Equatorial, Galactic, FK4};
     pub use crate::propagation::{propagate_n_body_spk, propagate_two_body};
     pub use crate::simult_states::SimultaneousStates;
     pub use crate::spice::{LOADED_PCK, LOADED_SPK};

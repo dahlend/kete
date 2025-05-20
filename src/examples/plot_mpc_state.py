@@ -21,7 +21,7 @@ orb = kete.mpc.fetch_known_orbit_data()
 orb = orb[orb["group_name"] == "Hilda"]
 
 # convert the table of data to State objects
-states = kete.mpc.table_to_states(orb)
+states = kete.conversion.table_to_states(orb)
 
 # Every object in the MPC orbit file has its own epoch of fit.
 # This means that some objects epochs may be months or years away from

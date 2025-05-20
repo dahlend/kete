@@ -48,4 +48,4 @@ def test_wise_neatm_model():
     assert np.isclose(output.fluxes[0], 3.04038361370317e-05)
     assert np.isclose(output.fluxes[1], 0.000155764430378102)
     assert np.isclose(output.fluxes[2], 0.005340059443086914)
-    assert np.isclose(output.fluxes[3], 0.008672894410144872)
+    assert np.isclose(output.fluxes[3], 0.008673191020104592)

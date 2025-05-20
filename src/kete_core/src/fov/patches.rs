@@ -1,12 +1,11 @@
-//! Basic Geometric shapes on a sphere (typically the celestial sphere)
+//! Basic Geometric shapes on the surface of a sphere
 
-use crate::frames::{rotate_around, Frame};
-use crate::io::serde_const_arr;
-use nalgebra::{UnitVector3, Vector3};
+use crate::{
+    frames::{Equatorial, Vector},
+    io::serde_const_arr,
+};
 use serde::{Deserialize, Serialize};
-use std::f64::consts::FRAC_PI_2;
-
-use super::KeteResult;
+use std::{f64::consts::FRAC_PI_2, ops::Neg};
 
 /// Bounded areas can either contains a vector or not.
 /// This enum specifies if the vector is within the area, or
@@ -47,16 +46,10 @@ pub(super) fn closest_inside(contains: &[Contains]) -> (usize, Contains) {
 /// Trait which defines an area on the surface area of a sphere.
 pub trait SkyPatch: Sized {
     /// Checks to see if a unit vector is within the bounded area.
-    fn contains(&self, obs_to_obj: &Vector3<f64>) -> Contains;
-
-    /// Frame of reference for the bounded area
-    fn frame(&self) -> Frame;
-
-    /// Change the frame of the bounded area to the new target frame.
-    fn try_frame_change(&self, target_frame: Frame) -> KeteResult<Self>;
+    fn contains(&self, obs_to_obj: &Vector<Equatorial>) -> Contains;
 
     /// Center of the field of view
-    fn pointing(&self) -> UnitVector3<f64>;
+    fn pointing(&self) -> Vector<Equatorial>;
 }
 
 /// A Spherical Polygon as represented by a series of planes through the central axis.
@@ -81,10 +74,7 @@ pub trait SkyPatch: Sized {
 pub struct SphericalPolygon<const N_SIDES: usize> {
     /// Normal vectors which define the boundary of a polygon.
     #[serde(with = "serde_const_arr")]
-    edge_normals: [[f64; 3]; N_SIDES],
-
-    /// Coordinate frame where the boundary is defined.
-    pub frame: Frame,
+    edge_normals: [Vector<Equatorial>; N_SIDES],
 }
 
 /// A rectangular patch of sky.
@@ -96,13 +86,9 @@ impl OnSkyRectangle {
     /// # Arguments
     ///
     /// * `edge_normals` - Normal vectors which define the boundary of a polygon.
-    /// * `frame` - Coordinate frame of the rectangle.
-    pub fn from_normals(edge_normals: [[f64; 3]; 4], frame: Frame) -> Self {
+    pub fn from_normals(edge_normals: [Vector<Equatorial>; 4]) -> Self {
         // construct the 4 normal vectors
-        Self {
-            edge_normals,
-            frame,
-        }
+        Self { edge_normals }
     }
 
     /// Construct a rectangular spherical polygon.
@@ -118,22 +104,20 @@ impl OnSkyRectangle {
     ///                 longitudinally in radians.
     /// * `lat_width` - If the rotation is 0, this defines the width of the rectangle
     ///                 latitudinally in radians.
-    /// * `frame` - Coordinate frame of the rectangle.
     pub fn new(
-        pointing: Vector3<f64>,
+        pointing: Vector<Equatorial>,
         rotation: f64,
         lon_width: f64,
         lat_width: f64,
-        frame: Frame,
     ) -> Self {
         // Rotate the Z axis to match the defined rotation angle, this vector is not
         // orthogonal to the pointing vector, but is in the correct plane of the final
         // up vector.
-        let up_vec = rotate_around(&Vector3::new(0.0, 0.0, 1.0), pointing, -rotation);
+        let up_vec = &Vector::new([0.0, 0.0, 1.0]).rotate_around(pointing, -rotation);
 
         // construct the vector orthogonal to the pointing and rotate z axis vectors.
         // left = cross(up, pointing)
-        let left_vec = pointing.cross(&up_vec);
+        let left_vec = pointing.cross(up_vec);
 
         // Given the new left vector, and the existing orthogonal pointing vector,
         // construct a new up vector which is in the same plane as it was before, but now
@@ -142,15 +126,14 @@ impl OnSkyRectangle {
         let up_vec = pointing.cross(&left_vec);
 
         // These have to be enumerated in clockwise order for the pointing calculation to be correct.
-        let n1: Vector3<f64> = rotate_around(&left_vec, up_vec, -lon_width / 2.0);
-        let n2: Vector3<f64> = rotate_around(&up_vec, left_vec, lat_width / 2.0);
-        let n3: Vector3<f64> = rotate_around(&(-left_vec), up_vec, lon_width / 2.0);
-        let n4: Vector3<f64> = rotate_around(&(-up_vec), left_vec, -lat_width / 2.0);
+        let n1 = left_vec.rotate_around(up_vec, -lon_width / 2.0);
+        let n2 = up_vec.rotate_around(left_vec, lat_width / 2.0);
+        let n3 = (-left_vec).rotate_around(up_vec, lon_width / 2.0);
+        let n4 = (-up_vec).rotate_around(left_vec, -lat_width / 2.0);
 
         // construct the 4 normal vectors
         Self {
-            edge_normals: [n1.into(), n2.into(), n3.into(), n4.into()],
-            frame,
+            edge_normals: [n1, n2, n3, n4],
         }
     }
 
@@ -158,15 +141,14 @@ impl OnSkyRectangle {
     /// The corners have to be provided in order, either clockwise or counter-clockwise.
     /// This only works for fields of view where the largest angle is less than 180 degrees,
     /// if the field is wider than that, this will flip the field in the other direction.
-    pub fn from_corners(corners: [Vector3<f64>; 4], frame: Frame) -> Self {
+    pub fn from_corners(corners: [Vector<Equatorial>; 4]) -> Self {
         let n1 = corners[0].cross(&corners[1]).normalize();
         let n2 = corners[1].cross(&corners[2]).normalize();
         let n3 = corners[2].cross(&corners[3]).normalize();
         let n4 = corners[3].cross(&corners[0]).normalize();
 
         let mut new = Self {
-            edge_normals: [n1.into(), n2.into(), n3.into(), n4.into()],
-            frame,
+            edge_normals: [n1, n2, n3, n4],
         };
 
         // If the pointing vector is the wrong direction, we flip signs and re-order the edges.
@@ -175,7 +157,7 @@ impl OnSkyRectangle {
         if corners[0].dot(&new.pointing()).is_sign_negative() {
             new.edge_normals
                 .iter_mut()
-                .for_each(|corner| corner.iter_mut().for_each(|v| *v *= -1.0));
+                .for_each(|corner| *corner = corner.neg());
             new.edge_normals.reverse();
         };
 
@@ -183,12 +165,12 @@ impl OnSkyRectangle {
     }
 
     /// Return the 4 corners of the patch.
-    pub fn corners(&self) -> [Vector3<f64>; 4] {
+    pub fn corners(&self) -> [Vector<Equatorial>; 4] {
         (0..4)
             .map(|idx| {
                 let idy = (idx + 1) % 4;
-                let a = Vector3::<f64>::from(self.edge_normals[idx]);
-                let b = Vector3::<f64>::from(self.edge_normals[idy]);
+                let a = self.edge_normals[idx];
+                let b = self.edge_normals[idy];
                 a.cross(&b)
             })
             .collect::<Vec<_>>()
@@ -199,23 +181,22 @@ impl OnSkyRectangle {
     /// Latitudinal width of the patch, the assumes the patch is rectangular.
     pub fn lat_width(&self) -> f64 {
         let pointing = self.pointing();
-        2.0 * (FRAC_PI_2 - pointing.angle(&Vector3::from(self.edge_normals[1])))
+        2.0 * (FRAC_PI_2 - pointing.angle(&self.edge_normals[1]))
     }
 
     /// Longitudinal width of the patch, the assumes the patch is rectangular.
     pub fn lon_width(&self) -> f64 {
         let pointing = self.pointing();
-        2.0 * (FRAC_PI_2 - pointing.angle(&Vector3::from(self.edge_normals[0])))
+        2.0 * (FRAC_PI_2 - pointing.angle(&self.edge_normals[0]))
     }
 }
 
 impl<const D: usize> SkyPatch for SphericalPolygon<D> {
     /// Is the obs_to_obj vector inside of the polygon.
-    fn contains(&self, obs_to_obj: &Vector3<f64>) -> Contains {
+    fn contains(&self, obs_to_obj: &Vector<Equatorial>) -> Contains {
         let mut closest_edge = f64::NEG_INFINITY;
         for normal in self.edge_normals.iter() {
-            let normal = Vector3::from(*normal);
-            let d = obs_to_obj.dot(&normal);
+            let d = obs_to_obj.dot(normal);
             if d.is_nan() {
                 return Contains::Outside(d);
             }
@@ -233,51 +214,22 @@ impl<const D: usize> SkyPatch for SphericalPolygon<D> {
         }
     }
 
-    fn frame(&self) -> Frame {
-        self.frame
-    }
-
-    fn try_frame_change(&self, target_frame: Frame) -> KeteResult<Self> {
-        let new_edges = self
-            .edge_normals
-            .iter()
-            .map(|vec| {
-                self.frame
-                    .try_vec_frame_change(Vector3::from(*vec), target_frame)
-            })
-            .collect::<KeteResult<Vec<_>>>()?;
-        let new_edges: Vec<[f64; 3]> = new_edges.into_iter().map(|e| e.into()).collect();
-        let new_edges: [[f64; 3]; D] = new_edges.try_into().unwrap();
-
-        Ok(Self {
-            edge_normals: new_edges,
-            frame: target_frame,
-        })
-    }
-
-    fn pointing(&self) -> UnitVector3<f64> {
-        let mut x = 0.0;
-        let mut y = 0.0;
-        let mut z = 0.0;
+    fn pointing(&self) -> Vector<Equatorial> {
+        let mut point: Vector<Equatorial> = [0.0; 3].into();
 
         for (idx, idy) in (0..D).zip(1..D) {
-            let v = Vector3::from(self.edge_normals[idx])
-                .cross(&Vector3::from(self.edge_normals[idy]))
+            let v = self.edge_normals[idx]
+                .cross(&self.edge_normals[idy])
                 .normalize();
-
-            x += v.x;
-            y += v.y;
-            z += v.z;
+            point += &v;
         }
 
-        let v = Vector3::from(self.edge_normals[D - 1])
-            .cross(&Vector3::from(self.edge_normals[0]))
+        let v = self.edge_normals[D - 1]
+            .cross(&self.edge_normals[0])
             .normalize();
-        x += v.x;
-        y += v.y;
-        z += v.z;
+        point += &v;
 
-        UnitVector3::new_normalize([x, y, z].into())
+        point.normalize()
     }
 }
 
@@ -285,34 +237,25 @@ impl<const D: usize> SkyPatch for SphericalPolygon<D> {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SphericalCone {
     /// Unit vector which defines the direction of the cone.
-    pointing: [f64; 3],
+    pointing: Vector<Equatorial>,
 
     /// Size of the cone in degrees.
     pub angle: f64,
-
-    frame: Frame,
 }
 
 impl SphericalCone {
     /// Construct a new `SphericalCone` given the central vector and the angle of the
     /// cone.
-    pub fn new(pointing: &Vector3<f64>, angle: f64, frame: Frame) -> Self {
+    pub fn new(pointing: &Vector<Equatorial>, angle: f64) -> Self {
         let pointing = pointing.normalize();
-        Self {
-            pointing: pointing.into(),
-            angle,
-            frame,
-        }
+        Self { pointing, angle }
     }
 }
 
 impl SkyPatch for SphericalCone {
     /// Is the obs_to_obj vector inside of the cone.
-    fn contains(&self, obs_to_obj: &Vector3<f64>) -> Contains {
-        let dist = Vector3::from(self.pointing)
-            .dot(&obs_to_obj.normalize())
-            .acos()
-            .abs();
+    fn contains(&self, obs_to_obj: &Vector<Equatorial>) -> Contains {
+        let dist = self.pointing.dot(&obs_to_obj.normalize()).acos().abs();
         match dist {
             // if d is less than the angle, it is inside cone
             d if d <= self.angle => Contains::Inside,
@@ -338,24 +281,8 @@ impl SkyPatch for SphericalCone {
         }
     }
 
-    fn frame(&self) -> Frame {
-        self.frame
-    }
-
-    fn try_frame_change(&self, target_frame: Frame) -> KeteResult<Self> {
-        let pointing = self
-            .frame
-            .try_vec_frame_change(Vector3::from(self.pointing), target_frame)?;
-
-        Ok(Self {
-            pointing: pointing.into(),
-            angle: self.angle,
-            frame: target_frame,
-        })
-    }
-
-    fn pointing(&self) -> UnitVector3<f64> {
-        UnitVector3::new_normalize(self.pointing.into())
+    fn pointing(&self) -> Vector<Equatorial> {
+        self.pointing
     }
 }
 
@@ -370,8 +297,8 @@ mod tests {
         let outside = [1.0, 0.1, 0.0].into();
         let just_inside = [1.0, (0.05f64).sin() * 0.99, (0.05f64).sin() * 0.99].into();
         let just_outside = [1.0, (0.05f64).sin() * 1.01, (0.05f64).sin() * 1.01].into();
-        let fov = OnSkyRectangle::new([1.0, 0.0, 0.0].into(), 0.0, 0.1, 0.1, Frame::Ecliptic);
-        let fov_rot = OnSkyRectangle::new([1.0, 0.0, 0.0].into(), rot, 0.1, 0.1, Frame::Ecliptic);
+        let fov = OnSkyRectangle::new([1.0, 0.0, 0.0].into(), 0.0, 0.1, 0.1);
+        let fov_rot = OnSkyRectangle::new([1.0, 0.0, 0.0].into(), rot, 0.1, 0.1);
 
         assert!(fov.contains(&inside).is_inside());
         assert!(fov.contains(&just_inside).is_inside());
@@ -380,14 +307,14 @@ mod tests {
 
         assert!(fov_rot.contains(&inside).is_inside());
         assert!(!fov_rot.contains(&just_inside).is_inside());
-        assert!((fov_rot.pointing().into_inner() - Vector3::from([1.0, 0.0, 0.0])).norm() < 1e-10);
+        assert!((fov_rot.pointing() - Vector::new([1.0, 0.0, 0.0])).norm() < 1e-10);
     }
 
     #[test]
     fn test_rectangular_patch_latlon() {
         let rot = (45f64).to_radians();
-        let fov = OnSkyRectangle::new([1.0, 0.0, 0.0].into(), 0.0, 0.1, 0.2, Frame::Ecliptic);
-        let fov_rot = OnSkyRectangle::new([1.0, 0.0, 0.0].into(), rot, 0.1, 0.2, Frame::Ecliptic);
+        let fov = OnSkyRectangle::new([1.0, 0.0, 0.0].into(), 0.0, 0.1, 0.2);
+        let fov_rot = OnSkyRectangle::new([1.0, 0.0, 0.0].into(), rot, 0.1, 0.2);
 
         assert!((fov.lat_width() - 0.2).abs() < 1e-10);
         assert!((fov.lon_width() - 0.1).abs() < 1e-10);

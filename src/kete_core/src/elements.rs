@@ -1,7 +1,8 @@
 //! # Orbital Elements
 //! This allows conversion to and from cometary orbital elements to [`State`].
 use crate::constants::GMS_SQRT;
-use crate::prelude::{Desig, Frame, KeteResult, State};
+use crate::frames::Ecliptic;
+use crate::prelude::{Desig, KeteResult, State};
 use crate::propagation::{compute_eccentric_anomaly, compute_true_anomaly, PARABOLIC_ECC_LIMIT};
 
 use nalgebra::Vector3;
@@ -40,20 +41,16 @@ pub struct CometElements {
 
     /// Perihelion distance in AU
     pub peri_dist: f64,
-
-    /// Frame of reference for the cometary elements
-    pub frame: Frame,
 }
 
 impl CometElements {
     /// Create cometary elements from a state.
-    pub fn from_state(state: &State) -> Self {
+    pub fn from_state(state: &State<Ecliptic>) -> Self {
         Self::from_pos_vel(
             state.desig.to_owned(),
             state.jd,
             &state.pos.into(),
             &state.vel.into(),
-            state.frame,
         )
     }
 
@@ -62,13 +59,7 @@ impl CometElements {
     /// The units of the vectors are AU and AU/Day, with the central mass assumed
     /// to be the Sun.
     ///
-    fn from_pos_vel(
-        desig: Desig,
-        epoch: f64,
-        pos: &Vector3<f64>,
-        vel: &Vector3<f64>,
-        frame: Frame,
-    ) -> Self {
+    fn from_pos_vel(desig: Desig, epoch: f64, pos: &Vector3<f64>, vel: &Vector3<f64>) -> Self {
         let vel_scaled = vel / GMS_SQRT;
         let v_mag2 = vel_scaled.norm_squared();
         let p_mag = pos.norm();
@@ -166,21 +157,19 @@ impl CometElements {
             peri_time,
             peri_arg,
             peri_dist,
-            frame,
         }
     }
 
     /// Convert cometary elements to an [`State`] if possible.
     ///
     /// Center ID is set to 10.
-    pub fn try_to_state(&self) -> KeteResult<State> {
+    pub fn try_to_state(&self) -> KeteResult<State<Ecliptic>> {
         let [pos, vel] = self.to_pos_vel()?;
         Ok(State::new(
             self.desig.to_owned(),
             self.epoch,
             pos.into(),
             vel.into(),
-            self.frame,
             10,
         ))
     }
@@ -329,7 +318,6 @@ mod tests {
         // This was previously a failed instance.
         let elem = CometElements {
             desig: Desig::Empty,
-            frame: Frame::Ecliptic,
             epoch: 2461722.5,
             eccentricity: 0.7495474422690582,
             inclination: 0.1582845445910239,
@@ -343,7 +331,6 @@ mod tests {
         // This was previously a failed instance.
         let elem = CometElements {
             desig: Desig::Empty,
-            frame: Frame::Ecliptic,
             epoch: 2455341.243793971,
             eccentricity: 1.001148327267,
             inclination: 2.433767,
@@ -357,7 +344,6 @@ mod tests {
 
         let elem = CometElements {
             desig: Desig::Empty,
-            frame: Frame::Ecliptic,
             epoch: 2455562.5,
             eccentricity: 0.99999,
             inclination: 2.792526803,
@@ -385,7 +371,6 @@ mod tests {
                                 peri_time: 10.0,
                                 peri_arg,
                                 peri_dist,
-                                frame: Frame::Ecliptic,
                             };
                             let [pos, vel] = elem.to_pos_vel().unwrap();
                             assert!(
@@ -397,7 +382,6 @@ mod tests {
                                 10.0,
                                 &pos.into(),
                                 &vel.into(),
-                                Frame::Ecliptic,
                             );
                             assert!((peri_dist - new_elem.peri_dist).abs() < 1e-8);
                             assert!((ecc - new_elem.eccentricity).abs() < 1e-8);
@@ -426,7 +410,6 @@ mod tests {
                                         peri_time,
                                         peri_arg,
                                         peri_dist,
-                                        frame: Frame::Ecliptic,
                                     };
                                     let [pos, vel] =
                                         elem.to_pos_vel().expect("Failed to convert to state.");
@@ -435,7 +418,6 @@ mod tests {
                                         epoch,
                                         &pos.into(),
                                         &vel.into(),
-                                        Frame::Ecliptic,
                                     );
                                     let [new_pos, new_vel] =
                                         new_elem.to_pos_vel().expect("Failed to convert to state.");
@@ -495,7 +477,6 @@ mod tests {
                                     peri_time,
                                     peri_arg,
                                     peri_dist,
-                                    frame: Frame::Ecliptic,
                                 };
                                 let [pos, vel] = elem.to_pos_vel().unwrap();
                                 let new_elem = CometElements::from_pos_vel(
@@ -503,7 +484,6 @@ mod tests {
                                     epoch,
                                     &pos.into(),
                                     &vel.into(),
-                                    Frame::Ecliptic,
                                 );
 
                                 let [new_pos, new_vel] = new_elem.to_pos_vel().unwrap();
