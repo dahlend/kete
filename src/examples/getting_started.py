@@ -88,7 +88,7 @@ subset = orb_file[orb_file["name"] == "Eros"]
 # Note that in this case the tool converts all objects in the provided table into states
 # which means it will always return a list of states, so below we get a list containing
 # a single state.
-states = kete.mpc.table_to_states(subset)
+states = kete.conversion.table_to_states(subset)
 states
 
 # %%
@@ -120,7 +120,7 @@ orb_file = kete.mpc.fetch_known_orbit_data()
 subset = orb_file[[name in names for name in orb_file["name"]]]
 
 # This now contains 3 states:
-states = kete.mpc.table_to_states(subset)
+states = kete.conversion.table_to_states(subset)
 
 # Lets propagate these states to the current epoch
 now = kete.Time.now().jd

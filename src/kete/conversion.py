@@ -404,7 +404,9 @@ def mag_to_flux(mag: float, zero_point=3631) -> float:
 
 def table_to_states(orbit_dataframe):
     """
-    Given a dataframe provided by :func:`fetch_known_orbit_data` above, load all states.
+    Load :class:`kete.State` from a dataframe provided by either
+    :func:`kete.mpc.fetch_known_orbit_data` or
+    :func:`kete.horizons.fetch_known_orbit_data`.
 
 
     .. testcode::
@@ -420,7 +422,7 @@ def table_to_states(orbit_dataframe):
         neo_subset = orbits[neos]
 
         # load the state object from this table
-        state = kete.mpc.table_to_states(neo_subset)
+        state = kete.conversion.table_to_states(neo_subset)
 
     Parameters
     ----------

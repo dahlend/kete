@@ -17,7 +17,7 @@ use pyo3::PyResult;
 /// of the solar system as used by JPL Horizons and SPICE.
 ///
 /// Only inertial frames are supported in the Python wrapper, these are available in
-/// the :py:enum:`kete.Frames` enum.
+/// the :py:class:`kete.Frames` enum.
 ///
 /// Parameters
 /// ----------

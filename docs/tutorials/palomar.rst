@@ -101,7 +101,7 @@ We also trim out more distant and eccentric objects.
     table = table[[str(t).isdigit() for t in table['desig']]]
     table = table[table['ecc'] < 0.5]
     table = table[table['peri_dist'] < 4]
-    states = kete.mpc.table_to_states(table)
+    states = kete.conversion.table_to_states(table)
 
 
 Quick Cut
@@ -158,7 +158,7 @@ how close the object came to the center of the FOV.
     
     mask = best < 3
     print(f"Total of {sum(mask)} asteroids less than 3 degrees from the FOV")
-    states = kete.mpc.table_to_states(table[mask])
+    states = kete.conversion.table_to_states(table[mask])
 
 ::
     
