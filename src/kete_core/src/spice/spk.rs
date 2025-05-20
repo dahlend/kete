@@ -10,7 +10,7 @@
 //!     use kete_core::spice::LOADED_SPK;
 //!     use kete_core::frames::Ecliptic;
 //!
-//!     // get a read-only reference to the [`SegmentCollection`]
+//!     // get a read-only reference to the [`SpkCollection`]
 //!     let singleton = LOADED_SPK.try_read().unwrap();
 //!
 //!     // get the state of 399 (Earth)
