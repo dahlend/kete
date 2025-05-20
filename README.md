@@ -57,9 +57,8 @@ for Cetaceans (Whales).
 The original version of this code was developed while the original author (Dar Dahlen)
 was working at Caltech IPAC. I have since left Caltech and moved to Germany for a PhD.
 This is a fork of that repo where the work will continue as a personal project during
-my PhD. Work done while at IPAC is of course owned by Caltech, but all future work will
-be marked as owned by Dar Dahlen & future contributors.
-License will remain as BSD-3 Clause to simplify things.
+my PhD. Difference between this fork and previous code is licensed as BSD 3-Clause but
+copyright to Dar Dahlen & future collaborators.
 
 ### Units and Reference Frame
 

@@ -1,3 +1,5 @@
+//! Cartesian Vectors with frame information.
+//!
 use super::{Ecliptic, Equatorial, InertialFrame};
 use nalgebra::{Rotation3, UnitVector3, Vector3};
 use serde::{Deserialize, Serialize};

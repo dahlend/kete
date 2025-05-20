@@ -23,10 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without manually performing a check for matching frames. `State` now use reference
   frames as well, and `SimultaneousStates` and `FOV` objects now all use
   `State<Equatorial>` as the base representation of the states of the objects.
+- Significant rewrite of reading SPICE files, there are now wrapper view types to the
+  for SPK and PCK.
 - Field of Views as downloaded from IRSA are now saved as parquet files. This enables
   them to be backward compatible if there are future changes to FOV, States, or Vector
   definitions. This is a breaking change for previously downloaded FOV files, and these
   may be deleted.
+- Moved plotting tools out of `kete.irsa` into `kete.plot`.
+- Moved `kete.mpc.table_to_states` into `kete.conversion.table_to_states`.
 
 
 ## [v1.1.0]
@@ -37,7 +41,7 @@ Caltech, and future development of this fork will occur as a personal project.
 
 ### Changed
 
-- SPICE kernels were removed for the respository, and now automatically download on
+- SPICE kernels were removed for the repository, and now automatically download on
   first use.
 
 ## [v1.0.8]
