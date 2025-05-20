@@ -84,7 +84,6 @@ def fetch_ZTF_fovs(year: int):
         )
         irsa_query.to_parquet(filename, index=False)
 
-    # Exposures are 30 seconds
     jds = [Time.from_iso(x + ":00").jd for x in irsa_query["obsdate"]]
     obs_info = find_obs_code("ZTF")
 

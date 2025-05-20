@@ -12,6 +12,13 @@ use pyo3::PyResult;
 
 /// Vector class which is a vector along with a reference frame.
 ///
+/// Vectors are always 3 dimensional cartesian coordinates, where the coordinate system
+/// is defined by the frame. For example, the Ecliptic frame is the coordinate frame
+/// of the solar system as used by JPL Horizons and SPICE.
+///
+/// Only inertial frames are supported in the Python wrapper, these are available in
+/// the :py:enum:`kete.Frames` enum.
+///
 /// Parameters
 /// ----------
 /// raw : list

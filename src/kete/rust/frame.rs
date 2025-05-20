@@ -2,7 +2,13 @@
 use kete_core::frames::*;
 use pyo3::prelude::*;
 
-/// Defined inertial frames supported by the python side of kete
+/// Defined inertial frames supported by the python side of kete.
+///
+/// All vectors and states are defined by these coordinate frames.
+///
+/// Coordinate frames are defined to be equivalent to the J2000 frames used by the
+/// JPL Horizons system and SPICE.
+///
 #[pyclass(frozen, eq, eq_int, name = "Frames", module = "kete")]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PyFrames {

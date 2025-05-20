@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+### Changed
+
+- Saving files to any binary format will no longer be guaranteed to be compatible in
+  future versions. If a file is saved by a particular version of kete, it may only be
+  compatible for that version.
+- Restructured frames of reference throughout the core rust code. This is a significant
+  breaking change, which introduces new objects into the kete_core code. The biggest
+  changes are that frames of reference are now individual classes which implement a new
+  traits `InertialFrame` and `NonInertialFrame`, and removes the previous Enum for
+  frames. As a result of this, there is a new class `Vector<T>` which has been added as
+  well, which must be of type `InertialFrame`. Numerous places throughout the code now
+  use these `Vector` classes, which guarantees the reference frames are preserved
+  without manually performing a check for matching frames. `State` now use reference
+  frames as well, and `SimultaneousStates` and `FOV` objects now all use
+  `State<Equatorial>` as the base representation of the states of the objects.
+- Field of Views as downloaded from IRSA are now saved as parquet files. This enables
+  them to be backward compatible if there are future changes to FOV, States, or Vector
+  definitions. This is a breaking change for previously downloaded FOV files, and these
+  may be deleted.
+
+
 ## [v1.1.0]
 
 Announcement: Author of Kete (Dar Dahlen) has left IPAC Caltech to begin a PhD at
