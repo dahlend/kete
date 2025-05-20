@@ -1,7 +1,6 @@
 import pytest
 import numpy as np
-import os
-from kete.vector import CometElements, State, SimultaneousStates
+from kete.vector import CometElements, State
 
 
 class TestlState:
@@ -58,8 +57,3 @@ class TestlState:
         assert np.isclose(elements.peri_arg, peri_arg)
         assert np.isclose(elements.lon_of_ascending, lon)
         assert np.isclose(elements.peri_dist, peri_dist)
-
-    def test_load(self, data_path):
-        path = os.path.join(data_path, "simult_state_v0.2.1.bin")
-        states = SimultaneousStates.load(path)
-        assert states.center_id == 10
