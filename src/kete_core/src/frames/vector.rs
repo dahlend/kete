@@ -136,8 +136,6 @@ impl Vector<Ecliptic> {
     }
 
     /// Convert a unit vector to latitude and longitude.
-    ///
-    /// Input vector needs to be in the [`Frame::Ecliptic`] frame.
     #[inline(always)]
     pub fn to_lat_lon(self) -> (f64, f64) {
         let (mut lat, mut lon) = self.to_polar_spherical();
@@ -157,8 +155,6 @@ impl Vector<Equatorial> {
     }
 
     /// Convert a unit vector to ra and dec.
-    ///
-    /// Input vector needs to be in the [`Frame::Equatorial`] frame.
     #[inline(always)]
     pub fn to_ra_dec(self) -> (f64, f64) {
         let (mut dec, mut ra) = self.to_polar_spherical();

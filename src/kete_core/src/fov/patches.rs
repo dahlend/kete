@@ -229,7 +229,7 @@ impl<const D: usize> SkyPatch for SphericalPolygon<D> {
             .normalize();
         point += &v;
 
-        point
+        point.normalize()
     }
 }
 

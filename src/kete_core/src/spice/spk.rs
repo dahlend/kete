@@ -8,13 +8,13 @@
 //! Here is a small worked example:
 //! ```
 //!     use kete_core::spice::LOADED_SPK;
-//!     use kete_core::frames::Frame;
+//!     use kete_core::frames::Ecliptic;
 //!
 //!     // get a read-only reference to the [`SegmentCollection`]
 //!     let singleton = LOADED_SPK.try_read().unwrap();
 //!
-//!     // get the state of 399 (Earth) with respect to the Sun (10)
-//!     let state = singleton.try_get_state(399, 2451545.0, 10, Frame::Ecliptic);
+//!     // get the state of 399 (Earth)
+//!     let state = singleton.try_get_state::<Ecliptic>(399, 2451545.0);
 //! ```
 //!
 //!
