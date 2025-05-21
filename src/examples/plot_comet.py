@@ -29,7 +29,7 @@ frame_info = dict(
 )
 
 # Load the fits file for this ZTF frame.
-frame = astropy.io.fits.open(kete.ztf.fetch_ZTF_file(**frame_info))[0]
+frame = astropy.io.fits.open(kete.ztf.fetch_file(**frame_info))[0]
 
 # Grab frame information from this file
 jd = kete.Time(frame.header["OBSJD"], scaling="utc").jd
@@ -251,7 +251,7 @@ for line in plt.gca().get_lines():
         label_pos = [line._x[idx], 0 - offset]
         ha = "center"
         va = "bottom"
-    elif edge == 3:
+    else:
         label_pos = [line._x[idx], shape[0] + offset]
         ha = "center"
         va = "top"

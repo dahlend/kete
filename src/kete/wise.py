@@ -14,6 +14,7 @@ from astropy.io import fits
 
 from . import spice
 from .cache import cache_path, download_file
+from .deprecation import rename
 from .time import Time
 from .vector import Vector, Frames
 from .plot import plot_fits_image, zoom_plot, annotate_plot
@@ -528,7 +529,7 @@ def plot_frames(
 
 
 @lru_cache(maxsize=2)
-def fetch_WISE_fovs(phase):
+def fetch_fovs(phase):
     """
     Load all FOVs taken during the specified mission phase of WISE.
 
@@ -618,3 +619,10 @@ def fetch_WISE_fovs(phase):
     fovs = FOVList(fovs)
     fovs.sort()
     return fovs
+
+
+fetch_wise_fovs = rename(
+    fetch_fovs,
+    "1.2.0",
+    old_name="fetch_wise_fovs",
+)

@@ -36,7 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   definitions. This is a breaking change for previously downloaded FOV files, and these
   may be deleted.
 - Moved plotting tools out of `kete.irsa` into `kete.plot`.
+- Generalized `kete.irsa` tools to `kete.tap`, and added cached query support. Queries
+  to any TAP service are now cached by default, and re-running the query will restore
+  the existing results by default.
 - Moved `kete.mpc.table_to_states` into `kete.conversion.table_to_states`.
+- Renamed `kete.wise.fetch_wise_fovs` to `kete.wise.fetch_fovs`.
+- Renamed `kete.ztf.fetch_ztf_fovs` to `kete.ztf.fetch_fovs`.
 
 
 ## [v1.1.0]

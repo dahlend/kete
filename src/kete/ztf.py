@@ -14,6 +14,7 @@ from astropy.io import fits
 import pandas as pd
 
 from .cache import download_file, cache_path
+from .deprecation import rename
 from .fov import ZtfCcdQuad, ZtfField, FOVList
 from .time import Time
 from .tap import query_tap
@@ -22,7 +23,7 @@ from .vector import Vector, State
 from . import spice
 
 
-__all__ = ["fetch_fovs", "fetch_frame"]
+__all__ = ["fetch_fovs", "fetch_frame", "fetch_file"]
 
 SURVEY_START_JD = Time.from_ymd(2018, 3, 20).jd
 """First image in ZTF dataset."""
@@ -135,6 +136,13 @@ def fetch_fovs(year: int):
     fov_list = FOVList(final_fovs)
     fov_list.sort()
     return fov_list
+
+
+fetch_ztf_fovs = rename(
+    fetch_fovs,
+    "1.2.0",
+    old_name="fetch_ztf_fovs",
+)
 
 
 def file_frac_day_split(filefracday):
