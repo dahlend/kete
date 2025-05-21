@@ -101,9 +101,9 @@ impl OnSkyRectangle {
     /// * `pointing` - A vector pointing to the center of the rectangle.
     /// * `rotation` - Rotation of the center of the rectangle in radians.
     /// * `lon_width` - If the rotation is 0, this defines the width of the rectangle
-    ///                 longitudinally in radians.
+    ///   longitudinally in radians.
     /// * `lat_width` - If the rotation is 0, this defines the width of the rectangle
-    ///                 latitudinally in radians.
+    ///   latitudinally in radians.
     pub fn new(
         pointing: Vector<Equatorial>,
         rotation: f64,

@@ -21,7 +21,7 @@ these FOVs directly from IPACs IRSA data repository.
     # During 2023 there were 2.369 million individual frames taken of both W1 and W2
     # bands, totalling just shy of 5 million individual frames.
     # This may take some time to download from IRSA.
-    fovs = kete.wise.fetch_WISE_fovs('Reactivation_2023')
+    fovs = kete.wise.fetch_fovs('Reactivation_2023')
 
 Minor Planet Center Data
 ------------------------

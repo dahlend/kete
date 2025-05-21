@@ -29,7 +29,7 @@ frame_info = dict(
 )
 
 # Load the fits file for this ZTF frame.
-frame = astropy.io.fits.open(kete.ztf.fetch_ZTF_file(**frame_info))[0]
+frame = astropy.io.fits.open(kete.ztf.fetch_file(**frame_info))[0]
 
 # Grab frame information from this file
 jd = kete.Time(frame.header["OBSJD"], scaling="utc").jd
@@ -120,13 +120,12 @@ def plot_syndyne(wcs, state, fov, beta, back_days=90, day_step=1, **kwargs):
 
     # Setup plotting
     pos = [(x.pos - fov.observer.pos).as_equatorial for x in cur_state]
+    pos = [pos[x] for x in kete.fov_static_check(pos, [fov])[0][0]]
     ras = [x.ra for x in pos]
     decs = [x.dec for x in pos]
     shape = wcs.array_shape
     pix = []
     for x, y in zip(*wcs.world_to_pixel_values(ras, decs)):
-        if not np.isfinite(x) or not np.isfinite(y):
-            continue
         pix.append([x, y])
     plt.xlim(0, shape[0])
     plt.ylim(0, shape[1])
@@ -137,7 +136,7 @@ def plot_synchrone(
     wcs, state, fov, days_back, beta_max=1, beta_min=1e-5, beta_steps=100, **kwargs
 ):
     """
-    Plot a single sychrone line for the provided release day.
+    Plot a single synchrone line for the provided release day.
     """
     # Sample beta values evenly in log space.
     betas = np.logspace(np.log10(beta_min), np.log10(beta_max), beta_steps)[::-1]
@@ -156,13 +155,12 @@ def plot_synchrone(
 
     # setup plotting
     pos = [(x.pos - fov.observer.pos).as_equatorial for x in cur_state]
+    pos = [pos[x] for x in kete.fov_static_check(pos, [fov])[0][0]]
     ras = [x.ra for x in pos]
     decs = [x.dec for x in pos]
     shape = wcs.array_shape
     pix = []
     for x, y in zip(*wcs.world_to_pixel_values(ras, decs)):
-        if not np.isfinite(x) or not np.isfinite(y):
-            continue
         pix.append([x, y])
     plt.xlim(0, shape[0])
     plt.ylim(0, shape[1])
@@ -182,7 +180,7 @@ for beta in [0.002, 0.004, 0.01, 0.04, 0.2]:
         vis[0],
         fov,
         beta,
-        day_step=0.1,
+        day_step=0.05,
         lw=0.6,
         c=(1, 0.0, 0.3),
         label=f"{beta:0.2g}",
@@ -203,9 +201,20 @@ plot_syndyne(
 # plot synchrones
 for days in [-10, -15, -20, -25]:
     plot_synchrone(
-        wcs, vis[0], fov, days, 0.1, ls="--", c=(0, 0.5, 1), lw=0.6, label=str(days)
+        wcs,
+        vis[0],
+        fov,
+        days,
+        0.2,
+        ls="--",
+        c=(0, 0.5, 1),
+        lw=0.6,
+        label=str(days),
+        beta_steps=2000,
     )
-plot_synchrone(wcs, vis[0], fov, -5, 0.8, ls="--", c=(0, 0.5, 1), lw=0.6, label=-5)
+plot_synchrone(
+    wcs, vis[0], fov, -5, 0.8, ls="--", c=(0, 0.5, 1), lw=0.6, label=-5, beta_steps=2000
+)
 
 plot_synchrone(
     wcs,
@@ -251,7 +260,7 @@ for line in plt.gca().get_lines():
         label_pos = [line._x[idx], 0 - offset]
         ha = "center"
         va = "bottom"
-    elif edge == 3:
+    else:
         label_pos = [line._x[idx], shape[0] + offset]
         ha = "center"
         va = "top"

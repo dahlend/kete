@@ -14,9 +14,11 @@ from astropy.io import fits
 
 from . import spice
 from .cache import cache_path, download_file
+from .deprecation import rename
 from .time import Time
 from .vector import Vector, Frames
-from .irsa import IRSA_URL, query_irsa_tap, plot_fits_image, zoom_plot, annotate_plot
+from .plot import plot_fits_image, zoom_plot, annotate_plot
+from .tap import query_tap, IRSA_URL
 from .fov import WiseCmos, FOVList
 
 from ._core import (
@@ -153,7 +155,7 @@ MissionPhase = namedtuple(
     ],
 )
 MissionPhase.__doc__ = (
-    "Information about a specific mission phase. The cannonical set of these is stored"
+    "Information about a specific mission phase. The canonical set of these is stored"
     " in the :py:class:`MISSION_PHASES` constant."
 )
 MissionPhase.name.__doc__ = "Name of the mission phase."
@@ -527,7 +529,7 @@ def plot_frames(
 
 
 @lru_cache(maxsize=2)
-def fetch_WISE_fovs(phase):
+def fetch_fovs(phase):
     """
     Load all FOVs taken during the specified mission phase of WISE.
 
@@ -567,9 +569,11 @@ def fetch_WISE_fovs(phase):
         mjd_start = Time(phase.jd_start).mjd
         mjd_end = Time(phase.jd_end).mjd
 
-        res = query_irsa_tap(
+        res = query_tap(
             f"SELECT {', '.join(cols)} FROM {table} "
-            f"WHERE mjd >= {mjd_start} and mjd < {mjd_end}"
+            f"WHERE mjd >= {mjd_start} and mjd < {mjd_end}",
+            cache=False,
+            verbose=True,
         )
 
         res.to_parquet(filename, index=False)
@@ -615,3 +619,10 @@ def fetch_WISE_fovs(phase):
     fovs = FOVList(fovs)
     fovs.sort()
     return fovs
+
+
+fetch_WISE_fovs = rename(
+    fetch_fovs,
+    "1.2.0",
+    old_name="fetch_WISE_fovs",
+)

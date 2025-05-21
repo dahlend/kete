@@ -19,3 +19,9 @@ ZTF
 .. automodule:: kete.ztf
    :members:
    :inherited-members:
+
+PTF
+---
+.. automodule:: kete.ptf
+   :members:
+   :inherited-members:

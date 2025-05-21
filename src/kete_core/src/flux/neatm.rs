@@ -78,10 +78,10 @@ impl NeatmParams {
     ///
     /// * `sun2obj` - Position of the object with respect to the Sun in AU.
     /// * `sun2obs` - Position of the Observer with respect to the Sun in AU.
-    /// * `color_correction` - Optional function which defines the color correction. If this
-    ///                        is provided, the function must accept a list of temperatures
-    ///                        in kelvin and return a scaling factor for how much the flux
-    ///                        gets scaled by for that specified temp.
+    /// * `color_correction` - Optional function which defines the color correction. If
+    ///   this is provided, the function must accept a list of temperatures in kelvin
+    ///   and return a scaling factor for how much the flux gets scaled by for that
+    ///   specified temp.
     pub fn apparent_thermal_flux(
         &self,
         sun2obj: &Vector3<f64>,

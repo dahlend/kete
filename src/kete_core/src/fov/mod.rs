@@ -6,11 +6,13 @@ pub mod neos;
 pub mod patches;
 pub mod wise;
 pub mod ztf;
+pub mod ptf;
 
 pub use fov_like::*;
 pub use generic::*;
 pub use neos::*;
 pub use patches::*;
+pub use ptf::*;
 pub use wise::*;
 pub use ztf::*;
 
@@ -37,14 +39,20 @@ pub enum FOV {
     /// NEOS single cmos FOV.
     NeosCmos(NeosCmos),
 
+    /// NEOS Visit.
+    NeosVisit(NeosVisit),
+    
     /// ZTF Single Quad of single CCD FOV.
     ZtfCcdQuad(ZtfCcdQuad),
 
     /// Full ZTF field of up to 64 individual files.
     ZtfField(ZtfField),
 
-    /// NEOS Visit.
-    NeosVisit(NeosVisit),
+    /// Single PTF CCD image.
+    PtfCcd(PtfCcd),
+
+    /// Full PTF field of multiple ccd images.
+    PtfField(PtfField),
 }
 
 impl FOV {
@@ -64,6 +72,8 @@ impl FOV {
             FOV::ZtfField(fov) => fov.check_visible(states, dt_limit, include_asteroids),
             FOV::NeosVisit(fov) => fov.check_visible(states, dt_limit, include_asteroids),
             FOV::OmniDirectional(fov) => fov.check_visible(states, dt_limit, include_asteroids),
+            FOV::PtfCcd(fov) => fov.check_visible(states, dt_limit, include_asteroids),
+            FOV::PtfField(fov) => fov.check_visible(states, dt_limit, include_asteroids),
         }
     }
 
@@ -78,6 +88,8 @@ impl FOV {
             FOV::ZtfField(fov) => fov.observer(),
             FOV::NeosVisit(fov) => fov.observer(),
             FOV::OmniDirectional(fov) => fov.observer(),
+            FOV::PtfCcd(fov)=> fov.observer(),
+            FOV::PtfField(fov) => fov.observer(),
         }
     }
 
@@ -92,6 +104,8 @@ impl FOV {
             FOV::ZtfField(fov) => fov.check_spks(obj_ids),
             FOV::NeosVisit(fov) => fov.check_spks(obj_ids),
             FOV::OmniDirectional(fov) => fov.check_spks(obj_ids),
+            FOV::PtfCcd(fov) => fov.check_spks(obj_ids),
+            FOV::PtfField(fov) => fov.check_spks(obj_ids),
         }
     }
 
@@ -106,6 +120,8 @@ impl FOV {
             FOV::ZtfField(fov) => fov.check_statics(pos),
             FOV::NeosVisit(fov) => fov.check_statics(pos),
             FOV::OmniDirectional(fov) => fov.check_statics(pos),
+            FOV::PtfCcd(fov) => fov.check_statics(pos),
+            FOV::PtfField(fov) => fov.check_statics(pos),
         }
     }
 }

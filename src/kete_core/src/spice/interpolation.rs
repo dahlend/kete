@@ -175,8 +175,8 @@ pub fn hermite_interpolation(times: &[f64], y: &[f64], dy: &[f64], eval_time: f6
 
     for idj in 2..(2 * n) {
         for idi in 1..(2 * n - idj + 1) {
-            let xi = (idi + 1) / 2;
-            let xij = (idi + idj + 1) / 2;
+            let xi = idi.div_ceil(2);
+            let xij = (idi + idj).div_ceil(2);
             let c1 = times[xij - 1] - eval_time;
             let c2 = eval_time - times[xi - 1];
             let denom = times[xij - 1] - times[xi - 1];
