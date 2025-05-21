@@ -35,7 +35,7 @@ def fetch_fovs(year: int):
 
     This will download and cache all FOV information for the given year from IRSA.
 
-    This can take about 20 minutes per year of survey, each year is 2-3 GB of data.
+    This can take up to about 20 minutes per year of survey.
 
     Parameters
     ----------
