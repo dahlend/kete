@@ -19,6 +19,7 @@ from .cache import cache_path
 
 __all__ = ["tap_column_info", "query_tap"]
 
+IRSA_URL = "https://irsa.ipac.caltech.edu"
 IRSA_TAP_URL = "https://irsa.ipac.caltech.edu/TAP/async"
 
 
