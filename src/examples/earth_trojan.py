@@ -49,7 +49,6 @@ sigma_steps = np.linspace(0, 1, n_sigma + 1)[:-1]
 
 energy_vals = []
 for shift in sigma_steps:
-
     total = 0
     for frac in np.linspace(0, 1, m_steps + 1)[:-1]:
         state_a = kete.propagate_two_body([state_a], jd + (frac + shift) * period_a)[0]

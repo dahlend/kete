@@ -60,7 +60,7 @@ impl Default for CentralAccelMeta {
 /// # Arguments
 ///
 /// * `time` - Time of the evaluation. This is saved in the metadata but otherwise
-///            unused.
+///   unused.
 /// * `pos` - A vector which defines the position with respect to the Sun in AU.
 /// * `vel` - A vector which defines the velocity with respect to the Sun in AU/Day.
 /// * `meta` - Metadata object which records values at integration steps.

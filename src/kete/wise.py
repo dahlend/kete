@@ -16,7 +16,8 @@ from . import spice
 from .cache import cache_path, download_file
 from .time import Time
 from .vector import Vector, Frames
-from .irsa import IRSA_URL, query_irsa_tap, plot_fits_image, zoom_plot, annotate_plot
+from .plot import plot_fits_image, zoom_plot, annotate_plot
+from .tap import query_tap, IRSA_TAP_URL
 from .fov import WiseCmos, FOVList
 
 from ._core import (
@@ -174,7 +175,7 @@ MISSION_PHASES = {
         jd_start=Time.from_ymd(2009, 12, 14).jd,
         jd_end=2455414.941783008,
         bands=(1, 2, 3, 4),
-        frame_url=IRSA_URL + "/ibe/data/wise/allsky/4band_p1bm_frm/",
+        frame_url=IRSA_TAP_URL + "/ibe/data/wise/allsky/4band_p1bm_frm/",
         frame_meta_table="allsky_4band_p1bs_frm",
         source_table="allsky_4band_p1bs_psd",
     ),
@@ -183,7 +184,7 @@ MISSION_PHASES = {
         jd_start=2455414.9417830084,
         jd_end=2455469.278276,
         bands=(1, 2, 3),
-        frame_url=IRSA_URL + "/ibe/data/wise/cryo_3band/3band_p1bm_frm/",
+        frame_url=IRSA_TAP_URL + "/ibe/data/wise/cryo_3band/3band_p1bm_frm/",
         frame_meta_table="allsky_3band_p1bs_frm",
         source_table="allsky_3band_p1bs_psd",
     ),
@@ -192,7 +193,7 @@ MISSION_PHASES = {
         jd_start=2455469.278277,
         jd_end=2455593.96119803,
         bands=(1, 2),
-        frame_url=IRSA_URL + "/ibe/data/wise/postcryo/2band_p1bm_frm/",
+        frame_url=IRSA_TAP_URL + "/ibe/data/wise/postcryo/2band_p1bm_frm/",
         frame_meta_table="allsky_2band_p1bs_frm",
         source_table="allsky_2band_p1bs_psd",
     ),
@@ -201,7 +202,7 @@ MISSION_PHASES = {
         jd_start=Time.from_ymd(2013, 12, 13).jd,
         jd_end=Time.from_ymd(2015, 1, 1).jd,
         bands=(1, 2),
-        frame_url=IRSA_URL + "/ibe/data/wise/neowiser/p1bm_frm/",
+        frame_url=IRSA_TAP_URL + "/ibe/data/wise/neowiser/p1bm_frm/",
         frame_meta_table="neowiser_p1bs_frm",
         source_table="neowiser_p1bs_psd",
     ),
@@ -210,7 +211,7 @@ MISSION_PHASES = {
         jd_start=Time.from_ymd(2024, 1, 1).jd,
         jd_end=Time.from_ymd(2024, 8, 1.291525).jd,
         bands=(1, 2),
-        frame_url=IRSA_URL + "/ibe/data/wise/neowiser/p1bm_frm/",
+        frame_url=IRSA_TAP_URL + "/ibe/data/wise/neowiser/p1bm_frm/",
         frame_meta_table="neowiser_p1bs_frm",
         source_table="neowiser_p1bs_psd",
     ),
@@ -223,7 +224,7 @@ for year in range(2015, 2024):
         jd_start=Time.from_ymd(year, 1, 1).jd,
         jd_end=Time.from_ymd(year + 1, 1, 1).jd,
         bands=(1, 2),
-        frame_url=IRSA_URL + "/ibe/data/wise/neowiser/p1bm_frm/",
+        frame_url=IRSA_TAP_URL + "/ibe/data/wise/neowiser/p1bm_frm/",
         frame_meta_table="neowiser_p1bs_frm",
         source_table="neowiser_p1bs_psd",
     )
@@ -567,9 +568,11 @@ def fetch_WISE_fovs(phase):
         mjd_start = Time(phase.jd_start).mjd
         mjd_end = Time(phase.jd_end).mjd
 
-        res = query_irsa_tap(
+        res = query_tap(
             f"SELECT {', '.join(cols)} FROM {table} "
-            f"WHERE mjd >= {mjd_start} and mjd < {mjd_end}"
+            f"WHERE mjd >= {mjd_start} and mjd < {mjd_end}",
+            cache=False,
+            verbose=True,
         )
 
         res.to_parquet(filename, index=False)

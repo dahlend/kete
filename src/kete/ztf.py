@@ -1,5 +1,9 @@
 """
 ZTF Related Functions and Data.
+ZTF data is available from 2018 to present.
+
+The imaging sensor is made up of a 4x4 grid of CCDs, which are further subdivided into
+2x2 "Quads", meaning each image that is captured is returned as 64 frames.
 """
 
 import os
@@ -12,13 +16,13 @@ import pandas as pd
 from .cache import download_file, cache_path
 from .fov import ZtfCcdQuad, ZtfField, FOVList
 from .time import Time
-from .irsa import query_irsa_tap
+from .tap import query_tap
 from .mpc import find_obs_code
 from .vector import Vector, State
 from . import spice
 
 
-__all__ = ["fetch_ZTF_file", "fetch_ZTF_fovs", "fetch_frame"]
+__all__ = ["fetch_fovs", "fetch_frame"]
 
 SURVEY_START_JD = Time.from_ymd(2018, 3, 20).jd
 """First image in ZTF dataset."""
@@ -27,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 @lru_cache(maxsize=2)
-def fetch_ZTF_fovs(year: int):
+def fetch_fovs(year: int):
     """
     Load all FOVs taken during the specified mission year of ZTF.
 
@@ -77,10 +81,11 @@ def fetch_ZTF_fovs(year: int):
         jd_start = Time.from_ymd(year, 1, 1).jd
         jd_end = Time.from_ymd(year + 1, 1, 1).jd
 
-        irsa_query = query_irsa_tap(
+        irsa_query = query_tap(
             f"SELECT {', '.join(cols)} FROM {table} "
             f"WHERE obsjd between {jd_start} and {jd_end}",
             verbose=True,
+            cache=False,
         )
         irsa_query.to_parquet(filename, index=False)
 
@@ -171,7 +176,7 @@ def fetch_frame(
     force_download :
         Optionally force a re-download if the file already exists in the cache.
     """
-    file = fetch_ZTF_file(
+    file = fetch_file(
         fov.field,
         fov.filefracday,
         fov.filtercode,
@@ -192,7 +197,7 @@ def fetch_frame(
         return fetch_frame(fov, products, im_type, force_download, retry - 1)
 
 
-def fetch_ZTF_file(
+def fetch_file(
     field,
     filefracday,
     filtercode,

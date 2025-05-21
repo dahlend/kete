@@ -15,7 +15,7 @@ Minor Planet Center (MPC)
 IPAC - IRSA
 -----------
 
-.. automodule:: kete.irsa
+.. automodule:: kete.tap
    :members:
    :inherited-members:
 

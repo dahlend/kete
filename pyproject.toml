@@ -61,9 +61,10 @@ markers = [
 # Options for the coverage report.
 [tool.coverage.run]
 omit = ["*/kete/mpc.py",
-        "*/kete/irsa.py",
+        "*/kete/tap.py",
         "*/kete/wise.py",
         "*/kete/ztf.py",
+        "*/kete/ptf.py",
         "*/kete/horizons.py",
         "*/kete/data/*",
         "*/examples/*",]

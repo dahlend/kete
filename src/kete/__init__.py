@@ -16,7 +16,9 @@ from . import (
     mpc,
     plot,
     irsa,
+    tap,
     ztf,
+    ptf,
     fov,
     shape,
     spice,
@@ -48,6 +50,8 @@ from .fov import (
     OmniDirectionalFOV,
     ZtfCcdQuad,
     ZtfField,
+    PtfCcd,
+    PtfField,
 )
 from .horizons import HorizonsProperties
 
@@ -93,12 +97,16 @@ __all__ = [
     "NeosVisit",
     "NeosCmos",
     "ZtfCcdQuad",
+    "PtfField",
+    "PtfCcd",
     "ZtfField",
     "mag_to_flux",
     "flux_to_mag",
     "Vector",
     "HorizonsProperties",
+    "tap",
     "ztf",
+    "ptf",
 ]
 
 

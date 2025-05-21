@@ -132,7 +132,7 @@ pub trait FovLike: Sync + Sized {
     /// # Arguments
     ///
     /// * `state` - A vector of States which define the objects, the center ID should be set
-    ///             to 10 (the Sun).
+    ///   to 10 (the Sun).
     /// * `dt_limit` - Length of time in days where two body motion is considered valid.
     /// * `include_asteroids` - Include the 5 largest asteroids during the computation.
     ///

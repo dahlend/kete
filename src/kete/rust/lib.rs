@@ -69,6 +69,8 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<fovs::PyWiseCmos>()?;
     m.add_class::<fovs::PyZtfCcdQuad>()?;
     m.add_class::<fovs::PyZtfField>()?;
+    m.add_class::<fovs::PyPtfCcd>()?;
+    m.add_class::<fovs::PyPtfField>()?;
     m.add_class::<fovs::PyGenericRectangle>()?;
     m.add_class::<fovs::PyGenericCone>()?;
     m.add_class::<fovs::PyOmniDirectional>()?;
