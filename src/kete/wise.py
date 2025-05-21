@@ -155,7 +155,7 @@ MissionPhase = namedtuple(
     ],
 )
 MissionPhase.__doc__ = (
-    "Information about a specific mission phase. The cannonical set of these is stored"
+    "Information about a specific mission phase. The canonical set of these is stored"
     " in the :py:class:`MISSION_PHASES` constant."
 )
 MissionPhase.name.__doc__ = "Name of the mission phase."
@@ -621,8 +621,8 @@ def fetch_fovs(phase):
     return fovs
 
 
-fetch_wise_fovs = rename(
+fetch_WISE_fovs = rename(
     fetch_fovs,
     "1.2.0",
-    old_name="fetch_wise_fovs",
+    old_name="fetch_WISE_fovs",
 )

@@ -137,7 +137,7 @@ def plot_synchrone(
     wcs, state, fov, days_back, beta_max=1, beta_min=1e-5, beta_steps=100, **kwargs
 ):
     """
-    Plot a single sychrone line for the provided release day.
+    Plot a single synchrone line for the provided release day.
     """
     # Sample beta values evenly in log space.
     betas = np.logspace(np.log10(beta_min), np.log10(beta_max), beta_steps)[::-1]
