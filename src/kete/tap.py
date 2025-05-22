@@ -21,6 +21,7 @@ __all__ = ["tap_column_info", "query_tap"]
 
 IRSA_URL = "https://irsa.ipac.caltech.edu"
 IRSA_TAP_URL = "https://irsa.ipac.caltech.edu/TAP/async"
+CADC_TAP_URL = "https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/argus/async"
 
 
 logger = logging.getLogger(__name__)
@@ -177,7 +178,7 @@ class AsyncTapQuery:
         self.update_cache = update_cache
         self.cache = cache
 
-        self.data = dict(FORMAT="CSV", QUERY=query)
+        self.data = dict(FORMAT="CSV", QUERY=query, LANG="ADQL", REQUEST="doQuery")
         files = None
         if upload_table is not None:
             self.data["UPLOAD"] = "my_table,param:table.tbl"
@@ -212,10 +213,15 @@ class AsyncTapQuery:
         if cache and not os.path.exists(job_path):
             with gzip.open(job_path, "wb") as f:
                 f.write(json.dumps({"status": "NOT_SUBMITTED"}).encode())
-        self.job_path = job_path
-        self.resp_path = resp_path
-        self._status_url = None
-        self._result_url = None
+
+        if cache:
+            self.job_path = job_path
+            self.resp_path = resp_path
+        else:
+            self.job_path = None
+            self.resp_path = None
+
+        self._job_id = None
 
     def query_blocking(self):
         """
@@ -229,7 +235,7 @@ class AsyncTapQuery:
 
         delay = 0.05
         last_print = 0
-        while status in ["QUEUED", "EXECUTING"]:
+        while status in ["PENDING", "QUEUED", "EXECUTING"]:
             cur_time = time.time()
             elapsed = cur_time - start
             time.sleep(delay)
@@ -280,22 +286,17 @@ class AsyncTapQuery:
         submit.raise_for_status()
 
         tree = ElementTree.fromstring(submit.content.decode())
-        element = tree.find("{*}results")
-
-        urls = [v for k, v in element[0].attrib.items() if "href" in k]
-        if len(urls) != 1:
-            raise ValueError("Unexpected results: ", submit.content.decode())
-        url = urls[0]
-
-        self._result_url = url
-        self._status_url = url.replace("results/result", "phase")
+        element = tree.find("{*}jobId")
+        if element is not None:
+            self._job_id = element.text.strip()
+        else:
+            raise ValueError(submit.content.decode())
 
         if self.cache:
             with gzip.open(self.job_path, "rb") as f:
                 status_file = json.loads(f.read().decode())
             status_file["status"] = "QUEUED"
-            status_file["status_url"] = self._status_url
-            status_file["result_url"] = self._result_url
+            status_file["job_id"] = self._job_id
             with gzip.open(self.job_path, "wb") as f:
                 f.write(json.dumps(status_file).encode())
 
@@ -305,7 +306,7 @@ class AsyncTapQuery:
         the cache, then this will return as COMPLETED without querying.
 
         Status results can have one of outcomes:
-        NOT_SUBMITTED, QUEUED, EXECUTING, ERROR, COMPLETED
+        NOT_SUBMITTED, QUEUED, PENDING, EXECUTING, ERROR, COMPLETED
         """
         if self.cache and os.path.exists(self.resp_path):
             return "COMPLETED"
@@ -352,3 +353,15 @@ class AsyncTapQuery:
         if self.verbose:
             logger.info("Download complete.")
         return result
+
+    @property
+    def _result_url(self):
+        if self._job_id is None:
+            return None
+        return self.base_url + "/" + self._job_id + "/results/result"
+
+    @property
+    def _status_url(self):
+        if self._job_id is None:
+            return None
+        return self.base_url + "/" + self._job_id + "/phase"
