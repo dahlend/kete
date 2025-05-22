@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added support for PTF fields of view for all public data. PTF operated from 2009 to
   2018, however data is only publicly available through early 2015.
+- Generalized TAP queries to support queries to the Canadian Astronomy Data Centre
+  (CADC).
 
 ### Changed
 
