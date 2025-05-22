@@ -235,7 +235,7 @@ class AsyncTapQuery:
 
         delay = 0.05
         last_print = 0
-        while status in ["PENDING", "QUEUED", "EXECUTING"]:
+        while status in ["QUEUED", "EXECUTING"]:
             cur_time = time.time()
             elapsed = cur_time - start
             time.sleep(delay)
@@ -256,7 +256,7 @@ class AsyncTapQuery:
                 )
                 last_print = cur_time
         if status != "COMPLETED":
-            raise ValueError("Job Failed: ", status)
+            raise ValueError("Job Failed: ", self.query_error())
 
         return self.result()
 
@@ -299,6 +299,15 @@ class AsyncTapQuery:
             status_file["job_id"] = self._job_id
             with gzip.open(self.job_path, "wb") as f:
                 f.write(json.dumps(status_file).encode())
+
+        status = self.query_status()
+        if status == "PENDING":
+            requests.post(
+                self.base_url + "/" + self._job_id + "/phase",
+                data={"PHASE": "RUN"},
+                auth=self.auth,
+                timeout=self.timeout,
+            ).raise_for_status()
 
     def query_status(self):
         """
@@ -365,3 +374,21 @@ class AsyncTapQuery:
         if self._job_id is None:
             return None
         return self.base_url + "/" + self._job_id + "/phase"
+
+    @property
+    def _error_url(self):
+        if self._job_id is None:
+            return None
+        return self.base_url + "/" + self._job_id + "/error"
+
+    def query_error(self):
+        if self.query_status() != "ERROR":
+            raise ValueError("Job has not failed.")
+
+        submit = requests.get(
+            self._error_url,
+            auth=self.auth,
+            timeout=self.timeout,
+        )
+        submit.raise_for_status()
+        return submit.content.decode()
