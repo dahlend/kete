@@ -1,6 +1,7 @@
 //! Spice replacement methods
 //! Primarily includes the ability to read the contents of SPK files.
 mod daf;
+mod das;
 mod interpolation;
 mod naif_ids;
 mod obs_codes;
