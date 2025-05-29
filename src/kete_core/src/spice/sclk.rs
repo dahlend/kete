@@ -7,7 +7,7 @@ use nom::{
         complete::{take, take_until, take_until1, take_while, take_while1},
         streaming::tag,
     },
-    character::complete::{alpha1, char, digit1, space0},
+    character::complete::{alpha1, char, digit1, space0, space1},
     combinator::{map_res, opt, Opt},
     error::{context, ParseError},
     multi::{separated_list0, separated_list1},
@@ -15,10 +15,13 @@ use nom::{
     IResult, Input, Parser,
 };
 
-use crate::{errors::Error, time::scales::TimeScale};
+use crate::{
+    errors::{Error, KeteResult},
+    time::scales::TimeScale,
+};
 
 #[derive(Debug, Clone, PartialEq)]
-struct Sclk {
+pub struct Sclk {
     naif_id: i32,
     kernel_id: String,
 
@@ -27,16 +30,74 @@ struct Sclk {
     moduli: Vec<u32>,
     offsets: Vec<u32>,
 
-    // Delimiter here is only use for output formatting.
-    output_delim: char,
-
     partition_start: Vec<f64>,
     partition_end: Vec<f64>,
 
     coefficients: Vec<[f64; 3]>,
 
+    // Delimiter here is only use for output formatting.
+    output_delim: char,
+
     /// Timescale defaults to TDB if not specified.
     tdb: bool,
+}
+
+impl Sclk {
+    /// Parse a spacecraft clock string into integers and a partition number.
+    ///
+    /// This handles all the rollover and partitioning logic.
+    fn parse_time_string(&self, time_str: &str) -> KeteResult<(usize, Vec<usize>)> {
+        let (_, (partition, mut fields)) = parse_time_fields(time_str)
+            .map_err(|_| Error::ValueError("Failed to parse time fields.".into()))?;
+
+        if fields.len() > self.n_fields as usize || fields.is_empty() {
+            return Err(Error::ValueError(format!(
+                "Fields in time string must be between 1 and {}, found {}.",
+                self.n_fields,
+                fields.len()
+            )));
+        }
+
+        let mut rollover = false;
+        fields
+            .iter_mut()
+            .zip(self.moduli.iter())
+            .rev()
+            .for_each(|(mut val, &modulus)| {
+                if rollover {
+                    *val += 1;
+                    rollover = false;
+                }
+                if *val >= (modulus as usize) {
+                    rollover = true;
+                    *val -= modulus as usize;
+                }
+            });
+        Ok((partition, fields))
+    }
+}
+
+/// Parse a formatted time string into a vector of integers.
+///
+/// Time strings are integers separated by spaces, dashes, colons, commas, or periods.
+/// Spaces between integers and separators are optional.
+///
+/// String formats include an optional partition number followed by a slash.
+/// If this is not provided, it defaults to the first partition 1.
+fn parse_time_fields(input: &str) -> IResult<&str, (usize, Vec<usize>)> {
+    let (res, (partition, vals)) = preceded(
+        space0,
+        pair(
+            opt(terminated(
+                delimited(space0, parse_num::<usize>, space0),
+                terminated(char('/'), space0),
+            )),
+            separated_list1(take_while1(|c| " -:,.".contains(c)), parse_num),
+        ),
+    )
+    .parse(input)?;
+
+    Ok((res, (partition.unwrap_or(1), vals)))
 }
 
 // Code below is used to parse SCLK files into the Sclk struct.
@@ -192,7 +253,7 @@ impl TryFrom<Vec<SclkToken>> for Sclk {
                     // require that val be either 1 or 2
                     if val != 1 && val != 2 {
                         return Err(Error::ValueError(format!(
-                            "SCLK Time System must be 1 (TDB) or 2 (TDT), found {}.",
+                            "SCLK Time System must be 1 (TDB) or 2 (TT), found {}.",
                             val
                         )));
                     }
@@ -472,6 +533,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_parse_time_field() {
+        let input = "  1:2   3 - 5:8 . 9 9 ";
+        let (_, result) = parse_time_fields(input).unwrap();
+        assert_eq!(result, (1, vec![1, 2, 3, 5, 8, 9, 9]));
+
+        let input = " 5 /  1:2   3 - 5:8 . 9 9 ";
+        let (_, result) = parse_time_fields(input).unwrap();
+        assert_eq!(result, (5, vec![1, 2, 3, 5, 8, 9, 9]));
+    }
+
+    #[test]
     fn test_num_vec() {
         let input = "  1  2\n\t 3 3.14E-2 ";
         let result = parse_num_vec::<f64>(input);
@@ -487,7 +559,7 @@ mod tests {
         assert!(result.is_ok());
         let (res, vec) = result.unwrap();
         assert_eq!(vec, 123);
-        assert_eq!(res, " = ");
+        assert_eq!(res, "= ");
     }
 
     #[test]
@@ -628,5 +700,21 @@ mod tests {
         );
 
         let clock = Sclk::try_from(vec).unwrap();
+
+        let (partition, val) = clock.parse_time_string("3/0:0:0:9").unwrap();
+        assert_eq!(val, vec![0, 0, 1, 1]);
+        assert_eq!(partition, 3);
+
+        let (partition, val) = clock.parse_time_string("0:0:0:8").unwrap();
+        assert_eq!(val, vec![0, 0, 1, 0]);
+        assert_eq!(partition, 1);
+
+        let (partition, val) = clock.parse_time_string("16777215:91:0:7").unwrap();
+        assert_eq!(val, vec![1, 0, 0, 7]);
+        assert_eq!(partition, 1);
+
+        let (partition, val) = clock.parse_time_string("10/16777215:91").unwrap();
+        assert_eq!(val, vec![1, 0]);
+        assert_eq!(partition, 10);
     }
 }
