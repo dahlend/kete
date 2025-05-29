@@ -6,6 +6,8 @@ mod naif_ids;
 mod obs_codes;
 mod pck;
 mod pck_segments;
+#[allow(unused)]
+mod sclk;
 mod spk;
 mod spk_segments;
 
