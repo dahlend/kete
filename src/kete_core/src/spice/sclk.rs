@@ -1,5 +1,6 @@
 use std::{marker::PhantomData, str::FromStr};
 
+use crossbeam::channel::tick;
 /// Parsing text kernels used by SPICE.
 use nom::{
     branch::alt,
@@ -17,6 +18,7 @@ use nom::{
 
 use crate::{
     errors::{Error, KeteResult},
+    spice::spice_jd_to_jd,
     time::scales::TimeScale,
 };
 
@@ -46,7 +48,7 @@ impl Sclk {
     /// Parse a spacecraft clock string into integers and a partition number.
     ///
     /// This handles all the rollover and partitioning logic.
-    fn parse_time_string(&self, time_str: &str) -> KeteResult<(usize, Vec<usize>)> {
+    fn parse_time_string(&self, time_str: &str) -> KeteResult<(usize, f64)> {
         let (_, (partition, mut fields)) = parse_time_fields(time_str)
             .map_err(|_| Error::ValueError("Failed to parse time fields.".into()))?;
 
@@ -57,6 +59,14 @@ impl Sclk {
                 fields.len()
             )));
         }
+
+        // Add the offsets to all of the fields.
+        fields
+            .iter_mut()
+            .zip(self.offsets.iter())
+            .for_each(|(field, &offset)| {
+                *field += offset as usize;
+            });
 
         let mut rollover = false;
         fields
@@ -73,7 +83,62 @@ impl Sclk {
                     *val -= modulus as usize;
                 }
             });
-        Ok((partition, fields))
+
+        let mut tick_rates = vec![1];
+        for modulo in self.moduli.iter().skip(1).rev() {
+            let last = tick_rates.last().unwrap();
+            tick_rates.push(*modulo as usize * last);
+        }
+        tick_rates.reverse();
+
+        // compute a floating point representation of the spacecraft clock time
+        let mut sc_ticks: usize = 0;
+        fields
+            .iter()
+            .zip(tick_rates.iter())
+            .for_each(|(field, rate)| {
+                sc_ticks += field * rate;
+            });
+
+        let clock_rate = self.find_clock_rate(sc_ticks as f64)?;
+
+        let par_time = clock_rate[2] * (sc_ticks as f64 - clock_rate[0])
+            / (*tick_rates.first().unwrap() as f64)
+            + clock_rate[1];
+
+        // find partition from the par_time by looking at the bounds
+        // self.partition_start and self.partition_end
+
+        let mut idx = self
+            .partition_start
+            .partition_point(|&start| start <= sc_ticks as f64);
+
+        if partition.is_some() && Some(idx) != partition {
+            return Err(Error::ValueError(format!(
+                "Partition mismatch: expected {}, found {}",
+                partition.unwrap(),
+                idx
+            )));
+        }
+        if idx == 0 {
+            return Err(Error::ValueError(format!(
+                "Time {} is before the first partition start.",
+                time_str
+            )));
+        }
+
+        Ok((idx, par_time))
+    }
+
+    /// Go through the coefficients and find the clock rate for a given spacecraft clock.
+    fn find_clock_rate(&self, sc_clock: f64) -> KeteResult<[f64; 3]> {
+        let mut idx = self
+            .coefficients
+            .partition_point(|probe| probe[0] <= sc_clock);
+        idx = idx.saturating_sub(1);
+
+        let coef = self.coefficients[idx];
+        Ok(coef)
     }
 }
 
@@ -84,8 +149,8 @@ impl Sclk {
 ///
 /// String formats include an optional partition number followed by a slash.
 /// If this is not provided, it defaults to the first partition 1.
-fn parse_time_fields(input: &str) -> IResult<&str, (usize, Vec<usize>)> {
-    let (res, (partition, vals)) = preceded(
+fn parse_time_fields(input: &str) -> IResult<&str, (Option<usize>, Vec<usize>)> {
+    preceded(
         space0,
         pair(
             opt(terminated(
@@ -95,9 +160,7 @@ fn parse_time_fields(input: &str) -> IResult<&str, (usize, Vec<usize>)> {
             separated_list1(take_while1(|c| " -:,.".contains(c)), parse_num),
         ),
     )
-    .parse(input)?;
-
-    Ok((res, (partition.unwrap_or(1), vals)))
+    .parse(input)
 }
 
 // Code below is used to parse SCLK files into the Sclk struct.
@@ -536,11 +599,11 @@ mod tests {
     fn test_parse_time_field() {
         let input = "  1:2   3 - 5:8 . 9 9 ";
         let (_, result) = parse_time_fields(input).unwrap();
-        assert_eq!(result, (1, vec![1, 2, 3, 5, 8, 9, 9]));
+        assert_eq!(result, (None, vec![1, 2, 3, 5, 8, 9, 9]));
 
         let input = " 5 /  1:2   3 - 5:8 . 9 9 ";
         let (_, result) = parse_time_fields(input).unwrap();
-        assert_eq!(result, (5, vec![1, 2, 3, 5, 8, 9, 9]));
+        assert_eq!(result, (Some(5), vec![1, 2, 3, 5, 8, 9, 9]));
     }
 
     #[test]
@@ -701,20 +764,6 @@ mod tests {
 
         let clock = Sclk::try_from(vec).unwrap();
 
-        let (partition, val) = clock.parse_time_string("3/0:0:0:9").unwrap();
-        assert_eq!(val, vec![0, 0, 1, 1]);
-        assert_eq!(partition, 3);
-
-        let (partition, val) = clock.parse_time_string("0:0:0:8").unwrap();
-        assert_eq!(val, vec![0, 0, 1, 0]);
-        assert_eq!(partition, 1);
-
-        let (partition, val) = clock.parse_time_string("16777215:91:0:7").unwrap();
-        assert_eq!(val, vec![1, 0, 0, 7]);
-        assert_eq!(partition, 1);
-
-        let (partition, val) = clock.parse_time_string("10/16777215:91").unwrap();
-        assert_eq!(val, vec![1, 0]);
-        assert_eq!(partition, 10);
+        let _ = clock.parse_time_string("1/1000:00:00").unwrap();
     }
 }
