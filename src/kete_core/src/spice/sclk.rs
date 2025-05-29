@@ -120,8 +120,8 @@ pub struct Sclk {
 
     // Required Fields
     n_fields: u32,
-    moduli: Vec<u32>,
-    offsets: Vec<u32>,
+    moduli: Vec<u64>,
+    offsets: Vec<u64>,
 
     partition_start: Vec<f64>,
     partition_end: Vec<f64>,
@@ -263,8 +263,8 @@ impl TryFrom<Vec<SclkToken>> for Sclk {
         let mut naif_id: Option<i32> = None;
         let mut kernel_id: Option<String> = None;
         let mut n_fields: Option<u32> = None;
-        let mut moduli: Option<Vec<u32>> = None;
-        let mut offsets: Option<Vec<u32>> = None;
+        let mut moduli: Option<Vec<u64>> = None;
+        let mut offsets: Option<Vec<u64>> = None;
         let mut output_delim: Option<char> = None;
         let mut partition_start: Option<Vec<f64>> = None;
         let mut partition_end: Option<Vec<f64>> = None;
@@ -432,18 +432,11 @@ impl TryFrom<Vec<SclkToken>> for Sclk {
             partition_end.ok_or(Error::ValueError("SCLK PARTITION_END is missing.".into()))?;
         let coefficients =
             coefficients.ok_or(Error::ValueError("SCLK Coefficients are missing.".into()))?;
-        if partition_start.len() != n_fields as usize {
+        if partition_start.len() != partition_end.len() {
             return Err(Error::ValueError(format!(
-                "SCLK PARTITION_START length ({}) does not match N_FIELDS ({})",
+                "SCLK PARTITION_START length ({}) does not match PARTITION_END ({})",
                 partition_start.len(),
-                n_fields
-            )));
-        }
-        if partition_end.len() != n_fields as usize {
-            return Err(Error::ValueError(format!(
-                "SCLK PARTITION_END length ({}) does not match N_FIELDS ({})",
-                partition_end.len(),
-                n_fields
+                partition_end.len()
             )));
         }
         if offsets.len() != n_fields as usize {
@@ -492,13 +485,13 @@ enum SclkToken {
     Comments(String),
     DataType(u32, i32),
     NFields01(u32, u32),
-    Moduli01(u32, Vec<u32>),
+    Moduli01(u32, Vec<u64>),
     OutputDelim01(u32, u32),
     PartitionStart(u32, Vec<f64>),
     PartitionEnd(u32, Vec<f64>),
     Coefficients01(u32, Vec<f64>),
     TimeSystem01(u32, u32),
-    Offsets01(u32, Vec<u32>),
+    Offsets01(u32, Vec<u64>),
     Unknown(String),
 }
 
@@ -519,23 +512,15 @@ fn parse_key_suffix(input: &str) -> IResult<&str, (&str, Option<u32>)> {
             nom::error::ErrorKind::TakeTill1,
         )));
     }
-    let word_len = word.len();
 
-    // without using nom for parsing, check if the last two characters are digits
-    let is_digit = |c: char| c.is_ascii_digit();
-    let (word, num) = if is_digit(word.chars().nth(word_len - 1).unwrap())
-        && is_digit(word.chars().nth(word_len - 2).unwrap())
-    {
-        // take the last two characters as a number
-        let num_str = &word[word_len - 2..];
-        let num = num_str.parse::<u32>().ok();
-        (&word[..word_len - 2], num)
+    let last_underscore = word.rfind('_').unwrap_or(word.len() - 1);
+    let (_, num) = opt(parse_num::<u32>).parse(&word[last_underscore + 1..])?;
+
+    if num.is_some() {
+        Ok((rem, (&word[..last_underscore + 1], num)))
     } else {
-        // no number at the end
-        (word, None)
-    };
-
-    Ok((rem, (word, num)))
+        Ok((rem, (word, None)))
+    }
 }
 
 /// SCLK file data is stored as key value pairs, this parses a specific key and its value.
@@ -606,6 +591,12 @@ fn n_fields(input: &str) -> IResult<&str, SclkToken> {
     Ok((rem, SclkToken::NFields01(sc_id.unwrap(), val)))
 }
 
+fn time_system(input: &str) -> IResult<&str, SclkToken> {
+    let (rem, (sc_id, contents)) = parse_line(input, true, "SCLK01_TIME_SYSTEM_")?;
+    let (_, val) = parse_num(contents)?;
+    Ok((rem, SclkToken::TimeSystem01(sc_id.unwrap(), val)))
+}
+
 /// Data type must be 1, as there is only one data type which has ever been defined
 /// in the SPICE standard.
 fn data_type(input: &str) -> IResult<&str, SclkToken> {
@@ -614,7 +605,7 @@ fn data_type(input: &str) -> IResult<&str, SclkToken> {
     Ok((rem, SclkToken::DataType(sc_id.unwrap(), val)))
 }
 
-fn n_moduli(input: &str) -> IResult<&str, SclkToken> {
+fn moduli(input: &str) -> IResult<&str, SclkToken> {
     let (rem, (sc_id, contents)) = parse_line(input, true, "SCLK01_MODULI_")?;
     let (_, val) = parse_num_vec(contents)?;
     Ok((rem, SclkToken::Moduli01(sc_id.unwrap(), val)))
@@ -672,17 +663,18 @@ fn parse_sclk_string(input: &str) -> IResult<&str, Vec<SclkToken>> {
                     kernel_id,
                     n_fields,
                     data_type,
-                    n_moduli,
+                    moduli,
                     offsets,
                     output_delim,
                     partition_start,
                     partition_end,
                     coefficients,
+                    time_system,
                     unknown,
                 ]),
             ),
         ),
-        preceded(sp, tag(r"\begintext")),
+        delimited(sp, tag(r"\begintext"), sp),
     )
     .parse(input)
 }
@@ -719,7 +711,7 @@ mod tests {
         assert!(result.is_ok());
         let (res, vec) = result.unwrap();
         assert_eq!(vec, 123);
-        assert_eq!(res, "= ");
+        assert_eq!(res, " = ");
     }
 
     #[test]
@@ -766,6 +758,14 @@ mod tests {
             sclk,
             SclkToken::PartitionStart(77, vec![0.0, 2.546544E+07, 7.2800001E+07, 1.31768E+08])
         );
+
+        let (_, sclk) = time_system(
+            "
+               SCLK01_TIME_SYSTEM_226   = ( 2)
+            ",
+        )
+        .unwrap();
+        assert_eq!(sclk, SclkToken::TimeSystem01(226, 2));
     }
 
     #[test]
@@ -844,7 +844,8 @@ mod tests {
             \begintext";
 
         let (_, vec) = parse_sclk_string(input).unwrap();
-        assert_eq!(vec.len(), 9);
+
+        assert_eq!(vec.len(), 9, "Expected 9 tokens, found {:?}", &vec);
         assert_eq!(
             vec[0],
             SclkToken::KernelID("@04-SEP-1990//4:23:00".to_string())
