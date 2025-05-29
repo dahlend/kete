@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (CADC).
 - Added initial support for SPICE SCLK text kernels, allowing the conversion of
   spacecraft formatted time strings to `kete.Time` objects. Conversion matches cSPICE
-  to within 5 ms.
+  to near numerical precision limits.
 
 ### Changed
 
