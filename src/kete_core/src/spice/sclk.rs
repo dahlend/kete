@@ -206,19 +206,17 @@ impl Sclk {
             )));
         }
 
-        let idx = self
-            .partition_start
-            .partition_point(|&start| start <= sc_ticks as f64);
+        let (exp_partition, part_low, _) = self.find_partition_range(sc_ticks as f64)?;
 
-        if partition.is_some() && Some(idx) != partition {
+        if partition.is_some() && Some(exp_partition) != partition {
             return Err(Error::ValueError(format!(
                 "Partition mismatch: expected {}, found {}",
                 partition.unwrap(),
-                idx
+                exp_partition
             )));
         }
 
-        Ok((idx, par_time))
+        Ok((exp_partition, par_time + part_low))
     }
 
     /// Go through the coefficients and find the clock rate for a given spacecraft clock.
@@ -230,6 +228,25 @@ impl Sclk {
 
         let coef = self.coefficients[idx];
         Ok(coef)
+    }
+
+    fn find_partition_range(&self, ticks: f64) -> KeteResult<(usize, f64, f64)> {
+        let idx = self
+            .partition_start
+            .partition_point(|&start| start <= ticks);
+
+        if idx == 0 || idx == self.partition_start.len() {
+            return Err(Error::ValueError(format!(
+                "Time {} is outside of the partition range.",
+                ticks
+            )));
+        }
+
+        Ok((
+            idx,
+            self.partition_start[idx - 1],
+            self.partition_end[idx - 1],
+        ))
     }
 }
 
@@ -863,5 +880,10 @@ mod tests {
         let clock = Sclk::try_from(vec).unwrap();
 
         let _ = clock.parse_time_string("1/1000:00:00").unwrap();
+
+        let (part, low, high) = clock.find_partition_range(0.0).unwrap();
+        assert_eq!(part, 1);
+        assert_eq!(low, 0.0);
+        assert_eq!(high, 2.546544E+07);
     }
 }
