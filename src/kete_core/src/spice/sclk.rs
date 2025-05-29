@@ -1,31 +1,122 @@
-use std::{marker::PhantomData, str::FromStr};
+use std::{collections::HashMap, fs, str::FromStr};
 
-use crossbeam::channel::tick;
+use crossbeam::sync::ShardedLock;
+use lazy_static::lazy_static;
 /// Parsing text kernels used by SPICE.
 use nom::{
     branch::alt,
     bytes::{
-        complete::{take, take_until, take_until1, take_while, take_while1},
+        complete::{take_until, take_until1, take_while, take_while1},
         streaming::tag,
     },
-    character::complete::{alpha1, char, digit1, space0, space1},
-    combinator::{map_res, opt, Opt},
+    character::complete::{char, space0},
+    combinator::{map_res, opt},
     error::{context, ParseError},
     multi::{separated_list0, separated_list1},
     sequence::{delimited, pair, preceded, terminated},
-    IResult, Input, Parser,
+    IResult, Parser,
 };
 
 use crate::{
+    cache::cache_path,
     errors::{Error, KeteResult},
     spice::spice_jd_to_jd,
-    time::scales::TimeScale,
+    time::{scales::TDB, Time},
 };
 
+/// A collection of segments.
+#[derive(Debug, Default)]
+pub struct SclkCollection {
+    /// Collection of SCLK file information
+    clocks: HashMap<i32, Sclk>,
+}
+
+/// Define the SCLK singleton structure.
+pub type SclkSingleton = ShardedLock<SclkCollection>;
+
+impl SclkCollection {
+    /// Given an SCLK filename, load all the segments present inside of it.
+    /// These segments are added to the SCLK singleton in memory.
+    pub fn load_file(&mut self, filename: &str) -> KeteResult<()> {
+        let contents = fs::read_to_string(filename)?;
+        let (_, tokens) = parse_sclk_string(&contents)
+            .map_err(|_| Error::IOError(format!("Failed to parse SCLK file: {}", filename)))?;
+        let sclk: Sclk = tokens.try_into()?;
+
+        let _ = self.clocks.insert(sclk.naif_id, sclk);
+
+        Ok(())
+    }
+
+    /// Convert a spacecraft clock string into a [`Time<TDB>`].
+    pub fn try_get_time(&self, id: i32, sclk_string: &str) -> KeteResult<Time<TDB>> {
+        if let Some(sclk) = self.clocks.get(&id) {
+            sclk.get_time(sclk_string)
+        } else {
+            Err(Error::ValueError(format!(
+                "SCLK clock for spacecraft ID {} not found.",
+                id
+            )))
+        }
+    }
+
+    /// Delete all segments in the PCK singleton, equivalent to unloading all files.
+    pub fn reset(&mut self) {
+        *self = SclkCollection::default();
+    }
+
+    /// Return a list of all loaded segments in the SCLK singleton.
+    /// This is a list of the center NAIF IDs of the segments.
+    pub fn loaded_objects(&self) -> Vec<i32> {
+        self.clocks.keys().cloned().collect()
+    }
+
+    /// Load files in the cache directory.
+    pub fn load_cache(&mut self) -> KeteResult<()> {
+        let cache = cache_path("kernels")?;
+        self.load_directory(cache)?;
+        Ok(())
+    }
+
+    /// Load all PCK files from a directory.
+    pub fn load_directory(&mut self, directory: String) -> KeteResult<()> {
+        fs::read_dir(&directory)?.for_each(|entry| {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_file() {
+                let filename = path.to_str().unwrap();
+                if filename.to_lowercase().ends_with(".tsc") {
+                    if let Err(err) = self.load_file(filename) {
+                        eprintln!("Failed to load PCK file {}: {}", filename, err);
+                    }
+                }
+            }
+        });
+        Ok(())
+    }
+}
+
+lazy_static! {
+    /// SCLK singleton.
+    /// This is a RwLock protected [`SclkCollection`], and must be `.try_read().unwrapped()` for any
+    /// read-only cases.
+    pub static ref LOADED_SCLK: SclkSingleton = {
+        let singleton = SclkCollection::default();
+        ShardedLock::new(singleton)
+    };
+}
+
+/// A spacecraft clock (SCLK) kernel.
+///
+/// Represents a spacecraft clock kernel used in SPICE, as loaded from
+/// a spice kernel text file.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sclk {
-    naif_id: i32,
-    kernel_id: String,
+    /// NAIF id of the spacecraft.
+    pub naif_id: i32,
+
+    /// Kernel ID, which is a string identifier for the kernel.
+    pub kernel_id: String,
 
     // Required Fields
     n_fields: u32,
@@ -37,17 +128,21 @@ pub struct Sclk {
 
     coefficients: Vec<[f64; 3]>,
 
-    // Delimiter here is only use for output formatting.
-    output_delim: char,
-
-    /// Timescale defaults to TDB if not specified.
-    tdb: bool,
+    /// Rate at which each field of the clock ticks.
+    /// The lowest value field ticks at 1 unit per tick.
+    tick_rates: Vec<usize>,
 }
 
 impl Sclk {
-    /// Parse a spacecraft clock string into integers and a partition number.
-    ///
-    /// This handles all the rollover and partitioning logic.
+    /// Given an SCLK clock string, parse it into a `Time<TDB>`.
+    pub fn get_time(&self, time_str: &str) -> KeteResult<Time<TDB>> {
+        let (_, parallel_time) = self.parse_time_string(time_str)?;
+
+        let jd = spice_jd_to_jd(parallel_time);
+        Ok(Time::<TDB>::new(jd))
+    }
+
+    /// Parse a spacecraft clock string into parallel time and partition index.
     fn parse_time_string(&self, time_str: &str) -> KeteResult<(usize, f64)> {
         let (_, (partition, mut fields)) = parse_time_fields(time_str)
             .map_err(|_| Error::ValueError("Failed to parse time fields.".into()))?;
@@ -73,7 +168,7 @@ impl Sclk {
             .iter_mut()
             .zip(self.moduli.iter())
             .rev()
-            .for_each(|(mut val, &modulus)| {
+            .for_each(|(val, &modulus)| {
                 if rollover {
                     *val += 1;
                     rollover = false;
@@ -84,18 +179,11 @@ impl Sclk {
                 }
             });
 
-        let mut tick_rates = vec![1];
-        for modulo in self.moduli.iter().skip(1).rev() {
-            let last = tick_rates.last().unwrap();
-            tick_rates.push(*modulo as usize * last);
-        }
-        tick_rates.reverse();
-
         // compute a floating point representation of the spacecraft clock time
         let mut sc_ticks: usize = 0;
         fields
             .iter()
-            .zip(tick_rates.iter())
+            .zip(self.tick_rates.iter())
             .for_each(|(field, rate)| {
                 sc_ticks += field * rate;
             });
@@ -103,13 +191,22 @@ impl Sclk {
         let clock_rate = self.find_clock_rate(sc_ticks as f64)?;
 
         let par_time = clock_rate[2] * (sc_ticks as f64 - clock_rate[0])
-            / (*tick_rates.first().unwrap() as f64)
+            / (*self.tick_rates.first().unwrap() as f64)
             + clock_rate[1];
 
-        // find partition from the par_time by looking at the bounds
-        // self.partition_start and self.partition_end
+        if sc_ticks < self.partition_start[0] as usize {
+            return Err(Error::ValueError(format!(
+                "Time {} is before the first partition start.",
+                time_str
+            )));
+        } else if sc_ticks > *self.partition_end.last().unwrap() as usize {
+            return Err(Error::ValueError(format!(
+                "Time {} is after the last partition end.",
+                time_str
+            )));
+        }
 
-        let mut idx = self
+        let idx = self
             .partition_start
             .partition_point(|&start| start <= sc_ticks as f64);
 
@@ -118,12 +215,6 @@ impl Sclk {
                 "Partition mismatch: expected {}, found {}",
                 partition.unwrap(),
                 idx
-            )));
-        }
-        if idx == 0 {
-            return Err(Error::ValueError(format!(
-                "Time {} is before the first partition start.",
-                time_str
             )));
         }
 
@@ -163,7 +254,7 @@ fn parse_time_fields(input: &str) -> IResult<&str, (Option<usize>, Vec<usize>)> 
     .parse(input)
 }
 
-// Code below is used to parse SCLK files into the Sclk struct.
+// All code below is used to parse SCLK files into the Sclk struct.
 
 impl TryFrom<Vec<SclkToken>> for Sclk {
     type Error = Error;
@@ -334,15 +425,13 @@ impl TryFrom<Vec<SclkToken>> for Sclk {
         let n_fields = n_fields.ok_or(Error::ValueError("SCLK N_FIELDS is missing.".into()))?;
         let moduli = moduli.ok_or(Error::ValueError("SCLK MODULI is missing.".into()))?;
         let offsets = offsets.ok_or(Error::ValueError("SCLK OFFSETS is missing.".into()))?;
-        let output_delim =
-            output_delim.ok_or(Error::ValueError("SCLK OUTPUT_DELIM is missing.".into()))?;
+        let _ = output_delim.ok_or(Error::ValueError("SCLK OUTPUT_DELIM is missing.".into()))?;
         let partition_start =
             partition_start.ok_or(Error::ValueError("SCLK PARTITION_START is missing.".into()))?;
         let partition_end =
             partition_end.ok_or(Error::ValueError("SCLK PARTITION_END is missing.".into()))?;
         let coefficients =
             coefficients.ok_or(Error::ValueError("SCLK Coefficients are missing.".into()))?;
-        let tdb = tdb.unwrap_or(true); // Default to TDB if not specified
         if partition_start.len() != n_fields as usize {
             return Err(Error::ValueError(format!(
                 "SCLK PARTITION_START length ({}) does not match N_FIELDS ({})",
@@ -372,17 +461,25 @@ impl TryFrom<Vec<SclkToken>> for Sclk {
             )));
         }
 
+        // each field has a different tick rate, where the tick rate is the rate
+        // at which the lowest value term of the clock ticks.
+        let mut tick_rates = vec![1];
+        for modulo in moduli.iter().skip(1).rev() {
+            let last = tick_rates.last().unwrap();
+            tick_rates.push(*modulo as usize * last);
+        }
+        tick_rates.reverse();
+
         Ok(Sclk {
             naif_id,
             kernel_id,
             n_fields,
             moduli,
             offsets,
-            output_delim,
+            tick_rates,
             partition_start,
             partition_end,
             coefficients,
-            tdb,
         })
     }
 }
@@ -499,7 +596,7 @@ fn parse_num_vec<T: FromStr>(input: &str) -> IResult<&str, Vec<T>> {
 }
 
 fn kernel_id(input: &str) -> IResult<&str, SclkToken> {
-    let (rem, (id, contents)) = parse_line(input, false, "SCLK_KERNEL_ID")?;
+    let (rem, (_, contents)) = parse_line(input, false, "SCLK_KERNEL_ID")?;
     Ok((rem, SclkToken::KernelID(contents.to_string())))
 }
 
@@ -664,7 +761,7 @@ mod tests {
                                             7.2800001000000E+07
                                             1.3176800000000E+08 )
             ";
-        let (res, sclk) = partition_start(a).unwrap();
+        let (_, sclk) = partition_start(a).unwrap();
         assert_eq!(
             sclk,
             SclkToken::PartitionStart(77, vec![0.0, 2.546544E+07, 7.2800001E+07, 1.31768E+08])
@@ -674,7 +771,7 @@ mod tests {
     #[test]
     fn test_partition_start() {
         let a = "Thing_a_b_10 = ( foo bar baz)";
-        let (res, (id, rem)) = parse_line(a, true, "Thing_a_b_").unwrap();
+        let (_, (id, rem)) = parse_line(a, true, "Thing_a_b_").unwrap();
         assert_eq!(id, Some(10));
         assert_eq!(rem, "foo bar baz");
     }

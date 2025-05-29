@@ -136,6 +136,11 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(spice::pck_loaded_objects_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::pck_load_core_py, m)?)?;
 
+    m.add_function(wrap_pyfunction!(spice::sclk_load_py, m)?)?;
+    m.add_function(wrap_pyfunction!(spice::sclk_loaded_objects_py, m)?)?;
+    m.add_function(wrap_pyfunction!(spice::sclk_reset_py, m)?)?;
+    m.add_function(wrap_pyfunction!(spice::sclk_time_from_str_py, m)?)?;
+
     m.add_function(wrap_pyfunction!(spice::daf_header_info_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::obs_codes, m)?)?;
 

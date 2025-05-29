@@ -1,10 +1,12 @@
 //! Python support for reading SPICE kernels
 mod daf;
 mod pck;
+mod sclk;
 mod spk;
 
 pub use daf::*;
 pub use pck::*;
+pub use sclk::*;
 pub use spk::*;
 
 use pyo3::pyfunction;
