@@ -6,6 +6,7 @@ mod naif_ids;
 mod obs_codes;
 mod pck;
 mod pck_segments;
+mod sclk;
 mod spk;
 mod spk_segments;
 
@@ -13,6 +14,7 @@ pub use daf::*;
 pub use naif_ids::try_name_from_id;
 pub use obs_codes::OBS_CODES;
 pub use pck::*;
+pub use sclk::*;
 pub use spk::*;
 
 /// Convert seconds from J2000 into JD.

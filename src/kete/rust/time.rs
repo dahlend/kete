@@ -37,7 +37,7 @@ use pyo3::prelude::*;
 ///     immediately.
 #[pyclass(frozen, module = "kete", name = "Time")]
 #[derive(Debug)]
-pub struct PyTime(Time<TDB>);
+pub struct PyTime(pub Time<TDB>);
 
 impl<'py> FromPyObject<'py> for PyTime {
     fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
@@ -51,6 +51,12 @@ impl<'py> FromPyObject<'py> for PyTime {
 impl From<f64> for PyTime {
     fn from(value: f64) -> Self {
         PyTime(Time::new(value))
+    }
+}
+
+impl From<Time<TDB>> for PyTime {
+    fn from(value: Time<TDB>) -> Self {
+        PyTime(value)
     }
 }
 

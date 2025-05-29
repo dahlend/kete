@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   2018, however data is only publicly available through early 2015.
 - Generalized TAP queries to support queries to the Canadian Astronomy Data Centre
   (CADC).
+- Added initial support for SPICE SCLK text kernels, allowing the conversion of
+  spacecraft formatted time strings to `kete.Time` objects. Conversion matches cSPICE
+  to near numerical precision limits.
 
 ### Changed
 
