@@ -180,33 +180,18 @@ impl Sclk {
             });
 
         // compute a floating point representation of the spacecraft clock time
-        let mut sc_ticks: usize = 0;
+        let mut sc_ticks: f64 = 0.0;
         fields
             .iter()
             .zip(self.tick_rates.iter())
             .for_each(|(field, rate)| {
-                sc_ticks += field * rate;
+                sc_ticks += (field * rate) as f64;
             });
 
-        let clock_rate = self.find_clock_rate(sc_ticks as f64)?;
+        let (exp_partition, partition_count) = self.partition_tick_count(sc_ticks)?;
+        sc_ticks += partition_count;
 
-        let par_time = clock_rate[2] * (sc_ticks as f64 - clock_rate[0])
-            / (*self.tick_rates.first().unwrap() as f64)
-            + clock_rate[1];
-
-        if sc_ticks < self.partition_start[0] as usize {
-            return Err(Error::ValueError(format!(
-                "Time {} is before the first partition start.",
-                time_str
-            )));
-        } else if sc_ticks > *self.partition_end.last().unwrap() as usize {
-            return Err(Error::ValueError(format!(
-                "Time {} is after the last partition end.",
-                time_str
-            )));
-        }
-
-        let (exp_partition, part_low, _) = self.find_partition_range(sc_ticks as f64)?;
+        let clock_rate = self.find_clock_rate(sc_ticks)?;
 
         if partition.is_some() && Some(exp_partition) != partition {
             return Err(Error::ValueError(format!(
@@ -216,7 +201,11 @@ impl Sclk {
             )));
         }
 
-        Ok((exp_partition, par_time + part_low))
+        let par_time = clock_rate[2] * (sc_ticks - clock_rate[0])
+            / (*self.tick_rates.first().unwrap() as f64)
+            + clock_rate[1];
+
+        Ok((exp_partition, par_time))
     }
 
     /// Go through the coefficients and find the clock rate for a given spacecraft clock.
@@ -225,28 +214,27 @@ impl Sclk {
             .coefficients
             .partition_point(|probe| probe[0] <= sc_clock);
         idx = idx.saturating_sub(1);
-
-        let coef = self.coefficients[idx];
-        Ok(coef)
+        Ok(self.coefficients[idx])
     }
 
-    fn find_partition_range(&self, ticks: f64) -> KeteResult<(usize, f64, f64)> {
+    fn partition_tick_count(&self, ticks: f64) -> KeteResult<(usize, f64)> {
         let idx = self
             .partition_start
             .partition_point(|&start| start <= ticks);
 
-        if idx == 0 || idx == self.partition_start.len() {
+        if idx == 0 || idx > self.partition_start.len() {
             return Err(Error::ValueError(format!(
                 "Time {} is outside of the partition range.",
                 ticks
             )));
         }
+        let mut count = 0.0;
+        for i in 0..idx.saturating_sub(1) {
+            count += self.partition_end[i] - self.partition_start[i];
+        }
+        count -= self.partition_start[idx - 1];
 
-        Ok((
-            idx,
-            self.partition_start[idx - 1],
-            self.partition_end[idx - 1],
-        ))
+        Ok((idx, count))
     }
 }
 
@@ -881,9 +869,12 @@ mod tests {
 
         let _ = clock.parse_time_string("1/1000:00:00").unwrap();
 
-        let (part, low, high) = clock.find_partition_range(0.0).unwrap();
+        let (part, count) = clock.partition_tick_count(0.0).unwrap();
         assert_eq!(part, 1);
-        assert_eq!(low, 0.0);
-        assert_eq!(high, 2.546544E+07);
+        assert_eq!(count, 0.0);
+
+        let (part, count) = clock.partition_tick_count(7.2900003000000E+07).unwrap();
+        assert_eq!(part, 3);
+        assert_eq!(count, -1.0);
     }
 }
