@@ -24,6 +24,8 @@ use crate::{
     time::{scales::TDB, Time},
 };
 
+use super::jd_to_spice_jd;
+
 /// A collection of segments.
 #[derive(Debug, Default)]
 pub struct SclkCollection {
@@ -49,9 +51,16 @@ impl SclkCollection {
     }
 
     /// Convert a spacecraft clock string into a [`Time<TDB>`].
-    pub fn try_get_time(&self, id: i32, sclk_string: &str) -> KeteResult<Time<TDB>> {
+    ///
+    /// Parameters
+    /// ----------
+    /// id: i32
+    ///   The NAIF ID of the spacecraft clock.
+    /// sclk_string: &str
+    ///   The spacecraft clock string to convert.
+    pub fn string_get_time(&self, id: i32, sclk_string: &str) -> KeteResult<Time<TDB>> {
         if let Some(sclk) = self.clocks.get(&id) {
-            sclk.get_time(sclk_string)
+            sclk.string_to_time(sclk_string)
         } else {
             Err(Error::ValueError(format!(
                 "SCLK clock for spacecraft ID {} not found.",
@@ -60,7 +69,64 @@ impl SclkCollection {
         }
     }
 
-    /// Delete all segments in the PCK singleton, equivalent to unloading all files.
+    /// Convert a spacecraft clock string into a clock tick (SCLK float).
+    ///
+    /// Parameters
+    /// ----------
+    /// id: i32
+    ///     The NAIF ID of the spacecraft clock.
+    /// sclk_string: &str
+    ///     The spacecraft clock string to convert.
+    pub fn try_string_to_tick(&self, id: i32, sclk_string: &str) -> KeteResult<f64> {
+        if let Some(sclk) = self.clocks.get(&id) {
+            sclk.string_to_tick(sclk_string).map(|x| x.1)
+        } else {
+            Err(Error::ValueError(format!(
+                "SCLK clock for spacecraft ID {} not found.",
+                id
+            )))
+        }
+    }
+
+    /// Convert clock tick into a time [`Time<TDB>`].
+    ///
+    /// Parameters
+    /// ----------
+    /// id: i32
+    ///     The NAIF ID of the spacecraft clock.
+    /// clock_tick: f64
+    ///     The clock tick (SCLK float) to convert.
+    pub fn try_tick_to_time(&self, id: i32, clock_tick: f64) -> KeteResult<Time<TDB>> {
+        if let Some(sclk) = self.clocks.get(&id) {
+            sclk.tick_to_time(clock_tick)
+        } else {
+            Err(Error::ValueError(format!(
+                "SCLK clock for spacecraft ID {} not found.",
+                id
+            )))
+        }
+    }
+
+    /// Convert [`Time<TDB>`] to clock tick.
+    ///
+    /// Parameters
+    /// ----------
+    /// id: i32
+    ///     The NAIF ID of the spacecraft clock.
+    /// time: f64
+    ///     The clock tick (SCLK float) to convert.
+    pub fn try_time_to_tick(&self, id: i32, time: Time<TDB>) -> KeteResult<f64> {
+        if let Some(sclk) = self.clocks.get(&id) {
+            sclk.time_to_tick(time)
+        } else {
+            Err(Error::ValueError(format!(
+                "SCLK clock for spacecraft ID {} not found.",
+                id
+            )))
+        }
+    }
+
+    /// Delete all segments in the SCLK singleton, equivalent to unloading all files.
     pub fn reset(&mut self) {
         *self = SclkCollection::default();
     }
@@ -78,7 +144,7 @@ impl SclkCollection {
         Ok(())
     }
 
-    /// Load all PCK files from a directory.
+    /// Load all SCLK files from a directory.
     pub fn load_directory(&mut self, directory: String) -> KeteResult<()> {
         fs::read_dir(&directory)?.for_each(|entry| {
             let entry = entry.unwrap();
@@ -87,7 +153,7 @@ impl SclkCollection {
                 let filename = path.to_str().unwrap();
                 if filename.to_lowercase().ends_with(".tsc") {
                     if let Err(err) = self.load_file(filename) {
-                        eprintln!("Failed to load PCK file {}: {}", filename, err);
+                        eprintln!("Failed to load SCLK file {}: {}", filename, err);
                     }
                 }
             }
@@ -135,15 +201,36 @@ pub struct Sclk {
 
 impl Sclk {
     /// Given an SCLK clock string, parse it into a `Time<TDB>`.
-    pub fn get_time(&self, time_str: &str) -> KeteResult<Time<TDB>> {
-        let (_, parallel_time) = self.parse_time_string(time_str)?;
-
-        let jd = spice_jd_to_jd(parallel_time);
-        Ok(Time::<TDB>::new(jd))
+    pub fn string_to_time(&self, time_str: &str) -> KeteResult<Time<TDB>> {
+        let (_, tick) = self.string_to_tick(time_str)?;
+        self.tick_to_time(tick)
     }
 
-    /// Parse a spacecraft clock string into parallel time and partition index.
-    fn parse_time_string(&self, time_str: &str) -> KeteResult<(usize, f64)> {
+    /// Convert a spacecraft clock tick (SCLK time) into a [`Time<TDB>`].
+    pub fn tick_to_time(&self, tick: f64) -> KeteResult<Time<TDB>> {
+        let clock_rate = self.find_tick_rate(tick)?;
+
+        let par_time = (tick - clock_rate[0])
+            * (clock_rate[2] / (*self.tick_rates.first().unwrap() as f64))
+            + clock_rate[1];
+
+        Ok(Time::<TDB>::new(spice_jd_to_jd(par_time)))
+    }
+
+    /// Convert time in TDB to a spacecraft clock tick count.
+    pub fn time_to_tick(&self, time: Time<TDB>) -> KeteResult<f64> {
+        let jd = time.jd;
+        let par_time = jd_to_spice_jd(jd);
+        let clock_rate = self.find_parallel_time_rate(par_time)?;
+
+        let tick = (par_time - clock_rate[1])
+            * ((*self.tick_rates.first().unwrap() as f64) / clock_rate[2])
+            + clock_rate[0];
+        Ok(tick)
+    }
+
+    /// Convert a spacecraft clock string into the partition and tick count.
+    pub fn string_to_tick(&self, time_str: &str) -> KeteResult<(usize, f64)> {
         let (_, (partition, mut fields)) = parse_time_fields(time_str)
             .map_err(|_| Error::ValueError("Failed to parse time fields.".into()))?;
 
@@ -180,18 +267,15 @@ impl Sclk {
             });
 
         // compute a floating point representation of the spacecraft clock time
-        let mut sc_ticks: f64 = 0.0;
+        let mut tick: f64 = 0.0;
         fields
             .iter()
             .zip(self.tick_rates.iter())
             .for_each(|(field, rate)| {
-                sc_ticks += (field * rate) as f64;
+                tick += (field * rate) as f64;
             });
 
-        let (exp_partition, partition_count) = self.partition_tick_count(sc_ticks)?;
-        sc_ticks += partition_count;
-
-        let clock_rate = self.find_clock_rate(sc_ticks)?;
+        let (exp_partition, partition_count) = self.partition_tick_count(tick)?;
 
         if partition.is_some() && Some(exp_partition) != partition {
             return Err(Error::ValueError(format!(
@@ -200,32 +284,35 @@ impl Sclk {
                 exp_partition
             )));
         }
-
-        let par_time = clock_rate[2] * (sc_ticks - clock_rate[0])
-            / (*self.tick_rates.first().unwrap() as f64)
-            + clock_rate[1];
-
-        Ok((exp_partition, par_time))
+        tick += partition_count;
+        Ok((exp_partition, tick))
     }
 
     /// Go through the coefficients and find the clock rate for a given spacecraft clock.
-    fn find_clock_rate(&self, sc_clock: f64) -> KeteResult<[f64; 3]> {
-        let mut idx = self
-            .coefficients
-            .partition_point(|probe| probe[0] <= sc_clock);
+    fn find_tick_rate(&self, tick: f64) -> KeteResult<[f64; 3]> {
+        let mut idx = self.coefficients.partition_point(|probe| probe[0] <= tick);
         idx = idx.saturating_sub(1);
         Ok(self.coefficients[idx])
     }
 
-    fn partition_tick_count(&self, ticks: f64) -> KeteResult<(usize, f64)> {
-        let idx = self
-            .partition_start
-            .partition_point(|&start| start <= ticks);
+    /// Go through the coefficients and find the clock rate for a given spacecraft clock.
+    fn find_parallel_time_rate(&self, par_time: f64) -> KeteResult<[f64; 3]> {
+        let mut idx = self
+            .coefficients
+            .partition_point(|probe| probe[1] <= par_time);
+        idx = idx.saturating_sub(1);
+        Ok(self.coefficients[idx])
+    }
+
+    /// Given a tick count, find the partition and the number of ticks from the
+    /// beginning of the SCLK to the current time, minus the partition start.
+    fn partition_tick_count(&self, tick: f64) -> KeteResult<(usize, f64)> {
+        let idx = self.partition_start.partition_point(|&start| start <= tick);
 
         if idx == 0 || idx > self.partition_start.len() {
             return Err(Error::ValueError(format!(
                 "Time {} is outside of the partition range.",
-                ticks
+                tick
             )));
         }
         let mut count = 0.0;
@@ -279,13 +366,13 @@ impl TryFrom<Vec<SclkToken>> for Sclk {
         for token in value {
             match token {
                 SclkToken::MagicNumber => continue,
+                SclkToken::Comments(_) => continue,
                 SclkToken::KernelID(id) => {
                     if kernel_id.is_some() {
                         return Err(Error::ValueError("Multiple SCLK_KERNEL_ID found.".into()));
                     }
                     kernel_id = Some(id);
                 }
-                SclkToken::Comments(_) => continue,
                 SclkToken::DataType(id, dtype) => {
                     let id = -(id as i32);
                     if naif_id.is_some() && Some(id) != naif_id {
@@ -867,7 +954,11 @@ mod tests {
 
         let clock = Sclk::try_from(vec).unwrap();
 
-        let _ = clock.parse_time_string("1/1000:00:00").unwrap();
+        let t = clock.string_to_time("1/1000:00:00").unwrap();
+
+        let ticks = clock.time_to_tick(t).unwrap();
+        let t2 = clock.tick_to_time(ticks).unwrap();
+        assert_eq!(t, t2);
 
         let (part, count) = clock.partition_tick_count(0.0).unwrap();
         assert_eq!(part, 1);

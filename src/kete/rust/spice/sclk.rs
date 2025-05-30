@@ -17,20 +17,59 @@ pub fn sclk_load_py(filenames: Vec<String>) -> PyResult<()> {
     Ok(())
 }
 
-/// Convert a spacecraft clock string into a `PyTime` object.
+/// Convert a spacecraft clock string into a :py:class:`kete.Time` object.
 /// This function requires that the SCLK kernels for the spacecraft have been loaded
 /// into the SCLK shared memory singleton.
-/// The `naif_id` is the NAIF ID of the spacecraft, and `sc_clock` is the spacecraft clock
-/// string.
 ///
-/// This conversion matches the cSPICE implementation to within a ~5 milliseconds, mostly
-/// due to the fact the Kete treats TT and TDB as equivalent.
+/// Parameters
+/// ----------
+/// naif_id: int
+///     The NAIF ID of the spacecraft.
+/// sc_clock: str
+///    The spacecraft clock string to convert into a time.
+///
 #[pyfunction]
 #[pyo3(name = "sclk_time_from_string")]
-pub fn sclk_time_from_str_py(naif_id: i32, sc_clock: String) -> PyResult<PyTime> {
+pub fn sclk_str_to_time_py(naif_id: i32, sc_clock: String) -> PyResult<PyTime> {
     let singleton = LOADED_SCLK.read().unwrap();
-    let time = singleton.try_get_time(naif_id, &sc_clock)?;
+    let time = singleton.string_get_time(naif_id, &sc_clock)?;
     Ok(time.into())
+}
+
+/// Convert a spacecraft clock tick (SCLK float) into a time.
+/// This function requires that the SCLK kernels for the spacecraft have been loaded
+/// into the SCLK shared memory singleton.
+///
+/// Parameters
+/// ----------
+/// naif_id: int
+///     The NAIF ID of the spacecraft.
+/// sc_tick: f64
+///     The spacecraft clock tick to convert into a time.
+#[pyfunction]
+#[pyo3(name = "sclk_tick_to_time")]
+pub fn sclk_tick_to_time_py(naif_id: i32, sc_tick: f64) -> PyResult<PyTime> {
+    let singleton = LOADED_SCLK.read().unwrap();
+    let time = singleton.try_tick_to_time(naif_id, sc_tick)?;
+    Ok(time.into())
+}
+
+/// Convert a time into a clock tick (SCLK float).
+/// This function requires that the SCLK kernels for the spacecraft have been loaded
+/// into the SCLK shared memory singleton.
+///
+/// Parameters
+/// ----------
+/// naif_id: int
+///    The NAIF ID of the spacecraft.
+/// time: :py:class:`kete.Time`
+///   The time to convert into a clock tick.
+///
+#[pyfunction]
+#[pyo3(name = "sclk_time_to_tick")]
+pub fn sclk_time_to_tick_py(naif_id: i32, time: PyTime) -> PyResult<f64> {
+    let singleton = LOADED_SCLK.read().unwrap();
+    Ok(singleton.try_time_to_tick(naif_id, time.into())?)
 }
 
 /// Reset the contents of the SCLK shared memory to the default set of SCLK kernels.
@@ -41,7 +80,7 @@ pub fn sclk_reset_py() {
 }
 
 /// Return a list of all loaded objects in the SCLK singleton.
-/// This is a list of the center NAIF IDs of the segments.
+/// This is a list of the NAIF IDs of the clocks.
 #[pyfunction]
 #[pyo3(name = "sclk_loaded")]
 pub fn sclk_loaded_objects_py() -> Vec<i32> {

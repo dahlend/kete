@@ -39,7 +39,7 @@ pub trait TimeScale {
 ///
 /// This is in agreement with TT up to about 1.7ms per century.
 /// This is in agreement with TCB up to 0.57ms per century.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TDB;
 
 impl TimeScale for TDB {
@@ -54,7 +54,7 @@ impl TimeScale for TDB {
 /// UTC Scaled JD time.
 ///
 /// The international standard for communicating time.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct UTC;
 
 impl TimeScale for UTC {
@@ -87,7 +87,7 @@ impl TimeScale for UTC {
 /// This is the international standard for the measurement of time.
 /// Atomic clocks around the world keep track of this time, which then gets
 /// converted to UTC time which is commonly used.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TAI;
 
 impl TimeScale for TAI {
