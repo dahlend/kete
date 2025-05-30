@@ -64,13 +64,15 @@ impl SpkCollection {
     #[inline(always)]
     pub fn try_get_state<T: InertialFrame>(&self, id: i32, jd: f64) -> KeteResult<State<T>> {
         for segment in self.planet_segments.iter() {
-            if segment.spk_array().object_id == id && segment.spk_array().contains(jd) {
+            let arr_ref: &SpkArray = segment.into();
+            if arr_ref.object_id == id && arr_ref.contains(jd) {
                 return segment.try_get_state(jd);
             }
         }
         if let Some(segments) = self.segments.get(&id) {
             for segment in segments.iter() {
-                if segment.spk_array().contains(jd) {
+                let arr_ref: &SpkArray = segment.into();
+                if arr_ref.contains(jd) {
                     return segment.try_get_state(jd);
                 }
             }
@@ -136,7 +138,7 @@ impl SpkCollection {
         let mut segment_info = Vec::<(f64, f64, i32, i32, i32)>::new();
         if let Some(segments) = self.segments.get(&id) {
             for segment in segments.iter() {
-                let spk_array_ref = segment.spk_array();
+                let spk_array_ref: &SpkArray = segment.into();
                 let jds_start = spk_array_ref.jds_start;
                 let jds_end = spk_array_ref.jds_end;
                 segment_info.push((
@@ -150,7 +152,7 @@ impl SpkCollection {
         }
 
         self.planet_segments.iter().for_each(|segment| {
-            let spk_array_ref = segment.spk_array();
+            let spk_array_ref: &SpkArray = segment.into();
             if spk_array_ref.object_id == id {
                 let jds_start = spk_array_ref.jds_start;
                 let jds_end = spk_array_ref.jds_end;
@@ -197,9 +199,10 @@ impl SpkCollection {
         let mut found = HashSet::new();
 
         self.planet_segments.iter().for_each(|x| {
-            let _ = found.insert(x.spk_array().object_id);
+            let spk_array_ref: &SpkArray = x.into();
+            let _ = found.insert(spk_array_ref.object_id);
             if include_centers {
-                let _ = found.insert(x.spk_array().center_id);
+                let _ = found.insert(spk_array_ref.center_id);
             };
         });
 
@@ -207,7 +210,8 @@ impl SpkCollection {
             let _ = found.insert(*obj_id);
             if include_centers {
                 segs.iter().for_each(|seg| {
-                    let _ = found.insert(seg.spk_array().center_id);
+                    let spk_array_ref: &SpkArray = seg.into();
+                    let _ = found.insert(spk_array_ref.center_id);
                 });
             }
         });
@@ -253,7 +257,7 @@ impl SpkCollection {
         let mut nodes: HashMap<i32, HashSet<(i32, i32)>> = HashMap::new();
 
         fn update_nodes(segment: &SpkSegment, nodes: &mut HashMap<i32, HashSet<(i32, i32)>>) {
-            let array_ref = segment.spk_array();
+            let array_ref: &SpkArray = segment.into();
             if let std::collections::hash_map::Entry::Vacant(e) = nodes.entry(array_ref.object_id) {
                 let mut set = HashSet::new();
                 let _ = set.insert((array_ref.center_id, array_ref.object_id));

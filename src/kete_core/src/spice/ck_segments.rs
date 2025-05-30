@@ -1,0 +1,164 @@
+use crate::errors::Error;
+
+use super::CkArray;
+
+#[derive(Debug)]
+pub(in crate::spice) enum CkSegment {
+    Type3(CkSegmentType3),
+}
+
+impl<'a> From<&'a CkSegment> for &'a CkArray {
+    fn from(value: &'a CkSegment) -> Self {
+        match value {
+            CkSegment::Type3(seg) => &seg.array,
+        }
+    }
+}
+
+impl From<CkSegment> for CkArray {
+    fn from(value: CkSegment) -> Self {
+        match value {
+            CkSegment::Type3(seg) => seg.array,
+        }
+    }
+}
+
+impl TryFrom<CkArray> for CkSegment {
+    type Error = Error;
+
+    fn try_from(array: CkArray) -> Result<Self, Self::Error> {
+        match array.segment_type {
+            3 => Ok(CkSegment::Type3(array.try_into()?)),
+            v => Err(Error::IOError(format!(
+                "CK Segment type {:?} not supported.",
+                v
+            ))),
+        }
+    }
+}
+
+
+/// Discrete pointing data with linear interpolation between.
+///
+/// This segment type is broken up into intervals, each with a beginning and
+/// end. One or more data points may be contained within each intervals. Linear
+/// interpolation may be performed within a intervals.
+///
+/// Queries may include a user supplied tolerance on the requested time.
+///
+/// Interpolation does not extend past the bounds of an interval, the closest
+/// point may be returned, provided it is within the specified tolerance.
+///
+/// Single points of data are allowed (no interpolation as long as it is within
+/// the tolerance).
+///
+/// https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/ck.html#Data%20Type%203
+
+#[derive(Debug)]
+#[allow(unused)]
+pub(in crate::spice) struct CkSegmentType3 {
+    array: CkArray,
+    n_intervals: usize,
+    n_records: usize,
+    rec_size: usize,
+
+    interval_start_idx: usize,
+    time_start_idx: usize,
+}
+
+#[allow(unused)]
+impl CkSegmentType3 {
+    fn get_record(&self, idx: usize) -> Type3RecordView {
+        unsafe {
+            let rec = self
+                .array
+                .daf
+                .data
+                .get_unchecked(idx * self.rec_size..(idx + 1) * self.rec_size);
+            Type3RecordView {
+                quaternion: &rec[..4],
+                accel: &rec[4..],
+            }
+        }
+    }
+
+    fn interval_starts(&self) -> &[f64] {
+        unsafe {
+            self.array
+                .daf
+                .data
+                .get_unchecked(self.interval_start_idx..self.interval_start_idx + self.n_intervals)
+        }
+    }
+
+    fn record_times(&self) -> &[f64] {
+        unsafe {
+            self.array
+                .daf
+                .data
+                .get_unchecked(self.time_start_idx..self.time_start_idx + self.n_records)
+        }
+    }
+}
+
+#[allow(unused)]
+struct Type3RecordView<'a> {
+    quaternion: &'a [f64],
+    accel: &'a [f64],
+}
+
+impl TryFrom<CkArray> for CkSegmentType3 {
+    type Error = Error;
+
+    fn try_from(array: CkArray) -> Result<Self, Self::Error> {
+        let n_records = array.daf[array.daf.len() - 1] as usize;
+        let n_intervals = array.daf[array.daf.len() - 2] as usize;
+
+        if n_records == 0 {
+            return Err(Error::IOError(
+                "CK File does not contain any records.".into(),
+            ));
+        }
+        if n_intervals == 0 {
+            return Err(Error::IOError(
+                "CK File does not contain any intervals of records.".into(),
+            ));
+        }
+
+        let rec_size = if array.produces_angular_rates { 7 } else { 4 };
+
+        // Times are also broken up into a 'directory' of every 100th time.
+        // This calculates the size of the directory.
+        let time_dir_size = (n_records - 1) / 100;
+
+        // interval times are also broken up into a 'directory' of every 100th
+        // interval start time. This calculates the size of the directory.
+        let interval_dir_size = (n_intervals - 1) / 100;
+
+        // there are n_records
+        let mut expected_size = n_records * rec_size;
+        // 2 lists of times + 2 numbers at the end
+        expected_size += n_intervals + n_records + 2;
+        // 2 directories
+        expected_size += time_dir_size + interval_dir_size;
+
+        if expected_size != array.daf.len() {
+            return Err(Error::IOError(
+                "CK File not formatted correctly. Number of records found in file don't match expected."
+                    .into(),
+            ));
+        }
+
+        let time_start_idx = n_records * rec_size;
+        let interval_start_idx = time_start_idx + n_records + time_dir_size;
+
+        Ok(CkSegmentType3 {
+            array,
+            n_intervals,
+            n_records,
+            rec_size,
+            interval_start_idx,
+            time_start_idx,
+        })
+    }
+}

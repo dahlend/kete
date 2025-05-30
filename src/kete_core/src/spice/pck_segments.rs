@@ -47,17 +47,19 @@ impl TryFrom<PckArray> for PckSegment {
     }
 }
 
-impl PckSegment {
-    pub fn pck_array(&self) -> &PckArray {
-        match self {
+impl<'a> From<&'a PckSegment> for &'a PckArray {
+    fn from(value: &'a PckSegment) -> Self {
+        match value {
             PckSegment::Type2(seg) => &seg.array,
         }
     }
+}
 
+impl PckSegment {
     /// Return the [`EclipticNonInertial`] at the specified JD. If the requested time is not within
     /// the available range, this will fail.
     pub fn try_get_orientation(&self, center_id: i32, jd: f64) -> KeteResult<EclipticNonInertial> {
-        let arr_ref = self.pck_array();
+        let arr_ref: &PckArray = self.into();
 
         if center_id != arr_ref.center_id {
             Err(Error::DAFLimits(

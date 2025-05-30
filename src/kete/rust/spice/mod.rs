@@ -1,9 +1,11 @@
 //! Python support for reading SPICE kernels
+mod ck;
 mod daf;
 mod pck;
 mod sclk;
 mod spk;
 
+pub use ck::*;
 pub use daf::*;
 pub use pck::*;
 pub use sclk::*;
