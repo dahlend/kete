@@ -33,7 +33,7 @@ use crate::prelude::{Error, KeteResult};
 /// Any conversions to a single float will by necessity result in some small accuracy
 /// loss due to the nature of the representation of numbers on computers.
 ///
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 
 pub struct Time<T: TimeScale> {
     /// Julian Date

@@ -60,15 +60,19 @@ impl From<Time<TDB>> for PyTime {
     }
 }
 
+impl From<PyTime> for Time<TDB> {
+    fn from(value: PyTime) -> Self {
+        value.0
+    }
+}
+
 #[pymethods]
 impl PyTime {
     /// Construct a new time object, TDB default.
     #[new]
     #[pyo3(signature = (jd, scaling="tdb"))]
     pub fn new(jd: f64, scaling: &str) -> PyResult<Self> {
-        let scaling = scaling.to_lowercase();
-
-        Ok(match scaling.as_str() {
+        Ok(match scaling.to_ascii_lowercase().as_str() {
             "tt" => PyTime(Time::<TDB>::new(jd)),
             "tdb" => PyTime(Time::<TDB>::new(jd)),
             "tcb" => PyTime(Time::<TDB>::new(jd)),
