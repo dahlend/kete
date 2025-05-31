@@ -134,14 +134,6 @@ impl Degrees {
         (h.copysign(self.degrees), m.trunc() as u32, s)
     }
 
-    /// Converts to Hours Minutes.
-    pub fn to_hours_minutes(&self) -> (f64, f64) {
-        let hours = self.degrees.abs() / 15.0;
-        let h = hours.trunc();
-        let m = (hours - h) * 60.0;
-        (h.copysign(self.degrees), m)
-    }
-
     /// Converts to Hours as a float.
     pub fn to_hours(&self) -> f64 {
         self.degrees / 15.0
@@ -167,15 +159,6 @@ impl Degrees {
             deg += 1.0;
         }
         (deg.copysign(self.degrees), m as u32, s)
-    }
-
-    /// Converts to Degrees Minutes.
-    pub fn to_degrees_minutes(&self) -> (f64, f64) {
-        let degrees = self.degrees.abs();
-
-        let d = degrees.trunc();
-        let m = (degrees - d) * 60.0;
-        (d.copysign(self.degrees), m)
     }
 
     /// Converts to degrees.
