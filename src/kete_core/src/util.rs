@@ -10,7 +10,14 @@ use crate::{
     spice::parse_num,
 };
 
-/// Hour Minutes Seconds (HMS) angle representation.
+/// Degree angle representation.
+///
+/// This exists primarily to provide conversion methods between
+/// the different representations of angles used in astronomy, such as
+/// degrees, hours, and radians.
+///
+/// This also provide text parsing and generation for the standard
+/// representations of these values.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Degrees {
     degrees: f64,
@@ -178,6 +185,13 @@ impl Degrees {
 
     /// Construct from a string containing the hours minutes and seconds
     /// representation.
+    ///
+    /// The strings must contain at least one number, and up to three.
+    /// Only the first number may have a signed value.
+    ///
+    /// This is a generous implementation, it allows multiple separator
+    /// characters such as spaces, commas, colons, and semicolons. It will
+    /// also allow all numbers to be floating point or scientific notation.
     pub fn try_from_hms_str(text: &str) -> KeteResult<Self> {
         let (h, m, s) = parse_str_to_floats(text)?;
         let hours = h + m.copysign(h) / 60.0 + s.copysign(h) / 3600.0;
@@ -186,6 +200,13 @@ impl Degrees {
 
     /// Construct from a string containing the degree minutes and seconds
     /// representation.
+    ///
+    /// The strings must contain at least one number, and up to three.
+    /// Only the first number may have a signed value.
+    ///
+    /// This is a generous implementation, it allows multiple separator
+    /// characters such as spaces, commas, colons, and semicolons. It will
+    /// also allow all numbers to be floating point or scientific notation.
     pub fn try_from_dms_str(text: &str) -> KeteResult<Self> {
         let (h, m, s) = parse_str_to_floats(text)?;
         let degrees = h + m.copysign(h) / 60.0 + s.copysign(h) / 3600.0;
