@@ -47,7 +47,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Moved `kete.mpc.table_to_states` into `kete.conversion.table_to_states`.
 - Renamed `kete.wise.fetch_wise_fovs` to `kete.wise.fetch_fovs`.
 - Renamed `kete.ztf.fetch_ztf_fovs` to `kete.ztf.fetch_fovs`.
+- Moved RA/DEC string parsing to rust backend.
+- Many functions in python now support passing one or a list of objects, for example,
+  `kete.propagate_n_body` can now be passed single or multiple states, and will return
+  the correct type back.
 
+### Fixed
+
+- Fixed support for `MPCObservation` parsing of MPC files, this regression was 
+  due to upstream changes at the MPC in their formats.
 
 ## [v1.1.0]
 

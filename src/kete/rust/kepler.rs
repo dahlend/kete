@@ -3,10 +3,11 @@ use itertools::Itertools;
 use kete_core::frames::{Equatorial, Vector};
 use kete_core::state::State;
 use kete_core::{constants, propagation};
-use pyo3::{exceptions, PyErr};
+use pyo3::{exceptions, PyErr, PyObject, Python};
 use pyo3::{pyfunction, PyResult};
 use rayon::prelude::*;
 
+use crate::maybe_vec::{maybe_vec_to_pyobj, MaybeVec};
 use crate::state::PyState;
 use crate::time::PyTime;
 use crate::vector::PyVector;
@@ -68,13 +69,16 @@ pub fn compute_eccentric_anomaly_py(
 #[pyfunction]
 #[pyo3(name = "propagate_two_body", signature = (states, jd, observer_pos=None))]
 pub fn propagation_kepler_py(
-    states: Vec<PyState>,
+    py: Python<'_>,
+    states: MaybeVec<PyState>,
     jd: PyTime,
     observer_pos: Option<PyVector>,
-) -> Vec<PyState> {
+) -> PyResult<PyObject> {
+    let (states, was_vec): (Vec<_>, bool) = states.into();
     let jd = jd.jd();
-    states
+    let states = states
         .par_iter()
+        .with_min_len(10)
         .map(|state| {
             let center = state.center_id();
             let frame = state.frame();
@@ -105,5 +109,6 @@ pub fn propagation_kepler_py(
                 .change_center(center)
                 .unwrap_or(State::new_nan(state.raw.desig, jd, state.raw.center_id).into())
         })
-        .collect()
+        .collect();
+    maybe_vec_to_pyobj(py, states, was_vec)
 }

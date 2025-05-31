@@ -4,9 +4,9 @@ pub mod fov_like;
 pub mod generic;
 pub mod neos;
 pub mod patches;
+pub mod ptf;
 pub mod wise;
 pub mod ztf;
-pub mod ptf;
 
 pub use fov_like::*;
 pub use generic::*;
@@ -41,7 +41,7 @@ pub enum FOV {
 
     /// NEOS Visit.
     NeosVisit(NeosVisit),
-    
+
     /// ZTF Single Quad of single CCD FOV.
     ZtfCcdQuad(ZtfCcdQuad),
 
@@ -88,7 +88,7 @@ impl FOV {
             FOV::ZtfField(fov) => fov.observer(),
             FOV::NeosVisit(fov) => fov.observer(),
             FOV::OmniDirectional(fov) => fov.observer(),
-            FOV::PtfCcd(fov)=> fov.observer(),
+            FOV::PtfCcd(fov) => fov.observer(),
             FOV::PtfField(fov) => fov.observer(),
         }
     }

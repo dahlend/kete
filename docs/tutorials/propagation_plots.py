@@ -28,15 +28,15 @@ for jd in jds:
     line = state.pos + state.vel * (jd - state.jd)
     error_line.append((jpl_pos - line).r * kete.constants.AU_KM)
 
-    two_body = kete.propagate_two_body([state], jd)[0].pos
+    two_body = kete.propagate_two_body(state, jd).pos
     error_2body.append((jpl_pos - two_body).r * kete.constants.AU_KM)
 
-    n_body_state = kete.propagate_n_body([n_body_state], jd)[0]
+    n_body_state = kete.propagate_n_body(n_body_state, jd)
     n_body_no_asteroids.append((jpl_pos - n_body_state.pos).r * kete.constants.AU_KM)
 
     n_body_state_ast = kete.propagate_n_body(
-        [n_body_state_ast], jd, include_asteroids=True
-    )[0]
+        n_body_state_ast, jd, include_asteroids=True
+    )
     n_body_ast.append((jpl_pos - n_body_state_ast.pos).r * kete.constants.AU_KM)
 
 plt.figure(dpi=150)

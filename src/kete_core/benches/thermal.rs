@@ -1,8 +1,8 @@
 extern crate criterion;
-use std::hint::black_box;
-use criterion::{ criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kete_core::flux::{FrmParams, HGParams, NeatmParams};
 use pprof::criterion::{Output, PProfProfiler};
+use std::hint::black_box;
 
 fn neatm_bench(params: &NeatmParams) {
     assert!(params

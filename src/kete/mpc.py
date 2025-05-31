@@ -823,6 +823,9 @@ class MPCObservation:
         import kete
         import gzip
 
+        # Comet Observations
+        # url = "https://www.minorplanetcenter.net/iau/ECS/MPCAT-OBS/CmtObs.txt.gz"
+
         # Download the database of unnumbered observations from the MPC
         url = "https://www.minorplanetcenter.net/iau/ECS/MPCAT-OBS/UnnObs.txt.gz"
         path = kete.data.download_file(url)
@@ -848,6 +851,8 @@ class MPCObservation:
     obs_code: str
     sun2sc: list[float]
 
+    _UNSUPPORTED = set("WwQqVvRrXx")
+
     def __post_init__(self):
         if self.sun2sc is None:
             self.sun2sc = [np.nan, np.nan, np.nan]
@@ -860,16 +865,14 @@ class MPCObservation:
         """
         found = []
         idx = 0
-        unsupported = set("WwQqVvRrXx")
         while True:
             if idx >= len(lines):
                 break
             line = cls._read_first_line(lines[idx])
             idx += 1
-            if line["note2"] in unsupported:
-                # unsupported or deprecated observation types
+            if line is None:
                 continue
-            elif line["note2"] == "s" or line["note2"] == "t":
+            if line["note2"] == "s" or line["note2"] == "t":
                 logger.warning("Second line of spacecraft observation found alone")
                 continue
             elif line["note2"] == "S" or line["note2"] == "T":
@@ -885,19 +888,27 @@ class MPCObservation:
 
     @staticmethod
     def _read_first_line(line):
+        if line[14] in MPCObservation._UNSUPPORTED:
+            # unsupported or deprecated observation types
+            return None
+
         mag_band = line[65:71].strip()
 
         year, month, day = line[15:32].strip().split()
         jd = Time.from_ymd(int(year), int(month), float(day)).jd
         if len(mag_band) > 0:
             mag_band = mag_band.split(maxsplit=1)[0]
+
+        ra = conversion.ra_hms_to_degrees(line[32:44].strip())
+        dec = conversion.dec_dms_to_degrees(line[44:55].strip())
+
         contents = dict(
             name=line[:12].strip(),
             discovery=line[12] == "*",
             note1=line[13].strip(),
             note2=line[14].strip(),
-            ra=conversion.ra_hms_to_degrees(line[32:44].strip()),
-            dec=conversion.dec_dms_to_degrees(line[44:55].strip()),
+            ra=ra,
+            dec=dec,
             mag_band=mag_band,
             obs_code=line[77:80],
             sun2sc=None,

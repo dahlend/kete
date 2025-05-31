@@ -40,7 +40,7 @@ fluxes = []
 for dt in dts:
     # Find the observer and object positions some time in the future.
     earth_pos = kete.spice.get_state("Earth", jd + dt).pos
-    final_pos = kete.propagate_two_body([state], jd + dt, earth_pos)[0].pos
+    final_pos = kete.propagate_two_body(state, jd + dt, earth_pos).pos
 
     obj2obs = final_pos - earth_pos
 

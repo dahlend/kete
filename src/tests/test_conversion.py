@@ -67,11 +67,12 @@ def test_dec_deg_dms():
     """
     dec_in = np.append(np.arange(-90, 90, 0.1357), 90)
     dec_out = [dec_dms_to_degrees(dec_degrees_to_dms(d)) for d in dec_in]
-    assert np.allclose(dec_in, dec_out)
 
-    with pytest.raises(ValueError, match="sign"):
-        dec_dms_to_degrees("0")
-    with pytest.raises(ValueError, match="space"):
+    for deg in dec_in:
+        dec_out = dec_dms_to_degrees(dec_degrees_to_dms(deg))
+        assert np.allclose(deg, dec_out)
+
+    with pytest.raises(ValueError, match="format"):
         dec_dms_to_degrees("+0 1 2 3 4")
     with pytest.raises(ValueError, match="between"):
         dec_degrees_to_dms(95)

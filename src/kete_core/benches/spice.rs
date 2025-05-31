@@ -1,5 +1,4 @@
 extern crate criterion;
-use std::hint::black_box;
 use criterion::{criterion_group, criterion_main, Criterion};
 use kete_core::{
     frames::{Ecliptic, Equatorial},
@@ -7,6 +6,7 @@ use kete_core::{
     state::State,
 };
 use pprof::criterion::{Output, PProfProfiler};
+use std::hint::black_box;
 
 fn spice_get_raw_state(jd: f64) {
     let spice = &LOADED_SPK.try_read().unwrap();

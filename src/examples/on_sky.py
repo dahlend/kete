@@ -40,7 +40,7 @@ jd = kete.Time.from_ymd(2025, 6, 1.5).jd
 
 # Currently the state of the object above is not at this date
 # lets perform orbit propagation to bring it to this date:
-state = kete.propagate_n_body([state], jd)[0]
+state = kete.propagate_n_body(state, jd)
 
 
 # %% Observatory Information
@@ -71,7 +71,7 @@ print(observer_to_object)
 # Note that in general the two-body approximation will result in incorrect
 # position calculations when propagation time exceeds a few days.
 # But its an excellent approximation over the minutes time scale.
-light_delay_state = kete.propagate_two_body([state], state.jd, observer.pos)[0]
+light_delay_state = kete.propagate_two_body(state, state.jd, observer.pos)
 
 print("\nThe light delayed position of the object vs the instantaneous:")
 print(light_delay_state.pos)

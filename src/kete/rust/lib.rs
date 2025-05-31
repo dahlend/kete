@@ -34,6 +34,7 @@ pub mod fovs;
 pub mod frame;
 pub mod horizons;
 pub mod kepler;
+pub mod maybe_vec;
 pub mod nongrav;
 pub mod propagation;
 pub mod simult_states;
@@ -41,6 +42,7 @@ pub mod spice;
 pub mod state;
 pub mod state_transition;
 pub mod time;
+pub mod utils;
 pub mod vector;
 
 // Due to the nature of this sort of interface, there is quite a bit of boiler-plate
@@ -152,6 +154,11 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fitting::fit_chi2_py, m)?)?;
 
     m.add_function(wrap_pyfunction!(kete_core::cache::cache_path, m)?)?;
+
+    m.add_function(wrap_pyfunction!(utils::ra_degrees_to_hms_py, m)?)?;
+    m.add_function(wrap_pyfunction!(utils::dec_degrees_to_dms_py, m)?)?;
+    m.add_function(wrap_pyfunction!(utils::ra_hms_to_degrees_py, m)?)?;
+    m.add_function(wrap_pyfunction!(utils::dec_dms_to_degrees_py, m)?)?;
 
     Ok(())
 }

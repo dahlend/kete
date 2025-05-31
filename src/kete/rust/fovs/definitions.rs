@@ -167,13 +167,11 @@ pub struct PyZtfField(pub fov::ZtfField);
 #[allow(clippy::upper_case_acronyms)]
 pub struct PyPtfField(pub fov::PtfField);
 
-
 /// Field of view of a Single PTF ccd.
 #[pyclass(module = "kete", frozen, name = "PtfCcd")]
 #[derive(Clone, Debug)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct PyPtfCcd(pub fov::PtfCcd);
-
 
 /// Generic Rectangular Field of view.
 ///
@@ -1090,7 +1088,6 @@ impl PyZtfField {
         )
     }
 }
-
 
 #[pymethods]
 #[allow(clippy::too_many_arguments)]

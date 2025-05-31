@@ -1,5 +1,6 @@
 //! Python vector support with frame information.
 use kete_core::frames::Vector;
+use kete_core::util::Degrees;
 use pyo3::basic::CompareOp;
 use pyo3::exceptions;
 use pyo3::exceptions::PyNotImplementedError;
@@ -203,10 +204,24 @@ impl PyVector {
         self.raw.to_ra_dec().0.to_degrees()
     }
 
+    /// The right ascension, in hours-minutes-seconds string format.
+    #[getter]
+    pub fn ra_hms(&self) -> String {
+        let deg = Degrees::from_radians(self.raw.to_ra_dec().0);
+        deg.to_hms_str()
+    }
+
     /// Declination in degrees in the Equatorial Frame.
     #[getter]
     pub fn dec(&self) -> f64 {
         self.raw.to_ra_dec().1.to_degrees()
+    }
+
+    /// The declination, in degrees-arcminutes-arcseconds string format.
+    #[getter]
+    pub fn dec_dms(&self) -> String {
+        let deg = Degrees::from_radians(self.raw.to_ra_dec().1);
+        deg.to_dms_str()
     }
 
     /// Latitude in degrees in the Ecliptic Frame.
