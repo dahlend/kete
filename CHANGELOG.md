@@ -49,6 +49,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Renamed `kete.ztf.fetch_ztf_fovs` to `kete.ztf.fetch_fovs`.
 - Moved RA/DEC string parsing to rust backend.
 
+### Fixed
+
+- Fixed support for `MPCObservation` parsing of MPC files, this regression was 
+  due to upstream changes at the MPC in their formats.
+
 ## [v1.1.0]
 
 Announcement: Author of Kete (Dar Dahlen) has left IPAC Caltech to begin a PhD at
