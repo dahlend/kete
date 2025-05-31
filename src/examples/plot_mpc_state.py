@@ -50,7 +50,7 @@ for i, planet in enumerate(["Mercury", "Venus", "Earth", "Mars", "Jupiter"]):
 for state in states:
     jd = states[0].jd
     jds = np.linspace(jd - 90, jd, 100)
-    pos = np.array([kete.propagate_two_body([state], jd)[0].pos for jd in jds]).T
+    pos = np.array([kete.propagate_two_body(state, jd).pos for jd in jds]).T
     ax.plot(pos[0], pos[1], pos[2], color="black", alpha=0.1, lw=0.2)
 
 ax.scatter(0, 0, 0, color="red")

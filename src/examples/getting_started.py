@@ -202,10 +202,10 @@ for i, planet in enumerate(["Mercury", "Venus", "Earth", "Mars", "Jupiter"]):
 
 # plot the orbit of eros, using 2 body mechanics to plot the previous orbit
 eros = kete.HorizonsProperties.fetch("Eros").state
-eros = kete.propagate_two_body([eros], jd)[0]
+eros = kete.propagate_two_body(eros, jd)
 plt.scatter(eros.pos.x, eros.pos.y, c="black", s=10)
 jds = np.linspace(jd - eros.elements.orbital_period, jd, 100)
-pos = np.array([kete.propagate_two_body([eros], jd)[0].pos for jd in jds]).T
+pos = np.array([kete.propagate_two_body(eros, jd).pos for jd in jds]).T
 plt.plot(pos[0], pos[1], c="C0", alpha=0.2)
 
 plt.xlabel("Ecliptic X (au)")

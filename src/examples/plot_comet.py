@@ -84,7 +84,7 @@ def plot_vectors(wcs, state, fov, x=0.2, y=0.2):
     - East vector, showing Equatorial East.
     """
 
-    past_vec = kete.propagate_n_body([state], state.jd - 0.05)[0].pos - fov.observer.pos
+    past_vec = kete.propagate_n_body(state, state.jd - 0.05).pos - fov.observer.pos
     sun_vec = (state.pos * 1.001) - fov.observer.pos
     vec = (state.pos - fov.observer.pos).as_equatorial
     north_vec = kete.Vector.from_ra_dec(vec.ra, vec.dec + 0.01)
@@ -104,10 +104,10 @@ def plot_syndyne(wcs, state, fov, beta, back_days=90, day_step=1, **kwargs):
     model = kete.propagation.NonGravModel.new_dust(beta)
 
     # working backward, calculate the position of the comet at each time step
-    dust_state = kete.propagate_n_body([state], fov.jd - back_days)[0]
+    dust_state = kete.propagate_n_body(state, fov.jd - back_days)
     dust_states = []
     for jd in np.arange(dust_state.jd, fov.jd, day_step):
-        dust_state = kete.propagate_n_body([dust_state], jd)[0]
+        dust_state = kete.propagate_n_body(dust_state, jd)
         dust_states.append(dust_state)
 
     # Now treat all of those points as though they are release dust, and
@@ -145,7 +145,7 @@ def plot_synchrone(
     models = [kete.propagation.NonGravModel.new_dust(beta) for beta in betas]
 
     # propagate the comet back to the release date
-    dust_state = kete.propagate_n_body([state], fov.jd + days_back)[0]
+    dust_state = kete.propagate_n_body(state, fov.jd + days_back)
     dust_states = [dust_state] * len(betas)
 
     # release dust and propagate foward to the current epoch.

@@ -47,7 +47,7 @@ class TestNBodyPropagation:
     def test_propagation_short(self, ceres_traj):
         initial_state = ceres_traj[0]
         final_state = ceres_traj[1]
-        calc = propagate_n_body([initial_state], Time(final_state.jd))[0]
+        calc = propagate_n_body(initial_state, Time(final_state.jd))
         assert np.allclose(calc.pos, final_state.pos)
         assert np.allclose(calc.vel, final_state.vel)
 
@@ -80,7 +80,7 @@ class TestTwoBodyPropagation:
 
         for jd in range(-5, 5):
             jd = state.jd + jd
-            vec_state = propagate_two_body([state], jd)[0]
+            vec_state = propagate_two_body(state, jd)
             jpl_state = spice.get_state("Venus", jd)
             assert vec_state.jd == jpl_state.jd
             assert np.allclose(vec_state.vel, jpl_state.vel)
@@ -98,8 +98,8 @@ class TestTwoBodyPropagation:
         for au in range(0, 5):
             sun2obs = Vector(state.pos + [au, 0.0, 0.0])
             delay = au / constants.SPEED_OF_LIGHT_AUDAY
-            should_be = propagate_two_body([state], state.jd - delay)[0]
-            calculated = propagate_two_body([state], state.jd, sun2obs)[0]
+            should_be = propagate_two_body(state, state.jd - delay)
+            calculated = propagate_two_body(state, state.jd, sun2obs)
 
             assert np.allclose(calculated.vel, should_be.vel)
             assert np.allclose(calculated.pos, should_be.pos)

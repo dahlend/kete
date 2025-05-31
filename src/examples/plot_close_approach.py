@@ -20,7 +20,7 @@ jd_end = jd_center + 1.25
 steps = 1 / 24 / 20
 
 # propagate the state up to the start date.
-cur_state = kete.propagate_n_body([cur_state], jd_start, include_asteroids=True)[0]
+cur_state = kete.propagate_n_body(cur_state, jd_start, include_asteroids=True)
 
 # Now we propagate the object, recording info as we go
 # this is not the most efficient way to do this, but for 1 object it is easy.
@@ -33,8 +33,8 @@ time = []
 while cur_state.jd < jd_end:
     # propagate the object, and include the massive main belt asteroids
     cur_state = kete.propagate_n_body(
-        [cur_state], cur_state.jd + steps, include_asteroids=True
-    )[0]
+        cur_state, cur_state.jd + steps, include_asteroids=True
+    )
     time.append((cur_state.jd - jd_center))
     elements.append(cur_state.elements)
     rel_earth_state = cur_state.change_center(399)

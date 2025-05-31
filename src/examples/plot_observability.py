@@ -45,7 +45,7 @@ if obj.g_phase is None:
 if obj.h_mag is None:
     print("Horizons doesn't have an h mag for this object, no mags will be computed!")
 
-state = kete.propagate_n_body([obj.state], start_time)[0]
+state = kete.propagate_n_body(obj.state, start_time)
 
 mags = []
 solar_elon = []
@@ -55,7 +55,7 @@ sun_dist = []
 for t in times:
     # For each time, compute the geometry, then compute the mag as well as all of the
     # various angle and distance values.
-    state = kete.propagate_n_body([state], t)[0]
+    state = kete.propagate_n_body(state, t)
     sun2obs = kete.spice.mpc_code_to_ecliptic(site, t).pos
     earth2obs = kete.spice.mpc_code_to_ecliptic(site, t, center="399").pos
 
@@ -126,10 +126,10 @@ night_len = []
 for t in day_steps:
     elevation = []
 
-    state = kete.propagate_n_body([state], t + substep_time / 2)[0]
+    state = kete.propagate_n_body(state, t + substep_time / 2)
     nights = []
     for subrange in substeps:
-        approx_state = kete.propagate_two_body([state], t + subrange)[0]
+        approx_state = kete.propagate_two_body(state, t + subrange)
         sun2obs = kete.spice.mpc_code_to_ecliptic(site, t + subrange).pos
         earth2obs = kete.spice.mpc_code_to_ecliptic(
             site, t + subrange, center="399"
