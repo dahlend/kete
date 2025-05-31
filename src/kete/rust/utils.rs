@@ -4,34 +4,7 @@ use itertools::Itertools;
 use kete_core::util::Degrees;
 use pyo3::{exceptions::PyValueError, prelude::*};
 
-/// Polymorphic support for a single value or a vector of values.
-#[derive(Debug, FromPyObject, IntoPyObject)]
-pub enum MaybeVec<T> {
-    /// A single value of type T.
-    Single(T),
-
-    /// A vector of values of type T.
-    Multiple(Vec<T>),
-}
-
-impl<T> From<MaybeVec<T>> for Vec<T> {
-    fn from(maybe_vec: MaybeVec<T>) -> Self {
-        match maybe_vec {
-            MaybeVec::Single(value) => vec![value],
-            MaybeVec::Multiple(vec) => vec,
-        }
-    }
-}
-
-impl<T: Clone> From<Vec<T>> for MaybeVec<T> {
-    fn from(maybe_vec: Vec<T>) -> Self {
-        if maybe_vec.len() == 1 {
-            MaybeVec::Single(maybe_vec[0].clone())
-        } else {
-            MaybeVec::Multiple(maybe_vec)
-        }
-    }
-}
+use crate::maybe_vec::{maybe_vec_to_pyobj, MaybeVec};
 
 /// Convert a Right Ascension in decimal degrees to an "hours minutes seconds" string.
 ///
@@ -41,16 +14,18 @@ impl<T: Clone> From<Vec<T>> for MaybeVec<T> {
 ///     Right Ascension in decimal degrees.
 #[pyfunction]
 #[pyo3(name = "ra_degrees_to_hms")]
-pub fn ra_degrees_to_hms_py(ra: MaybeVec<f64>) -> MaybeVec<String> {
-    let ra: Vec<_> = ra.into();
-    ra.into_iter()
+pub fn ra_degrees_to_hms_py(py: Python<'_>, ra: MaybeVec<f64>) -> PyResult<PyObject> {
+    let (ra, was_vec): (Vec<_>, bool) = ra.into();
+    let ra = ra
+        .into_iter()
         .map(|ra| {
             let mut deg = Degrees::from_degrees(ra);
             deg.bound_to_360();
             deg.to_hms_str()
         })
-        .collect_vec()
-        .into()
+        .collect_vec();
+
+    maybe_vec_to_pyobj(py, ra, was_vec)
 }
 
 /// Convert a declination in degrees to a "degrees arcminutes arcseconds" string.
@@ -61,23 +36,25 @@ pub fn ra_degrees_to_hms_py(ra: MaybeVec<f64>) -> MaybeVec<String> {
 ///     Declination in decimal degrees.
 #[pyfunction]
 #[pyo3(name = "dec_degrees_to_dms")]
-pub fn dec_degrees_to_dms_py(dec: MaybeVec<f64>) -> PyResult<MaybeVec<String>> {
-    let dec: Vec<_> = dec.into();
+pub fn dec_degrees_to_dms_py(py: Python<'_>, dec: MaybeVec<f64>) -> PyResult<PyObject> {
+    let (dec, was_vec): (Vec<_>, bool) = dec.into();
 
     if dec.iter().any(|&d| d.abs() > 90.0) {
         return Err(PyErr::new::<PyValueError, _>(
             "Declination must be between -90 and 90 degrees",
         ));
     }
-    Ok(dec
+
+    let dec = dec
         .into_iter()
         .map(|dec| {
             let mut deg = Degrees::from_degrees(dec);
             deg.bound_to_pm_180();
             deg.to_dms_str()
         })
-        .collect_vec()
-        .into())
+        .collect_vec();
+
+    maybe_vec_to_pyobj(py, dec, was_vec)
 }
 
 /// Convert a declination from "degrees arcminutes arcseconds" string to degrees.
@@ -90,8 +67,8 @@ pub fn dec_degrees_to_dms_py(dec: MaybeVec<f64>) -> PyResult<MaybeVec<String>> {
 ///     Declination in degrees-arcminutes-arcseconds.
 #[pyfunction]
 #[pyo3(name = "dec_dms_to_degrees")]
-pub fn dec_dms_to_degrees_py(dec: MaybeVec<String>) -> PyResult<MaybeVec<f64>> {
-    let dec: Vec<_> = dec.into();
+pub fn dec_dms_to_degrees_py(py: Python<'_>, dec: MaybeVec<String>) -> PyResult<PyObject> {
+    let (dec, was_vec): (Vec<_>, bool) = dec.into();
     let mut results = Vec::with_capacity(dec.len());
 
     for dms in dec {
@@ -109,7 +86,7 @@ pub fn dec_dms_to_degrees_py(dec: MaybeVec<String>) -> PyResult<MaybeVec<f64>> {
             })?;
     }
 
-    Ok(results.into())
+    maybe_vec_to_pyobj(py, results, was_vec)
 }
 
 ///  Convert a right ascension from "hours minutes seconds" string to degrees.
@@ -122,8 +99,8 @@ pub fn dec_dms_to_degrees_py(dec: MaybeVec<String>) -> PyResult<MaybeVec<f64>> {
 ///     Right ascension in hours-minutes-seconds.
 #[pyfunction]
 #[pyo3(name = "ra_hms_to_degrees")]
-pub fn ra_hms_to_degrees_py(ra: MaybeVec<String>) -> PyResult<MaybeVec<f64>> {
-    let ra: Vec<_> = ra.into();
+pub fn ra_hms_to_degrees_py(py: Python<'_>, ra: MaybeVec<String>) -> PyResult<PyObject> {
+    let (ra, was_vec): (Vec<_>, bool) = ra.into();
     let mut results = Vec::with_capacity(ra.len());
 
     for hms in ra {
@@ -141,5 +118,5 @@ pub fn ra_hms_to_degrees_py(ra: MaybeVec<String>) -> PyResult<MaybeVec<f64>> {
             })?;
     }
 
-    Ok(results.into())
+    maybe_vec_to_pyobj(py, results, was_vec)
 }

@@ -7,11 +7,15 @@ use kete_core::{
     state::State,
     time::{scales::TDB, Time},
 };
-use pyo3::{pyfunction, PyResult, Python};
+use pyo3::{pyfunction, PyObject, PyResult, Python};
 use rayon::prelude::*;
 
-use crate::state::PyState;
-use crate::{nongrav::PyNonGravModel, time::PyTime};
+use crate::{
+    maybe_vec::{maybe_vec_to_pyobj, MaybeVec},
+    nongrav::PyNonGravModel,
+    state::PyState,
+    time::PyTime,
+};
 
 /// Compute the MOID between the input state and an optional second state.
 /// If the second state is not provided, default to Earth.
@@ -26,16 +30,37 @@ use crate::{nongrav::PyNonGravModel, time::PyTime};
 ///     Optional state of the second object, defaults to Earth.
 #[pyfunction]
 #[pyo3(name = "moid", signature = (state_a, state_b=None))]
-pub fn moid_py(state_a: PyState, state_b: Option<PyState>) -> PyResult<f64> {
+pub fn moid_py(
+    py: Python<'_>,
+    state_a: MaybeVec<PyState>,
+    state_b: Option<PyState>,
+) -> PyResult<PyObject> {
+    let (states, was_vec): (Vec<_>, bool) = state_a.into();
+    if states.is_empty() {
+        Err(Error::ValueError(
+            "state_a must have at least one state.".into(),
+        ))?;
+    }
+
     let state_b =
         state_b
             .map(|x| x.raw)
             .unwrap_or(LOADED_SPK.read().unwrap().try_get_state_with_center(
                 399,
-                state_a.raw.jd,
+                states[0].raw.jd,
                 10,
             )?);
-    Ok(moid(state_a.raw, state_b)?)
+
+    let moids: Vec<f64> = states
+        .into_par_iter()
+        .with_min_len(30)
+        .map(|state| {
+            let state = state.raw;
+            moid(state, state_b.clone()).unwrap_or(f64::NAN)
+        })
+        .collect::<Vec<_>>();
+
+    maybe_vec_to_pyobj(py, moids, was_vec)
 }
 
 /// Propagate the provided :class:`~kete.State` using N body mechanics to the
@@ -72,13 +97,15 @@ pub fn moid_py(state_a: PyState, state_b: Option<PyState>) -> PyResult<f64> {
     non_gravs=None, suppress_errors=true, suppress_impact_errors=false))]
 pub fn propagation_n_body_spk_py(
     py: Python<'_>,
-    states: Vec<PyState>,
+    states: MaybeVec<PyState>,
     jd: PyTime,
     include_asteroids: bool,
-    non_gravs: Option<Vec<Option<PyNonGravModel>>>,
+    non_gravs: Option<MaybeVec<Option<PyNonGravModel>>>,
     suppress_errors: bool,
     suppress_impact_errors: bool,
-) -> PyResult<Vec<PyState>> {
+) -> PyResult<PyObject> {
+    let (states, was_vec): (Vec<_>, bool) = states.into();
+    let non_gravs: Option<Vec<Option<PyNonGravModel>>> = non_gravs.map(|x| x.into());
     let non_gravs = non_gravs.unwrap_or(vec![None; states.len()]);
 
     if states.len() != non_gravs.len() {
@@ -150,7 +177,7 @@ pub fn propagation_n_body_spk_py(
         res.append(&mut proc_chunk);
     }
 
-    Ok(res)
+    maybe_vec_to_pyobj(py, res, was_vec)
 }
 
 /// It is *STRONGLY* recommended to use `propagate_n_body` instead of this function

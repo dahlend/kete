@@ -34,6 +34,7 @@ pub mod fovs;
 pub mod frame;
 pub mod horizons;
 pub mod kepler;
+pub mod maybe_vec;
 pub mod nongrav;
 pub mod propagation;
 pub mod simult_states;
