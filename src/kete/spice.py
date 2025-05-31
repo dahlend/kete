@@ -290,8 +290,8 @@ def _download_core_files():
             )
 
     # Look for PCK files
-    cache_files = glob.glob(os.path.join(cache_path(), "kernels", "*.bpc"))
-    if not any(["combined.bsp" in file for file in cache_files]):
+    cache_files = glob.glob(os.path.join(cache_path(), "kernels/core", "*.bpc"))
+    if not any(["combined.bpc" in file for file in cache_files]):
         pck_path = "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/pck/"
 
         # cannot find the combined file, so download it

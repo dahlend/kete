@@ -207,7 +207,6 @@ impl FovLike for PtfField {
         self.ccds.len()
     }
 
-
     #[inline]
     fn pointing(&self) -> KeteResult<Vector<Equatorial>> {
         if self.ccds.is_empty() {

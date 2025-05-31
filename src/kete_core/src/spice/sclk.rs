@@ -659,7 +659,7 @@ fn sp<'a, E: ParseError<&'a str>>(i: &'a str) -> IResult<&'a str, &'a str, E> {
     take_while(move |c| chars.contains(c))(i)
 }
 
-fn parse_num<T: FromStr>(input: &str) -> IResult<&str, T> {
+pub(crate) fn parse_num<T: FromStr>(input: &str) -> IResult<&str, T> {
     let chars = ".Ee+-";
     map_res(
         take_while1(|c: char| c.is_ascii_digit() || chars.contains(c)),

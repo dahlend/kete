@@ -47,7 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Moved `kete.mpc.table_to_states` into `kete.conversion.table_to_states`.
 - Renamed `kete.wise.fetch_wise_fovs` to `kete.wise.fetch_fovs`.
 - Renamed `kete.ztf.fetch_ztf_fovs` to `kete.ztf.fetch_fovs`.
-
+- Moved RA/DEC string parsing to rust backend.
 
 ## [v1.1.0]
 

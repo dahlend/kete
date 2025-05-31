@@ -4,13 +4,20 @@ Conversion functions between various physical values or representations.
 
 from __future__ import annotations
 import logging
-from typing import Union
 import numpy as np
 from numpy.typing import NDArray
 
 from . import _core
 from . import constants
-from ._core import compute_obliquity, earth_precession_rotation, CometElements
+from ._core import (
+    compute_obliquity,
+    earth_precession_rotation,
+    CometElements,
+    ra_degrees_to_hms,
+    dec_degrees_to_dms,
+    dec_dms_to_degrees,
+    ra_hms_to_degrees,
+)
 
 __all__ = [
     "bin_data",
@@ -266,104 +273,6 @@ def bin_data(data, bin_size=2, method="mean"):
     reshaped = data.reshape(xdim // bin_size, bin_size, ydim // bin_size, bin_size)
 
     return funcs[method](funcs[method](reshaped, axis=1), axis=2)
-
-
-def dec_degrees_to_dms(dec: NDArray) -> Union[str, list[str]]:
-    """
-    Convert a declination in degrees to a "degrees arcminutes arcseconds" string.
-
-    Parameters
-    ----------
-    dec:
-        Declination in decimal degrees.
-    """
-    if np.any(np.abs(dec) > 90):
-        raise ValueError("Dec must be between -90 and 90")
-
-    dec = np.array(dec)
-
-    def _val(dec):
-        degree = np.fix(dec)
-        arc_min = int((dec - degree) * 60)
-        arc_sec = (((dec - degree) * 60) - arc_min) * 60
-        return f"{degree:+03.0f} {abs(arc_min):02d} {abs(arc_sec):05.2f}"
-
-    res = np.vectorize(_val)(dec)
-    if res.ndim == 0:
-        return str(res)
-    if res.ndim == 1:
-        return list(res)
-    return res
-
-
-def dec_dms_to_degrees(dec: str) -> float:
-    """
-    Convert a declination from "degrees arcminutes arcseconds" string to degrees.
-
-    This must be formatted with a space between the terms.
-
-    Parameters
-    ----------
-    dec:
-        Declination in degrees-arcminutes-arcseconds.
-    """
-    dec = dec.rstrip()
-
-    if dec[0] not in "+- ":
-        raise ValueError("Dec must have a sign as the first character")
-
-    sign = -1 if dec[0] == "-" else 1
-
-    dms = dec.split()
-    if len(dms) != 3:
-        raise ValueError("Dec must be formatted with space-separation")
-
-    return sign * (abs(int(dms[0])) + int(dms[1]) / 60.0 + float(dms[2]) / 3600.0)
-
-
-def ra_degrees_to_hms(ra: NDArray) -> Union[str, list[str]]:
-    """
-    Convert a Right Ascension in decimal degrees to an "hours minutes seconds" string.
-
-    Parameters
-    ----------
-    ra:
-        Right Ascension in decimal degrees.
-    """
-    ra = np.array(ra) % 360
-
-    def _val(ra):
-        ra_time = ra / 15.0
-        hours = int(ra_time)
-        minutes = int((ra_time - hours) * 60)
-        seconds = (((ra_time - hours) * 60) - minutes) * 60
-        return f"{hours:02d} {minutes:02d} {seconds:06.3f}"
-
-    res = np.vectorize(_val)(ra)
-    if res.ndim == 0:
-        return str(res)
-    if res.ndim == 1:
-        return list(res)
-    return res
-
-
-def ra_hms_to_degrees(ra: str) -> float:
-    """
-    Convert a right ascension from "hours minutes seconds" string to degrees.
-
-    This must be formatted with a space between the terms.
-
-    Parameters
-    ----------
-    ra:
-        Right ascension in hours-minutes-seconds.
-    """
-
-    hms = ra.split()
-    if len(hms) != 3:
-        raise ValueError("RA must be formatted with space-separation")
-
-    return (int(hms[0]) + int(hms[1]) / 60.0 + float(hms[2]) / 3600.0) * 15
 
 
 def flux_to_mag(flux: float, zero_point=3631) -> float:
