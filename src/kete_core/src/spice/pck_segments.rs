@@ -139,14 +139,14 @@ impl PckSegmentType2 {
         // rem_euclid is equivalent to the modulo operator, so this maps w to [0, 2pi]
         let w = w.rem_euclid(std::f64::consts::TAU);
 
-        Ok(EclipticNonInertial([
-            ra,
-            dec,
-            w,
-            ra_der / t_step * 86400.0,
-            dec_der / t_step * 86400.0,
-            w_der / t_step * 86400.0,
-        ]))
+        Ok(EclipticNonInertial(
+            [ra, dec, w],
+            [
+                ra_der / t_step * 86400.0,
+                dec_der / t_step * 86400.0,
+                w_der / t_step * 86400.0,
+            ],
+        ))
     }
 }
 
