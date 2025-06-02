@@ -452,14 +452,14 @@ pub struct CkArray {
     /// The internal representation of the DAF array.
     pub daf: DafArray,
 
-    /// JD Time in spice units of seconds from J2000.
-    pub jds_start: f64,
+    /// Start SCLK tick time of the spacecraft.
+    pub tick_start: f64,
 
-    /// JD Time in spice units of seconds from J2000.
-    pub jds_end: f64,
+    /// End SCLK tick time of the spacecraft.
+    pub tick_end: f64,
 
     /// Instrument ID
-    pub instrument: i32,
+    pub instrument_id: i32,
 
     /// NAIF ID of the spacecraft.
     pub naif_id: i32,
@@ -476,10 +476,9 @@ pub struct CkArray {
 }
 
 impl CkArray {
-    /// Is the specified JD within the range of this array.
-    pub fn contains(&self, jd: f64) -> bool {
-        let jds = jd_to_spice_jd(jd);
-        (jds >= self.jds_start) && (jds <= self.jds_end)
+    /// Is the specified SCLK tick within the range of this array.
+    pub fn contains(&self, tick: f64) -> bool {
+        (tick >= self.tick_start) && (tick <= self.tick_end)
     }
 }
 
@@ -501,13 +500,13 @@ impl TryFrom<DafArray> for CkArray {
             return Err(Error::IOError("DAF Array is not a CK array. Summary of array is incorrectly formatted, incorrect number of ints.".into()));
         }
 
-        let jds_start = array.summary_floats[0];
-        let jds_end = array.summary_floats[1];
+        let tick_start = array.summary_floats[0];
+        let tick_end = array.summary_floats[1];
 
         // The last two integers in the summary are the start and end of the array.
         // Those two values are already contained within the DafArray stored in this
         // object.
-        let instrument = array.summary_ints[0].rem_euclid(1000);
+        let instrument_id = array.summary_ints[0];
         let naif_id = array.summary_ints[0] / 1000;
         let frame_id = array.summary_ints[1];
         let segment_type = array.summary_ints[2];
@@ -515,9 +514,9 @@ impl TryFrom<DafArray> for CkArray {
 
         Ok(CkArray {
             daf: array,
-            jds_start,
-            jds_end,
-            instrument,
+            tick_start,
+            tick_end,
+            instrument_id,
             naif_id,
             frame_id,
             segment_type,

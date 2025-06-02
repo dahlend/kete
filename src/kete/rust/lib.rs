@@ -146,7 +146,7 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(spice::sclk_time_to_tick_py, m)?)?;
 
     m.add_function(wrap_pyfunction!(spice::ck_load_py, m)?)?;
-    m.add_function(wrap_pyfunction!(spice::ck_get_record_py, m)?)?;
+    m.add_function(wrap_pyfunction!(spice::ck_frame_to_equatorial, m)?)?;
 
     m.add_function(wrap_pyfunction!(spice::daf_header_info_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::obs_codes, m)?)?;

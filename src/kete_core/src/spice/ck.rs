@@ -8,10 +8,11 @@
 
 use crate::{
     errors::{Error, KeteResult},
+    frames::NonInertialFrame,
     time::{scales::TDB, Time},
 };
 
-use super::{ck_segments::CkSegment, CkArray, DAFType, DafFile};
+use super::{ck_segments::CkSegment, CkArray, DAFType, DafFile, LOADED_SCLK};
 use crossbeam::sync::ShardedLock;
 use lazy_static::lazy_static;
 
@@ -47,17 +48,26 @@ impl CkCollection {
 
     /// Get the closest record to the given JD for the specified instrument ID.
     ///
-    pub fn get_record_at_time(
+    pub fn try_get_frame<T: NonInertialFrame>(
         &self,
         jd: f64,
         naif_id: i32,
-    ) -> KeteResult<(Time<TDB>, [f64; 4], Option<[f64; 3]>)> {
+    ) -> KeteResult<(Time<TDB>, T)> {
         let time = Time::<TDB>::new(jd);
-        return self.segments.first().unwrap().try_get_record(naif_id, time);
+        let sclk = LOADED_SCLK.try_read().unwrap();
+        let tick = sclk.try_time_to_tick(naif_id, time)?;
 
-        // Err(Error::DAFLimits(
-        //     "No segment found for the requested time.".into(),
-        // ))
+        for segment in self.segments.iter() {
+            let array: &CkArray = segment.into();
+            if (array.naif_id == naif_id) & array.contains(tick) {
+                return segment.try_get_orientation(naif_id, time);
+            }
+        }
+
+        Err(Error::DAFLimits(format!(
+            "Object ({}) does not have an CK record for the target JD.",
+            naif_id
+        )))?
     }
 }
 

@@ -1,6 +1,8 @@
 use crate::errors::{Error, KeteResult};
+use crate::frames::{quaternion_to_euler, NonInertialFrame};
 use crate::time::scales::TDB;
 use crate::time::Time;
+use nalgebra::{Quaternion, Rotation3, Unit};
 
 use super::CkArray;
 use super::LOADED_SCLK;
@@ -11,11 +13,11 @@ pub(in crate::spice) enum CkSegment {
 }
 
 impl CkSegment {
-    pub fn try_get_record(
+    pub fn try_get_orientation<T: NonInertialFrame>(
         &self,
         naif_id: i32,
         time: Time<TDB>,
-    ) -> KeteResult<(Time<TDB>, [f64; 4], Option<[f64; 3]>)> {
+    ) -> KeteResult<(Time<TDB>, T)> {
         let arr_ref: &CkArray = self.into();
         if arr_ref.naif_id != naif_id {
             return Err(Error::DAFLimits(format!(
@@ -25,7 +27,7 @@ impl CkSegment {
         }
 
         match self {
-            CkSegment::Type3(seg) => seg.get_record_at_time(time),
+            CkSegment::Type3(seg) => seg.try_get_orientation(time),
         }
     }
 }
@@ -153,15 +155,40 @@ impl CkSegmentType3 {
         Ok((&record_times[start_idx..stop_idx], start_idx))
     }
 
+    pub fn try_get_orientation<T: NonInertialFrame>(
+        &self,
+        time: Time<TDB>,
+    ) -> KeteResult<(Time<TDB>, T)> {
+        if T::spice_frame_id() != self.array.frame_id {
+            return Err(Error::ValueError(format!(
+                "Frame ID {} does not match segment frame ID {}.",
+                T::spice_frame_id(),
+                self.array.frame_id
+            )));
+        }
+        let (time, quaternion, accel) = self.get_quaternion_at_time(time)?;
+        let rot: Rotation3<_> = quaternion.into();
+
+        let accel: [f64; 3] = accel.unwrap_or_default();
+
+        /// convert quaternion to euler angles in the order X, Z, X
+        let angles = quaternion_to_euler::<'X', 'Z', 'X'>(quaternion.into_inner());
+        let values = [
+            angles[0], angles[1], angles[2], accel[0], accel[1], accel[2],
+        ];
+
+        Ok((time, T::new(values)))
+    }
+
     /// Return the record at the given time, interpolating if necessary.
     ///
     /// This will return the best effort record, along with the time of
     /// the record. If the requested time is outside of any interval, this
     /// will return the closest record.
-    pub fn get_record_at_time(
+    pub fn get_quaternion_at_time(
         &self,
         time: Time<TDB>,
-    ) -> KeteResult<(Time<TDB>, [f64; 4], Option<[f64; 3]>)> {
+    ) -> KeteResult<(Time<TDB>, Unit<Quaternion<f64>>, Option<[f64; 3]>)> {
         let sclk = LOADED_SCLK
             .try_read()
             .map_err(|_| Error::IOError("Failed to read SCLK data.".into()))?;
@@ -172,7 +199,7 @@ impl CkSegmentType3 {
             let record = self.get_record(0);
             let t = sclk.try_tick_to_time(self.array.naif_id, self.record_times()[0])?;
             let (quat, accel) = record.into();
-            return Ok((t, quat, accel));
+            return Ok((t, Unit::from_quaternion(quat), accel));
         }
 
         let (interval_times, start_idx) = self.get_times_in_interval(tick)?;
@@ -184,45 +211,34 @@ impl CkSegmentType3 {
             let record = self.get_record(idx - 1);
             let (quat, accel) = record.into();
             let t = sclk.try_tick_to_time(self.array.naif_id, *(interval_times.last().unwrap()))?;
-            Ok((t, quat, accel))
+            Ok((t, Unit::from_quaternion(quat), accel))
         } else if idx == 0 {
             // if the index is before the beginning of the interval, return the first record
             let record = self.get_record(0);
             let (quat, accel) = record.into();
             let t =
                 sclk.try_tick_to_time(self.array.naif_id, *(interval_times.first().unwrap()))?;
-            Ok((t, quat, accel))
+            Ok((t, Unit::from_quaternion(quat), accel))
         } else {
             // otherwise, we have two records to interpolate between
             idx -= 1;
             let t1 = interval_times[idx];
             let t2 = interval_times[idx + 1];
-            let r1 = self.get_record(start_idx + idx);
-            let r2 = self.get_record(start_idx + idx + 1);
-            let alpha = (tick - t1) / (t2 - t1);
-            let quaternion = r1
-                .quaternion
-                .iter()
-                .zip(r2.quaternion.iter())
-                .map(|(q1, q2)| q1 * (1.0 - alpha) + q2 * alpha)
-                .collect::<Vec<_>>()
-                .try_into()
-                .unwrap();
+            let (q0, acc0) = self.get_record(start_idx + idx).into();
+            let (q1, acc1) = self.get_record(start_idx + idx + 1).into();
+            let dt = (tick - t1) / (t2 - t1);
+            let quaternion = q0.lerp(&q1, dt);
 
-            let accel = if r1.accel.len() != 3 {
-                None
-            } else {
-                Some(
-                    r1.accel
-                        .iter()
-                        .zip(r2.accel.iter())
-                        .map(|(a1, a2)| a1 * (1.0 - alpha) + a2 * alpha)
-                        .collect::<Vec<_>>()
-                        .try_into()
-                        .unwrap(),
-                )
-            };
-            Ok((time, quaternion, accel))
+            let accel: Option<[f64; 3]> = acc0.map(|acc0| {
+                acc0.iter()
+                    .zip(acc1.unwrap())
+                    .map(|(a1, a2)| a1 * (1.0 - dt) + a2 * dt)
+                    .collect::<Vec<_>>()
+                    .try_into()
+                    .unwrap()
+            });
+
+            Ok((time, Unit::from_quaternion(quaternion), accel))
         }
     }
 }
@@ -233,9 +249,11 @@ struct Type3RecordView<'a> {
     accel: &'a [f64],
 }
 
-impl From<Type3RecordView<'_>> for ([f64; 4], Option<[f64; 3]>) {
+impl From<Type3RecordView<'_>> for (Quaternion<f64>, Option<[f64; 3]>) {
     fn from(record: Type3RecordView) -> Self {
         let quaternion: [f64; 4] = record.quaternion.try_into().unwrap();
+        let quaternion =
+            Quaternion::new(quaternion[0], quaternion[1], quaternion[2], quaternion[3]);
         let accel = if record.accel.is_empty() {
             None
         } else {
