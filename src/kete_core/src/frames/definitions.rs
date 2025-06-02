@@ -95,7 +95,7 @@ pub trait NonInertialFrame {
     }
 }
 
-/// NonInertial rotation frame defined by rotations to and from the Ecliptic Inertial Frame.
+/// NonInertial rotation frame defined by rotations to and from the Equatorial Inertial Frame.
 #[derive(Debug, Clone)]
 pub struct EclipticNonInertial(pub [f64; 6]);
 
