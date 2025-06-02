@@ -40,6 +40,7 @@ pub mod fov;
 pub mod frames;
 pub mod io;
 pub mod propagation;
+pub mod quaternion;
 pub mod simult_states;
 pub mod spice;
 pub mod state;
