@@ -6,7 +6,10 @@
 //! will only be the read case.
 //!
 
-use crate::errors::{Error, KeteResult};
+use crate::{
+    errors::{Error, KeteResult},
+    time::{scales::TDB, Time},
+};
 
 use super::{ck_segments::CkSegment, CkArray, DAFType, DafFile};
 use crossbeam::sync::ShardedLock;
@@ -40,6 +43,21 @@ impl CkCollection {
             self.segments.push(segment);
         }
         Ok(())
+    }
+
+    /// Get the closest record to the given JD for the specified instrument ID.
+    ///
+    pub fn get_record_at_time(
+        &self,
+        jd: f64,
+        naif_id: i32,
+    ) -> KeteResult<(Time<TDB>, [f64; 4], Option<[f64; 3]>)> {
+        let time = Time::<TDB>::new(jd);
+        return self.segments.first().unwrap().try_get_record(naif_id, time);
+
+        // Err(Error::DAFLimits(
+        //     "No segment found for the requested time.".into(),
+        // ))
     }
 }
 

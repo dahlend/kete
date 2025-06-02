@@ -14,3 +14,13 @@ pub fn ck_load_py(filenames: Vec<String>) -> PyResult<()> {
     }
     Ok(())
 }
+
+/// Get the closest record to the given JD for the specified instrument ID.
+#[pyfunction]
+#[pyo3(name = "ck_get_record")]
+pub fn ck_get_record_py(time: f64, inst_id: i32) -> PyResult<(f64, [f64; 4], Option<[f64; 3]>)> {
+    let singleton = LOADED_CK.read().unwrap();
+    let (time, quat, accel) = singleton.get_record_at_time(time, inst_id)?;
+    let time = time.jd;
+    Ok((time, quat, accel))
+}

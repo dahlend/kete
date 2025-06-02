@@ -1,10 +1,33 @@
-use crate::errors::Error;
+use crate::errors::{Error, KeteResult};
+use crate::time::scales::TDB;
+use crate::time::Time;
 
 use super::CkArray;
+use super::LOADED_SCLK;
 
 #[derive(Debug)]
 pub(in crate::spice) enum CkSegment {
     Type3(CkSegmentType3),
+}
+
+impl CkSegment {
+    pub fn try_get_record(
+        &self,
+        naif_id: i32,
+        time: Time<TDB>,
+    ) -> KeteResult<(Time<TDB>, [f64; 4], Option<[f64; 3]>)> {
+        let arr_ref: &CkArray = self.into();
+        if arr_ref.naif_id != naif_id {
+            return Err(Error::DAFLimits(format!(
+                "NAIF ID is not present in this record. {}",
+                arr_ref.naif_id
+            )));
+        }
+
+        match self {
+            CkSegment::Type3(seg) => seg.get_record_at_time(time),
+        }
+    }
 }
 
 impl<'a> From<&'a CkSegment> for &'a CkArray {
@@ -36,7 +59,6 @@ impl TryFrom<CkArray> for CkSegment {
         }
     }
 }
-
 
 /// Discrete pointing data with linear interpolation between.
 ///
@@ -99,12 +121,128 @@ impl CkSegmentType3 {
                 .get_unchecked(self.time_start_idx..self.time_start_idx + self.n_records)
         }
     }
+
+    /// Get the list of times inside of the interval.
+    ///
+    /// This queries the directory of interval start times, then uses the
+    /// start and stop of the matching interval to find the list of times
+    /// in the SCLK time directory.
+    ///
+    /// If the time requested is not within any interval, return the closest
+    /// interval, and the start index of the associated clock times.
+    fn get_times_in_interval(&self, time_sclk: f64) -> KeteResult<(&[f64], usize)> {
+        // first, check if the time is inside a known interval
+        let interval_starts = self.interval_starts();
+        if self.n_intervals == 1 {
+            // If there is only one interval, return its times
+            return Ok((self.record_times(), 0));
+        }
+        let mut interval_idx = interval_starts.partition_point(|&x| x <= time_sclk);
+
+        // if the interval_index is the last one, or the second to last one, return the last interval
+        if interval_idx >= self.n_intervals - 1 {
+            interval_idx = self.n_intervals - 1;
+        }
+        let interval_start_time = interval_starts[interval_idx];
+        let interval_stop_time = interval_starts[interval_idx + 1];
+
+        // find the start and stop index in the time directory uing the interval times
+        let record_times = self.record_times();
+        let start_idx = record_times.partition_point(|&x| x < interval_start_time);
+        let stop_idx = record_times.partition_point(|&x| x <= interval_stop_time);
+        Ok((&record_times[start_idx..stop_idx], start_idx))
+    }
+
+    /// Return the record at the given time, interpolating if necessary.
+    ///
+    /// This will return the best effort record, along with the time of
+    /// the record. If the requested time is outside of any interval, this
+    /// will return the closest record.
+    pub fn get_record_at_time(
+        &self,
+        time: Time<TDB>,
+    ) -> KeteResult<(Time<TDB>, [f64; 4], Option<[f64; 3]>)> {
+        let sclk = LOADED_SCLK
+            .try_read()
+            .map_err(|_| Error::IOError("Failed to read SCLK data.".into()))?;
+        let tick = sclk.try_time_to_tick(self.array.naif_id, time)?;
+
+        // If there is only one record, return it immediately.
+        if self.n_records == 1 {
+            let record = self.get_record(0);
+            let t = sclk.try_tick_to_time(self.array.naif_id, self.record_times()[0])?;
+            let (quat, accel) = record.into();
+            return Ok((t, quat, accel));
+        }
+
+        let (interval_times, start_idx) = self.get_times_in_interval(tick)?;
+
+        // find the closest two times in the interval
+        let mut idx = interval_times.partition_point(|&x| x <= tick);
+        if interval_times.len() == idx {
+            // if the index is after the end of the interval, return the last record
+            let record = self.get_record(idx - 1);
+            let (quat, accel) = record.into();
+            let t = sclk.try_tick_to_time(self.array.naif_id, *(interval_times.last().unwrap()))?;
+            Ok((t, quat, accel))
+        } else if idx == 0 {
+            // if the index is before the beginning of the interval, return the first record
+            let record = self.get_record(0);
+            let (quat, accel) = record.into();
+            let t =
+                sclk.try_tick_to_time(self.array.naif_id, *(interval_times.first().unwrap()))?;
+            Ok((t, quat, accel))
+        } else {
+            // otherwise, we have two records to interpolate between
+            idx -= 1;
+            let t1 = interval_times[idx];
+            let t2 = interval_times[idx + 1];
+            let r1 = self.get_record(start_idx + idx);
+            let r2 = self.get_record(start_idx + idx + 1);
+            let alpha = (tick - t1) / (t2 - t1);
+            let quaternion = r1
+                .quaternion
+                .iter()
+                .zip(r2.quaternion.iter())
+                .map(|(q1, q2)| q1 * (1.0 - alpha) + q2 * alpha)
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap();
+
+            let accel = if r1.accel.len() != 3 {
+                None
+            } else {
+                Some(
+                    r1.accel
+                        .iter()
+                        .zip(r2.accel.iter())
+                        .map(|(a1, a2)| a1 * (1.0 - alpha) + a2 * alpha)
+                        .collect::<Vec<_>>()
+                        .try_into()
+                        .unwrap(),
+                )
+            };
+            Ok((time, quaternion, accel))
+        }
+    }
 }
 
 #[allow(unused)]
 struct Type3RecordView<'a> {
     quaternion: &'a [f64],
     accel: &'a [f64],
+}
+
+impl From<Type3RecordView<'_>> for ([f64; 4], Option<[f64; 3]>) {
+    fn from(record: Type3RecordView) -> Self {
+        let quaternion: [f64; 4] = record.quaternion.try_into().unwrap();
+        let accel = if record.accel.is_empty() {
+            None
+        } else {
+            Some(record.accel.try_into().unwrap())
+        };
+        (quaternion, accel)
+    }
 }
 
 impl TryFrom<CkArray> for CkSegmentType3 {

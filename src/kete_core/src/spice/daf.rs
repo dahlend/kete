@@ -461,6 +461,9 @@ pub struct CkArray {
     /// Instrument ID
     pub instrument: i32,
 
+    /// NAIF ID of the spacecraft.
+    pub naif_id: i32,
+
     /// The spice frame ID of the array.
     /// Called the `Reference` in SPICE documentation.
     pub frame_id: i32,
@@ -504,7 +507,8 @@ impl TryFrom<DafArray> for CkArray {
         // The last two integers in the summary are the start and end of the array.
         // Those two values are already contained within the DafArray stored in this
         // object.
-        let instrument = array.summary_ints[0];
+        let instrument = array.summary_ints[0].rem_euclid(1000);
+        let naif_id = array.summary_ints[0] / 1000;
         let frame_id = array.summary_ints[1];
         let segment_type = array.summary_ints[2];
         let produces_angular_rates = array.summary_ints[3] == 1;
@@ -514,6 +518,7 @@ impl TryFrom<DafArray> for CkArray {
             jds_start,
             jds_end,
             instrument,
+            naif_id,
             frame_id,
             segment_type,
             produces_angular_rates,
