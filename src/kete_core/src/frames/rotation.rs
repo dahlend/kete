@@ -1,9 +1,10 @@
-//! Quaternion math utilities.
+//! Rotation related math utilities.
+//!
 //!
 
 use std::f64::consts::PI;
 
-use nalgebra::Quaternion;
+use nalgebra::{Matrix3, Quaternion, Rotation3, Unit, Vector3};
 
 /// Convert a quaternion to specified euler angles.
 ///
@@ -18,9 +19,9 @@ use nalgebra::Quaternion;
 ///
 /// ```rust
 ///     use nalgebra::UnitQuaternion;
-///     use kete_core::quaternion::quaternion_to_euler;
+///     use kete_core::frames::quaternion_to_euler;
 ///     let quat = UnitQuaternion::from_euler_angles(0.1, 0.2, 0.3).into_inner();
-///     let euler = quaternion_to_euler::<'x', 'y', 'z'>(quat);
+///     let euler = quaternion_to_euler::<'X', 'Y', 'Z'>(quat);
 ///     assert!((euler[0] - 0.1).abs() < 1e-12);
 ///     assert!((euler[1] - 0.2).abs() < 1e-12);
 ///     assert!((euler[2] - 0.3).abs() < 1e-12);
@@ -31,9 +32,9 @@ pub fn quaternion_to_euler<const E1: char, const E2: char, const E3: char>(
 ) -> [f64; 3] {
     const {
         // compile time checks to make sure the axes are valid
-        assert!(check_axis::<E1>(), "Axis must be one of x, y, z.");
-        assert!(check_axis::<E2>(), "Axis must be one of x, y, z.");
-        assert!(check_axis::<E3>(), "Axis must be one of x, y, z.");
+        check_axis::<E1>();
+        check_axis::<E2>();
+        check_axis::<E3>();
 
         assert!(E1 != E2 && E2 != E3, "Middle axis must not match outer.");
     }
@@ -94,23 +95,85 @@ pub fn quaternion_to_euler<const E1: char, const E2: char, const E3: char>(
     ]
 }
 
+/// Compute two rotation matrices from a target inertial frame to the frame defined by
+/// the provided angles. The first 3 angles here define the rotation with the specified
+/// euler angles, the second three values define the derivative of the 3 angles.
+///
+/// This then calculates two rotation matrices, one is the 3x3 rotation matrix, and the
+/// second is the derivative of the 3x3 matrix with respect to time. These two matrices
+/// may be used to compute the new position and velocities when moving from one frame
+/// to another.
+pub fn euler_rotation<const E1: char, const E2: char, const E3: char>(
+    angles: &[f64; 3],
+    rates: &[f64; 3],
+) -> (Matrix3<f64>, Matrix3<f64>) {
+    let r_e1 = rotation::<E1>(angles[0]);
+    let r_e2 = rotation::<E2>(angles[1]);
+    let r_e3 = rotation::<E3>(angles[2]);
+    let dr_e1 = rotation_derivative::<E1>(angles[0]);
+    let dr_e2 = rotation_derivative::<E2>(angles[1]);
+    let dr_e3 = rotation_derivative::<E3>(angles[2]);
+
+    // math for computing the derivative:
+    // r = rot_z(z1) * rot_x(x) * rot_z(z0)
+    // dr / dt =
+    //  (d rot_z(z1) / d z1 * d z1 / dt) * rot_x(x) * rot_z(z0) +
+    //  rot_z(z1) * (d rot_x(x) / d x * d x / dt) * rot_z(z0) +
+    //  rot_z(z0) * rot_x(x) * (d rot_z(z1) / d z1 * d z1 / dt)
+    let mut dr_dt = dr_e1 * r_e2 * r_e3 * rates[0];
+    dr_dt += r_e1 * dr_e2 * r_e3 * rates[1];
+    dr_dt += r_e1 * r_e2 * dr_e3 * rates[2];
+
+    ((r_e1 * r_e2 * r_e3).into(), dr_dt)
+}
+
 /// Convert the character axis to an index X=1, Y=2, Z=3.
 const fn char_to_index<const E: char>() -> i8 {
-    const {
-        assert!(check_axis::<E>(), "Axis must be one of x, y, z.");
-    }
+    const { check_axis::<E>() }
     match E {
-        'x' | 'X' => 1,
-        'y' | 'Y' => 2,
-        'z' | 'Z' => 3,
+        'X' => 1,
+        'Y' => 2,
+        'Z' => 3,
         _ => unreachable!(),
     }
 }
 
-/// ensure the axis is in the set 'xXyYzZ'
-const fn check_axis<const E: char>() -> bool {
-    E == 'x' || E == 'y' || E == 'z' || E == 'X' || E == 'Y' || E == 'Z'
+/// Convert the character axis to a unit vector.
+#[inline(always)]
+const fn char_to_vector<const E: char>() -> [f64; 3] {
+    const { check_axis::<E>() }
+    match E {
+        'X' => [1.0, 0.0, 0.0],
+        'Y' => [0.0, 1.0, 0.0],
+        'Z' => [0.0, 0.0, 1.0],
+        _ => unreachable!(),
+    }
 }
+
+/// ensure the axis is in the set 'XYZ'
+const fn check_axis<const E: char>() {
+    assert!(E == 'X' || E == 'Y' || E == 'Z', "Axis must be one of XYZ.");
+}
+
+/// Derivative of the rotation matrix with respect to the rotation angle.
+fn rotation_derivative<const E: char>(angle: f64) -> Matrix3<f64> {
+    const { check_axis::<E>() }
+    let (sin_a, cos_a) = angle.sin_cos();
+    match E {
+        'X' => Matrix3::<f64>::from([[0.0, 0.0, 0.0], [0.0, -sin_a, cos_a], [0.0, -cos_a, -sin_a]]),
+        'Y' => Matrix3::<f64>::from([[-sin_a, 0.0, cos_a], [0.0, 0.0, 0.0], [-cos_a, 0.0, -sin_a]]),
+        'Z' => Matrix3::<f64>::from([[-sin_a, cos_a, 0.0], [-cos_a, -sin_a, 0.0], [0.0, 0.0, 0.0]]),
+        _ => unreachable!(),
+    }
+}
+
+/// Construct a rotation around the specified axis.
+#[inline(always)]
+fn rotation<const E: char>(angle: f64) -> Rotation3<f64> {
+    let axis: [f64; 3] = const { char_to_vector::<E>() };
+    Rotation3::from_axis_angle(&Unit::new_unchecked(Vector3::from(axis)), angle)
+}
+
 // tests
 #[cfg(test)]
 mod tests {
@@ -120,7 +183,7 @@ mod tests {
     #[test]
     fn test_quaternion_to_euler() {
         let quat = UnitQuaternion::from_euler_angles(0.1, 0.2, 0.3);
-        let euler = quaternion_to_euler::<'x', 'y', 'z'>(quat.into_inner() * 5.0);
+        let euler = quaternion_to_euler::<'X', 'Y', 'Z'>(quat.into_inner() * 5.0);
         assert!((euler[0] - 0.1).abs() < 1e-12);
         assert!((euler[1] - 0.2).abs() < 1e-12);
         assert!((euler[2] - 0.3).abs() < 1e-12);
