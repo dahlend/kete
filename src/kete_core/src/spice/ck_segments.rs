@@ -2,7 +2,7 @@ use crate::errors::{Error, KeteResult};
 use crate::frames::{quaternion_to_euler, NonInertialFrame};
 use crate::time::scales::TDB;
 use crate::time::Time;
-use nalgebra::{Quaternion, Rotation3, Unit};
+use nalgebra::{Quaternion, Unit, UnitQuaternion};
 
 use super::CkArray;
 use super::LOADED_SCLK;
@@ -167,7 +167,6 @@ impl CkSegmentType3 {
             )));
         }
         let (time, quaternion, accel) = self.get_quaternion_at_time(time)?;
-        let rot: Rotation3<_> = quaternion.into();
 
         let accel: [f64; 3] = accel.unwrap_or_default();
 
@@ -188,7 +187,7 @@ impl CkSegmentType3 {
     pub fn get_quaternion_at_time(
         &self,
         time: Time<TDB>,
-    ) -> KeteResult<(Time<TDB>, Unit<Quaternion<f64>>, Option<[f64; 3]>)> {
+    ) -> KeteResult<(Time<TDB>, UnitQuaternion<f64>, Option<[f64; 3]>)> {
         let sclk = LOADED_SCLK
             .try_read()
             .map_err(|_| Error::IOError("Failed to read SCLK data.".into()))?;

@@ -106,7 +106,7 @@ pub fn quaternion_to_euler<const E1: char, const E2: char, const E3: char>(
 pub fn euler_rotation<const E1: char, const E2: char, const E3: char>(
     angles: &[f64; 3],
     rates: &[f64; 3],
-) -> (Matrix3<f64>, Matrix3<f64>) {
+) -> (Rotation3<f64>, Matrix3<f64>) {
     let r_e1 = rotation::<E1>(angles[0]);
     let r_e2 = rotation::<E2>(angles[1]);
     let r_e3 = rotation::<E3>(angles[2]);
@@ -124,7 +124,7 @@ pub fn euler_rotation<const E1: char, const E2: char, const E3: char>(
     dr_dt += r_e1 * dr_e2 * r_e3 * rates[1];
     dr_dt += r_e1 * r_e2 * dr_e3 * rates[2];
 
-    ((r_e1 * r_e2 * r_e3).into(), dr_dt)
+    ((r_e1 * r_e2 * r_e3), dr_dt)
 }
 
 /// Convert the character axis to an index X=1, Y=2, Z=3.

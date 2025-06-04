@@ -9,25 +9,34 @@
 //! integration, so any reduction in friction in reading those states improves
 //! performance.
 //!
+use crate::time::Time;
 use lazy_static::lazy_static;
-use nalgebra::{Rotation3, Vector3};
+use nalgebra::{Matrix3, Rotation3, Vector3};
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 use std::fmt::Debug;
-
-use crate::time::Time;
 
 use super::euler_rotation;
 
 /// Frame which supports vector conversion
 pub trait InertialFrame: Sized + Sync + Send + Clone + Copy + Debug + PartialEq {
     /// Convert a vector from input frame to equatorial frame.
-    fn to_equatorial(vec: Vector3<f64>) -> Vector3<f64>;
+    #[inline(always)]
+    fn to_equatorial(vec: Vector3<f64>) -> Vector3<f64> {
+        Self::rotation_to_equatorial().transform_vector(&vec)
+    }
 
     /// Convert a vector from the equatorial frame to this frame.
-    fn from_equatorial(vec: Vector3<f64>) -> Vector3<f64>;
+    #[inline(always)]
+    fn from_equatorial(vec: Vector3<f64>) -> Vector3<f64> {
+        Self::rotation_to_equatorial().inverse_transform_vector(&vec)
+    }
+
+    /// Rotation matrix from the inertial frame to the equatorial frame.
+    fn rotation_to_equatorial() -> &'static Rotation3<f64>;
 
     /// Convert between frames.
+    #[inline(always)]
     fn convert<Target: InertialFrame>(vec: Vector3<f64>) -> Vector3<f64> {
         Target::from_equatorial(Self::to_equatorial(vec))
     }
@@ -38,62 +47,87 @@ pub trait InertialFrame: Sized + Sync + Send + Clone + Copy + Debug + PartialEq 
 pub struct Equatorial {}
 
 impl InertialFrame for Equatorial {
+    #[inline(always)]
     fn to_equatorial(vec: Vector3<f64>) -> Vector3<f64> {
+        // equatorial is a special case, so we can skip the rotation
+        // and just return the vector as is.
         vec
     }
+
+    #[inline(always)]
     fn from_equatorial(vec: Vector3<f64>) -> Vector3<f64> {
+        // equatorial is a special case, so we can skip the rotation
+        // and just return the vector as is.
         vec
+    }
+
+    #[inline(always)]
+    fn rotation_to_equatorial() -> &'static Rotation3<f64> {
+        &IDENTITY_ROT
     }
 }
 
-/// Equatorial frame.
+/// Ecliptic frame.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Ecliptic {}
+
 impl InertialFrame for Ecliptic {
-    fn from_equatorial(vec: Vector3<f64>) -> Vector3<f64> {
-        ECLIPTIC_EQUATORIAL_ROT.inverse_transform_vector(&vec)
-    }
-    fn to_equatorial(vec: Vector3<f64>) -> Vector3<f64> {
-        ECLIPTIC_EQUATORIAL_ROT.transform_vector(&vec)
+    #[inline(always)]
+    fn rotation_to_equatorial() -> &'static Rotation3<f64> {
+        &ECLIPTIC_EQUATORIAL_ROT
     }
 }
 
-/// Equatorial frame.
+/// Galactic frame.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Galactic {}
+
 impl InertialFrame for Galactic {
-    fn from_equatorial(vec: Vector3<f64>) -> Vector3<f64> {
-        GALACTIC_EQUATORIAL_ROT.inverse_transform_vector(&vec)
-    }
-    fn to_equatorial(vec: Vector3<f64>) -> Vector3<f64> {
-        GALACTIC_EQUATORIAL_ROT.transform_vector(&vec)
+    #[inline(always)]
+    fn rotation_to_equatorial() -> &'static Rotation3<f64> {
+        &GALACTIC_EQUATORIAL_ROT
     }
 }
 
-/// Equatorial frame.
+/// FK4 frame.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct FK4 {}
+
 impl InertialFrame for FK4 {
-    fn from_equatorial(vec: Vector3<f64>) -> Vector3<f64> {
-        FK4_EQUATORIAL_ROT.inverse_transform_vector(&vec)
-    }
-    fn to_equatorial(vec: Vector3<f64>) -> Vector3<f64> {
-        FK4_EQUATORIAL_ROT.transform_vector(&vec)
+    #[inline(always)]
+    fn rotation_to_equatorial() -> &'static Rotation3<f64> {
+        &FK4_EQUATORIAL_ROT
     }
 }
 
 /// Frame which supports vector conversion
-pub trait NonInertialFrame {
+pub trait NonInertialFrame: Sized + Sync + Send + Clone + Copy + Debug + PartialEq {
     /// Construct a new non-inertial frame from the provided angles.
     fn new(angles: [f64; 6]) -> Self;
 
-    /// Convert a vector from input frame to equatorial frame.
-    fn to_equatorial(&self, pos: Vector3<f64>, vel: Vector3<f64>) -> (Vector3<f64>, Vector3<f64>);
-
     /// Convert a vector from the equatorial frame to this frame.
     #[allow(clippy::wrong_self_convention)]
-    fn from_equatorial(&self, pos: Vector3<f64>, vel: Vector3<f64>)
-        -> (Vector3<f64>, Vector3<f64>);
+    fn from_equatorial(
+        &self,
+        pos: Vector3<f64>,
+        vel: Vector3<f64>,
+    ) -> (Vector3<f64>, Vector3<f64>) {
+        let (rot_p, rot_dp) = self.rotations();
+
+        let new_pos = rot_p.inverse_transform_vector(&pos);
+        let new_vel = rot_dp.transpose() * pos + rot_p.inverse_transform_vector(&vel);
+
+        (new_pos, new_vel)
+    }
+
+    /// Convert a vector from input frame to equatorial frame.
+    fn to_equatorial(&self, pos: Vector3<f64>, vel: Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
+        let (rot_p, rot_dp) = self.rotations();
+
+        let new_pos = rot_p.transform_vector(&pos);
+        let new_vel = rot_dp * pos + rot_p.transform_vector(&vel);
+        (new_pos, new_vel)
+    }
 
     /// Convert between frames.
     fn convert<T: NonInertialFrame>(
@@ -106,12 +140,24 @@ pub trait NonInertialFrame {
         target_frame.from_equatorial(pos, vel)
     }
 
+    /// Rotation matrix from the non-inertial frame to the reference frame.
+    /// The second rotation is the derivative of the first rotation with respect to time.
+    fn rotations(&self) -> (Rotation3<f64>, Matrix3<f64>) {
+        euler_rotation::<'Z', 'X', 'Z'>(self.angles(), self.rates())
+    }
+
+    /// Euler angles for this non-inertial frame.
+    fn angles(&self) -> &[f64; 3];
+
+    /// Euler rates for this non-inertial frame.
+    fn rates(&self) -> &[f64; 3];
+
     /// Return the SPICE frame ID for this non-inertial frame.
     fn spice_frame_id() -> i32;
 }
 
 /// NonInertial rotation frame defined by rotations to and from the Equatorial Inertial Frame.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct EclipticNonInertial(pub [f64; 3], pub [f64; 3]);
 
 impl NonInertialFrame for EclipticNonInertial {
@@ -122,44 +168,31 @@ impl NonInertialFrame for EclipticNonInertial {
         )
     }
 
-    fn from_equatorial(
-        &self,
-        pos: Vector3<f64>,
-        vel: Vector3<f64>,
-    ) -> (Vector3<f64>, Vector3<f64>) {
-        let pos = ECLIPTIC_EQUATORIAL_ROT.inverse_transform_vector(&pos);
-        let vel = ECLIPTIC_EQUATORIAL_ROT.inverse_transform_vector(&vel);
-        let (rot_p, rot_dp) = euler_rotation::<'Z', 'X', 'Z'>(&self.0, &self.1);
-
-        // compute the ecliptic position and velocity
-        let new_pos = rot_p.transpose() * pos;
-        let new_vel = rot_dp.transpose() * pos + rot_p.transpose() * vel;
-
-        // convert from equatorial
-        (new_pos, new_vel)
-    }
-
-    fn to_equatorial(&self, pos: Vector3<f64>, vel: Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
-        let (rot_p, rot_dp) = euler_rotation::<'Z', 'X', 'Z'>(&self.0, &self.1);
-
-        // compute the ecliptic position and velocity
-        let new_pos = rot_p * pos;
-        let new_vel = rot_dp * pos + rot_p * vel;
-
-        // convert to equatorial
+    /// Rotation matrix from the non-inertial frame to the reference frame.
+    /// The second rotation is the derivative of the first rotation with respect to time.
+    fn rotations(&self) -> (Rotation3<f64>, Matrix3<f64>) {
+        let (rot_p, rot_dp) = euler_rotation::<'Z', 'X', 'Z'>(self.angles(), self.rates());
         (
-            ECLIPTIC_EQUATORIAL_ROT.transform_vector(&new_pos),
-            ECLIPTIC_EQUATORIAL_ROT.transform_vector(&new_vel),
+            *ECLIPTIC_EQUATORIAL_ROT * rot_p,
+            *ECLIPTIC_EQUATORIAL_ROT * rot_dp,
         )
     }
 
     fn spice_frame_id() -> i32 {
         17
     }
+
+    fn angles(&self) -> &[f64; 3] {
+        &self.0
+    }
+
+    fn rates(&self) -> &[f64; 3] {
+        &self.1
+    }
 }
 
 /// NonInertial rotation frame defined by rotations to and from the Equatorial Inertial Frame.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct EquatorialNonInertial(pub [f64; 3], pub [f64; 3]);
 
 impl NonInertialFrame for EquatorialNonInertial {
@@ -170,31 +203,16 @@ impl NonInertialFrame for EquatorialNonInertial {
         )
     }
 
-    fn from_equatorial(
-        &self,
-        pos: Vector3<f64>,
-        vel: Vector3<f64>,
-    ) -> (Vector3<f64>, Vector3<f64>) {
-        let (rot_p, rot_dp) = euler_rotation::<'Z', 'X', 'Z'>(&self.0, &self.1);
-
-        // compute the equatorial position and velocity
-        let new_pos = rot_p.transpose() * pos;
-        let new_vel = rot_dp.transpose() * pos + rot_p.transpose() * vel;
-
-        (new_pos, new_vel)
-    }
-
-    fn to_equatorial(&self, pos: Vector3<f64>, vel: Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
-        let (rot_p, rot_dp) = euler_rotation::<'Z', 'X', 'Z'>(&self.0, &self.1);
-
-        // compute the equatorial position and velocity
-        let new_pos = rot_p * pos;
-        let new_vel = rot_dp * pos + rot_p * vel;
-        (new_pos, new_vel)
-    }
-
     fn spice_frame_id() -> i32 {
         1
+    }
+
+    fn angles(&self) -> &[f64; 3] {
+        &self.0
+    }
+
+    fn rates(&self) -> &[f64; 3] {
+        &self.1
     }
 }
 
@@ -285,6 +303,7 @@ pub fn earth_precession_rotation(tdb_time: f64) -> Rotation3<f64> {
 }
 
 lazy_static! {
+    static ref IDENTITY_ROT: Rotation3<f64> = Rotation3::identity();
     static ref ECLIPTIC_EQUATORIAL_ROT: Rotation3<f64> = {
         let x = nalgebra::Unit::new_unchecked(Vector3::x_axis());
         Rotation3::from_axis_angle(&x, OBLIQUITY)
