@@ -27,14 +27,17 @@ use super::jd_to_spice_jd;
 /// This list contains the supported formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DAFType {
+    /// An unrecognized DAF type.
+    Unrecognized([u8; 3]),
+
     /// SPK files are planetary and satellite ephemeris data.
     Spk,
 
     /// PCK Files are planetary and satellite orientation data.
     Pck,
 
-    /// An unrecognized DAF type.
-    Unrecognized([u8; 3]),
+    /// CK files define instrument orientation data.
+    Ck,
 }
 
 impl From<&str> for DAFType {
@@ -42,6 +45,7 @@ impl From<&str> for DAFType {
         match &magic.to_uppercase()[4..7] {
             "SPK" => DAFType::Spk,
             "PCK" => DAFType::Pck,
+            "CK " => DAFType::Ck,
             other => DAFType::Unrecognized(other.as_bytes().try_into().unwrap()),
         }
     }
@@ -436,6 +440,87 @@ impl TryFrom<DafArray> for PckArray {
             center_id,
             frame_id,
             segment_type,
+        })
+    }
+}
+
+/// DAF Array of CK data.
+/// These are segments of data.
+/// This is a wrapper around the DafArray which is specific to CK data.
+#[derive(Debug)]
+pub struct CkArray {
+    /// The internal representation of the DAF array.
+    pub daf: DafArray,
+
+    /// Start SCLK tick time of the spacecraft.
+    pub tick_start: f64,
+
+    /// End SCLK tick time of the spacecraft.
+    pub tick_end: f64,
+
+    /// Instrument ID
+    pub instrument_id: i32,
+
+    /// NAIF ID of the spacecraft.
+    pub naif_id: i32,
+
+    /// The spice frame ID of the array.
+    /// Called the `Reference` in SPICE documentation.
+    pub frame_id: i32,
+
+    /// The spice segment type.
+    pub segment_type: i32,
+
+    /// Does this segment produce angular rates.
+    pub produces_angular_rates: bool,
+}
+
+impl CkArray {
+    /// Is the specified SCLK tick within the range of this array.
+    pub fn contains(&self, tick: f64) -> bool {
+        (tick >= self.tick_start) && (tick <= self.tick_end)
+    }
+}
+
+impl TryFrom<DafArray> for CkArray {
+    type Error = Error;
+
+    fn try_from(array: DafArray) -> Result<Self, Self::Error> {
+        if array.daf_type != DAFType::Ck {
+            return Err(Error::IOError("DAF Array is not a CK array.".into()));
+        }
+
+        if array.summary_floats.len() != 2 {
+            return Err(Error::IOError(
+                "DAF Array is not a CK array. Summary of array is incorrectly formatted, incorrect number of floats.".into(),
+            ));
+        }
+
+        if array.summary_ints.len() != 6 {
+            return Err(Error::IOError("DAF Array is not a CK array. Summary of array is incorrectly formatted, incorrect number of ints.".into()));
+        }
+
+        let tick_start = array.summary_floats[0];
+        let tick_end = array.summary_floats[1];
+
+        // The last two integers in the summary are the start and end of the array.
+        // Those two values are already contained within the DafArray stored in this
+        // object.
+        let instrument_id = array.summary_ints[0];
+        let naif_id = array.summary_ints[0] / 1000;
+        let frame_id = array.summary_ints[1];
+        let segment_type = array.summary_ints[2];
+        let produces_angular_rates = array.summary_ints[3] == 1;
+
+        Ok(CkArray {
+            daf: array,
+            tick_start,
+            tick_end,
+            instrument_id,
+            naif_id,
+            frame_id,
+            segment_type,
+            produces_angular_rates,
         })
     }
 }

@@ -51,18 +51,18 @@ impl TryFrom<SpkArray> for SpkSegment {
             18 => Ok(SpkSegment::Type18(array.try_into()?)),
             21 => Ok(SpkSegment::Type21(array.into())),
             v => Err(Error::IOError(format!(
-                "SPK Segment type {:?} not supported.",
+                "SPK Segment type {:?} not supported. Please submit a github issue!",
                 v
             ))),
         }
     }
 }
 
-impl SpkSegment {
-    pub fn spk_array(&self) -> &SpkArray {
-        match self {
-            SpkSegment::Type1(v) => &v.array,
-            SpkSegment::Type2(v) => &v.array,
+impl<'a> From<&'a SpkSegment> for &'a SpkArray {
+    fn from(segment: &'a SpkSegment) -> Self {
+        match segment {
+            SpkSegment::Type1(seg) => &seg.array,
+            SpkSegment::Type2(seg) => &seg.array,
             SpkSegment::Type3(v) => &v.array,
             SpkSegment::Type9(v) => &v.array,
             SpkSegment::Type10(v) => &v.array.array,
@@ -71,12 +71,14 @@ impl SpkSegment {
             SpkSegment::Type21(v) => &v.array,
         }
     }
+}
 
+impl SpkSegment {
     /// Return the [`State`] object at the specified JD. If the requested time is
     /// not within the available range, this will fail.
     #[inline(always)]
     pub fn try_get_state<T: InertialFrame>(&self, jd: f64) -> KeteResult<State<T>> {
-        let arr_ref = self.spk_array();
+        let arr_ref: &SpkArray = self.into();
 
         let jds = jd_to_spice_jd(jd);
 

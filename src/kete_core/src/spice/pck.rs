@@ -51,7 +51,7 @@ impl PckCollection {
     /// This orientation will have the frame of what was originally present in the file.
     pub fn try_get_orientation(&self, id: i32, jd: f64) -> KeteResult<EclipticNonInertial> {
         for segment in self.segments.iter() {
-            let array = segment.pck_array();
+            let array: &PckArray = segment.into();
             if (array.center_id == id) & array.contains(jd) {
                 return segment.try_get_orientation(id, jd);
             }
@@ -74,7 +74,7 @@ impl PckCollection {
         let loaded: HashSet<i32> = self
             .segments
             .iter()
-            .map(|x| x.pck_array().center_id)
+            .map(|x| Into::<&PckArray>::into(x).center_id)
             .collect();
         loaded.into_iter().collect()
     }

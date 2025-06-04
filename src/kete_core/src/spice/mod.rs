@@ -1,5 +1,7 @@
 //! Spice replacement methods
 //! Primarily includes the ability to read the contents of SPK files.
+mod ck;
+mod ck_segments;
 mod daf;
 mod interpolation;
 mod naif_ids;
@@ -10,6 +12,7 @@ mod sclk;
 mod spk;
 mod spk_segments;
 
+pub use ck::*;
 pub use daf::*;
 pub use naif_ids::try_name_from_id;
 pub use obs_codes::OBS_CODES;
@@ -20,16 +23,18 @@ pub use spk::*;
 /// Convert seconds from J2000 into JD.
 ///
 /// # Arguments
-/// * `jds_sec` - The number of seconds from J2000.
+/// * `jds_sec` - The number of TDB seconds from J2000.
 ///
 /// # Returns
 /// The Julian Date (TDB).
+#[inline(always)]
 fn spice_jd_to_jd(jds_sec: f64) -> f64 {
     // 86400.0 = 60 * 60 * 24
     jds_sec / 86400.0 + 2451545.0
 }
 
-/// Convert JD to seconds from J2000.
+/// Convert TDB JD to seconds from J2000.
+#[inline(always)]
 fn jd_to_spice_jd(jd: f64) -> f64 {
     // 86400.0 = 60 * 60 * 24
     (jd - 2451545.0) * 86400.0
