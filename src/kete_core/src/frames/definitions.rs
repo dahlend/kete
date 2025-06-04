@@ -112,7 +112,7 @@ pub trait NonInertialFrame: Sized + Sync + Send + Clone + Copy + Debug + Partial
         pos: Vector3<f64>,
         vel: Vector3<f64>,
     ) -> (Vector3<f64>, Vector3<f64>) {
-        let (rot_p, rot_dp) = self.rotations();
+        let (rot_p, rot_dp) = self.rotations_to_equatorial();
 
         let new_pos = rot_p.inverse_transform_vector(&pos);
         let new_vel = rot_dp.transpose() * pos + rot_p.inverse_transform_vector(&vel);
@@ -122,7 +122,7 @@ pub trait NonInertialFrame: Sized + Sync + Send + Clone + Copy + Debug + Partial
 
     /// Convert a vector from input frame to equatorial frame.
     fn to_equatorial(&self, pos: Vector3<f64>, vel: Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
-        let (rot_p, rot_dp) = self.rotations();
+        let (rot_p, rot_dp) = self.rotations_to_equatorial();
 
         let new_pos = rot_p.transform_vector(&pos);
         let new_vel = rot_dp * pos + rot_p.transform_vector(&vel);
@@ -142,7 +142,7 @@ pub trait NonInertialFrame: Sized + Sync + Send + Clone + Copy + Debug + Partial
 
     /// Rotation matrix from the non-inertial frame to the reference frame.
     /// The second rotation is the derivative of the first rotation with respect to time.
-    fn rotations(&self) -> (Rotation3<f64>, Matrix3<f64>) {
+    fn rotations_to_equatorial(&self) -> (Rotation3<f64>, Matrix3<f64>) {
         euler_rotation::<'Z', 'X', 'Z'>(self.angles(), self.rates())
     }
 
@@ -170,7 +170,7 @@ impl NonInertialFrame for EclipticNonInertial {
 
     /// Rotation matrix from the non-inertial frame to the reference frame.
     /// The second rotation is the derivative of the first rotation with respect to time.
-    fn rotations(&self) -> (Rotation3<f64>, Matrix3<f64>) {
+    fn rotations_to_equatorial(&self) -> (Rotation3<f64>, Matrix3<f64>) {
         let (rot_p, rot_dp) = euler_rotation::<'Z', 'X', 'Z'>(self.angles(), self.rates());
         (
             *ECLIPTIC_EQUATORIAL_ROT * rot_p,

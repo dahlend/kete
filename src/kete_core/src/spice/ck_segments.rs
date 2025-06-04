@@ -168,10 +168,11 @@ impl CkSegmentType3 {
         }
         let (time, quaternion, accel) = self.get_quaternion_at_time(time)?;
 
-        let accel: [f64; 3] = accel.unwrap_or_default();
+        let mut accel: [f64; 3] = accel.unwrap_or_default();
+        accel.iter_mut().for_each(|x| *x *= 86400.0);
 
-        /// convert quaternion to euler angles in the order X, Z, X
-        let angles = quaternion_to_euler::<'X', 'Z', 'X'>(quaternion.into_inner());
+        /// convert quaternion to euler angles in the order Z, X, Z
+        let angles = quaternion_to_euler::<'Z', 'X', 'Z'>(quaternion.into_inner());
         let values = [
             angles[0], angles[1], angles[2], accel[0], accel[1], accel[2],
         ];

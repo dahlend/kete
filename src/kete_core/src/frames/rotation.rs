@@ -1,6 +1,5 @@
 //! Rotation related math utilities.
 //!
-//!
 
 use std::f64::consts::PI;
 
