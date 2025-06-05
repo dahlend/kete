@@ -16,8 +16,10 @@
 use super::jd_to_spice_jd;
 use super::{interpolation::*, PckArray};
 use crate::errors::Error;
-use crate::frames::EclipticNonInertial;
+use crate::frames::NonInertialFrame;
 use crate::prelude::KeteResult;
+use crate::time::scales::TDB;
+use crate::time::Time;
 use std::fmt::Debug;
 
 #[derive(Debug)]
@@ -56,12 +58,12 @@ impl<'a> From<&'a PckSegment> for &'a PckArray {
 }
 
 impl PckSegment {
-    /// Return the [`EclipticNonInertial`] at the specified JD. If the requested time is not within
+    /// Return the [`NonInertialFrame`] at the specified JD. If the requested time is not within
     /// the available range, this will fail.
-    pub fn try_get_orientation(&self, center_id: i32, jd: f64) -> KeteResult<EclipticNonInertial> {
+    pub fn try_get_orientation(&self, center_id: i32, jd: f64) -> KeteResult<NonInertialFrame> {
         let arr_ref: &PckArray = self.into();
 
-        if center_id != arr_ref.center_id {
+        if center_id != arr_ref.frame_id {
             Err(Error::DAFLimits(
                 "Center ID is not present in this record.".into(),
             ))?;
@@ -72,10 +74,10 @@ impl PckSegment {
         if jds < arr_ref.jds_start || jds > arr_ref.jds_end {
             Err(Error::DAFLimits("JD is not present in this record.".into()))?;
         }
-        if arr_ref.frame_id != 17 {
+        if arr_ref.reference_frame_id != 17 {
             Err(Error::ValueError(format!(
                 "PCK frame ID {} is not supported. Only 17 (Ecliptic) is supported.",
-                arr_ref.frame_id
+                arr_ref.reference_frame_id
             )))?;
         }
 
@@ -108,7 +110,7 @@ impl PckSegmentType2 {
     }
 
     /// Return the stored orientation, along with the rate of change of the orientation.
-    fn try_get_orientation(&self, jds: f64) -> KeteResult<EclipticNonInertial> {
+    fn try_get_orientation(&self, jds: f64) -> KeteResult<NonInertialFrame> {
         // Records in the segment contain information about the central position of the
         // north pole, as well as the position of the prime meridian. These values for
         // type 2 segments are stored as chebyshev polynomials of the first kind, in
@@ -139,14 +141,20 @@ impl PckSegmentType2 {
         // rem_euclid is equivalent to the modulo operator, so this maps w to [0, 2pi]
         let w = w.rem_euclid(std::f64::consts::TAU);
 
-        Ok(EclipticNonInertial(
+        let time = Time::<TDB>::new(jd_to_spice_jd(jds));
+        let frame = NonInertialFrame::from_euler::<'Z', 'X', 'Z'>(
+            time,
             [ra, dec, w],
             [
-                ra_der / t_step * 86400.0,
+                ra_der / t_step * 86400.0, // convert to radians per day
                 dec_der / t_step * 86400.0,
                 w_der / t_step * 86400.0,
             ],
-        ))
+            self.array.reference_frame_id,
+            1,
+        );
+
+        Ok(frame)
     }
 }
 

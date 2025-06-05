@@ -20,7 +20,7 @@ use lazy_static::lazy_static;
 #[derive(Debug, Default)]
 pub struct CkCollection {
     /// Collection of PCK file information
-    segments: Vec<CkSegment>,
+    pub(crate) segments: Vec<CkSegment>,
 }
 
 /// Define the PCK singleton structure.
@@ -48,26 +48,63 @@ impl CkCollection {
 
     /// Get the closest record to the given JD for the specified instrument ID.
     ///
-    pub fn try_get_frame<T: NonInertialFrame>(
+    pub fn try_get_frame(
         &self,
         jd: f64,
-        naif_id: i32,
-    ) -> KeteResult<(Time<TDB>, T)> {
+        instrument_id: i32,
+    ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
         let time = Time::<TDB>::new(jd);
         let sclk = LOADED_SCLK.try_read().unwrap();
-        let tick = sclk.try_time_to_tick(naif_id, time)?;
+        let spice_id = instrument_id / 1000;
+        let tick = sclk.try_time_to_tick(spice_id, time)?;
 
         for segment in self.segments.iter() {
             let array: &CkArray = segment.into();
-            if (array.naif_id == naif_id) & array.contains(tick) {
-                return segment.try_get_orientation(naif_id, time);
+            if (array.instrument_id == instrument_id) & array.contains(tick) {
+                return segment.try_get_orientation(instrument_id, time);
             }
         }
 
         Err(Error::DAFLimits(format!(
-            "Object ({}) does not have an CK record for the target JD.",
-            naif_id
+            "Instrument ({}) does not have an CK record for the target JD.",
+            instrument_id
         )))?
+    }
+
+    /// Return a list of all loaded instrument ids.
+    pub fn loaded_instruments(&self) -> Vec<i32> {
+        self.segments
+            .iter()
+            .map(|s| {
+                let array: &CkArray = s.into();
+                array.instrument_id
+            })
+            .collect::<Vec<i32>>()
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    /// For a given NAIF ID, return all increments of time which are currently loaded.
+    pub fn available_info(&self, instrument_id: i32) -> Vec<(i32, i32, i32, f64, f64)> {
+        self.segments
+            .iter()
+            .filter_map(|s| {
+                let array: &CkArray = s.into();
+                if array.instrument_id != instrument_id {
+                    None
+                } else {
+                    Some((
+                        array.instrument_id,
+                        array.reference_frame_id,
+                        array.segment_type,
+                        array.tick_start,
+                        array.tick_end,
+                    ))
+                }
+            })
+            .collect()
     }
 }
 

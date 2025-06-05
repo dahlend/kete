@@ -148,6 +148,14 @@ impl PyState {
         self.frame
     }
 
+    /// Is the state finite?
+    #[getter]
+    pub fn is_finite(&self) -> bool {
+        self.raw.pos.norm().is_finite()
+            && self.raw.vel.norm().is_finite()
+            && self.raw.jd.is_finite()
+    }
+
     /// Central ID of the object used as reference for the coordinate frame.
     #[getter]
     pub fn center_id(&self) -> i32 {

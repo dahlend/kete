@@ -147,6 +147,8 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_function(wrap_pyfunction!(spice::ck_load_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::ck_frame_to_equatorial, m)?)?;
+    m.add_function(wrap_pyfunction!(spice::ck_loaded_instrument_info_py, m)?)?;
+    m.add_function(wrap_pyfunction!(spice::ck_loaded_instruments_py, m)?)?;
 
     m.add_function(wrap_pyfunction!(spice::daf_header_info_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::obs_codes, m)?)?;
