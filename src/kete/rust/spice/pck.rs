@@ -1,4 +1,4 @@
-use kete_core::frames::{ecef_to_geodetic_lat_lon, NonInertialFrame};
+use kete_core::frames::ecef_to_geodetic_lat_lon;
 use kete_core::spice::{LOADED_PCK, LOADED_SPK};
 use kete_core::{constants, prelude::*};
 use pyo3::{pyfunction, PyResult};
@@ -54,7 +54,7 @@ pub fn pck_earth_frame_py(
     let pcks = LOADED_PCK.try_read().unwrap();
     let frame = pcks.try_get_orientation(3000, jd)?;
 
-    let (pos, vel) = frame.to_equatorial(pos.into(), [0.0, 0.0, 0.0].into());
+    let (pos, vel) = frame.to_equatorial(pos.into(), [0.0, 0.0, 0.0].into())?;
 
     let mut state: State<Equatorial> = State::new(desig, jd, pos.into(), vel.into(), 399);
 
@@ -86,7 +86,7 @@ pub fn pck_state_to_earth(state: PyState) -> PyResult<(f64, f64, f64)> {
     let state = state.change_center(399)?.raw;
     let frame = pcks.try_get_orientation(3000, state.jd)?;
 
-    let (pos, _) = frame.from_equatorial(state.pos.into(), state.vel.into());
+    let (pos, _) = frame.from_equatorial(state.pos.into(), state.vel.into())?;
     let [x, y, z] = pos.into();
     let (lat, lon, height) = ecef_to_geodetic_lat_lon(
         x * constants::AU_KM,

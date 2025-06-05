@@ -154,19 +154,21 @@ pub fn propagation_n_body_spk_py(
                     Err(er) => {
                         if !suppress_errors {
                             Err(er)?
+                        } else if let Error::Impact(id, time) = er {
+                            if !suppress_impact_errors {
+                                eprintln!(
+                                    "Impact detected between ({}) <-> {} at time {} ({})",
+                                    desig,
+                                    spice::try_name_from_id(id).unwrap_or(id.to_string()),
+                                    time,
+                                    Time::<TDB>::new(time).utc().to_iso().unwrap()
+                                );
+                            }
+                            // if we get an impact, we return a state with NaNs
+                            // but put the impact time into the new state.
+                            Ok(Into::<PyState>::into(State::new_nan(desig, time, center))
+                                .change_frame(frame))
                         } else {
-                            if let Error::Impact(id, time) = er {
-                                let time_full: Time<TDB> = Time::new(time);
-                                if !suppress_impact_errors {
-                                    eprintln!(
-                                        "Impact detected between ({:?}) <-> ({}) at time {} ({})",
-                                        desig,
-                                        spice::try_name_from_id(id).unwrap_or(id.to_string()),
-                                        time,
-                                        time_full.utc().to_iso().unwrap()
-                                    );
-                                }
-                            };
                             Ok(Into::<PyState>::into(State::new_nan(desig, jd, center))
                                 .change_frame(frame))
                         }

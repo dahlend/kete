@@ -13,7 +13,7 @@ use super::pck_segments::PckSegment;
 use super::PckArray;
 use crate::cache::cache_path;
 use crate::errors::{Error, KeteResult};
-use crate::frames::EclipticNonInertial;
+use crate::frames::NonInertialFrame;
 use crossbeam::sync::ShardedLock;
 use lazy_static::lazy_static;
 
@@ -49,10 +49,10 @@ impl PckCollection {
 
     /// Get the raw orientation from the loaded PCK files.
     /// This orientation will have the frame of what was originally present in the file.
-    pub fn try_get_orientation(&self, id: i32, jd: f64) -> KeteResult<EclipticNonInertial> {
+    pub fn try_get_orientation(&self, id: i32, jd: f64) -> KeteResult<NonInertialFrame> {
         for segment in self.segments.iter() {
             let array: &PckArray = segment.into();
-            if (array.center_id == id) & array.contains(jd) {
+            if (array.frame_id == id) & array.contains(jd) {
                 return segment.try_get_orientation(id, jd);
             }
         }
@@ -74,7 +74,7 @@ impl PckCollection {
         let loaded: HashSet<i32> = self
             .segments
             .iter()
-            .map(|x| Into::<&PckArray>::into(x).center_id)
+            .map(|x| Into::<&PckArray>::into(x).frame_id)
             .collect();
         loaded.into_iter().collect()
     }

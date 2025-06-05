@@ -389,11 +389,11 @@ pub struct PckArray {
     /// JD Time in spice units of seconds from J2000.
     pub jds_end: f64,
 
-    /// The reference center NAIF ID for the central body in this Array.
-    pub center_id: i32,
-
-    /// The spice frame ID of the array.
+    /// The ID which identifies this frame.
     pub frame_id: i32,
+
+    /// The inertial reference frame this PCK is defined against.
+    pub reference_frame_id: i32,
 
     /// The spice segment type.
     pub segment_type: i32,
@@ -429,16 +429,16 @@ impl TryFrom<DafArray> for PckArray {
         let jds_end = array.summary_floats[1];
 
         // The last two integers in the summary are the start and end of the array.
-        let center_id = array.summary_ints[0];
-        let frame_id = array.summary_ints[1];
+        let frame_id = array.summary_ints[0];
+        let reference_frame_id = array.summary_ints[1];
         let segment_type = array.summary_ints[2];
 
         Ok(PckArray {
             daf: array,
             jds_start,
             jds_end,
-            center_id,
             frame_id,
+            reference_frame_id,
             segment_type,
         })
     }
@@ -466,7 +466,7 @@ pub struct CkArray {
 
     /// The spice frame ID of the array.
     /// Called the `Reference` in SPICE documentation.
-    pub frame_id: i32,
+    pub reference_frame_id: i32,
 
     /// The spice segment type.
     pub segment_type: i32,
@@ -518,7 +518,7 @@ impl TryFrom<DafArray> for CkArray {
             tick_end,
             instrument_id,
             naif_id,
-            frame_id,
+            reference_frame_id: frame_id,
             segment_type,
             produces_angular_rates,
         })

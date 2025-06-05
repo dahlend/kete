@@ -2,32 +2,34 @@ use crate::errors::{Error, KeteResult};
 use crate::frames::{quaternion_to_euler, NonInertialFrame};
 use crate::time::scales::TDB;
 use crate::time::Time;
-use nalgebra::{Quaternion, Unit, UnitQuaternion};
+use nalgebra::{Quaternion, Rotation3, Unit, UnitQuaternion};
 
 use super::CkArray;
 use super::LOADED_SCLK;
 
 #[derive(Debug)]
-pub(in crate::spice) enum CkSegment {
+pub(crate) enum CkSegment {
+    Type2(CkSegmentType2),
     Type3(CkSegmentType3),
 }
 
 impl CkSegment {
-    pub fn try_get_orientation<T: NonInertialFrame>(
+    pub fn try_get_orientation(
         &self,
-        naif_id: i32,
+        instrument_id: i32,
         time: Time<TDB>,
-    ) -> KeteResult<(Time<TDB>, T)> {
+    ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
         let arr_ref: &CkArray = self.into();
-        if arr_ref.naif_id != naif_id {
+        if arr_ref.instrument_id != instrument_id {
             return Err(Error::DAFLimits(format!(
-                "NAIF ID is not present in this record. {}",
-                arr_ref.naif_id
+                "Instrument ID is not present in this record. {}",
+                arr_ref.instrument_id
             )));
         }
 
         match self {
             CkSegment::Type3(seg) => seg.try_get_orientation(time),
+            CkSegment::Type2(seg) => seg.try_get_orientation(time),
         }
     }
 }
@@ -36,6 +38,7 @@ impl<'a> From<&'a CkSegment> for &'a CkArray {
     fn from(value: &'a CkSegment) -> Self {
         match value {
             CkSegment::Type3(seg) => &seg.array,
+            CkSegment::Type2(seg) => &seg.array,
         }
     }
 }
@@ -44,6 +47,7 @@ impl From<CkSegment> for CkArray {
     fn from(value: CkSegment) -> Self {
         match value {
             CkSegment::Type3(seg) => seg.array,
+            CkSegment::Type2(seg) => seg.array,
         }
     }
 }
@@ -53,12 +57,148 @@ impl TryFrom<CkArray> for CkSegment {
 
     fn try_from(array: CkArray) -> Result<Self, Self::Error> {
         match array.segment_type {
+            2 => Ok(CkSegment::Type2(array.try_into()?)),
             3 => Ok(CkSegment::Type3(array.try_into()?)),
             v => Err(Error::IOError(format!(
                 "CK Segment type {:?} not supported.",
                 v
             ))),
         }
+    }
+}
+
+/// Discrete pointing data.
+///
+/// This segment type is broken up into intervals, during each interval the
+/// rotation rate is constant. Each interval has a defined orientation saved
+/// as a quaternion, and then a vector defining the axis of rotation, then
+/// the last value is the angular rate of rotation in SCLK ticks per second.
+///
+/// https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/ck.html#Data%20Type%202
+
+#[derive(Debug)]
+#[allow(unused)]
+pub(crate) struct CkSegmentType2 {
+    array: CkArray,
+
+    n_records: usize,
+
+    time_start_idx: usize,
+}
+
+impl CkSegmentType2 {
+    fn get_record(&self, idx: usize) -> (Quaternion<f64>, [f64; 3], f64) {
+        unsafe {
+            let rec = self.array.daf.data.get_unchecked(idx * 8..(idx + 1) * 8);
+            let quaternion = Quaternion::new(rec[0], rec[1], rec[2], rec[3]);
+            let accel: [f64; 3] = rec[4..7].try_into().unwrap();
+            let angular_rate = rec[7];
+            (quaternion, accel, angular_rate)
+        }
+    }
+
+    fn time_starts(&self) -> &[f64] {
+        unsafe {
+            self.array
+                .daf
+                .data
+                .get_unchecked(self.time_start_idx..self.time_start_idx + self.n_records)
+        }
+    }
+
+    pub fn try_get_orientation(
+        &self,
+        time: Time<TDB>,
+    ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
+        let sclk = LOADED_SCLK
+            .try_read()
+            .map_err(|_| Error::DAFLimits("Failed to read SCLK data.".into()))?;
+        let tick = sclk.try_time_to_tick(self.array.naif_id, time)?;
+
+        // get the time of the last record and its index
+        let time_starts = self.time_starts();
+        let (record_time, record_idx) = if self.n_records == 1 {
+            // If there is only one interval, return its times
+            (self.time_starts()[0], 0)
+        } else {
+            let interval_idx = time_starts.partition_point(|&x| x <= tick);
+            if interval_idx >= self.n_records - 1 {
+                // If the index is the last one, return the last record
+                (time_starts[self.n_records - 1], self.n_records - 1)
+            } else if interval_idx == 0 {
+                // If the index is before the beginning of the interval, return the first record
+                (time_starts[0], 0)
+            } else {
+                // Otherwise, we have a valid index
+                let idx = interval_idx - 1;
+                (time_starts[idx], idx)
+            }
+        };
+        let (mut quaternion, mut accel_vec, rate) = self.get_record(record_idx);
+
+        let dt = tick - record_time;
+
+        if dt < 0.0 {
+            return Err(Error::DAFLimits(format!(
+                "Requested time {} is before the start of the segment.",
+                record_idx
+            )));
+        }
+
+        accel_vec.iter_mut().for_each(|x| *x *= 86400.0 * dt * rate);
+        let rotation = Rotation3::from_scaled_axis(accel_vec.into());
+        quaternion *= UnitQuaternion::from_rotation_matrix(&rotation).into_inner();
+
+        // convert quaternion to euler angles in the order Z, X, Z
+        let angles = quaternion_to_euler::<'Z', 'X', 'Z'>(quaternion);
+
+        let frame = NonInertialFrame::from_euler::<'Z', 'X', 'Z'>(
+            time,
+            angles,
+            [0.0; 3],
+            self.array.reference_frame_id,
+            self.array.instrument_id,
+        );
+        Ok((time, frame))
+    }
+}
+
+impl TryFrom<CkArray> for CkSegmentType2 {
+    type Error = Error;
+
+    fn try_from(array: CkArray) -> Result<Self, Self::Error> {
+        // each pointing record is 8 numbers long, along with a start and stop time
+        // and a directory of every 100th time.
+        let array_len = array.daf.len();
+        let mut n_records = array.daf.len() / 10;
+        let mut dir_size = n_records / 100;
+
+        // n_records will be an over estimate, as it is also counting the directory
+        n_records -= ((n_records * 10 + dir_size) - array_len) / 10;
+        dir_size = n_records / 100;
+        // probably dont need the second time, but better safe than sorry
+        n_records -= ((n_records * 10 + dir_size) - array_len) / 10;
+        dir_size = n_records / 100;
+
+        if array_len != (n_records * 10 + dir_size) {
+            return Err(Error::DAFLimits(
+                "CK File is not formatted correctly, directory size of segments appear incorrect."
+                    .into(),
+            ));
+        };
+        if n_records == 0 {
+            return Err(Error::DAFLimits(
+                "CK File does not contain any records.".into(),
+            ));
+        };
+
+        let time_start_idx = n_records * 10;
+
+        Ok(CkSegmentType2 {
+            array,
+            n_records,
+            time_start_idx,
+        })
     }
 }
 
@@ -80,7 +220,7 @@ impl TryFrom<CkArray> for CkSegment {
 
 #[derive(Debug)]
 #[allow(unused)]
-pub(in crate::spice) struct CkSegmentType3 {
+pub(crate) struct CkSegmentType3 {
     array: CkArray,
     n_intervals: usize,
     n_records: usize,
@@ -155,17 +295,10 @@ impl CkSegmentType3 {
         Ok((&record_times[start_idx..stop_idx], start_idx))
     }
 
-    pub fn try_get_orientation<T: NonInertialFrame>(
+    pub fn try_get_orientation(
         &self,
         time: Time<TDB>,
-    ) -> KeteResult<(Time<TDB>, T)> {
-        if T::spice_frame_id() != self.array.frame_id {
-            return Err(Error::ValueError(format!(
-                "Frame ID {} does not match segment frame ID {}.",
-                T::spice_frame_id(),
-                self.array.frame_id
-            )));
-        }
+    ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
         let (time, quaternion, accel) = self.get_quaternion_at_time(time)?;
 
         let mut accel: [f64; 3] = accel.unwrap_or_default();
@@ -177,7 +310,15 @@ impl CkSegmentType3 {
             angles[0], angles[1], angles[2], accel[0], accel[1], accel[2],
         ];
 
-        Ok((time, T::new(values)))
+        let frame = NonInertialFrame::from_euler::<'Z', 'X', 'Z'>(
+            time,
+            angles,
+            [0.0; 3],
+            self.array.reference_frame_id,
+            self.array.instrument_id,
+        );
+
+        Ok((time, frame))
     }
 
     /// Return the record at the given time, interpolating if necessary.
@@ -191,7 +332,7 @@ impl CkSegmentType3 {
     ) -> KeteResult<(Time<TDB>, UnitQuaternion<f64>, Option<[f64; 3]>)> {
         let sclk = LOADED_SCLK
             .try_read()
-            .map_err(|_| Error::IOError("Failed to read SCLK data.".into()))?;
+            .map_err(|_| Error::DAFLimits("Failed to read SCLK data.".into()))?;
         let tick = sclk.try_time_to_tick(self.array.naif_id, time)?;
 
         // If there is only one record, return it immediately.
@@ -243,7 +384,6 @@ impl CkSegmentType3 {
     }
 }
 
-#[allow(unused)]
 struct Type3RecordView<'a> {
     quaternion: &'a [f64],
     accel: &'a [f64],
@@ -271,12 +411,12 @@ impl TryFrom<CkArray> for CkSegmentType3 {
         let n_intervals = array.daf[array.daf.len() - 2] as usize;
 
         if n_records == 0 {
-            return Err(Error::IOError(
+            return Err(Error::DAFLimits(
                 "CK File does not contain any records.".into(),
             ));
         }
         if n_intervals == 0 {
-            return Err(Error::IOError(
+            return Err(Error::DAFLimits(
                 "CK File does not contain any intervals of records.".into(),
             ));
         }
@@ -299,7 +439,7 @@ impl TryFrom<CkArray> for CkSegmentType3 {
         expected_size += time_dir_size + interval_dir_size;
 
         if expected_size != array.daf.len() {
-            return Err(Error::IOError(
+            return Err(Error::DAFLimits(
                 "CK File not formatted correctly. Number of records found in file don't match expected."
                     .into(),
             ));
