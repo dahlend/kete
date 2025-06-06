@@ -29,15 +29,18 @@ jobs:
           # Window 64 bit
           - os: windows-latest
             platform_id: win_amd64
+            sdist:
 
           # Linux 64 bit manylinux2014
           - os: ubuntu-latest
             platform_id: manylinux_x86_64
             manylinux_image: manylinux2014
+            sdist: --sdist
 
           # MacOS - latest is now arm64, no longer x86_64
           - os: macos-latest
             platform_id: macosx_arm64
+            sdist: 
     steps:
       - uses: actions/checkout@v4
       - name: Cache downloaded files
@@ -62,11 +65,15 @@ jobs:
           python3 -m pip install --upgrade pip setuptools
           python3 -m pip install maturin
       - name: Build wheels
-        run: python3 -m maturin build --release --out wheelhouse
+        run: python3 -m maturin build --release --out wheelhouse ${{ matrix.sdist }}
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-cp-${{ matrix.platform_id }}
           path: ./wheelhouse/*.whl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-cp-sdist
+          path: ./wheelhouse/*.tar.gz
   # publish-to-pypi:
   #   name: Publish Kete to PyPI
   #   needs:
