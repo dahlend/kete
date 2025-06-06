@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build_wheels:
-    name: Build wheel for py${{ matrix.python }}-${{ matrix.platform_id }}
+    name: Build wheel for py-abi3-${{ matrix.platform_id }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -62,12 +62,10 @@ jobs:
           python3 -m pip install --upgrade pip setuptools
           python3 -m pip install maturin
       - name: Build wheels
-        env:
-          ARCHFLAGS: -arch x86_64 -arch arm64
         run: python3 -m maturin build --release --out wheelhouse
       - uses: actions/upload-artifact@v4
         with:
-          name: wheel-cp${{ matrix.python }}-${{ matrix.platform_id }}
+          name: wheel-cp-${{ matrix.platform_id }}
           path: ./wheelhouse/*.whl
   # publish-to-pypi:
   #   name: Publish Kete to PyPI
