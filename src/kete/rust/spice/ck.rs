@@ -45,25 +45,6 @@ pub fn ck_loaded_instrument_info_py(instrument_id: i32) -> Vec<(i32, i32, i32, f
 }
 
 /// Convert a vector in the specified frame to equatorial coordinates.
-#[pyfunction]
-#[pyo3(name = "ck_frame_to_equatorial")]
-pub fn ck_frame_to_equatorial(
-    jd: PyTime,
-    vec: [f64; 3],
-    instrument_id: i32,
-) -> PyResult<(PyTime, PyVector)> {
-    let time = jd.0;
-    let cks = LOADED_CK.try_read().unwrap();
-    let (time, frame) = cks.try_get_frame(time.jd, instrument_id)?;
-
-    let (pos, _) = frame.to_equatorial(vec.into(), [0.0; 3].into())?;
-
-    let vec = PyVector::new(pos.into(), PyFrames::Equatorial);
-
-    Ok((time.into(), vec))
-}
-
-/// Convert a vector in the specified frame to equatorial coordinates.
 ///
 /// This returns the closest time found in the CK kernels, along with the rotated
 /// vector.
