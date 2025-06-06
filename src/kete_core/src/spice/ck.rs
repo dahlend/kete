@@ -46,6 +46,12 @@ impl CkCollection {
         Ok(())
     }
 
+
+    /// Clear all loaded CK kernels.
+    pub fn reset(&mut self){
+        *self = CkCollection::default();
+    }
+
     /// Get the closest record to the given JD for the specified instrument ID.
     ///
     pub fn try_get_frame(

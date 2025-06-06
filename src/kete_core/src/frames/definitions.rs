@@ -108,7 +108,8 @@ impl InertialFrame for FK4 {
 pub struct NonInertialFrame {
     time: Time<TDB>,
 
-    rotation: Rotation3<f64>,
+    /// Rotation matrix
+    pub rotation: Rotation3<f64>,
 
     rotation_rate: Option<Matrix3<f64>>,
 
@@ -131,6 +132,23 @@ impl NonInertialFrame {
             time,
             rotation: rot_p,
             rotation_rate: Some(rot_dp),
+            reference_frame_id,
+            frame_id,
+        }
+    }
+
+    /// Create non-inertial from from rotations
+    pub fn from_rotations(
+        time: Time<TDB>,
+        rotation: Rotation3<f64>,
+        rotation_rate: Option<Matrix3<f64>>,
+        reference_frame_id: i32,
+        frame_id: i32,
+    ) -> Self {
+        Self {
+            time,
+            rotation,
+            rotation_rate,
             reference_frame_id,
             frame_id,
         }

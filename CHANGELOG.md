@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added initial support for SPICE SCLK text kernels, allowing the conversion of
   spacecraft formatted time strings to `kete.Time` objects. Conversion matches cSPICE
   to near numerical precision limits.
+- Added initial support for SPICE CK binary kernels, allowing conversion of instrument
+  coordinate frames to equatorial frame and back.
 
 ### Changed
 
