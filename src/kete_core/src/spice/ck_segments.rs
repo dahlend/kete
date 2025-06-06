@@ -1,5 +1,5 @@
 use crate::errors::{Error, KeteResult};
-use crate::frames::{quaternion_to_euler, NonInertialFrame};
+use crate::frames::NonInertialFrame;
 use crate::time::scales::TDB;
 use crate::time::Time;
 use nalgebra::{Quaternion, Rotation3, Unit, UnitQuaternion};
@@ -134,7 +134,7 @@ impl CkSegmentType2 {
                 (time_starts[idx], idx)
             }
         };
-        let (mut quaternion, mut accel_vec, rate) = self.get_record(record_idx);
+        let (quaternion, mut accel_vec, rate) = self.get_record(record_idx);
 
         let dt = tick - record_time;
 
@@ -144,18 +144,16 @@ impl CkSegmentType2 {
                 record_idx
             )));
         }
+        let mut rotation = Unit::from_quaternion(quaternion).to_rotation_matrix();
 
         accel_vec.iter_mut().for_each(|x| *x *= 86400.0 * dt * rate);
-        let rotation = Rotation3::from_scaled_axis(accel_vec.into());
-        quaternion *= UnitQuaternion::from_rotation_matrix(&rotation).into_inner();
+        let rates = Rotation3::from_scaled_axis(accel_vec.into());
+        rotation *= rates;
 
-        // convert quaternion to euler angles in the order Z, X, Z
-        let angles = quaternion_to_euler::<'Z', 'X', 'Z'>(quaternion);
-
-        let frame = NonInertialFrame::from_euler::<'Z', 'X', 'Z'>(
+        let frame = NonInertialFrame::from_rotations(
             time,
-            angles,
-            [0.0; 3],
+            rotation.inverse(),
+            None,
             self.array.reference_frame_id,
             self.array.instrument_id,
         );
@@ -283,7 +281,7 @@ impl CkSegmentType3 {
 
         // if the interval_index is the last one, or the second to last one, return the last interval
         if interval_idx >= self.n_intervals - 1 {
-            interval_idx = self.n_intervals - 1;
+            interval_idx = self.n_intervals - 2;
         }
         let interval_start_time = interval_starts[interval_idx];
         let interval_stop_time = interval_starts[interval_idx + 1];
@@ -301,19 +299,14 @@ impl CkSegmentType3 {
     ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
         let (time, quaternion, accel) = self.get_quaternion_at_time(time)?;
 
-        let mut accel: [f64; 3] = accel.unwrap_or_default();
-        accel.iter_mut().for_each(|x| *x *= 86400.0);
+        let mut rates: [f64; 3] = accel.unwrap_or_default();
+        rates.iter_mut().for_each(|x| *x *= 86400.0);
+        let rotation_rate = Rotation3::from_scaled_axis(rates.into());
 
-        /// convert quaternion to euler angles in the order Z, X, Z
-        let angles = quaternion_to_euler::<'Z', 'X', 'Z'>(quaternion.into_inner());
-        let values = [
-            angles[0], angles[1], angles[2], accel[0], accel[1], accel[2],
-        ];
-
-        let frame = NonInertialFrame::from_euler::<'Z', 'X', 'Z'>(
+        let frame = NonInertialFrame::from_rotations(
             time,
-            angles,
-            [0.0; 3],
+            quaternion.to_rotation_matrix().inverse(),
+            Some(rotation_rate.inverse().into_inner()),
             self.array.reference_frame_id,
             self.array.instrument_id,
         );

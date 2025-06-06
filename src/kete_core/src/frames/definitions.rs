@@ -136,6 +136,23 @@ impl NonInertialFrame {
         }
     }
 
+    /// Create non-inertial from from rotations
+    pub fn from_rotations(
+        time: Time<TDB>,
+        rotation: Rotation3<f64>,
+        rotation_rate: Option<Matrix3<f64>>,
+        reference_frame_id: i32,
+        frame_id: i32,
+    ) -> Self {
+        Self {
+            time,
+            rotation,
+            rotation_rate,
+            reference_frame_id,
+            frame_id,
+        }
+    }
+
     /// Return the rotation matrix and rotation rate for this frame in the equatorial frame.
     pub fn rotations_to_equatorial(&self) -> KeteResult<(Rotation3<f64>, Matrix3<f64>)> {
         if self.reference_frame_id == 1 {

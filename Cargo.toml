@@ -9,15 +9,15 @@ keywords = ["physics", "simulation", "astronomy"]
 
 [dependencies]
 kete_core = { version = "*", path = "src/kete_core", features=["pyo3", "polars"]}
-pyo3 = { version =  "^0.25.0", features = ["extension-module"] }
+pyo3 = { version =  "^0.25.0", features = ["extension-module", "abi3-py39"] }
 serde = { version = "^1.0.203", features = ["derive"] }
 nalgebra = {version = "^0.33.0"}
 itertools = "^0.14.0"
 rayon = "^1.10.0"
 sgp4 = "2.2.0"
 
-# bincode is pinned to ensure backward compatability with saved files, all updates to
-# this version need to be validated that they are forward compatable.
+# bincode is pinned to ensure backward compatibility with saved files, all updates to
+# this version need to be validated that they are forward compatible.
 bincode = {version = "2.0.1", features=["derive", "serde"]}
 
 [lib]
