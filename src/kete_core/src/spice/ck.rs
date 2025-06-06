@@ -46,9 +46,8 @@ impl CkCollection {
         Ok(())
     }
 
-
     /// Clear all loaded CK kernels.
-    pub fn reset(&mut self){
+    pub fn reset(&mut self) {
         *self = CkCollection::default();
     }
 

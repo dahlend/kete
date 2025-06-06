@@ -21,7 +21,6 @@ pub fn ck_load_py(filenames: Vec<String>) -> PyResult<()> {
     Ok(())
 }
 
-
 /// Reset the contents of the CK shared memory to the default set of CK kernels.
 #[pyfunction]
 #[pyo3(name = "ck_reset")]
@@ -68,7 +67,7 @@ pub fn ck_frame_to_equatorial(
 ///
 /// This returns the closest time found in the CK kernels, along with the rotated
 /// vector.
-/// 
+///
 #[pyfunction]
 #[pyo3(name = "instrument_frame_to_equatorial")]
 pub fn ck_sc_frame_to_equatorial(
@@ -88,7 +87,7 @@ pub fn ck_sc_frame_to_equatorial(
 }
 
 /// Convert a vector from the equatorial frame to an instrument frame.
-/// 
+///
 /// This returns the closest time found in the CK kernels, along with the rotated
 /// vector.
 ///

@@ -108,8 +108,7 @@ impl InertialFrame for FK4 {
 pub struct NonInertialFrame {
     time: Time<TDB>,
 
-    /// Rotation matrix
-    pub rotation: Rotation3<f64>,
+    rotation: Rotation3<f64>,
 
     rotation_rate: Option<Matrix3<f64>>,
 
