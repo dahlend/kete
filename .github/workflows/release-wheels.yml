@@ -23,7 +23,7 @@ jobs:
       # Ensure that a wheel builder finishes even if another fails
       fail-fast: false
       matrix:
-        python: [39, 310, 311, 312, 313]
+        python: 313
         os: [windows-latest, ubuntu-latest, macos-latest]
         include:
           # Window 64 bit
@@ -60,44 +60,31 @@ jobs:
       - name: Install dependencies
         run: |
           python3 -m pip install --upgrade pip setuptools
-          python3 -m pip install cibuildwheel
+          python3 -m pip install maturin
       - name: Build wheels
         env:
-          CIBW_BUILD: cp${{ matrix.python }}-${{ matrix.platform_id }}
-          CIBW_ARCHS: all
-          CIBW_MANYLINUX_X86_64_IMAGE: ${{ matrix.manylinux_image }}
-          CIBW_MANYLINUX_I686_IMAGE: ${{ matrix.manylinux_image }}
-          CIBW_TEST_SKIP: "*-macosx_arm64"
-          CIBW_ENVIRONMENT: 'PATH="$HOME/.cargo/bin:$PATH" CARGO_TERM_COLOR="always"'
-          CIBW_ENVIRONMENT_WINDOWS: 'PATH="$UserProfile\.cargo\bin;$PATH"'
-          CIBW_BEFORE_BUILD: rustup show
-          CIBW_BEFORE_BUILD_LINUX: >
-            curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain=stable --profile=minimal -y &&
-            rustup show
-          CIBW_TEST_REQUIRES: pytest
-          CIBW_BUILD_VERBOSITY: 1
-          CONDA_HOME: /usr/local/miniconda
-        run: python3 -m cibuildwheel --output-dir wheelhouse
+          ARCHFLAGS: -arch x86_64 -arch arm64
+        run: python3 -m maturin build --release --out wheelhouse
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-cp${{ matrix.python }}-${{ matrix.platform_id }}
           path: ./wheelhouse/*.whl
-  publish-to-pypi:
-    name: Publish Kete to PyPI
-    needs:
-      - build_wheels
-    runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/kete
-    permissions:
-      id-token: write
-    steps:
-      - name: Download all the dists
-        uses: actions/download-artifact@v4
-        with:
-          pattern: wheel-*
-          path: dist
-          merge-multiple: true
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+  # publish-to-pypi:
+  #   name: Publish Kete to PyPI
+  #   needs:
+  #     - build_wheels
+  #   runs-on: ubuntu-latest
+  #   environment:
+  #     name: pypi
+  #     url: https://pypi.org/p/kete
+  #   permissions:
+  #     id-token: write
+  #   steps:
+  #     - name: Download all the dists
+  #       uses: actions/download-artifact@v4
+  #       with:
+  #         pattern: wheel-*
+  #         path: dist
+  #         merge-multiple: true
+  #     - name: Publish to PyPI
+  #       uses: pypa/gh-action-pypi-publish@release/v1
