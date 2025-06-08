@@ -5,7 +5,7 @@ description = "Kete Asteroid Survey Tools"
 readme = "README.md"
 authors = [{name = "Dar Dahlen", email = "dardahlen@gmail.com"},
           ]
-license = {text = "BSD"}
+license = {text = "License :: OSI Approved :: BSD License"}
 requires-python = ">=3.9"
 classifiers=["Programming Language :: Python :: 3"]
 dependencies = ["astropy>=5.3.4",
