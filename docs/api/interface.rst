@@ -1,4 +1,4 @@
-interface
+Interface
 =========
 
 Below are APIs to external organizations and web interfaces. These are provided
@@ -12,7 +12,7 @@ Minor Planet Center (MPC)
    :members:
    :inherited-members:
 
-IPAC - IRSA
+TAP Queries
 -----------
 
 .. automodule:: kete.tap

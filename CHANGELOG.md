@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to near numerical precision limits.
 - Added initial support for SPICE CK binary kernels, allowing conversion of instrument
   coordinate frames to equatorial frame and back.
+- Exposed orbital element values on Python State objects, instead of having to convert
+  the state first to an `CometaryElements` object.
 
 ### Changed
 
@@ -53,6 +55,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Many functions in python now support passing one or a list of objects, for example,
   `kete.propagate_n_body` can now be passed single or multiple states, and will return
   the correct type back.
+- Parsing and packing of MPC Designations was re-written and moved out of Python.
 
 ### Fixed
 

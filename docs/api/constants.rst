@@ -1,4 +1,4 @@
-constants
+Constants
 =========
 
 .. automodule:: kete.constants

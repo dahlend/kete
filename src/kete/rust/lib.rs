@@ -35,6 +35,7 @@ pub mod frame;
 pub mod horizons;
 pub mod kepler;
 pub mod maybe_vec;
+pub mod mpc;
 pub mod nongrav;
 pub mod propagation;
 pub mod simult_states;
@@ -166,6 +167,9 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(utils::dec_degrees_to_dms_py, m)?)?;
     m.add_function(wrap_pyfunction!(utils::ra_hms_to_degrees_py, m)?)?;
     m.add_function(wrap_pyfunction!(utils::dec_dms_to_degrees_py, m)?)?;
+
+    m.add_function(wrap_pyfunction!(mpc::unpack_designation_py, m)?)?;
+    m.add_function(wrap_pyfunction!(mpc::pack_designation_py, m)?)?;
 
     Ok(())
 }

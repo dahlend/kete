@@ -101,7 +101,11 @@ pub fn spk_state_py(id: i32, jd: PyTime, center: i32, frame: PyFrames) -> PyResu
     let spk = &LOADED_SPK.try_read().unwrap();
     let mut state = spk.try_get_state_with_center(id, jd, center)?;
     let _ = state.try_naif_id_to_name();
-    Ok(PyState { raw: state, frame })
+    Ok(PyState {
+        raw: state,
+        frame,
+        elements: None,
+    })
 }
 
 /// Return the raw state of an object as encoded in the SPK Kernels.
@@ -123,5 +127,6 @@ pub fn spk_raw_state_py(id: i32, jd: PyTime) -> PyResult<PyState> {
     Ok(PyState {
         raw: spk.try_get_state(id, jd)?,
         frame: PyFrames::Equatorial,
+        elements: None,
     })
 }

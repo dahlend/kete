@@ -32,6 +32,7 @@
 
 pub mod cache;
 pub mod constants;
+pub mod desigs;
 pub mod elements;
 pub mod errors;
 pub mod fitting;
@@ -49,6 +50,7 @@ pub mod util;
 
 /// Common useful imports
 pub mod prelude {
+    pub use crate::desigs::Desig;
     pub use crate::elements::CometElements;
     pub use crate::errors::{Error, KeteResult};
     pub use crate::flux::{
@@ -59,5 +61,5 @@ pub mod prelude {
     pub use crate::propagation::{propagate_n_body_spk, propagate_two_body};
     pub use crate::simult_states::SimultaneousStates;
     pub use crate::spice::{LOADED_PCK, LOADED_SPK};
-    pub use crate::state::{Desig, State};
+    pub use crate::state::State;
 }

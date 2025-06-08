@@ -10,7 +10,7 @@ use std::{error, fmt, io};
 pub type KeteResult<T> = Result<T, Error>;
 
 /// Possible Errors which may be raised by this crate.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Error {
     /// Numerical method did not converge within the algorithms limits.
     Convergence(String),

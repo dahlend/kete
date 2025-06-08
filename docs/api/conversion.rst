@@ -1,4 +1,4 @@
-conversion
+Conversion
 ==========
 
 .. automodule:: kete.conversion

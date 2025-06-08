@@ -24,7 +24,7 @@ use pyo3::prelude::*;
 /// center_id :
 ///     The SPICE kernel ID which defines the central reference point, defaults to the
 ///     Sun (10).
-#[pyclass(frozen, module = "kete", name = "State")]
+#[pyclass(module = "kete", name = "State")]
 #[derive(Clone, Debug)]
 pub struct PyState {
     /// The raw state object, always in the Equatorial frame.
@@ -32,6 +32,9 @@ pub struct PyState {
 
     /// Frame of reference used to define the coordinate system.
     pub frame: PyFrames,
+
+    /// Cometary orbital elements of the state, computes on first use.
+    pub elements: Option<Box<PyCometElements>>,
 }
 
 impl From<prelude::State<Equatorial>> for PyState {
@@ -39,6 +42,7 @@ impl From<prelude::State<Equatorial>> for PyState {
         Self {
             raw: value,
             frame: PyFrames::Equatorial,
+            elements: None,
         }
     }
 }
@@ -78,7 +82,11 @@ impl PyState {
 
         let center_id = center_id.unwrap_or(10);
         let state = prelude::State::new(desig, jd.jd(), pos, vel, center_id);
-        Self { raw: state, frame }
+        Self {
+            raw: state,
+            frame,
+            elements: None,
+        }
     }
 
     /// Change the center ID of the state from the current state to the target state.
@@ -91,13 +99,18 @@ impl PyState {
         Ok(Self {
             raw: state,
             frame: self.frame,
+            elements: None,
         })
     }
 
     /// Change the frame of the state to the target frame.
     pub fn change_frame(&self, frame: PyFrames) -> Self {
         let raw = self.raw.clone();
-        Self { raw, frame }
+        Self {
+            raw,
+            frame,
+            elements: None,
+        }
     }
 
     /// Convert state to the Ecliptic Frame.
@@ -164,21 +177,93 @@ impl PyState {
 
     /// Cometary orbital elements of the state.
     #[getter]
-    pub fn elements(&self) -> PyCometElements {
-        PyCometElements::from_state(self.clone())
+    pub fn elements(&mut self) -> PyCometElements {
+        if self.elements.is_none() {
+            self.elements = Some(Box::new(PyCometElements::from_state(self.clone())));
+        }
+        *self.elements.clone().unwrap()
+    }
+
+    /// Eccentricity of the orbit.
+    #[getter]
+    pub fn eccentricity(&mut self) -> f64 {
+        self.elements().eccentricity()
+    }
+
+    /// Inclination of the orbit in degrees.
+    #[getter]
+    pub fn inclination(&mut self) -> f64 {
+        self.elements().inclination().to_degrees()
+    }
+
+    /// Longitude of the ascending node of the orbit in degrees.
+    #[getter]
+    pub fn lon_of_ascending(&mut self) -> f64 {
+        self.elements().lon_of_ascending().to_degrees()
+    }
+
+    /// Perihelion time of the orbit in JD.
+    #[getter]
+    pub fn peri_time(&mut self) -> f64 {
+        self.elements().peri_time()
+    }
+
+    /// Argument of Perihelion of the orbit in degrees.
+    #[getter]
+    pub fn peri_arg(&mut self) -> f64 {
+        self.elements().peri_arg().to_degrees()
+    }
+
+    /// Distance of Perihelion of the orbit in au.
+    #[getter]
+    pub fn peri_dist(&mut self) -> f64 {
+        self.elements().peri_dist()
+    }
+
+    /// Semi Major Axis of the orbit in au.
+    #[getter]
+    pub fn semi_major(&mut self) -> f64 {
+        self.elements().semi_major()
+    }
+
+    /// Mean Motion of the orbit in degrees.
+    #[getter]
+    pub fn mean_motion(&mut self) -> f64 {
+        self.elements().mean_motion().to_degrees()
+    }
+
+    /// Orbital Period in days, nan if non-elliptical.
+    #[getter]
+    pub fn orbital_period(&mut self) -> f64 {
+        self.elements().orbital_period()
+    }
+
+    /// Eccentric Anomaly in degrees.
+    #[getter]
+    pub fn eccentric_anomaly(&mut self) -> PyResult<f64> {
+        self.elements().eccentric_anomaly().map(|x| x.to_degrees())
+    }
+
+    /// Mean Anomaly in degrees.
+    #[getter]
+    pub fn mean_anomaly(&mut self) -> f64 {
+        self.elements().mean_anomaly().to_degrees()
+    }
+
+    /// True Anomaly in degrees.
+    #[getter]
+    pub fn true_anomaly(&mut self) -> PyResult<f64> {
+        self.elements().true_anomaly().map(|x| x.to_degrees())
     }
 
     /// Designation of the object if defined.
     #[getter]
     pub fn desig(&self) -> String {
         match &self.raw.desig {
-            prelude::Desig::Name(s) => s.clone(),
             prelude::Desig::Naif(s) => {
                 kete_core::spice::try_name_from_id(*s).unwrap_or(s.to_string())
             }
-            prelude::Desig::Perm(s) => format!("{:?}", s),
-            prelude::Desig::Prov(s) => s.clone(),
-            prelude::Desig::Empty => "None".into(),
+            _ => self.raw.desig.to_string(),
         }
     }
 

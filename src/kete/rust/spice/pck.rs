@@ -64,6 +64,7 @@ pub fn pck_earth_frame_py(
     Ok(PyState {
         raw: state,
         frame: PyFrames::Ecliptic,
+        elements: None,
     })
 }
 

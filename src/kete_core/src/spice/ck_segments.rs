@@ -319,6 +319,7 @@ impl CkSegmentType3 {
     /// This will return the best effort record, along with the time of
     /// the record. If the requested time is outside of any interval, this
     /// will return the closest record.
+    #[allow(clippy::type_complexity)]
     pub fn get_quaternion_at_time(
         &self,
         time: Time<TDB>,

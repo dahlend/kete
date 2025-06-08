@@ -23,14 +23,6 @@ __all__ = [
     "fetch_known_orbit_data",
     "fetch_known_comet_orbit_data",
     "find_obs_code",
-    "unpack_permanent_designation",
-    "pack_permanent_designation",
-    "unpack_provisional_designation",
-    "pack_provisional_designation",
-    "unpack_satellite_designation",
-    "pack_satellite_designation",
-    "unpack_comet_designation",
-    "pack_comet_designation",
     "normalize_names",
 ]
 
@@ -40,8 +32,6 @@ table_to_states = deprecation.rename(
     old_name="table_to_states",
     additional_msg="Use `kete.conversion.table_to_states` instead.",
 )
-
-_mpc_hex = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +44,7 @@ def find_obs_code(name: str):
     appropriate.
 
     >>> kete.mpc.find_obs_code("Palomar Mountain")
-    (33.35411714208074, -116.86253999999998, 1.6960628760407417, 'Palomar Mountain', '675')
+    (33.35411714208074, -116.86254, 1.6960628760407417, 'Palomar Mountain', '675')
 
     Parameters
     ----------
@@ -79,373 +69,6 @@ def find_obs_code(name: str):
         raise ValueError(f"Found multiple codes: \n{found_str}")
 
 
-def num_to_base62(n: int, base_len=6) -> str:
-    """
-    Convert an integer to a base 62 MPC string of the specified length.
-
-    >>> kete.mpc.num_to_base62(63, 3)
-    '011'
-
-    """
-    base = len(_mpc_hex)
-    buf = []
-    while n > 0:
-        buf.append(_mpc_hex[n % base])
-        n //= base
-    return "".join(reversed(buf)).zfill(base_len)
-
-
-def base62_to_num(n: str) -> int:
-    """
-    Convert a base 62 MPC string into an integer.
-
-    >>> kete.mpc.base62_to_num('011')
-    63
-
-    """
-    val = 0
-    for i, c in enumerate(n[::-1]):
-        val += _mpc_hex.index(c) * 62**i
-    return val
-
-
-def unpack_mpc_dates(packed: str) -> float:
-    """
-    Convert a packed MPC date into JD time.
-
-    See https://www.minorplanetcenter.net/iau/info/PackedDates.html for more details.
-
-    Parameters
-    ----------
-    packed:
-        The packed MPC date.
-    """
-    year = _mpc_hex.index(packed[0]) * 100 + int(packed[1:3])
-    month = _mpc_hex.index(packed[3])
-    day = float(_mpc_hex.index(packed[4]))
-    day += float("." + packed[5:]) if len(packed) > 5 else 0.0
-    return Time.from_ymd(year, month, day).jd
-
-
-def unpack_permanent_designation(designation):
-    """
-    Convert an MPC 5 character permanent designation into an unpacked representation.
-
-    >>> kete.mpc.unpack_permanent_designation("~AZaz")
-    '3140113'
-    >>> kete.mpc.unpack_permanent_designation("C3456")
-    '123456'
-    >>> kete.mpc.unpack_permanent_designation("0021P")
-    '21P'
-    >>> kete.mpc.unpack_permanent_designation("J005S")
-    'Jupiter V'
-
-    Parameters
-    ----------
-    designation : str
-        A 5 character permanent designation to convert to unpack.
-    """
-    if len(designation) != 5:
-        raise ValueError(f"({designation}) is not a permanent designation.")
-    if designation[0] == "~":
-        # Numbered object at or above 620000
-        dig1 = _mpc_hex.index(designation[1]) * (62**3)
-        dig2 = _mpc_hex.index(designation[2]) * (62**2)
-        dig3 = _mpc_hex.index(designation[3]) * 62
-        dig4 = _mpc_hex.index(designation[4])
-        return str(620000 + dig1 + dig2 + dig3 + dig4)
-    elif designation[-1] == "S":
-        # planetary satellites
-        return unpack_satellite_designation(designation)
-    elif designation[-1] in "APDXI":
-        # numbered comets and interstellar objects
-        return unpack_comet_designation(designation)
-    return str(_mpc_hex.index(designation[0]) * 10000 + int(designation[1:]))
-
-
-def pack_permanent_designation(unpacked):
-    """
-    Convert an MPC asteroid number into an MPC 5 character packed designation.
-
-    >>> kete.mpc.pack_permanent_designation('3140113')
-    '~AZaz'
-    >>> kete.mpc.pack_permanent_designation('21P')
-    '0021P'
-    >>> kete.mpc.pack_permanent_designation('Saturn V')
-    'S005S'
-
-    Parameters
-    ----------
-    unpacked : str
-        A string to convert to an MPC permanent designation.
-    """
-
-    unpacked = str(unpacked).strip()
-
-    if unpacked.isnumeric():
-        num = int(unpacked)
-
-        if num < 620_000:
-            idx = int(num / 10_000)
-            rem = str(num % 10_000).zfill(4)
-            return _mpc_hex[idx] + rem
-
-        num -= 620_000
-        if num >= 62**4:
-            raise ValueError("No designation possible")
-        return "~" + num_to_base62(num, base_len=4)
-
-    if " " in unpacked:
-        if unpacked.split()[0] in [
-            "Earth",
-            "Mars",
-            "Jupiter",
-            "Saturn",
-            "Uranus",
-            "Neptune",
-        ]:
-            # satellite names like Jupiter V
-            return pack_satellite_designation(unpacked)
-        else:
-            raise ValueError("This is not a permanent designation")
-
-    return pack_comet_designation(unpacked)
-
-
-def unpack_provisional_designation(packed: str):
-    """
-    Accepts a packed MPC provisional designation and returns an unpacked provisional
-    designation.
-
-    See https://www.minorplanetcenter.net/iau/info/PackedDes.html for more details.
-
-    >>> kete.mpc.unpack_provisional_designation("J98SA8Q")
-    '1998 SQ108'
-
-    Parameters
-    ----------
-    packed :
-        A packed 7 character provisional MPC designation of an object.
-    """
-    if len(packed) == 12:
-        packed = packed[6:]
-    if len(packed) == 8:
-        return unpack_comet_designation(packed)
-    if len(packed) != 7:
-        raise ValueError("Packed designation is not correctly formatted.")
-    if packed[:3] in ["PLS", "T1S", "T2S", "T3S"]:
-        return packed[3:] + " " + packed[0] + "-" + packed[1]
-    year = str(_mpc_hex.index(packed[0]) * 100 + int(packed[1:3]))
-    if int(year) < 1925:
-        year = "A" + year[1:]
-    loop = _mpc_hex.index(packed[4]) * 10 + int(packed[5])
-    loop_str = "" if loop == 0 else str(loop)
-    order = packed[6]
-    if order.isnumeric() or order.islower():
-        # it's a comet
-        return unpack_comet_designation(packed)
-    return year + " " + packed[3] + order + loop_str
-
-
-def pack_provisional_designation(unpacked: str):
-    """
-    Accepts an unpacked MPC provisional designation and returns a packed provisional
-    designation.
-
-    See https://www.minorplanetcenter.net/iau/info/PackedDes.html for more details.
-
-    >>> kete.mpc.pack_provisional_designation("1998 SQ108")
-    'J98SA8Q'
-
-    Parameters
-    ----------
-    unpacked :
-        An unpacked provisional MPC designation of an object.
-    """
-    year, designation = unpacked.split()
-    if designation[:3] in ["P-L", "T-1", "T-2", "T-3"]:
-        return designation[0] + designation[2] + "S" + year
-
-    order = designation[1]
-    if order.isnumeric() or "/" in unpacked:
-        # its a comet
-        return pack_comet_designation(unpacked)
-    else:
-        num = 0 if len(designation) == 2 else int(designation[2:])
-    loop = _mpc_hex[int(num / 10)]
-    subloop = str(int(num % 10))
-    year_lookup = {"18": "I", "19": "J", "20": "K", "A9": "J", "A8": "I"}
-    century = year_lookup[year[:2]]
-    decade = year[2:]
-    half_month = designation[0]
-    return century + decade + half_month + loop + subloop + order
-
-
-def pack_satellite_designation(unpacked: str):
-    """
-    Accepts an unpacked MPC planetary satellite designation and returns a packed
-    designation.
-
-    See https://www.minorplanetcenter.net/iau/info/PackedDes.html for more details.
-
-    >>> kete.mpc.pack_satellite_designation("Jupiter XIII")
-    'J013S'
-
-    Parameters
-    ----------
-    unpacked :
-        An unpacked satellite MPC designation of an object.
-    """
-    planet, satnum = unpacked.split()
-    pout = planet[0]
-
-    if pout not in "EMJSUN":
-        raise ValueError("planet name not known")
-
-    digout = roman_to_int(satnum)
-
-    return f"{pout:1s}{digout:03d}S"
-
-
-def unpack_satellite_designation(packed: str):
-    """
-    Accepts a packed MPC satellite designation and returns an unpacked
-    designation.
-
-    See https://www.minorplanetcenter.net/iau/info/PackedDes.html for more details.
-
-    >>> kete.mpc.unpack_satellite_designation("J013S")
-    'Jupiter XIII'
-
-    Parameters
-    ----------
-    packed :
-        A packed 5 character satellite MPC designation of an object.
-    """
-
-    if packed[4] != "S":
-        raise ValueError("this is not a packed satellite designation")
-
-    planets = {
-        "E": "Earth",
-        "M": "Mars",
-        "J": "Jupiter",
-        "S": "Saturn",
-        "U": "Uranus",
-        "N": "Neptune",
-    }
-
-    if packed[0] not in planets:
-        raise ValueError("Planet character not known")
-
-    return planets[packed[0]] + " " + int_to_roman(int(packed[1:4]))
-
-
-def pack_comet_designation(unpacked: str):
-    """
-    Accepts an unpacked MPC provisional designation and returns a packed provisional
-    designation.
-
-    See https://www.minorplanetcenter.net/iau/info/PackedDes.html for more details.
-
-    >>> kete.mpc.pack_comet_designation("C/2020 F3")
-    'CK20F030'
-
-    >>> kete.mpc.pack_comet_designation("1P/Halley")
-    '0001P'
-
-    Parameters
-    ----------
-    unpacked :
-        An unpacked MPC comet designation of an object.
-    """
-
-    unpacked = unpacked.strip()
-
-    if "/" in unpacked and unpacked[0].isdigit():
-        unpacked = unpacked.split("/")[0].upper()
-
-    frag = None
-    if "-" in unpacked:
-        # fragments
-        unpacked, frag = unpacked.split("-")
-        frag = frag.lower()
-
-    if " " not in unpacked:
-        comet_type = unpacked[-1]
-        comet_number = int(unpacked[:-1])
-        packed = f"{comet_number:04d}{comet_type:1s}"
-        if frag is None:
-            return packed
-        else:
-            return packed + "{:>7s}".format(frag)
-
-    else:
-        if "/" in unpacked:
-            comet_type = unpacked[0]
-            unpacked = unpacked[2:]
-        else:
-            comet_type = None
-
-        year, designation = unpacked.split()
-        if designation[1] in "0123456789":
-            # comet-like designation
-            num = int(designation[1:])
-            if num > 99:
-                outnum = _mpc_hex[int(num / 10)] + str(num % 10)
-            else:
-                outnum = f"{num:02d}"
-            packed = _mpc_hex[int(year[0:2])] + year[2:] + designation[0] + outnum
-            if comet_type is not None:
-                packed = comet_type + packed
-
-            if frag is None:
-                return packed + "0"
-            else:
-                return packed + frag
-        else:
-            # asteroid-like designation
-            if comet_type is None:
-                return pack_provisional_designation(unpacked)
-            else:
-                return comet_type + pack_provisional_designation(unpacked)
-
-
-def unpack_comet_designation(packed: str):
-    """
-    Accepts a packed MPC comet designation and returns an unpacked provisional
-    designation.
-
-    See https://www.minorplanetcenter.net/iau/info/PackedDes.html for more details.
-
-    >>> kete.mpc.unpack_comet_designation("CI70Q010")
-    'C/1870 Q1'
-
-    Parameters
-    ----------
-    packed :
-        A packed 5,7, or 8 character provisional MPC designation of an object.
-    """
-    if len(packed) == 5:
-        return str(int(packed[0:4])) + packed[4]
-
-    comet_add = ""
-    if len(packed) == 8 and packed[0].upper() in "APCDXI":
-        comet_add = packed[0] + "/"
-        packed = packed[1:]
-
-    year = str(_mpc_hex.index(packed[0]) * 100 + int(packed[1:3]))
-    comet_num = _mpc_hex.index(packed[4]) * 10 + int(packed[5])
-    half_month = packed[3]
-    frag = packed[6]
-    if frag == "0":
-        return comet_add + year + " " + half_month + str(comet_num)
-    elif frag.islower():
-        return comet_add + year + " " + half_month + str(comet_num) + "-" + frag.upper()
-    else:
-        return comet_add + unpack_provisional_designation(packed)
-
-
 def unpack_designation(packed: str):
     """
     Accepts either a packed provisional designation or permanent designation and returns
@@ -463,14 +86,7 @@ def unpack_designation(packed: str):
         A packed 5, 7, or 8 character MPC designation of an object.
     """
     packed = packed.strip()
-    if len(packed) == 5:
-        return unpack_permanent_designation(packed)
-    elif len(packed) == 7:
-        return unpack_provisional_designation(packed)
-    elif len(packed) == 8:
-        return unpack_comet_designation(packed)
-
-    raise SyntaxError(f"This designation could not be unpacked '{packed}'")
+    return _core.unpack_designation(packed)
 
 
 def pack_designation(unpacked: str):
@@ -490,11 +106,8 @@ def pack_designation(unpacked: str):
         An unpacked designation to be packed into either a permanent or provisional
         designation.
     """
-
-    try:
-        return pack_permanent_designation(unpacked)
-    except ValueError:
-        return pack_provisional_designation(unpacked)
+    unpacked = unpacked.strip()
+    return _core.pack_designation(unpacked)
 
 
 @lru_cache()
@@ -720,7 +333,7 @@ def fetch_known_comet_orbit_data(force_download=False):
     objs = download_json(url, force_download)
     objects = []
     for comet in objs:
-        name = pack_comet_designation(comet.get("Designation_and_name").split("(")[0])
+        name = pack_designation(comet.get("Designation_and_name").split("(")[0])
         peri_time = (
             comet["Year_of_perihelion"],
             comet["Month_of_perihelion"],
@@ -767,7 +380,7 @@ def int_to_roman(num: int):
     if not isinstance(num, int):
         raise TypeError("Input needs to be an integer")
     if not 0 < num < 4000:
-        raise ValueError("Argument must be between 1 and 3999")
+        raise SyntaxError("Argument must be between 1 and 3999")
 
     ints = (1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1)
     nums = ("M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I")
@@ -782,12 +395,10 @@ def int_to_roman(num: int):
 def roman_to_int(num: str):
     """Convert a Roman numeral to an integer."""
 
-    if not isinstance(num, str):
-        raise TypeError("input must be a string")
-    num = num.upper()
+    num = str(num).upper()
 
     if any(v not in "MDCLXVI" for v in num):
-        raise ValueError("input is not a valid roman numeral")
+        raise SyntaxError("Input is not a valid roman numeral")
 
     nums = {"M": 1000, "D": 500, "C": 100, "L": 50, "X": 10, "V": 5, "I": 1}
 
@@ -809,7 +420,7 @@ def roman_to_int(num: str):
     if int_to_roman(val) == num:
         return val
     else:
-        raise ValueError("input is not a valid Roman numeral")
+        raise SyntaxError("input is not a valid Roman numeral")
 
 
 @dataclass
@@ -840,7 +451,8 @@ class MPCObservation:
 
     """
 
-    name: str
+    desig: str
+    prov_desig: str
     discovery: bool
     note1: str
     note2: str
@@ -902,8 +514,18 @@ class MPCObservation:
         ra = conversion.ra_hms_to_degrees(line[32:44].strip())
         dec = conversion.dec_dms_to_degrees(line[44:55].strip())
 
+        try:
+            desig = unpack_designation(line[:5])
+        except ValueError:
+            desig = line[:5].strip()
+        try:
+            prov_desig = unpack_designation(line[5:12].strip())
+        except ValueError:
+            prov_desig = line[5:12].strip()
+
         contents = dict(
-            name=line[:12].strip(),
+            desig=desig,
+            prov_desig=prov_desig,
             discovery=line[12] == "*",
             note1=line[13].strip(),
             note2=line[14].strip(),
@@ -921,7 +543,7 @@ class MPCObservation:
         from . import spice
 
         if line[14] != "s":
-            raise ValueError("No second line of spacecraft observation found.")
+            raise SyntaxError("No second line of spacecraft observation found.")
 
         x = float(line[34:45].replace(" ", "")) / constants.AU_KM
         y = float(line[46:57].replace(" ", "")) / constants.AU_KM

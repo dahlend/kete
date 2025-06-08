@@ -1,4 +1,4 @@
-flux
+Flux
 ====
 
 .. automodule:: kete.flux
