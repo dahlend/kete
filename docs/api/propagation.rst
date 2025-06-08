@@ -1,4 +1,4 @@
-propagation
+Propagation
 ===========
 
 .. automodule:: kete.propagation

@@ -1,4 +1,4 @@
-spice
+SPICE
 =====
 
 This is a thread-safe, read only re-implementation of a SPICE kernel interpreter.
@@ -13,11 +13,11 @@ into RAM.
    cSPICE is difficult to use in a thread safe manner which is limiting when
    performing orbit calculations on millions of objects.
 
-Data files which are automatically included:
+Data files which are automatically downloaded:
 
 DE440 - A SPICE file containing the planets within a few hundred years.
 
-BSP files are also automatically included for the 5 largest asteroids, which are
+BSP files are also automatically downloaded for the 5 largest asteroids, which are
 used for numerical integrations when the correct flags are set.
 
 PCK Files which enable coordinate transformations between Earths surface and the

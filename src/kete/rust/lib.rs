@@ -27,6 +27,7 @@ use pyo3::prelude::*;
 use state::PyState;
 
 pub mod covariance;
+pub mod desigs;
 pub mod elements;
 pub mod fitting;
 pub mod flux;
@@ -145,8 +146,10 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(spice::sclk_tick_to_time_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::sclk_time_to_tick_py, m)?)?;
 
+    m.add_function(wrap_pyfunction!(spice::ck_reset_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::ck_load_py, m)?)?;
-    m.add_function(wrap_pyfunction!(spice::ck_frame_to_equatorial, m)?)?;
+    m.add_function(wrap_pyfunction!(spice::ck_sc_frame_to_equatorial, m)?)?;
+    m.add_function(wrap_pyfunction!(spice::ck_sc_equatorial_to_frame, m)?)?;
     m.add_function(wrap_pyfunction!(spice::ck_loaded_instrument_info_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::ck_loaded_instruments_py, m)?)?;
 
@@ -164,6 +167,9 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(utils::dec_degrees_to_dms_py, m)?)?;
     m.add_function(wrap_pyfunction!(utils::ra_hms_to_degrees_py, m)?)?;
     m.add_function(wrap_pyfunction!(utils::dec_dms_to_degrees_py, m)?)?;
+
+    m.add_function(wrap_pyfunction!(desigs::unpack_designation_py, m)?)?;
+    m.add_function(wrap_pyfunction!(desigs::pack_designation_py, m)?)?;
 
     Ok(())
 }

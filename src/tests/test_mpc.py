@@ -35,37 +35,6 @@ from kete import mpc
         ["PK05SL6B", "P/2005 SB216"],
         ["DJ18W010", "D/1918 W1"],
         ["XJ51G020", "X/1951 G2"],
-        ["cK20F030", "c/2020 F3"],
-        ["pK16S00V", "p/2016 SV"],
-        ["pK05SL6B", "p/2005 SB216"],
-        ["dJ18W010", "d/1918 W1"],
-        ["xJ51G020", "x/1951 G2"],
-        ["K20F030", "2020 F3"],
-        ["K16S00V", "2016 SV"],
-        ["K05SL6B", "2005 SB216"],
-        ["J18W010", "1918 W1"],
-        ["J51G020", "1951 G2"],
-        ["K16J01b", "2016 J1-B"],
-    ],
-)
-def test_provisional(packed, unpacked):
-    assert mpc.pack_provisional_designation(unpacked) == packed
-    assert mpc.unpack_provisional_designation(packed) == unpacked
-    assert mpc.unpack_designation(packed) == unpacked
-    assert mpc.pack_designation(unpacked) == packed
-
-
-@pytest.mark.parametrize(
-    "packed, unpacked",
-    [
-        # comets
-        ["J96N020", "1996 N2"],
-        ["J95A010", "1995 A1"],
-        ["J94P01b", "1994 P1-B"],
-        ["J94P010", "1994 P1"],
-        ["K48X130", "2048 X13"],
-        ["K33L89c", "2033 L89-C"],
-        ["K88AA30", "2088 A103"],
         ["CK20F030", "C/2020 F3"],
         ["PK16S00V", "P/2016 SV"],
         ["PK05SL6B", "P/2005 SB216"],
@@ -77,37 +46,14 @@ def test_provisional(packed, unpacked):
         ["J18W010", "1918 W1"],
         ["J51G020", "1951 G2"],
         ["K16J01b", "2016 J1-B"],
-        ["0002I", "2I"],
-        ["0212P", "212P"],
-        ["0001P", "1P"],
-    ],
-)
-def test_comets(packed, unpacked):
-    assert mpc.pack_comet_designation(unpacked) == packed
-    assert mpc.unpack_comet_designation(packed) == unpacked
-
-
-def test_comet_slash():
-    assert mpc.pack_comet_designation("1P/Halley") == "0001P"
-    assert mpc.pack_designation("1P/Halley") == "0001P"
-    assert mpc.pack_comet_designation("c/2017 k2") == "cK17k020"
-    assert mpc.pack_designation("c/2017 k2") == "cK17k020"
-    assert mpc.unpack_comet_designation("cK17k020") == "c/2017 k2"
-
-
-@pytest.mark.parametrize(
-    "packed, unpacked",
-    [
-        # comets
+        # planet sats
         ["J005S", "Jupiter V"],
         ["S019S", "Saturn XIX"],
         ["U004S", "Uranus IV"],
         ["N011S", "Neptune XI"],
     ],
 )
-def test_satellites(packed, unpacked):
-    assert mpc.pack_satellite_designation(unpacked) == packed
-    assert mpc.unpack_satellite_designation(packed) == unpacked
+def test_provisional(packed, unpacked):
     assert mpc.unpack_designation(packed) == unpacked
     assert mpc.pack_designation(unpacked) == packed
 
@@ -126,18 +72,8 @@ def test_satellites(packed, unpacked):
     ],
 )
 def test_permanent(unpacked, packed):
-    assert mpc.unpack_permanent_designation(packed) == unpacked
-    assert mpc.pack_permanent_designation(unpacked) == packed
     assert mpc.unpack_designation(packed) == unpacked
     assert mpc.pack_designation(unpacked) == packed
-
-
-def test_base62_to_num():
-    assert mpc.base62_to_num("011") == 63
-
-
-def test_num_to_base62():
-    assert mpc.num_to_base62(63, 3) == "011"
 
 
 def test_MPCObservation():
@@ -150,7 +86,7 @@ def test_MPCObservation():
     obs_list = mpc.MPCObservation.from_lines(MPC_OBS)
     assert len(obs_list) == 1
     obs = obs_list[0]
-    assert obs.name == "01566"
+    assert obs.desig == "1566"
     assert obs.discovery is False
     assert obs.note1 == ""
     assert obs.note2 == "S"

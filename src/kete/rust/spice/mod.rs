@@ -25,7 +25,7 @@ pub fn obs_codes() -> Vec<(f64, f64, f64, String, String)> {
             row.lon,
             row.altitude,
             row.name.clone(),
-            row.code.clone(),
+            row.code.to_string(),
         ))
     }
     codes

@@ -115,7 +115,7 @@ pub fn read_states_parquet(filename: &str) -> KeteResult<Vec<State<Equatorial>>>
             let vz = state_iters[6].next().unwrap();
 
             State::new(
-                crate::state::Desig::Name(desig.to_string()),
+                crate::desigs::Desig::Name(desig.to_string()),
                 jd,
                 [x, y, z].into(),
                 [vx, vy, vz].into(),

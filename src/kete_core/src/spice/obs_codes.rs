@@ -3,6 +3,7 @@ use lazy_static::lazy_static;
 use nalgebra::{Rotation3, UnitVector3, Vector3};
 use serde::Deserialize;
 
+use crate::desigs::Desig;
 use crate::frames::{ecef_to_geodetic_lat_lon, EARTH_A};
 use crate::prelude::{Error, KeteResult};
 use std::str;
@@ -12,7 +13,7 @@ use std::str::FromStr;
 #[derive(Debug, Deserialize)]
 pub struct ObsCode {
     /// observatory code
-    pub code: String,
+    pub code: Desig,
 
     /// longitude in degrees
     pub lon: f64,
@@ -48,7 +49,7 @@ impl FromStr for ObsCode {
 
         let name = row[30..].trim().to_string();
         Ok(ObsCode {
-            code,
+            code: Desig::ObservatoryCode(code),
             lon: lon.to_degrees(),
             lat: lat.to_degrees(),
             altitude,

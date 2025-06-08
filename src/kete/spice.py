@@ -11,7 +11,11 @@ from . import _core
 from .constants import AU_KM
 from .cache import download_file, cache_path
 from .vector import Frames, State
-from ._core import state_to_earth_pos
+from ._core import (
+    state_to_earth_pos,
+    instrument_equatorial_to_frame,
+    instrument_frame_to_equatorial,
+)
 
 __all__ = [
     "SpkInfo",
@@ -27,6 +31,8 @@ __all__ = [
     "earth_pos_to_ecliptic",
     "state_to_earth_pos",
     "moon_illumination_frac",
+    "instrument_frame_to_equatorial",
+    "instrument_equatorial_to_frame",
 ]
 
 
@@ -244,6 +250,7 @@ def kernel_reload(
     """
     _core.spk_reset()
     _core.pck_reset()
+    _core.ck_reset()
 
     if include_planets:
         _download_core_files()

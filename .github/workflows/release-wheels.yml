@@ -16,28 +16,31 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build_wheels:
-    name: Build wheel for py${{ matrix.python }}-${{ matrix.platform_id }}
+    name: Build wheel for py-abi3-${{ matrix.platform_id }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       # Ensure that a wheel builder finishes even if another fails
       fail-fast: false
       matrix:
-        python: [39, 310, 311, 312, 313]
+        python: [313]
         os: [windows-latest, ubuntu-latest, macos-latest]
         include:
           # Window 64 bit
           - os: windows-latest
             platform_id: win_amd64
+            sdist:
 
           # Linux 64 bit manylinux2014
           - os: ubuntu-latest
             platform_id: manylinux_x86_64
             manylinux_image: manylinux2014
+            sdist: --sdist
 
           # MacOS - latest is now arm64, no longer x86_64
           - os: macos-latest
             platform_id: macosx_arm64
+            sdist: 
     steps:
       - uses: actions/checkout@v4
       - name: Cache downloaded files
@@ -60,28 +63,17 @@ jobs:
       - name: Install dependencies
         run: |
           python3 -m pip install --upgrade pip setuptools
-          python3 -m pip install cibuildwheel
+          python3 -m pip install maturin
       - name: Build wheels
-        env:
-          CIBW_BUILD: cp${{ matrix.python }}-${{ matrix.platform_id }}
-          CIBW_ARCHS: all
-          CIBW_MANYLINUX_X86_64_IMAGE: ${{ matrix.manylinux_image }}
-          CIBW_MANYLINUX_I686_IMAGE: ${{ matrix.manylinux_image }}
-          CIBW_TEST_SKIP: "*-macosx_arm64"
-          CIBW_ENVIRONMENT: 'PATH="$HOME/.cargo/bin:$PATH" CARGO_TERM_COLOR="always"'
-          CIBW_ENVIRONMENT_WINDOWS: 'PATH="$UserProfile\.cargo\bin;$PATH"'
-          CIBW_BEFORE_BUILD: rustup show
-          CIBW_BEFORE_BUILD_LINUX: >
-            curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain=stable --profile=minimal -y &&
-            rustup show
-          CIBW_TEST_REQUIRES: pytest
-          CIBW_BUILD_VERBOSITY: 1
-          CONDA_HOME: /usr/local/miniconda
-        run: python3 -m cibuildwheel --output-dir wheelhouse
+        run: python3 -m maturin build --release --out wheelhouse ${{ matrix.sdist }}
       - uses: actions/upload-artifact@v4
         with:
-          name: wheel-cp${{ matrix.python }}-${{ matrix.platform_id }}
+          name: wheel-cp-${{ matrix.platform_id }}
           path: ./wheelhouse/*.whl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-cp-sdist
+          path: ./wheelhouse/*.tar.gz
   publish-to-pypi:
     name: Publish Kete to PyPI
     needs:

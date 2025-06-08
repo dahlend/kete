@@ -1,4 +1,4 @@
-observatories
+Observatories
 =============
 
 

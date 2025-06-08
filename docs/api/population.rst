@@ -1,4 +1,4 @@
-population
+Population
 ==========
 
 .. automodule:: kete.population

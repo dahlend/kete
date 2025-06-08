@@ -1,4 +1,4 @@
-cache
+Cache
 =====
 
 Tools to interact with kete's Cache folder.

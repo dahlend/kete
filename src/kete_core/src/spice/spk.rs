@@ -37,7 +37,7 @@ use crossbeam::sync::ShardedLock;
 pub struct SpkCollection {
     // This collection is split into two parts, the planet segments and the rest of the
     // segments. This is done to allow the planet segments to be accessed quickly,
-    // as they are by far the most commonly used. Somewhat suprisingly, the
+    // as they are by far the most commonly used. Somewhat surprisingly, the
     // planet segments perform much better as a vector than as a hashmap, by about 40%
     // in typical usage. Putting everything in a vector destroys performance for
     // items further down the vector.

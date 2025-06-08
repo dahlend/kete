@@ -215,8 +215,8 @@ impl FovLike for GenericCone {
 mod tests {
     use super::*;
     use crate::constants::{self, GMS_SQRT};
+    use crate::desigs::Desig;
     use crate::prelude::*;
-    use crate::state::Desig;
 
     #[test]
     fn test_check_rectangle_visible() {

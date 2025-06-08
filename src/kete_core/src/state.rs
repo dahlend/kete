@@ -17,50 +17,12 @@
 //! Below is the [`State`] which defines this minimum information.
 //!
 use serde::{Deserialize, Serialize};
-use std::fmt::{Debug, Display};
+use std::fmt::Debug;
 
+use crate::desigs::Desig;
 use crate::errors::{Error, KeteResult};
 use crate::frames::{InertialFrame, Vector};
 use crate::spice;
-
-/// Designation for an object.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Hash, Eq)]
-pub enum Desig {
-    /// Permanent ID, an integer.
-    Perm(u64),
-
-    /// Provisional Designation
-    Prov(String),
-
-    /// Text name
-    Name(String),
-
-    /// NAIF id for the object.
-    /// These are used by SPICE kernels for identification.
-    Naif(i32),
-
-    /// No id assigned.
-    Empty,
-}
-
-impl Desig {
-    /// Return a full string representation of the designation, including the type.
-    pub fn full_string(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl Display for Desig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&match self {
-            Desig::Empty => "".to_string(),
-            Desig::Prov(s) => s.clone(),
-            Desig::Name(s) => s.clone(),
-            Desig::Perm(i) => i.to_string(),
-            Desig::Naif(i) => i.to_string(),
-        })
-    }
-}
 
 /// Exact State of an object.
 ///
@@ -241,15 +203,6 @@ mod tests {
 
         let b = State::<Equatorial>::new_nan(Desig::Empty, 0.0, 1000);
         assert!(!b.is_finite())
-    }
-
-    #[test]
-    fn desig_strings() {
-        assert!(Desig::Empty.to_string() == "");
-        assert!(Desig::Naif(100).to_string() == "100");
-        assert!(Desig::Name("Foo".into()).to_string() == "Foo");
-        assert!(Desig::Perm(123).to_string() == "123");
-        assert!(Desig::Prov("Prov".into()).to_string() == "Prov");
     }
 
     #[test]

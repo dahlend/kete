@@ -1,4 +1,4 @@
-fov
+FOV
 ===
 
 Field of View

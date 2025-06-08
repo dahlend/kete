@@ -1,4 +1,4 @@
-vectors/states/frames
+Vectors/States/Frames
 =====================
 
 Units used throughout kete are distance in au, and time in Days TDB scaled.

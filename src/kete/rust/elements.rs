@@ -100,13 +100,10 @@ impl PyCometElements {
     #[getter]
     pub fn desig(&self) -> String {
         match &self.0.desig {
-            prelude::Desig::Name(s) => s.clone(),
             prelude::Desig::Naif(s) => {
                 kete_core::spice::try_name_from_id(*s).unwrap_or(s.to_string())
             }
-            prelude::Desig::Perm(s) => format!("{:?}", s),
-            prelude::Desig::Prov(s) => s.clone(),
-            prelude::Desig::Empty => "None".into(),
+            _ => self.0.desig.to_string(),
         }
     }
 
@@ -164,12 +161,6 @@ impl PyCometElements {
         self.0.orbital_period()
     }
 
-    /// Convert the orbital elements into a cartesian State.
-    #[getter]
-    pub fn state(&self) -> PyResult<PyState> {
-        Ok(self.0.try_to_state()?.into_frame().into())
-    }
-
     /// Eccentric Anomaly in degrees.
     #[getter]
     pub fn eccentric_anomaly(&self) -> PyResult<f64> {
@@ -186,6 +177,12 @@ impl PyCometElements {
     #[getter]
     pub fn true_anomaly(&self) -> PyResult<f64> {
         Ok(self.0.true_anomaly().map(|x| x.to_degrees())?)
+    }
+
+    /// Convert the orbital elements into a cartesian State.
+    #[getter]
+    pub fn state(&self) -> PyResult<PyState> {
+        Ok(self.0.try_to_state()?.into_frame().into())
     }
 
     fn __repr__(&self) -> String {
