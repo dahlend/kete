@@ -43,7 +43,7 @@ def find_obs_code(name: str):
     appropriate.
 
     >>> kete.mpc.find_obs_code("Palomar Mountain")
-    (33.35411714208074, -116.86254, 1.6960628760407417, 'Palomar Mountain', '675')
+    [33.35411714, -116.86254, 1.69606288, 'Palomar Mountain', '675']
 
     Parameters
     ----------
@@ -54,6 +54,7 @@ def find_obs_code(name: str):
     found = []
     name_lower = name.lower().strip()
     for obs in codes:
+        obs = [float(np.around(x, 8)) if isinstance(x, float) else x for x in obs]
         if name_lower in obs[3].lower() or name_lower in obs[4].lower():
             # If an exact match, return early.
             if name == obs[3]:
