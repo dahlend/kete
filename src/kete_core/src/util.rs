@@ -114,11 +114,14 @@ impl Degrees {
 
     /// Converts to Hours Minutes Seconds.
     ///
+    /// This will be returned in the range [0, 24).
+    ///
     /// Parameters
     /// ----------
     /// tol: Tolerance for rounding seconds to zero.
     pub fn to_hours_minutes_seconds(&self, tol: f64) -> (f64, u32, f64) {
-        let hours = self.degrees.abs() / 15.0;
+        let deg = self.degrees.rem_euclid(360.0);
+        let hours = deg / 15.0;
         let mut h = hours.trunc();
         let mut m = (hours - h) * 60.0;
         let mut s = (m - m.trunc()) * 60.0;
@@ -131,7 +134,10 @@ impl Degrees {
             m = 0.0;
             h += 1.0;
         }
-        (h.copysign(self.degrees), m.trunc() as u32, s)
+        if h == 24.0 {
+            h = 0.0;
+        }
+        (h, m.trunc() as u32, s)
     }
 
     /// Converts to Hours as a float.
@@ -385,7 +391,7 @@ mod tests {
         assert!((seconds - 0.0).abs() < 1e-10);
 
         let (hours, minutes, seconds) = Degrees::from_degrees(360.0).to_hours_minutes_seconds(1e-8);
-        assert_eq!(hours, 24.0);
+        assert_eq!(hours, 0.0);
         assert_eq!(minutes, 0);
         assert!((seconds - 0.0).abs() < 1e-10);
 
