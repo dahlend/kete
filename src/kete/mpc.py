@@ -13,17 +13,16 @@ from .cache import download_json
 from .conversion import table_to_states
 
 from . import _core
+from ._core import unpack_designation, pack_designation
 
 
 __all__ = [
     "unpack_designation",
     "pack_designation",
-    "fetch_known_packed_designations",
     "fetch_known_designations",
     "fetch_known_orbit_data",
     "fetch_known_comet_orbit_data",
     "find_obs_code",
-    "normalize_names",
 ]
 
 table_to_states = deprecation.rename(
@@ -67,88 +66,6 @@ def find_obs_code(name: str):
     else:
         found_str = "\n".join([f"{x[3]} - {x[4]}" for x in found])
         raise ValueError(f"Found multiple codes: \n{found_str}")
-
-
-def unpack_designation(packed: str):
-    """
-    Accepts either a packed provisional designation or permanent designation and returns
-    the unpacked representation.
-
-    >>> kete.mpc.unpack_designation("J98SA8Q")
-    '1998 SQ108'
-
-    >>> kete.mpc.unpack_designation("~AZaz")
-    '3140113'
-
-    Parameters
-    ----------
-    packed :
-        A packed 5, 7, or 8 character MPC designation of an object.
-    """
-    packed = packed.strip()
-    return _core.unpack_designation(packed)
-
-
-def pack_designation(unpacked: str):
-    """
-    Accepts either a unpacked provisional designation or permanent designation and
-    returns the packed representation.
-
-    >>> kete.mpc.pack_designation("1998 SQ108")
-    'J98SA8Q'
-
-    >>> kete.mpc.pack_designation("3140113")
-    '~AZaz'
-
-    Parameters
-    ----------
-    unpacked :
-        An unpacked designation to be packed into either a permanent or provisional
-        designation.
-    """
-    unpacked = unpacked.strip()
-    return _core.pack_designation(unpacked)
-
-
-@lru_cache()
-def fetch_known_packed_designations(force_download=False):
-    """
-    Download the most recent copy of the MPCs known ID mappings in their packed format.
-
-    This download only occurs the first time this function is called.
-
-    This then returns a dictionary of all known packed IDs to a single ID which is the
-    one that the MPC specifies as their default.
-
-    For example, here are the first two objects which are returned:
-
-    {'00001': '00001',
-    'I01A00A': '00001',
-    'I99O00F': '00001',
-    'J43X00B': '00001',
-    '00002': '00002',
-    'I02F00A': '00002',
-    ...}
-
-    Ceres has 4 entries, which all map to '00001'.
-    """
-    # download the data from the MPC
-    packed_ids = download_json(
-        "https://minorplanetcenter.net/Extended_Files/mpc_ids_packed.json.gz",
-        force_download,
-    )
-
-    # The data which is in the format {'#####"; ['#####', ...], ...}
-    # where the keys of the dictionary are the MPC default name, and the values are the
-    # other possible names.
-    # Reshape the MPC dictionary to be flat, with every possible name mapping to the
-    # MPC default name.
-    packed_map = {}
-    for name, others in packed_ids.items():
-        packed_map[name] = name
-        for other in others:
-            packed_map[other] = name
-    return packed_map
 
 
 @lru_cache()
@@ -227,33 +144,6 @@ def fetch_known_packed_to_full_names(force_download=False):
             for other in packed_ids[row.desig]:
                 lookup[other] = row.name
     return lookup
-
-
-def normalize_names(dataset, col: str = "MPC_packed_name", name_lookup=None):
-    """
-    Given a Pandas Dataframe containing packed MPC names, alter the names to be the up
-    to date MPC designation.
-
-
-    Parameters
-    ----------
-    dataset :
-        A pandas dataframe which contains a column of packed MPC names.
-    col :
-        The column of the dataset which contains the packed MPC names.
-    name_lookup :
-        Dictionary mapping old names to current names, if None is provided, this will
-        use :py:func:`fetch_known_packed_designations`.
-    """
-    if name_lookup is None:
-        name_lookup = fetch_known_packed_designations()
-    dataset = dataset.copy()
-    new_names = []
-    for item in dataset[col]:
-        item = item.strip()
-        new_names.append(name_lookup.get(item, item))
-    dataset[col] = new_names
-    return dataset
 
 
 @lru_cache()
@@ -356,71 +246,6 @@ def fetch_known_comet_orbit_data(force_download=False):
         )
         objects.append(obj)
     return pd.DataFrame.from_records(objects)
-
-
-def mpc_known_orbit_filtered(filt):
-    """
-    Return all objects in the MPC database which pass the selected filter function.
-
-    Parameters
-    ----------
-    filt:
-        Filter function which defines which group to select. The filter function must
-        accept 3 parameters, `peri_dist, eccentricity, h_mag`, and return a bool.
-        See `kete.population` for a collection of filter functions which
-        are used to generation model populations.
-    """
-    orbs = fetch_known_orbit_data()
-    orbs.fillna(value=np.nan)
-    return orbs[filt(orbs.peri_dist, orbs.ecc, orbs.h_mag)]
-
-
-def int_to_roman(num: int):
-    """Convert an integer to a Roman numeral."""
-    if not isinstance(num, int):
-        raise TypeError("Input needs to be an integer")
-    if not 0 < num < 4000:
-        raise SyntaxError("Argument must be between 1 and 3999")
-
-    ints = (1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1)
-    nums = ("M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I")
-    result = []
-    for val, dig in zip(ints, nums):
-        count = int(num / val)
-        result.append(dig * count)
-        num -= val * count
-    return "".join(result)
-
-
-def roman_to_int(num: str):
-    """Convert a Roman numeral to an integer."""
-
-    num = str(num).upper()
-
-    if any(v not in "MDCLXVI" for v in num):
-        raise SyntaxError("Input is not a valid roman numeral")
-
-    nums = {"M": 1000, "D": 500, "C": 100, "L": 50, "X": 10, "V": 5, "I": 1}
-
-    # convert the string representation to a list of values
-    values = [nums[v] for v in num]
-
-    val = 0
-    for digit, next_digit in zip(values, values[1:]):
-        # If the next place holds a larger number, this value is negative
-        if next_digit > digit:
-            val -= digit
-        else:
-            val += digit
-
-    # Add the last digit
-    val += values[-1]
-
-    # easiest test for validity...
-    if int_to_roman(val) == num:
-        return val
-    else:
-        raise SyntaxError("input is not a valid Roman numeral")
 
 
 @dataclass
