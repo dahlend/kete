@@ -56,11 +56,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `kete.propagate_n_body` can now be passed single or multiple states, and will return
   the correct type back.
 - Parsing and packing of MPC Designations was re-written and moved out of Python.
+- Reduced threshold for hyperbolic orbits to `|ecc - 1| < 1e-4` from `1e-3`.
+- Improved accuracy for Apophis example by included non-gravitational forces.
 
 ### Fixed
 
 - Fixed support for `MPCObservation` parsing of MPC files, this regression was 
   due to upstream changes at the MPC in their formats.
+- Parsing some non-gravitational forces from JPL Horizons was not correctly resolving
+  parameter names, this is now fixed.
 
 ## [v1.1.0]
 

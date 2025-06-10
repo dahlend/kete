@@ -17,9 +17,9 @@ use pyo3::prelude::*;
 /// UTC can be recovered from this object through :py:meth:`~Time.utc_mjd`,
 /// :py:meth:`~Time.utc_jd`, or :py:meth:`~Time.iso`.
 ///
-/// UTC Leap seconds cannot be predicted, as a result of this, UTC becomes a bit fuzzy
-/// when attempting to record future times. All conversion of future times ignores the
-/// possibility of leap seconds.
+/// Future UTC Leap seconds cannot be predicted, as a result of this, UTC becomes a
+/// bit fuzzy when attempting to represent future times. All conversion of future times
+/// therefore ignores the possibility of leap seconds.
 ///
 /// This representation and conversion tools make some small tradeoff for performance
 /// vs accuracy. Conversion between time scales is only accurate on the millisecond
@@ -31,10 +31,10 @@ use pyo3::prelude::*;
 /// Parameters
 /// ----------
 /// jd:
-///     Julian Date in days.
+///     Julian Date in days, or a UTC string.
 /// scaling:
 ///     Accepts 'tdb', 'tai', 'utc', 'tcb', and 'tt', but they are converted to TDB
-///     immediately.
+///     immediately. Defaults to 'tdb'
 #[pyclass(frozen, module = "kete", name = "Time")]
 #[derive(Debug)]
 pub struct PyTime(pub Time<TDB>);
@@ -114,6 +114,15 @@ impl PyTime {
     /// Time from an ISO formatted string.
     ///
     /// ISO formatted strings are assumed to be in UTC time scaling.
+    /// 
+    /// This only supports RFC3339 - a strict subset of the ISO format which removes
+    /// all ambiguity for the definition of time. There are many examples where the
+    /// ISO standard does not have enough information to uniquely specify the exact
+    /// time.
+    /// 
+    /// The most common issue is failing to provide a timezone offset value. Typically
+    /// these are numbers at the end of the UTC ISO string "+00:00". This function will
+    /// check for that and add it if not found.
     ///
     /// Parameters
     /// ----------
@@ -121,6 +130,14 @@ impl PyTime {
     ///     ISO Formatted String.
     #[staticmethod]
     pub fn from_iso(s: &str) -> PyResult<Self> {
+        // attempt to make life easier for the user by checking if they are missing
+        // the timezone information. If they are, append it and return. Otherwise
+        // let the conversion fail as it normally would.
+        if !s.contains('+'){
+            if let Ok(t) = Time::<UTC>::from_iso(&(s.to_owned() + "+00:00")){
+                return Ok(PyTime(t.tdb()))
+            }
+        }
         Ok(PyTime(Time::<UTC>::from_iso(s)?.tdb()))
     }
 

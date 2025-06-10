@@ -3,8 +3,7 @@ use crate::elements::PyCometElements;
 use crate::frame::*;
 use crate::time::PyTime;
 use crate::vector::*;
-use kete_core::frames::Equatorial;
-use kete_core::prelude;
+use kete_core::prelude::*;
 use pyo3::prelude::*;
 
 /// Representation of the state of an object at a specific moment in time.
@@ -28,7 +27,7 @@ use pyo3::prelude::*;
 #[derive(Clone, Debug)]
 pub struct PyState {
     /// The raw state object, always in the Equatorial frame.
-    pub raw: prelude::State<Equatorial>,
+    pub raw: State<Equatorial>,
 
     /// Frame of reference used to define the coordinate system.
     pub frame: PyFrames,
@@ -37,11 +36,13 @@ pub struct PyState {
     pub elements: Option<Box<PyCometElements>>,
 }
 
-impl From<prelude::State<Equatorial>> for PyState {
-    fn from(value: prelude::State<Equatorial>) -> Self {
+impl From<State<Equatorial>> for PyState {
+    fn from(value: State<Equatorial>) -> Self {
         Self {
             raw: value,
-            frame: PyFrames::Equatorial,
+            // note that the raw value is always equatorial, this frame
+            // only specifies how the equatorial vector is displayed in python
+            frame: PyFrames::Ecliptic,
             elements: None,
         }
     }
@@ -61,8 +62,8 @@ impl PyState {
         center_id: Option<i32>,
     ) -> Self {
         let desig = match desig {
-            Some(name) => prelude::Desig::Name(name),
-            None => prelude::Desig::Empty,
+            Some(name) =>Desig::Name(name),
+            None => Desig::Empty,
         };
 
         // if no frame is provided, but pos or vel have a frame, use that one.
@@ -81,7 +82,7 @@ impl PyState {
         let vel = vel.into_vector(frame);
 
         let center_id = center_id.unwrap_or(10);
-        let state = prelude::State::new(desig, jd.jd(), pos, vel, center_id);
+        let state =State::new(desig, jd.jd(), pos, vel, center_id);
         Self {
             raw: state,
             frame,
@@ -94,7 +95,7 @@ impl PyState {
     /// If the desired state is not a known NAIF id this will raise an exception.
     pub fn change_center(&self, naif_id: i32) -> PyResult<Self> {
         let mut state = self.raw.clone();
-        let spk = prelude::LOADED_SPK.try_read().unwrap();
+        let spk = LOADED_SPK.try_read().unwrap();
         spk.try_change_center(&mut state, naif_id)?;
         Ok(Self {
             raw: state,
@@ -260,7 +261,7 @@ impl PyState {
     #[getter]
     pub fn desig(&self) -> String {
         match &self.raw.desig {
-            prelude::Desig::Naif(s) => {
+            Desig::Naif(s) => {
                 kete_core::spice::try_name_from_id(*s).unwrap_or(s.to_string())
             }
             _ => self.raw.desig.to_string(),

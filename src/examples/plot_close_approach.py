@@ -11,16 +11,20 @@ import numpy as np
 import matplotlib
 
 # load apophis from horizons
-cur_state = kete.HorizonsProperties.fetch("Apophis").state
+obj = kete.HorizonsProperties.fetch("Apophis")
+cur_state = obj.state
+non_grav = obj.non_grav
 
 
 jd_center = kete.Time.from_ymd(2029, 4, 13.9066).jd
 jd_start = jd_center - 1.25
 jd_end = jd_center + 1.25
-steps = 1 / 24 / 20
+steps = 1 / 24 / 60
 
 # propagate the state up to the start date.
-cur_state = kete.propagate_n_body(cur_state, jd_start, include_asteroids=True)
+cur_state = kete.propagate_n_body(
+    cur_state, jd_start, non_gravs=[non_grav], include_asteroids=True
+)
 
 # Now we propagate the object, recording info as we go
 # this is not the most efficient way to do this, but for 1 object it is easy.
@@ -49,7 +53,7 @@ cmap = matplotlib.colormaps["magma"]
 colors = [cmap(x / len(elements) * 0.8) for x in range(len(elements))]
 
 print("Closest approach is on:")
-print(kete.Time(jd_start + np.argmin(dist_to_earth) * steps).ymd)
+print(kete.Time(jd_start + np.argmin(dist_to_earth) * steps).iso)
 
 # Note that this is at 10 steps a day, so this is not an exact calculation
 print(f"At a distance of about {np.min(dist_to_earth):0.0f} km")
