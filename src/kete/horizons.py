@@ -280,9 +280,10 @@ def _nongrav_params(self) -> dict:
         return params
 
     for vals in orbit["model_pars"]:
-        if vals["name"].lower() not in params:
+        param_name = vals["name"].lower()
+        if param_name not in _PARAM_MAP:
             raise ValueError("Unknown non-grav values: ", vals)
-        params[_PARAM_MAP[vals["name"].lower()]] = float(vals["value"])
+        params[_PARAM_MAP[param_name]] = float(vals["value"])
     return params
 
 

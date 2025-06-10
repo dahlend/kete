@@ -3,7 +3,7 @@ Annotated Comet
 ===============
 
 Given a specific FITs file containing a comet, annotate the plot with orbital
-information, such as diection of motion.
+information, such as direction of motion.
 """
 
 from astropy.wcs import WCS

@@ -16,7 +16,7 @@ use nalgebra::{ComplexField, Vector3};
 use std::f64::consts::TAU;
 
 /// How close to ecc=1 do we assume the orbit is parabolic
-pub const PARABOLIC_ECC_LIMIT: f64 = 1e-3;
+pub const PARABOLIC_ECC_LIMIT: f64 = 1e-4;
 
 /// Compute the eccentric anomaly for all orbital classes.
 ///

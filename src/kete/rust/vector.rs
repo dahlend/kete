@@ -46,7 +46,9 @@ impl From<Vector<Equatorial>> for PyVector {
     fn from(value: Vector<Equatorial>) -> Self {
         Self {
             raw: value,
-            frame: PyFrames::Equatorial,
+            // Note that the raw value is always equatorial, the frame here
+            // only specifies how python displays it.
+            frame: PyFrames::Ecliptic,
         }
     }
 }
