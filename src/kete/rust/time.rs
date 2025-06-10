@@ -31,7 +31,7 @@ use pyo3::prelude::*;
 /// Parameters
 /// ----------
 /// jd:
-///     Julian Date in days, or a UTC string.
+///     Julian Date in days.
 /// scaling:
 ///     Accepts 'tdb', 'tai', 'utc', 'tcb', and 'tt', but they are converted to TDB
 ///     immediately. Defaults to 'tdb'
