@@ -48,6 +48,53 @@ Kete may be installed using pip:
 pip install kete
 ```
 
+## Example of Code
+
+Here is a small example showing off what programming with kete looks like.
+This calculates the closest distance that the asteroid Apophis will be at
+during its *very* close approach to Earth in April of 2029.
+
+A more in-depth look at this example can be found
+[here](https://dahlend.github.io/kete/auto_examples/plot_close_approach.html).
+
+```python
+
+      import kete
+      import numpy as np
+
+      # Date of impact +- 1 day in Julian Date
+      jd_center = kete.Time.from_ymd(2029, 4, 13.9066).jd
+
+      # Step the orbit every 1 minute for +- 1 day.
+      step_size = 1 / 24 / 60
+      jd_range = np.arange(-1, 1, step_size) + jd_center
+
+      # load Apophis from JPL Horizons
+      obj = kete.HorizonsProperties.fetch("Apophis")
+      cur_state = obj.state
+
+      # keep track the the closest approach
+      closest_approach = [np.inf, 0]
+      for jd in jd_range:
+            # propagate the object, and include the massive main belt asteroids
+            cur_state = kete.propagate_n_body(cur_state, jd, include_asteroids=True)
+
+            # calculate position relative to earth
+            earth_vec = cur_state.pos - kete.spice.get_state("Earth", cur_state.jd).pos
+            earth_dist = earth_vec.r * kete.constants.AU_KM
+            if earth_dist < closest_approach[0]:
+                  closest_approach = [earth_dist, cur_state.jd]
+
+      print("Closest approach is on:")
+      print(kete.Time(closest_approach[1]).iso)
+      print(f"At a distance of about {closest_approach[0]:0.0f} km")
+      #  Closest approach is on:
+      #  2029-04-13T21:45:30.239+00:00
+      #  At a distance of about 38015 km
+
+```
+
+
 ## Name
 
 'Kete' comes from ancient greek mythology, meaning sea monsters, and is the root word
