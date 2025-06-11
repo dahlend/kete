@@ -1,8 +1,8 @@
 //! Utility functions which cant be easily classified into a specific module.
 
 use nom::{
-    bytes::complete::take_while1, character::complete::space0, multi::separated_list1,
-    sequence::delimited, Parser,
+    Parser, bytes::complete::take_while1, character::complete::space0, multi::separated_list1,
+    sequence::delimited,
 };
 
 use crate::{
@@ -255,7 +255,7 @@ fn parse_str_to_floats(text: &str) -> KeteResult<(f64, f64, f64)> {
             return Err(Error::ValueError(format!(
                 "String has too many numbers: {}",
                 text
-            )))
+            )));
         }
     };
 
@@ -385,20 +385,29 @@ mod tests {
 
     #[test]
     fn test_deg_to_hms() {
-        let (hours, minutes, seconds) = Degrees::from_degrees(30.0).to_hours_minutes_seconds(1e-8);
-        assert_eq!(hours, 2.0);
-        assert_eq!(minutes, 0);
-        assert!((seconds - 0.0).abs() < 1e-10);
+        {
+            let (hours, minutes, seconds) =
+                Degrees::from_degrees(30.0).to_hours_minutes_seconds(1e-8);
+            assert_eq!(hours, 2.0);
+            assert_eq!(minutes, 0);
+            assert!((seconds - 0.0).abs() < 1e-10);
+        }
 
-        let (hours, minutes, seconds) = Degrees::from_degrees(360.0).to_hours_minutes_seconds(1e-8);
-        assert_eq!(hours, 0.0);
-        assert_eq!(minutes, 0);
-        assert!((seconds - 0.0).abs() < 1e-10);
+        {
+            let (hours, minutes, seconds) =
+                Degrees::from_degrees(360.0).to_hours_minutes_seconds(1e-8);
+            assert_eq!(hours, 0.0);
+            assert_eq!(minutes, 0);
+            assert!((seconds - 0.0).abs() < 1e-10);
+        }
 
-        let (hours, minutes, seconds) = Degrees::from_degrees(15.54).to_hours_minutes_seconds(1e-8);
-        assert_eq!(hours, 1.0);
-        assert_eq!(minutes, 2);
-        assert!((seconds - 9.6).abs() < 1e-10, "{}", seconds);
+        {
+            let (hours, minutes, seconds) =
+                Degrees::from_degrees(15.54).to_hours_minutes_seconds(1e-8);
+            assert_eq!(hours, 1.0);
+            assert_eq!(minutes, 2);
+            assert!((seconds - 9.6).abs() < 1e-10, "{}", seconds);
+        }
     }
 
     #[test]

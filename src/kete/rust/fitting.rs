@@ -6,7 +6,7 @@ use pyo3::pyfunction;
 #[pyfunction]
 #[pyo3(name = "ks_test")]
 pub fn ks_test_py(sample_a: Vec<f64>, sample_b: Vec<f64>) -> f64 {
-    stats::two_sample_ks_statistic(&sample_a, &sample_b)
+    stats::two_sample_ks_statistic(&sample_a, &sample_b).unwrap()
 }
 
 /// Fit the reduced chi squared value for a collection of data with uncertainties.

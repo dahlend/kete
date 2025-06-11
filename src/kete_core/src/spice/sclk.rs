@@ -1,9 +1,8 @@
-use std::{collections::HashMap, fs, str::FromStr};
-
+/// Parsing text of SPICE SCLK kernels.
 use crossbeam::sync::ShardedLock;
 use lazy_static::lazy_static;
-/// Parsing text kernels used by SPICE.
 use nom::{
+    IResult, Parser,
     branch::alt,
     bytes::{
         complete::{take_until, take_until1, take_while, take_while1},
@@ -11,17 +10,17 @@ use nom::{
     },
     character::complete::{char, space0},
     combinator::{map_res, opt},
-    error::{context, ParseError},
+    error::{ParseError, context},
     multi::{separated_list0, separated_list1},
     sequence::{delimited, pair, preceded, terminated},
-    IResult, Parser,
 };
+use std::{collections::HashMap, fs, str::FromStr};
 
 use crate::{
     cache::cache_path,
     errors::{Error, KeteResult},
     spice::spice_jd_to_jd,
-    time::{scales::TDB, Time},
+    time::{Time, scales::TDB},
 };
 
 use super::jd_to_spice_jd;
@@ -54,9 +53,9 @@ impl SclkCollection {
     ///
     /// Parameters
     /// ----------
-    /// id: i32
+    /// ``id``: i32
     ///   The NAIF ID of the spacecraft clock.
-    /// sclk_string: &str
+    /// ``sclk_string``: &str
     ///   The spacecraft clock string to convert.
     pub fn string_get_time(&self, id: i32, sclk_string: &str) -> KeteResult<Time<TDB>> {
         if let Some(sclk) = self.clocks.get(&id) {
@@ -73,9 +72,9 @@ impl SclkCollection {
     ///
     /// Parameters
     /// ----------
-    /// id: i32
+    /// ``id``: i32
     ///     The NAIF ID of the spacecraft clock.
-    /// sclk_string: &str
+    /// ``sclk_string``: &str
     ///     The spacecraft clock string to convert.
     pub fn try_string_to_tick(&self, id: i32, sclk_string: &str) -> KeteResult<f64> {
         if let Some(sclk) = self.clocks.get(&id) {
@@ -92,9 +91,9 @@ impl SclkCollection {
     ///
     /// Parameters
     /// ----------
-    /// id: i32
+    /// ``id``: i32
     ///     The NAIF ID of the spacecraft clock.
-    /// clock_tick: f64
+    /// ``clock_tick``: f64
     ///     The clock tick (SCLK float) to convert.
     pub fn try_tick_to_time(&self, id: i32, clock_tick: f64) -> KeteResult<Time<TDB>> {
         if let Some(sclk) = self.clocks.get(&id) {
@@ -111,9 +110,9 @@ impl SclkCollection {
     ///
     /// Parameters
     /// ----------
-    /// id: i32
+    /// ``id``: i32
     ///     The NAIF ID of the spacecraft clock.
-    /// time: f64
+    /// ``time``: f64
     ///     The clock tick (SCLK float) to convert.
     pub fn try_time_to_tick(&self, id: i32, time: Time<TDB>) -> KeteResult<f64> {
         if let Some(sclk) = self.clocks.get(&id) {
@@ -128,7 +127,7 @@ impl SclkCollection {
 
     /// Delete all segments in the SCLK singleton, equivalent to unloading all files.
     pub fn reset(&mut self) {
-        *self = SclkCollection::default();
+        *self = Self::default();
     }
 
     /// Return a list of all loaded segments in the SCLK singleton.
@@ -506,7 +505,7 @@ impl TryFrom<Vec<SclkToken>> for Sclk {
                     tdb = Some(val == 1);
                 }
                 SclkToken::Unknown(s) => {
-                    return Err(Error::ValueError(format!("Unknown SCLK line: {}", s)))
+                    return Err(Error::ValueError(format!("Unknown SCLK line: {}", s)));
                 }
             }
         }
@@ -555,7 +554,7 @@ impl TryFrom<Vec<SclkToken>> for Sclk {
         }
         tick_rates.reverse();
 
-        Ok(Sclk {
+        Ok(Self {
             naif_id,
             kernel_id,
             n_fields,
@@ -569,7 +568,6 @@ impl TryFrom<Vec<SclkToken>> for Sclk {
     }
 }
 
-#[allow(unused)]
 #[derive(Debug, Clone, PartialEq)]
 enum SclkToken {
     MagicNumber,
@@ -592,8 +590,8 @@ enum SclkToken {
 /// Keys are made up of a text string with some of them ending in a numeric suffix.
 /// This parses the optional numeric suffix from the key.
 ///    
-/// parse_key_suffix("Thing_a_b_10") == Ok(("", ("Thing_a_b_", Some(10))))
-/// parse_key_suffix("Thing_a_b") == Ok(("", ("Thing_a_b", None)))
+/// `parse_key_suffix("Thing_a_b_10") == Ok(("", ("Thing_a_b_", Some(10))))`
+/// `parse_key_suffix("Thing_a_b") == Ok(("", ("Thing_a_b", None)))`
 ///
 fn parse_key_suffix(input: &str) -> IResult<&str, (&str, Option<u32>)> {
     let (rem, word) = take_while1(|c: char| c.is_ascii_alphanumeric() || c == '_').parse(input)?;
@@ -618,10 +616,8 @@ fn parse_key_suffix(input: &str) -> IResult<&str, (&str, Option<u32>)> {
 /// SCLK file data is stored as key value pairs, this parses a specific key and its value.
 ///
 ///
-/// Thing_a_b_10 = ( foo bar
-///                   baz)
-///
-/// Parses into (Some(10), "foo bar \n baz")
+/// `Thing_a_b_10 = ( foo bar baz)`
+/// Parses into `(Some(10), "foo bar \n baz")`
 ///
 fn parse_line<'a>(
     input: &'a str,

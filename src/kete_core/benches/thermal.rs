@@ -1,19 +1,26 @@
-extern crate criterion;
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+#![allow(missing_docs, reason = "Unnecessary for benchmarks")]
+#![allow(unused_results, reason = "Unnecessary for benchmarks")]
+#![allow(clippy::missing_assert_message, reason = "Unnecessary for benchmarks")]
+
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use kete_core::flux::{FrmParams, HGParams, NeatmParams};
 use pprof::criterion::{Output, PProfProfiler};
 use std::hint::black_box;
 
 fn neatm_bench(params: &NeatmParams) {
-    assert!(params
-        .apparent_thermal_flux(&[1.0, 0.0, 0.0].into(), &[0.0, 1.0, 0.0].into(),)
-        .is_some());
+    assert!(
+        params
+            .apparent_thermal_flux(&[1.0, 0.0, 0.0].into(), &[0.0, 1.0, 0.0].into(),)
+            .is_some()
+    );
 }
 
 fn frm_bench(params: &FrmParams) {
-    assert!(params
-        .apparent_thermal_flux(&[1.0, 0.0, 0.0].into(), &[0.0, 1.0, 0.0].into(),)
-        .is_some());
+    assert!(
+        params
+            .apparent_thermal_flux(&[1.0, 0.0, 0.0].into(), &[0.0, 1.0, 0.0].into(),)
+            .is_some()
+    );
 }
 
 pub fn neatm_benchmark(c: &mut Criterion) {
@@ -48,10 +55,10 @@ pub fn neatm_benchmark(c: &mut Criterion) {
     };
 
     neatm_group.bench_function(BenchmarkId::new("neatm", "No Color Correction"), |b| {
-        b.iter(|| neatm_bench(black_box(&generic_params)))
+        b.iter(|| neatm_bench(black_box(&generic_params)));
     });
     neatm_group.bench_function(BenchmarkId::new("neatm", "Wise Color Correction"), |b| {
-        b.iter(|| neatm_bench(black_box(&wise_params)))
+        b.iter(|| neatm_bench(black_box(&wise_params)));
     });
 }
 
@@ -85,10 +92,10 @@ pub fn frm_benchmark(c: &mut Criterion) {
     };
 
     frm_group.bench_function(BenchmarkId::new("frm", "No Color Correction"), |b| {
-        b.iter(|| frm_bench(black_box(&generic_params)))
+        b.iter(|| frm_bench(black_box(&generic_params)));
     });
     frm_group.bench_function(BenchmarkId::new("frm", "Wise Color Correction"), |b| {
-        b.iter(|| frm_bench(black_box(&wise_params)))
+        b.iter(|| frm_bench(black_box(&wise_params)));
     });
 }
 

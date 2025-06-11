@@ -3,7 +3,7 @@
 use crate::constants::GMS_SQRT;
 use crate::frames::Ecliptic;
 use crate::prelude::{Desig, KeteResult, State};
-use crate::propagation::{compute_eccentric_anomaly, compute_true_anomaly, PARABOLIC_ECC_LIMIT};
+use crate::propagation::{PARABOLIC_ECC_LIMIT, compute_eccentric_anomaly, compute_true_anomaly};
 
 use nalgebra::Vector3;
 use std::f64::consts::TAU;
@@ -115,7 +115,7 @@ impl CometElements {
                     true_anomaly = -true_anomaly;
                 }
                 let d = (true_anomaly / 2.0).tan();
-                let dt = (2f64.sqrt() * peri_dist.powf(1.5) / GMS_SQRT) * (d + d.powi(3) / 3.0);
+                let dt = (2_f64.sqrt() * peri_dist.powf(1.5) / GMS_SQRT) * (d + d.powi(3) / 3.0);
                 epoch - dt
             } else if ecc < 1e-6 {
                 let semi_major = (2.0 / p_mag - v_mag2).recip();
@@ -285,7 +285,7 @@ impl CometElements {
     pub fn mean_motion(&self) -> f64 {
         match self.eccentricity {
             ecc if ((ecc - 1.0).abs() <= PARABOLIC_ECC_LIMIT) => {
-                GMS_SQRT * 1.5 / 2f64.sqrt() / self.peri_dist.powf(1.5)
+                GMS_SQRT * 1.5 / 2_f64.sqrt() / self.peri_dist.powf(1.5)
             }
             _ => GMS_SQRT / self.semi_major().abs().powf(1.5),
         }
@@ -315,44 +315,48 @@ mod tests {
 
     #[test]
     fn test_specific_conversion() {
-        // This was previously a failed instance.
-        let elem = CometElements {
-            desig: Desig::Empty,
-            epoch: 2461722.5,
-            eccentricity: 0.7495474422690582,
-            inclination: 0.1582845445910239,
-            lon_of_ascending: 1.247985615390004,
-            peri_time: 2459273.227910867,
-            peri_arg: 4.229481513899533,
-            peri_dist: 0.5613867506855604,
-        };
-        assert!(elem.to_pos_vel().is_ok());
-
-        // This was previously a failed instance.
-        let elem = CometElements {
-            desig: Desig::Empty,
-            epoch: 2455341.243793971,
-            eccentricity: 1.001148327267,
-            inclination: 2.433767,
-            lon_of_ascending: -1.24321,
-            peri_time: 2454482.5825015577,
-            peri_arg: 0.823935226897,
-            peri_dist: 5.594792535298549,
-        };
-        assert!((elem.true_anomaly().unwrap() - 1.198554792).abs() < 1e-6);
-        assert!(elem.to_pos_vel().is_ok());
-
-        let elem = CometElements {
-            desig: Desig::Empty,
-            epoch: 2455562.5,
-            eccentricity: 0.99999,
-            inclination: 2.792526803,
-            lon_of_ascending: 0.349065850,
-            peri_time: 2455369.7,
-            peri_arg: -0.8726646259,
-            peri_dist: 0.5,
-        };
-        assert!((elem.true_anomaly().unwrap() - 2.6071638616282553).abs() < 1e-6);
+        {
+            // This was previously a failed instance.
+            let elem = CometElements {
+                desig: Desig::Empty,
+                epoch: 2461722.5,
+                eccentricity: 0.7495474422690582,
+                inclination: 0.1582845445910239,
+                lon_of_ascending: 1.247985615390004,
+                peri_time: 2459273.227910867,
+                peri_arg: 4.229481513899533,
+                peri_dist: 0.5613867506855604,
+            };
+            assert!(elem.to_pos_vel().is_ok());
+        }
+        {
+            // This was previously a failed instance.
+            let elem = CometElements {
+                desig: Desig::Empty,
+                epoch: 2455341.243793971,
+                eccentricity: 1.001148327267,
+                inclination: 2.433767,
+                lon_of_ascending: -1.24321,
+                peri_time: 2454482.5825015577,
+                peri_arg: 0.823935226897,
+                peri_dist: 5.594792535298549,
+            };
+            assert!((elem.true_anomaly().unwrap() - 1.198554792).abs() < 1e-6);
+            assert!(elem.to_pos_vel().is_ok());
+        }
+        {
+            let elem = CometElements {
+                desig: Desig::Empty,
+                epoch: 2455562.5,
+                eccentricity: 0.99999,
+                inclination: 2.792526803,
+                lon_of_ascending: 0.349065850,
+                peri_time: 2455369.7,
+                peri_arg: -0.8726646259,
+                peri_dist: 0.5,
+            };
+            assert!((elem.true_anomaly().unwrap() - 2.6071638616282553).abs() < 1e-6);
+        }
     }
 
     #[test]

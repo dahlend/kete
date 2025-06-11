@@ -32,5 +32,5 @@ pub const GOLDEN_RATIO: f64 = 1.618033988749894;
 /// <https://coolwiki.ipac.caltech.edu/index.php/Central_wavelengths_and_zero_points>
 pub const V_MAG_ZERO: f64 = 3597.28;
 
-/// V-band constant for the relationship between D, H_V, and p_v, in km.
+/// V-band constant for the relationship between `D`, `H_V`, and `p_v`, in km.
 pub const C_V: f64 = 1329.0;

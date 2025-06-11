@@ -1,5 +1,8 @@
-extern crate criterion;
-use criterion::{criterion_group, criterion_main, Criterion};
+#![allow(missing_docs, reason = "Unnecessary for benchmarks")]
+#![allow(unused_results, reason = "Unnecessary for benchmarks")]
+#![allow(clippy::missing_assert_message, reason = "Unnecessary for benchmarks")]
+
+use criterion::{Criterion, criterion_group, criterion_main};
 use kete_core::{
     frames::{Ecliptic, Equatorial},
     spice::LOADED_SPK,
@@ -34,13 +37,13 @@ pub fn spice_benchmark(c: &mut Criterion) {
     let spice = &LOADED_SPK.try_read().unwrap();
     let state = spice.try_get_state_with_center(5, 2451545.0, 10).unwrap();
     c.bench_function("spice_get_raw_state", |b| {
-        b.iter(|| spice_get_raw_state(black_box(2451545.0)))
+        b.iter(|| spice_get_raw_state(black_box(2451545.0)));
     });
     c.bench_function("spice_get_state", |b| {
-        b.iter(|| spice_get_state(black_box(2451545.0)))
+        b.iter(|| spice_get_state(black_box(2451545.0)));
     });
     c.bench_function("spice_change_center", |b| {
-        b.iter(|| spice_change_center(black_box(state.clone())))
+        b.iter(|| spice_change_center(black_box(state.clone())));
     });
 }
 

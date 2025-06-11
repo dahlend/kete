@@ -1,16 +1,16 @@
 //! Loading and reading of states from JPL PCK kernel files.
 //!
 //! PCKs are intended to be loaded into a singleton which is accessible via the
-//! [`LOADED_PCK`] object defined below. This singleton is wrapped in a RwLock,
-//! meaning before its use it must by unwrapped. A vast majority of intended use cases
-//! will only be the read case.
+//! [`LOADED_PCK`] object defined below. This singleton is wrapped in a
+//! [`crossbeam::sync::ShardedLock`], meaning before its use it must by unwrapped.
+//! A vast majority of intended use cases will only be the read case.
 //!
 use std::collections::HashSet;
 use std::fs;
 
+use super::PckArray;
 use super::daf::{DAFType, DafFile};
 use super::pck_segments::PckSegment;
-use super::PckArray;
 use crate::cache::cache_path;
 use crate::errors::{Error, KeteResult};
 use crate::frames::NonInertialFrame;
@@ -65,7 +65,7 @@ impl PckCollection {
 
     /// Delete all segments in the PCK singleton, equivalent to unloading all files.
     pub fn reset(&mut self) {
-        *self = PckCollection::default();
+        *self = Self::default();
     }
 
     /// Return a list of all loaded segments in the PCK singleton.

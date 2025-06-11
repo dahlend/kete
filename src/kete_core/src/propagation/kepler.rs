@@ -127,7 +127,7 @@ const PARABOLIC_BETA: f64 = 1e-10;
 ///  Wisdom, Jack, and David M. Hernandez.
 ///  "A fast and accurate universal Kepler solver without Stumpff series."
 ///  Monthly Notices of the Royal Astronomical Society 453.3 (2015): 3015-3023.
-///  https://arxiv.org/abs/1508.02699
+///  <https://arxiv.org/abs/1508.02699>
 fn g_1(s: f64, beta: f64) -> f64 {
     // the limit of this equation as beta approaches 0 is s
     if beta.abs() < PARABOLIC_BETA {
@@ -147,7 +147,7 @@ fn g_1(s: f64, beta: f64) -> f64 {
 ///  Wisdom, Jack, and David M. Hernandez.
 ///  "A fast and accurate universal Kepler solver without Stumpff series."
 ///  Monthly Notices of the Royal Astronomical Society 453.3 (2015): 3015-3023.
-///  https://arxiv.org/abs/1508.02699
+///  <https://arxiv.org/abs/1508.02699>
 fn g_2(s: f64, beta: f64) -> f64 {
     // the limit of this equation as beta approaches 0 is s^2 / 2
     if beta.abs() < PARABOLIC_BETA {
@@ -169,7 +169,7 @@ fn g_2(s: f64, beta: f64) -> f64 {
 ///  Wisdom, Jack, and David M. Hernandez.
 ///  "A fast and accurate universal Kepler solver without Stumpff series."
 ///  Monthly Notices of the Royal Astronomical Society 453.3 (2015): 3015-3023.
-///  https://arxiv.org/abs/1508.02699
+///  <https://arxiv.org/abs/1508.02699>
 ///
 /// # Arguments
 ///
@@ -414,7 +414,7 @@ mod tests {
 
     #[test]
     fn test_kepler_circular() {
-        for r in [0.2, 0.5, 1.0, 2.0f64].iter() {
+        for r in [0.2, 0.5, 1.0, 2.0].iter() {
             let pos = Vector3::new(0.0, *r, 0.0);
             let vel = Vector3::new(-GMS_SQRT / r.sqrt(), 0.0, 0.0);
             let year = TAU / GMS_SQRT * r.powf(3.0 / 2.0);

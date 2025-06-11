@@ -5,24 +5,23 @@
 //! `Records`, with an associated maximum and minimum time where they are valid for.
 //!
 //! There are unique structs for each possible segment type, not all are currently
-//! supported. Each segment type must implement the SPKSegment trait, which allows for
-//! the loading and querying of states contained within.
+//! supported.
 //!
 //! <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/spk.html#Supported%20Data%20Types>
 //!
 //! There is a lot of repetition in this file, as many of the segment types have very
 //! similar internal structures.
-use super::{interpolation::*, SpkArray};
+use super::{SpkArray, interpolation::*};
 use super::{jd_to_spice_jd, spice_jd_to_jd};
 use crate::constants::AU_KM;
 use crate::errors::Error;
-use crate::frames::{Ecliptic, Equatorial, Galactic, InertialFrame, FK4};
+use crate::frames::{Ecliptic, Equatorial, FK4, Galactic, InertialFrame};
 use crate::prelude::{Desig, KeteResult};
 use crate::state::State;
-use crate::time::scales::TDB;
 use crate::time::Time;
+use crate::time::scales::TDB;
 use itertools::Itertools;
-use sgp4::{julian_years_since_j2000, Constants, Geopotential, MinutesSinceEpoch, Orbit};
+use sgp4::{Constants, Geopotential, MinutesSinceEpoch, Orbit, julian_years_since_j2000};
 use std::fmt::Debug;
 
 #[derive(Debug)]
@@ -42,14 +41,14 @@ impl TryFrom<SpkArray> for SpkSegment {
 
     fn try_from(array: SpkArray) -> Result<Self, Self::Error> {
         match array.segment_type {
-            1 => Ok(SpkSegment::Type1(array.into())),
-            2 => Ok(SpkSegment::Type2(array.try_into()?)),
-            3 => Ok(SpkSegment::Type3(array.try_into()?)),
-            9 => Ok(SpkSegment::Type9(array.into())),
-            10 => Ok(SpkSegment::Type10(array.try_into()?)),
-            13 => Ok(SpkSegment::Type13(array.into())),
-            18 => Ok(SpkSegment::Type18(array.try_into()?)),
-            21 => Ok(SpkSegment::Type21(array.into())),
+            1 => Ok(Self::Type1(array.into())),
+            2 => Ok(Self::Type2(array.try_into()?)),
+            3 => Ok(Self::Type3(array.try_into()?)),
+            9 => Ok(Self::Type9(array.into())),
+            10 => Ok(Self::Type10(array.try_into()?)),
+            13 => Ok(Self::Type13(array.into())),
+            18 => Ok(Self::Type18(array.try_into()?)),
+            21 => Ok(Self::Type21(array.into())),
             v => Err(Error::IOError(format!(
                 "SPK Segment type {:?} not supported. Please submit a github issue!",
                 v
@@ -77,7 +76,10 @@ impl SpkSegment {
     /// Return the [`State`] object at the specified JD. If the requested time is
     /// not within the available range, this will fail.
     #[inline(always)]
-    pub fn try_get_state<T: InertialFrame>(&self, jd: f64) -> KeteResult<State<T>> {
+    pub(in crate::spice) fn try_get_state<T: InertialFrame>(
+        &self,
+        jd: f64,
+    ) -> KeteResult<State<T>> {
         let arr_ref: &SpkArray = self.into();
 
         let jds = jd_to_spice_jd(jd);
@@ -90,14 +92,14 @@ impl SpkSegment {
         }
 
         let (pos, vel) = match &self {
-            SpkSegment::Type1(v) => v.try_get_pos_vel(jds)?,
-            SpkSegment::Type2(v) => v.try_get_pos_vel(jds)?,
-            SpkSegment::Type3(v) => v.try_get_pos_vel(jds)?,
-            SpkSegment::Type9(v) => v.try_get_pos_vel(jds)?,
-            SpkSegment::Type10(v) => v.try_get_pos_vel(jds)?,
-            SpkSegment::Type13(v) => v.try_get_pos_vel(jds)?,
-            SpkSegment::Type18(v) => v.try_get_pos_vel(jds)?,
-            SpkSegment::Type21(v) => v.try_get_pos_vel(jds)?,
+            Self::Type1(v) => v.try_get_pos_vel(jds)?,
+            Self::Type2(v) => v.try_get_pos_vel(jds)?,
+            Self::Type3(v) => v.try_get_pos_vel(jds)?,
+            Self::Type9(v) => v.try_get_pos_vel(jds)?,
+            Self::Type10(v) => v.try_get_pos_vel(jds)?,
+            Self::Type13(v) => v.try_get_pos_vel(jds)?,
+            Self::Type18(v) => v.try_get_pos_vel(jds)?,
+            Self::Type21(v) => v.try_get_pos_vel(jds)?,
         };
 
         match arr_ref.frame_id {
@@ -268,7 +270,7 @@ impl From<SpkArray> for SpkSegmentType1 {
     fn from(array: SpkArray) -> Self {
         let n_records = array.daf[array.daf.len() - 1] as usize;
 
-        SpkSegmentType1 { array, n_records }
+        Self { array, n_records }
     }
 }
 
@@ -298,7 +300,7 @@ struct Type2RecordView<'a> {
 
 impl SpkSegmentType2 {
     #[inline(always)]
-    fn get_record(&self, idx: usize) -> Type2RecordView {
+    fn get_record(&self, idx: usize) -> Type2RecordView<'_> {
         unsafe {
             let vals = self
                 .array
@@ -353,7 +355,7 @@ impl TryFrom<SpkArray> for SpkSegmentType2 {
             return Err(Error::ValueError("File incorrectly formatted, found number of Chebyshev coefficients doesn't match expected".into()));
         }
 
-        Ok(SpkSegmentType2 {
+        Ok(Self {
             array,
             n_coef,
             record_len,
@@ -392,7 +394,7 @@ struct Type3RecordView<'a> {
 
 impl SpkSegmentType3 {
     #[inline(always)]
-    fn get_record(&self, idx: usize) -> Type3RecordView {
+    fn get_record(&self, idx: usize) -> Type3RecordView<'_> {
         unsafe {
             let vals = self
                 .array
@@ -446,7 +448,7 @@ impl TryFrom<SpkArray> for SpkSegmentType3 {
             return Err(Error::ValueError("File incorrectly formatted, found number of Chebyshev coefficients doesn't match expected".into()));
         }
 
-        Ok(SpkSegmentType3 {
+        Ok(Self {
             array,
             n_coef,
             record_len,
@@ -493,7 +495,7 @@ struct Type9RecordView<'a> {
 
 impl SpkSegmentType9 {
     #[inline(always)]
-    fn get_record(&self, idx: usize) -> Type9RecordView {
+    fn get_record(&self, idx: usize) -> Type9RecordView<'_> {
         unsafe {
             let rec = self.array.daf.data.get_unchecked(idx * 6..(idx + 1) * 6);
             Type9RecordView {
@@ -578,8 +580,23 @@ impl SpkSegmentType10 {
     #[inline(always)]
     fn get_record(&self, idx: usize) -> Constants {
         let rec = self.array.get_packet::<15>(idx);
-        let [_, _, _, b_star, inclination, right_ascension, eccentricity, argument_of_perigee, mean_anomaly, kozai_mean_motion, epoch, _, _, _, _] =
-            *rec;
+        let [
+            _,
+            _,
+            _,
+            b_star,
+            inclination,
+            right_ascension,
+            eccentricity,
+            argument_of_perigee,
+            mean_anomaly,
+            kozai_mean_motion,
+            epoch,
+            _,
+            _,
+            _,
+            _,
+        ] = *rec;
 
         let epoch = julian_years_since_j2000(
             &Time::<TDB>::new(spice_jd_to_jd(epoch))
@@ -664,7 +681,7 @@ impl TryFrom<SpkArray> for SpkSegmentType10 {
             ae: constants[6],
         };
 
-        Ok(SpkSegmentType10 {
+        Ok(Self {
             array,
             geopotential,
         })
@@ -709,7 +726,7 @@ struct Type13RecordView<'a> {
 
 impl SpkSegmentType13 {
     #[inline(always)]
-    fn get_record(&self, idx: usize) -> Type13RecordView {
+    fn get_record(&self, idx: usize) -> Type13RecordView<'_> {
         unsafe {
             let rec = self.array.daf.data.get_unchecked(idx * 6..(idx + 1) * 6);
             Type13RecordView {
@@ -808,7 +825,7 @@ impl TryFrom<SpkArray> for SpkSegmentType18 {
             }
         };
 
-        Ok(SpkSegmentType18 {
+        Ok(Self {
             array,
             subtype,
             window_size,
@@ -828,7 +845,7 @@ struct Type18RecordView<'a> {
 
 impl SpkSegmentType18 {
     #[inline(always)]
-    fn get_record(&self, idx: usize) -> Type18RecordView {
+    fn get_record(&self, idx: usize) -> Type18RecordView<'_> {
         unsafe {
             let rec = self
                 .array
@@ -872,33 +889,36 @@ impl SpkSegmentType18 {
         match self.subtype {
             0 => {
                 for idx in 0..3 {
-                    let p: Box<[f64]> = (0..self.window_size)
-                        .map(|i| self.get_record(i + start_idx).pos[idx])
-                        .collect();
-                    let dp: Box<[f64]> = (0..self.window_size)
-                        .map(|i| self.get_record(i + start_idx).pos[idx + 3])
-                        .collect();
-                    let (p, _) = hermite_interpolation(
-                        &times[start_idx..start_idx + self.window_size],
-                        &p,
-                        &dp,
-                        jds,
-                    );
-                    pos[idx] = p / AU_KM;
-
-                    let p: Box<[f64]> = (0..self.window_size)
-                        .map(|i| self.get_record(i + start_idx).vel[idx])
-                        .collect();
-                    let dp: Box<[f64]> = (0..self.window_size)
-                        .map(|i| self.get_record(i + start_idx).vel[idx + 3])
-                        .collect();
-                    let (v, _) = hermite_interpolation(
-                        &times[start_idx..start_idx + self.window_size],
-                        &p,
-                        &dp,
-                        jds,
-                    );
-                    vel[idx] = v / AU_KM * 86400.;
+                    {
+                        let p: Box<[f64]> = (0..self.window_size)
+                            .map(|i| self.get_record(i + start_idx).pos[idx])
+                            .collect();
+                        let dp: Box<[f64]> = (0..self.window_size)
+                            .map(|i| self.get_record(i + start_idx).pos[idx + 3])
+                            .collect();
+                        let (p, _) = hermite_interpolation(
+                            &times[start_idx..start_idx + self.window_size],
+                            &p,
+                            &dp,
+                            jds,
+                        );
+                        pos[idx] = p / AU_KM;
+                    }
+                    {
+                        let p: Box<[f64]> = (0..self.window_size)
+                            .map(|i| self.get_record(i + start_idx).vel[idx])
+                            .collect();
+                        let dp: Box<[f64]> = (0..self.window_size)
+                            .map(|i| self.get_record(i + start_idx).vel[idx + 3])
+                            .collect();
+                        let (v, _) = hermite_interpolation(
+                            &times[start_idx..start_idx + self.window_size],
+                            &p,
+                            &dp,
+                            jds,
+                        );
+                        vel[idx] = v / AU_KM * 86400.;
+                    }
                 }
             }
             1 => {
@@ -1080,7 +1100,7 @@ impl SpkSegmentType21 {
 /// Segments of type 10 and 14 use a "generic segment" definition.
 /// The DAF Array is big flat vector of floats.
 #[derive(Debug)]
-#[allow(dead_code)]
+#[allow(dead_code, reason = "Some fields are not used in this segment type")]
 struct GenericSegment {
     /// Underlying Spk array
     array: SpkArray,
@@ -1132,7 +1152,6 @@ struct GenericSegment {
     n_reserved: usize,
 }
 
-#[allow(dead_code)]
 impl GenericSegment {
     fn constants(&self) -> &[f64] {
         unsafe {
@@ -1140,15 +1159,6 @@ impl GenericSegment {
                 .daf
                 .data
                 .get_unchecked(self.const_addr..self.const_addr + self.n_consts)
-        }
-    }
-
-    fn peak_packet(&self) -> &[f64] {
-        unsafe {
-            self.array
-                .daf
-                .data
-                .get_unchecked(self.packet_addr - 3..self.packet_addr + 7)
         }
     }
 
@@ -1223,7 +1233,7 @@ impl TryFrom<SpkArray> for GenericSegment {
             .next_tuple()
             .unwrap();
 
-        Ok(GenericSegment {
+        Ok(Self {
             array,
             n_meta,
             const_addr,

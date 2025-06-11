@@ -1,7 +1,7 @@
 //! Time representation and conversions
 //!
-//! See [TimeScale] for a list of supported Time Scales.
-//! See [Time] for the representation of time itself.
+//! See [`TimeScale`] for a list of supported Time Scales.
+//! See [`Time`] for the representation of time itself.
 
 use std::marker::PhantomData;
 
@@ -9,13 +9,13 @@ pub mod leap_second;
 pub mod scales;
 
 use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc};
-use scales::{TimeScale, JD_TO_MJD, TAI, TDB, UTC};
+use scales::{JD_TO_MJD, TAI, TDB, TimeScale, UTC};
 
 use crate::prelude::{Error, KeteResult};
 
 /// Representation of Time.
 ///
-/// This supports different time scaling standards via the [TimeScale] trait.
+/// This supports different time scaling standards via the [`TimeScale`] trait.
 ///
 /// Machine precision between float 64s with numbers near J2000 (IE: 2451545.0) is
 /// around 23 microseconds (2.7e-10 days). So times near J2000 by necessity can only
@@ -39,7 +39,7 @@ pub struct Time<T: TimeScale> {
     /// Julian Date
     pub jd: f64,
 
-    /// PhantomData is used here as the scale is only a record keeping convenience.
+    /// [`PhantomData`] is used here as the scale is only a record keeping convenience.
     scale_type: PhantomData<T>,
 }
 
@@ -82,7 +82,7 @@ impl Time<UTC> {
         Self::from_datetime(&Utc::now())
     }
 
-    /// Construct a Time object from a UTC DateTime.
+    /// Construct a Time object from a UTC [`DateTime`].
     pub fn from_datetime(time: &DateTime<Utc>) -> KeteResult<Self> {
         let frac_day = hour_min_sec_to_day(
             time.hour(),
@@ -90,7 +90,7 @@ impl Time<UTC> {
             time.second(),
             time.timestamp_subsec_millis(),
         );
-        Ok(Time::<UTC>::from_year_month_day(
+        Ok(Self::from_year_month_day(
             time.year() as i64,
             time.month(),
             time.day(),
@@ -142,7 +142,7 @@ impl Time<UTC> {
         Self::new(days as f64 + frac_day)
     }
 
-    /// Create a DateTime object
+    /// Create a [`DateTime`] object
     pub fn to_datetime(&self) -> KeteResult<DateTime<Utc>> {
         let (y, month, d, f) = self.year_month_day();
         let (h, m, s, ms) = frac_day_to_hmsms(f).unwrap();
@@ -205,7 +205,7 @@ impl<T: TimeScale> Time<T> {
 
 impl<T: TimeScale> From<f64> for Time<T> {
     fn from(value: f64) -> Self {
-        Time::<T>::new(value)
+        Self::new(value)
     }
 }
 
@@ -224,14 +224,14 @@ mod tests {
         let t2 = Time::<UTC>::from_year_month_day(2000, 1, 1, 0.5);
         assert!(t2.jd == 2451545.);
 
-        let t2 = Time::<UTC>::from_year_month_day(2000, 1, 2, -0.5);
-        assert!(t2.jd == 2451545.);
+        let t3 = Time::<UTC>::from_year_month_day(2000, 1, 2, -0.5);
+        assert!(t3.jd == 2451545.);
 
-        let t = Time::<UTC>::new(2000000.);
-        assert!(t.year_month_day() == (763, 9, 18, 0.5));
+        let t4 = Time::<UTC>::new(2000000.);
+        assert!(t4.year_month_day() == (763, 9, 18, 0.5));
 
-        let t2 = Time::<UTC>::from_year_month_day(763, 9, 18, 0.5);
-        assert!(t2.jd == 2000000.);
+        let t5 = Time::<UTC>::from_year_month_day(763, 9, 18, 0.5);
+        assert!(t5.jd == 2000000.);
 
         let ymd = Time::<UTC>::new(-68774.4991992591).year_month_day();
         assert!(ymd.0 == -4901);
@@ -294,9 +294,8 @@ mod tests {
         let t = Time::<UTC>::from_iso("2000-01-01T06:00:00.000Z").unwrap();
         assert!(t.year_month_day() == (2000, 1, 1, 0.25));
 
-        let t = Time::<UTC>::from_iso("1987-12-25T00:00:00.000Z").unwrap();
-        assert!(t.year_month_day() == (1987, 12, 25, 0.0));
-
-        assert!(t.to_iso().unwrap() == "1987-12-25T00:00:00+00:00")
+        let t1 = Time::<UTC>::from_iso("1987-12-25T00:00:00.000Z").unwrap();
+        assert!(t1.year_month_day() == (1987, 12, 25, 0.0));
+        assert!(t1.to_iso().unwrap() == "1987-12-25T00:00:00+00:00");
     }
 }

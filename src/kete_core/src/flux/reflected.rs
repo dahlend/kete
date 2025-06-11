@@ -36,7 +36,7 @@ pub fn hg_phase_curve_correction(g_param: f64, phase: f64) -> f64 {
 /// Reflected light properties of an asteroid under the H/G magnitude system.
 ///
 /// H, Albedo, and Diameter are all related by the relation:
-/// diameter = c_hg / albedo.sqrt() * (10f64).powf(-h_mag / 5.0);
+/// `diameter = c_hg / albedo.sqrt() * (10f64).powf(-h_mag / 5.0)`
 ///
 /// Specifically page Page 549 - Equation (A1) of:
 ///
@@ -106,7 +106,7 @@ impl HGParams {
     /// `h_mag` must either be provided, or be computable from the albedo and diameter.
     ///
     /// H, Albedo, and Diameter are all related by the relation:
-    /// diameter = c_hg / albedo.sqrt() * (10f64).powf(-h_mag / 5.0);
+    /// `diameter = c_hg / albedo.sqrt() * (10f64).powf(-h_mag / 5.0)`
     ///
     /// This means if 2 are provided, the third may be computed, which is what this
     /// function enables.
@@ -145,7 +145,7 @@ impl HGParams {
         })
     }
 
-    /// New [`HGParams`] assuming G param is `0.15` and c_hg is the V band value.
+    /// New [`HGParams`] assuming G param is `0.15` and ``c_hg`` is the V band value.
     pub fn default(desig: String, h_mag: f64) -> Self {
         Self::new(desig, 0.15, h_mag, Some(C_V))
     }
@@ -199,7 +199,7 @@ impl HGParams {
             // h_mag is undefined, but computable
             let diam = diam.unwrap();
             let albedo = vis_albedo.unwrap();
-            let h_mag = -5.0 * (diam * albedo.sqrt() / c_hg).log10();
+            let h_mag: f64 = -5.0 * (diam * albedo.sqrt() / c_hg).log10();
             return Ok((h_mag, Some(albedo), Some(diam), c_hg));
         }
 
@@ -213,12 +213,12 @@ impl HGParams {
 
         if let Some(albedo) = vis_albedo {
             // h is defined and albedo is defined, meaning diameter may be calculated.
-            let expected_diam = c_hg / albedo.sqrt() * (10f64).powf(-0.2 * h_mag);
+            let expected_diam = c_hg / albedo.sqrt() * (10_f64).powf(-0.2 * h_mag);
             if let Some(diam) = diam {
                 if (expected_diam - diam).abs() > 1e-8 {
-                    Err(Error::ValueError(
-                        format!("Provided diameter doesn't match with computed diameter. {expected_diam} != {diam}"),
-                    ))?;
+                    Err(Error::ValueError(format!(
+                        "Provided diameter doesn't match with computed diameter. {expected_diam} != {diam}"
+                    )))?;
                 }
             }
             return Ok((h_mag, Some(albedo), Some(expected_diam), c_hg));
@@ -229,7 +229,7 @@ impl HGParams {
 
         let diam = diam.unwrap();
 
-        let expected_albedo = (c_hg * 10f64.powf(-0.2 * h_mag) / diam)
+        let expected_albedo = (c_hg * 10_f64.powf(-0.2 * h_mag) / diam)
             .powi(2)
             .clamp(0.0, 1.0);
 

@@ -7,7 +7,7 @@
 //! These functions have a strict function signature, which is defined inside of the
 //! radau integrator class. This function signature contains 4 terms:
 //!
-//! (time, x, x_der, &mut MetaData, exact_eval) -> NeosResult<x_der_der>
+//! `(time, x, x_der, &mut MetaData, exact_eval) -> NeosResult<x_der_der>`
 //!
 //! Where `x` and its derivative `x_der` are vectors. This also accepts a mutable
 //! reference to a metadata collection. Metadata may include things like object
@@ -23,7 +23,7 @@ use crate::prelude::KeteResult;
 use crate::spice::LOADED_SPK;
 use crate::{constants::*, errors::Error, propagation::nongrav::NonGravModel};
 use nalgebra::allocator::Allocator;
-use nalgebra::{DefaultAllocator, Dim, Matrix3, OVector, Vector3, U1, U2};
+use nalgebra::{DefaultAllocator, Dim, Matrix3, OVector, U1, U2, Vector3};
 use std::ops::AddAssign;
 
 /// Metadata object used by the [`central_accel`] function below.
@@ -44,7 +44,7 @@ pub struct CentralAccelMeta {
 
 impl Default for CentralAccelMeta {
     fn default() -> Self {
-        CentralAccelMeta {
+        Self {
             times: Vec::new(),
             pos: Vec::new(),
             vel: Vec::new(),
@@ -115,15 +115,15 @@ pub struct AccelSPKMeta<'a> {
 ///
 /// # Arguments
 ///
-/// * `time` - Time of the evaluation in JD in TDB scaled time multiplied by SUN_GMS_SQRT.
+/// * `time` - Time of the evaluation in JD in TDB scaled time multiplied by `SUN_GMS_SQRT`.
 /// * `pos` - A vector which defines the position with respect to the Sun in AU.
-/// * `vel` - A vector which defines the velocity with respect to the Sun in AU/Day multiplied by SUN_GMS_SQRT.
+/// * `vel` - A vector which defines the velocity with respect to the Sun in AU/Day multiplied by `SUN_GMS_SQRT`.
 /// * `meta` - Metadata object [`AccelSPKMeta`] which records values at each integration step.
 pub fn spk_accel(
     time: f64,
     pos: &Vector3<f64>,
     vel: &Vector3<f64>,
-    meta: &mut AccelSPKMeta,
+    meta: &mut AccelSPKMeta<'_>,
     exact_eval: bool,
 ) -> KeteResult<Vector3<f64>> {
     let mut accel = Vector3::<f64>::zeros();
@@ -131,7 +131,7 @@ pub fn spk_accel(
     if exact_eval {
         if let Some(close_approach) = meta.close_approach.as_mut() {
             if close_approach.2 == 0.0 {
-                *close_approach = (-1, 1000000.0, 0.0)
+                *close_approach = (-1, 1000000.0, 0.0);
             }
         }
     }
@@ -161,7 +161,7 @@ pub fn spk_accel(
 
         if grav_params.naif_id == 10 {
             if let Some(non_grav) = &meta.non_grav_model {
-                non_grav.add_acceleration(&mut accel, &rel_pos, &rel_vel)
+                non_grav.add_acceleration(&mut accel, &rel_pos, &rel_vel);
             }
         }
     }
@@ -185,7 +185,7 @@ pub struct AccelVecMeta<'a> {
 
 /// Compute the accel on an object which experiences acceleration due to all massive
 /// objects. This assumes that the first N objects match the objects in the metadata
-/// list in order. IE: if MASSIVE_OBJECTS from the constants file is used in the meta
+/// list in order. IE: if `MASSIVE_OBJECTS` from the constants file is used in the meta
 /// data, then those objects are assumed to be in the same order in the pos/vel vectors
 /// provided.
 ///
@@ -199,7 +199,7 @@ pub fn vec_accel<D: Dim>(
     time: f64,
     pos: &OVector<f64, D>,
     vel: &OVector<f64, D>,
-    meta: &mut AccelVecMeta,
+    meta: &mut AccelVecMeta<'_>,
     exact_eval: bool,
 ) -> KeteResult<OVector<f64, D>>
 where
@@ -249,7 +249,7 @@ where
     Ok(accel)
 }
 
-/// Calculate the Jacobian for the central_accel function.
+/// Calculate the Jacobian for the [`central_accel`] function.
 ///
 /// This enables the computation of the STM.
 pub fn central_accel_grad(
@@ -262,7 +262,7 @@ pub fn central_accel_grad(
     accel_grad(pos, _vel, &zeros, &zeros, meta.mass_scaling)
 }
 
-/// Calculate the Jacobian for the central_accel function.
+/// Calculate the Jacobian for the [`central_accel`] function.
 ///
 /// This enables the computation of the STM.
 pub fn accel_grad(

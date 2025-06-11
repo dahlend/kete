@@ -27,7 +27,7 @@ pub struct ConvexShape {
 }
 
 impl ConvexShape {
-    /// Construct a new ConvexShape using fibonacci lattice spacing.
+    /// Construct a new [`ConvexShape`] using fibonacci lattice spacing.
     ///
     /// Evenly place points on a sphere using the Fibonacci Lattice algorithm.
     ///
@@ -84,6 +84,6 @@ mod tests {
         let n1024 = ConvexShape::new_fibonacci_lattice(1024);
 
         assert!(n1024.facets.len() == 1024);
-        assert!(n1024.facets.iter().all(|x| x.area == (1024f64).recip()))
+        assert!(n1024.facets.iter().all(|x| x.area == (1024_f64).recip()));
     }
 }

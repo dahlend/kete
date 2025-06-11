@@ -2,6 +2,7 @@
 use kete_core::errors::Error;
 use kete_core::io::FileIO;
 use kete_core::simult_states::SimultaneousStates;
+use kete_core::spice::LOADED_SPK;
 use pyo3::exceptions;
 use pyo3::prelude::*;
 use pyo3::{pyclass, pymethods, PyResult};
@@ -157,6 +158,7 @@ impl PySimultaneousStates {
 
     /// If a FOV is present, calculate all vectors from the observer position to the
     /// position of the objects.
+    ///
     #[getter]
     pub fn obs_vecs(&self) -> PyResult<Vec<PyVector>> {
         let fov = self
@@ -166,13 +168,61 @@ impl PySimultaneousStates {
             ))?
             .unwrap();
         let obs = fov.observer();
+        let spk = LOADED_SPK.try_read().unwrap();
 
         let mut vecs = Vec::with_capacity(self.__len__());
         for state in &self.0.states {
-            let diff = state.pos - obs.pos;
-            vecs.push(diff.into());
+            if state.center_id != obs.center_id {
+                let mut state = state.clone();
+                spk.try_change_center(&mut state, obs.center_id)?;
+                let diff = state.pos - obs.pos;
+                vecs.push(diff.into());
+            } else {
+                let diff = state.pos - obs.pos;
+                vecs.push(diff.into());
+            }
         }
         Ok(vecs)
+    }
+
+    /// If a FOV is present, this returns the phases of the observed objects.
+    ///
+    /// Specifically, this is the angle between the `center_id` and the observer as seen
+    /// from the object. Typically the center is the Sun.
+    #[getter]
+    pub fn phase_angles(&self) -> PyResult<Vec<f64>> {
+        let obs_vecs = self.obs_vecs()?;
+
+        self.0
+            .states
+            .iter()
+            .zip(obs_vecs)
+            .map(|(state, vec)| {
+                let phase = state.pos.angle(&vec.into());
+                Ok(phase.to_degrees())
+            })
+            .collect()
+    }
+
+    /// If a FOV is present, this returns the elongation of the observed objects.
+    ///
+    /// If the center ID of the observer is the Sun, this is the solar elongation.
+    ///
+    /// Specifically, this is the angle between the `center_id` and the object as seen
+    /// from the observer. Typically the center is the Sun.
+    #[getter]
+    pub fn elongation(&self) -> PyResult<Vec<f64>> {
+        let obs_vecs = self.obs_vecs()?;
+        let fov = self.fov().unwrap().unwrap();
+        let observer = fov.observer();
+
+        obs_vecs
+            .into_iter()
+            .map(|vec| {
+                let elongation = observer.pos.angle(&vec.into());
+                Ok(elongation.to_degrees())
+            })
+            .collect()
     }
 
     /// If a FOV is present, calculate the RA/Decs and their rates for all states in this object.

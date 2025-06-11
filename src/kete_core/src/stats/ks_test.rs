@@ -1,13 +1,15 @@
 /// Implementation of the two sample KS test statistic.
 use itertools::Itertools;
 
+use crate::errors::{Error, KeteResult};
+
 /// Compute the KS Test two sample statistic.
 ///
 /// <https://en.wikipedia.org/wiki/Kolmogorov%E2%80%93Smirnov_test>
 ///
 /// This ignores NAN or INF values in the samples.
 ///
-pub fn two_sample_ks_statistic(sample_a: &[f64], sample_b: &[f64]) -> f64 {
+pub fn two_sample_ks_statistic(sample_a: &[f64], sample_b: &[f64]) -> KeteResult<f64> {
     // Sort the two inputs and drop nan/inf
     let mut sample_a = sample_a
         .iter()
@@ -26,7 +28,11 @@ pub fn two_sample_ks_statistic(sample_a: &[f64], sample_b: &[f64]) -> f64 {
     let len_a = sample_a.len();
     let len_b = sample_b.len();
 
-    assert!(len_a > 0 && len_b > 0);
+    if len_a == 0 || len_b == 0 {
+        return Err(Error::ValueError(
+            "Both samples must contain at least one finite value.".into(),
+        ));
+    }
 
     let mut stat = 0.0;
     let mut ida = 0;
@@ -38,12 +44,12 @@ pub fn two_sample_ks_statistic(sample_a: &[f64], sample_b: &[f64]) -> f64 {
     while ida < len_a && idb < len_b {
         let val_a = &sample_a[ida];
         while ida + 1 < len_a && *val_a == sample_a[ida + 1] {
-            ida += 1
+            ida += 1;
         }
 
         let val_b = &sample_b[idb];
         while idb + 1 < len_b && *val_b == sample_b[idb + 1] {
-            idb += 1
+            idb += 1;
         }
 
         let min = &val_a.min(*val_b);
@@ -62,5 +68,5 @@ pub fn two_sample_ks_statistic(sample_a: &[f64], sample_b: &[f64]) -> f64 {
             stat = diff;
         }
     }
-    stat
+    Ok(stat)
 }

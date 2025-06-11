@@ -88,7 +88,7 @@ const MIN_STEP: f64 = 0.005;
 /// to match the original Fortran implementation. After some experimentation it was
 /// found that the correction and prediction steps turned out to in general help such to
 /// a small degree that they were not worth the added complexity.
-#[allow(missing_debug_implementations)]
+#[allow(missing_debug_implementations, reason = "No debug impl needed")]
 pub struct RadauIntegrator<'a, MType, D: Dim>
 where
     DefaultAllocator: Allocator<D, U1> + Allocator<D, U7>,
@@ -257,11 +257,12 @@ where
                     self.cur_b.row_iter(),
                 )
                 .for_each(|(out, state, der, derder, b)| {
+                    let bw = b * w_pow;
                     *out = state
                         + gauss_radau_frac * der * step_size
                         + gauss_radau_frac.powi(2)
                             * step_size.powi(2)
-                            * (derder / 2.0 + unsafe { (b * w_pow).get_unchecked(0) })
+                            * (derder / 2.0 + unsafe { bw.get_unchecked(0) });
                 });
 
                 izip!(
@@ -271,10 +272,9 @@ where
                     self.cur_b.row_iter(),
                 )
                 .for_each(|(out, der, derder, b)| {
+                    let bu = b * u_pow;
                     *out = der
-                        + gauss_radau_frac
-                            * step_size
-                            * (derder + unsafe { (b * u_pow).get_unchecked(0) })
+                        + gauss_radau_frac * step_size * (derder + unsafe { bu.get_unchecked(0) });
                 });
 
                 // Evaluate the function at this new intermediate state.
@@ -351,7 +351,7 @@ mod tests {
     use nalgebra::Vector3;
 
     use super::*;
-    use crate::propagation::{central_accel, CentralAccelMeta};
+    use crate::propagation::{CentralAccelMeta, central_accel};
 
     #[test]
     fn basic_two_body() {

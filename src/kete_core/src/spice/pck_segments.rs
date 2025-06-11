@@ -5,8 +5,7 @@
 //! `Records`, with an associated maximum and minimum time where they are valid for.
 //!
 //! There are unique structs for each possible segment type, not all are currently
-//! supported. Each segment type must implement the PCKSegment trait, which allows for
-//! the loading and querying of states contained within.
+//! supported.
 //!
 //! <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/pck.html>
 //!
@@ -14,12 +13,12 @@
 //! similar internal structures.
 //!
 use super::jd_to_spice_jd;
-use super::{interpolation::*, PckArray};
+use super::{PckArray, interpolation::*};
 use crate::errors::Error;
 use crate::frames::NonInertialFrame;
 use crate::prelude::KeteResult;
-use crate::time::scales::TDB;
 use crate::time::Time;
+use crate::time::scales::TDB;
 use std::fmt::Debug;
 
 #[derive(Debug)]
@@ -40,7 +39,7 @@ impl TryFrom<PckArray> for PckSegment {
 
     fn try_from(array: PckArray) -> Result<Self, Self::Error> {
         match array.segment_type {
-            2 => Ok(PckSegment::Type2(array.try_into()?)),
+            2 => Ok(Self::Type2(array.try_into()?)),
             v => Err(Error::IOError(format!(
                 "PCK Segment type {:?} not supported.",
                 v
@@ -60,7 +59,11 @@ impl<'a> From<&'a PckSegment> for &'a PckArray {
 impl PckSegment {
     /// Return the [`NonInertialFrame`] at the specified JD. If the requested time is not within
     /// the available range, this will fail.
-    pub fn try_get_orientation(&self, center_id: i32, jd: f64) -> KeteResult<NonInertialFrame> {
+    pub(in crate::spice) fn try_get_orientation(
+        &self,
+        center_id: i32,
+        jd: f64,
+    ) -> KeteResult<NonInertialFrame> {
         let arr_ref: &PckArray = self.into();
 
         if center_id != arr_ref.frame_id {
@@ -82,14 +85,14 @@ impl PckSegment {
         }
 
         match &self {
-            PckSegment::Type2(v) => v.try_get_orientation(jds),
+            Self::Type2(v) => v.try_get_orientation(jds),
         }
     }
 }
 
 /// Chebyshev polynomials (Euler angles only)
 ///
-/// https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/spk.html#Type%201:%20Modified%20Difference%20Arrays
+/// <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/spk.html#Type%201:%20Modified%20Difference%20Arrays>
 ///
 #[derive(Debug)]
 pub(in crate::spice) struct PckSegmentType2 {
@@ -175,7 +178,7 @@ impl TryFrom<PckArray> for PckSegmentType2 {
             ));
         }
 
-        Ok(PckSegmentType2 {
+        Ok(Self {
             array,
             jd_step,
             n_coef,

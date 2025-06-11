@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 ///
 /// The model for apparent magnitudes are:
 ///
-/// m1 + k1 * log10(sun2obj.r) + 5.0 * log10(obj2obs.r) + phase_mag_slope_1 * phase
-/// m2 + k2 * log10(sun2obj.r) + 5.0 * log10(obj2obs.r) + phase_mag_slope_2 * phase
+/// `m1 + k1 * log10(sun2obj.r) + 5.0 * log10(obj2obs.r) + phase_mag_slope_1 * phase`
+/// `m2 + k2 * log10(sun2obj.r) + 5.0 * log10(obj2obs.r) + phase_mag_slope_2 * phase`
 ///
 /// Where m1/k1 are related to total magnitudes and m2/k2 are nucleus magnitudes.
 ///
@@ -38,7 +38,7 @@ pub struct CometMKParams {
 }
 
 impl CometMKParams {
-    /// Create a new CometMKParams object.
+    /// Create a new [`CometMKParams`] object.
     pub fn new(
         desig: String,
         mk_1: Option<[f64; 2]>,

@@ -10,12 +10,13 @@ use super::leap_second::tai_to_utc_offset;
 /// Offset from TT to TAI.
 /// Definitional offset from TT to TAI, however we treat TT==TDB.
 ///
-/// TT = TAI + TT_TO_TAI
-/// TAI = TT - TT_TO_TAI
+/// ``TT = TAI + TT_TO_TAI``
+/// ``TAI = TT - TT_TO_TAI``
 pub(crate) const TT_TO_TAI: f64 = 32.184 / 86400.0;
 
 /// Offset from JD to MJD
-/// MJD = JD + JD_TO_MJD;
+///
+/// ``MJD = JD + JD_TO_MJD``
 pub const JD_TO_MJD: f64 = -2400000.5;
 
 /// Time Scaling support, all time scales must implement this.

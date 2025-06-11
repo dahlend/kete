@@ -41,13 +41,13 @@ where
     /// JD of the object's state in TDB scaled time.
     pub jd: f64,
 
-    /// Position of the object with respect to the center_id object, units of AU.
+    /// Position of the object with respect to the `center_id` object, units of AU.
     pub pos: Vector<T>,
 
-    /// Velocity of the object with respect to the center_id object, units of AU/Day.
+    /// Velocity of the object with respect to the `center_id` object, units of AU/Day.
     pub vel: Vector<T>,
 
-    /// Position and velocity are given with respect to the specified center_id.
+    /// Position and velocity are given with respect to the specified `center_id`.
     /// The only privileged center ID is the Solar System Barycenter 0.
     pub center_id: i32,
 }
@@ -56,7 +56,7 @@ impl<T: InertialFrame> State<T> {
     /// Construct a new State object.
     #[inline(always)]
     pub fn new(desig: Desig, jd: f64, pos: Vector<T>, vel: Vector<T>, center_id: i32) -> Self {
-        State {
+        Self {
             desig,
             jd,
             pos,
@@ -83,7 +83,7 @@ impl<T: InertialFrame> State<T> {
     #[inline(always)]
     pub fn try_flip_center_id(&mut self) -> KeteResult<()> {
         if let Desig::Naif(mut id) = self.desig {
-            (id, self.center_id) = (self.center_id, id);
+            std::mem::swap(&mut id, &mut self.center_id);
             self.pos = -self.pos;
             self.vel = -self.vel;
             self.desig = Desig::Naif(id);
@@ -116,7 +116,7 @@ impl<T: InertialFrame> State<T> {
             _ => {
                 return Err(Error::ValueError(
                     "Changing centers only works on states with NAIF Ids.".into(),
-                ))
+                ));
             }
         };
 
@@ -202,7 +202,7 @@ mod tests {
         assert!(a.is_finite());
 
         let b = State::<Equatorial>::new_nan(Desig::Empty, 0.0, 1000);
-        assert!(!b.is_finite())
+        assert!(!b.is_finite());
     }
 
     #[test]

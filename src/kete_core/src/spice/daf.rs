@@ -43,10 +43,10 @@ pub enum DAFType {
 impl From<&str> for DAFType {
     fn from(magic: &str) -> Self {
         match &magic.to_uppercase()[4..7] {
-            "SPK" => DAFType::Spk,
-            "PCK" => DAFType::Pck,
-            "CK " => DAFType::Ck,
-            other => DAFType::Unrecognized(other.as_bytes().try_into().unwrap()),
+            "SPK" => Self::Spk,
+            "PCK" => Self::Pck,
+            "CK " => Self::Ck,
+            other => Self::Unrecognized(other.as_bytes().try_into().unwrap()),
         }
     }
 }
@@ -145,7 +145,7 @@ impl DafFile {
             comments.push(read_str(&mut buffer, 1024)?.chars().take(1000).collect());
         }
 
-        let mut daf = DafFile {
+        let mut daf = Self {
             daf_type,
             n_doubles,
             n_ints,
@@ -173,7 +173,7 @@ impl DafFile {
         Self::from_buffer(&mut buffer)
     }
 
-    /// Load all DafArray segments from the DAF file.
+    /// Load all [`DafArray`] segments from the DAF file.
     /// These are tuples containing a series of f64s and i32s along with arrays of data.
     /// The meaning of these values depends on the particular implementation of the DAF.
     ///
@@ -185,7 +185,7 @@ impl DafFile {
             if next_idx == 0 {
                 break;
             }
-            let bytes = DafFile::try_load_record(file, next_idx as u64)?;
+            let bytes = Self::try_load_record(file, next_idx as u64)?;
 
             next_idx = bytes_to_f64(&bytes[0..8], self.little_endian)? as i32;
             // let prev_idx = bytes_to_f64(&bytes[8..16], daf.little_endian)? as i32;
@@ -222,10 +222,10 @@ impl DafFile {
 /// Contents of the structure depends on specific file formats, however they are all
 /// made up of floats.
 pub struct DafArray {
-    /// DafArray segment summary float information.
+    /// [`DafArray`] segment summary float information.
     pub summary_floats: Box<[f64]>,
 
-    /// DafArray segment summary int information.
+    /// [`DafArray`] segment summary int information.
     pub summary_ints: Box<[i32]>,
 
     /// Data contained within the array.
@@ -302,7 +302,7 @@ where
 }
 
 /// DAF Array of SPK data.
-/// This is a wrapper around the DafArray which is specific to SPK data.
+/// This is a wrapper around the [`DafArray`] which is specific to SPK data.
 ///
 #[derive(Debug)]
 pub struct SpkArray {
@@ -363,7 +363,7 @@ impl TryFrom<DafArray> for SpkArray {
         let frame_id = array.summary_ints[2];
         let segment_type = array.summary_ints[3];
 
-        Ok(SpkArray {
+        Ok(Self {
             daf: array,
             jds_start,
             jds_end,
@@ -378,7 +378,7 @@ impl TryFrom<DafArray> for SpkArray {
 #[derive(Debug)]
 
 /// DAF Array of PCK data.
-/// This is a wrapper around the DafArray which is specific to PCK data.
+/// This is a wrapper around the [`DafArray`] which is specific to PCK data.
 pub struct PckArray {
     /// The internal representation of the DAF array.
     pub daf: DafArray,
@@ -433,7 +433,7 @@ impl TryFrom<DafArray> for PckArray {
         let reference_frame_id = array.summary_ints[1];
         let segment_type = array.summary_ints[2];
 
-        Ok(PckArray {
+        Ok(Self {
             daf: array,
             jds_start,
             jds_end,
@@ -446,7 +446,7 @@ impl TryFrom<DafArray> for PckArray {
 
 /// DAF Array of CK data.
 /// These are segments of data.
-/// This is a wrapper around the DafArray which is specific to CK data.
+/// This is a wrapper around the [`DafArray`] which is specific to CK data.
 #[derive(Debug)]
 pub struct CkArray {
     /// The internal representation of the DAF array.
@@ -512,7 +512,7 @@ impl TryFrom<DafArray> for CkArray {
         let segment_type = array.summary_ints[2];
         let produces_angular_rates = array.summary_ints[3] == 1;
 
-        Ok(CkArray {
+        Ok(Self {
             daf: array,
             tick_start,
             tick_end,

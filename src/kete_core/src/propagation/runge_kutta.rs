@@ -1,7 +1,7 @@
 use crate::{errors::Error, prelude::KeteResult};
 use nalgebra::SVector;
 
-/// Function will be of the form y' = F(t, y, metadata, exact_eval).
+/// Function will be of the form `y' = F(t, y, metadata, exact_eval)`.
 /// Metadata is passed for every evaluation. The `exact_eval` bool indicates to the
 /// function that the input parameters are known to be solutions for the IVP.
 pub type FirstOrderFunc<'a, MType, const D: usize> =
@@ -12,7 +12,7 @@ pub type FirstOrderResult<MType, const D: usize> = KeteResult<(SVector<f64, D>, 
 
 /// Runge-Kutta-Fehlberg Integrator - RK4(5)
 /// <https://en.wikipedia.org/wiki/Runge%E2%80%93Kutta%E2%80%93Fehlberg_method>
-#[allow(missing_debug_implementations)]
+#[allow(missing_debug_implementations, reason = "Not practical to avoid this")]
 pub struct RK45Integrator<'a, MType, const D: usize> {
     func: FirstOrderFunc<'a, MType, D>,
     metadata: MType,
@@ -168,14 +168,14 @@ mod tests {
         for step in 1..4 {
             let res = RK45Integrator::integrate(
                 &f,
-                Vector1::<f64>::repeat(1f64),
+                Vector1::<f64>::repeat(1_f64),
                 0.0,
                 step as f64 * 10.0,
                 (),
                 1e-14,
             );
             assert!(res.is_ok());
-            assert!((res.unwrap().0[0] - (-step as f64 * 10.0).exp()).abs() < 1e-14)
+            assert!((res.unwrap().0[0] - (-step as f64 * 10.0).exp()).abs() < 1e-14);
         }
     }
 
@@ -190,7 +190,8 @@ mod tests {
             Ok(Vector1::<f64>::repeat(2.0))
         }
 
-        let res = RK45Integrator::integrate(&f, Vector1::<f64>::repeat(1f64), 0.0, 10.0, (), 0.001);
+        let res =
+            RK45Integrator::integrate(&f, Vector1::<f64>::repeat(1_f64), 0.0, 10.0, (), 0.001);
 
         assert!(res.is_ok());
         assert!((res.unwrap().0[0] - 21.0).abs() < 1e-12);
