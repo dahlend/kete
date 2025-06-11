@@ -3,8 +3,9 @@
 Kete - Solar System Survey Simulation Software.
 <br>
 <img src="https://github.com/dahlend/kete/actions/workflows/test-lint.yml/badge.svg?branch=main">
-<img src="https://zenodo.org/badge/DOI/10.5281/zenodo.15259732.svg)](https://doi.org/10.5281/zenodo.15259732">
+<a href="https://doi.org/10.5281/zenodo.15259732"><img src="https://zenodo.org/badge/DOI/10.5281/zenodo.15259732.svg"></a>
 </p> 
+
 
 # Kete
 
