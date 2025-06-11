@@ -1,13 +1,12 @@
 # Kete
 
-![Github Actions](https://github.com/dahlend/kete/actions/workflows/test-lint.yml/badge.svg?branch=main)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.15259732.svg)](https://doi.org/10.5281/zenodo.15259732)
-
 <p align="center">
-  <img src="docs/_static/kete.svg" alt="Flowers" style="width:auto;" max-width="200">
+<img src="docs/_static/kete.svg" alt="Flowers" style="width:auto;" max-width="200px">
+Kete - Solar System Survey Simulation Software.
 </p> 
 
-Kete - Solar System Survey Simulation Software.
+![Github Actions](https://github.com/dahlend/kete/actions/workflows/test-lint.yml/badge.svg?branch=main)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.15259732.svg)](https://doi.org/10.5281/zenodo.15259732)
 
 ## Introduction
 
