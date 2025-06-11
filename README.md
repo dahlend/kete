@@ -1,13 +1,11 @@
 <p align="center">
 <img src="docs/_static/kete.svg" style="width:30%"><br>
-Kete - Solar System Survey Simulation Software.
+<h2>Kete - Solar System Survey Simulation Software.</h2>
 <br>
 <img src="https://github.com/dahlend/kete/actions/workflows/test-lint.yml/badge.svg?branch=main">
 <a href="https://doi.org/10.5281/zenodo.15259732"><img src="https://zenodo.org/badge/DOI/10.5281/zenodo.15259732.svg"></a>
 </p> 
 
-
-# Kete
 
 ## Introduction
 
