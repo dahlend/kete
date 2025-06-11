@@ -1,5 +1,5 @@
 <p align="center">
-<img src="docs/_static/kete.svg" style="width:30%">
+<img src="docs/_static/kete.svg" style="width:20%">
 </p> 
 
 # *Kete*
