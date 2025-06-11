@@ -1,7 +1,7 @@
 # Kete
 
 <p align="center">
-<img src="docs/_static/kete.svg" alt="Flowers" style="width:auto;" max-width="200px">
+<img src="docs/_static/kete.svg" alt="Flowers" style="width:auto;max-width:200px">
 Kete - Solar System Survey Simulation Software.
 </p> 
 
