@@ -1,6 +1,8 @@
 //! Python support for non-gravitational forces
+use std::collections::HashMap;
+
 use kete_core::{errors::Error, propagation::NonGravModel};
-use pyo3::{pyclass, pymethods, PyResult};
+use pyo3::{PyResult, pyclass, pymethods};
 
 /// Non-gravitational force models.
 ///
@@ -72,6 +74,15 @@ impl PyNonGravModel {
     #[staticmethod]
     pub fn new_dust(beta: f64) -> Self {
         Self(NonGravModel::Dust { beta })
+    }
+
+    #[getter]
+    /// Get the beta value for this dust model.
+    pub fn beta(&self) -> f64 {
+        match self.0 {
+            NonGravModel::Dust { beta } => beta,
+            _ => f64::NAN,
+        }
     }
 
     /// JPL's non-gravitational forces are modeled as defined on page 139 of the
@@ -160,13 +171,47 @@ impl PyNonGravModel {
         })
     }
 
+    #[getter]
+    /// Return a dictionary of the values used in this non-grav model.
+    pub fn items(&self) -> HashMap<String, f64> {
+        match self.0 {
+            NonGravModel::Dust { beta } => {
+                let mut values = HashMap::new();
+                let _ = values.insert("beta".to_string(), beta);
+                values
+            }
+            NonGravModel::JplComet {
+                a1,
+                a2,
+                a3,
+                alpha,
+                r_0,
+                m,
+                n,
+                k,
+                dt,
+            } => {
+                let mut values = HashMap::new();
+                let _ = values.insert("a1".to_string(), a1);
+                let _ = values.insert("a2".to_string(), a2);
+                let _ = values.insert("a3".to_string(), a3);
+                let _ = values.insert("alpha".to_string(), alpha);
+                let _ = values.insert("r_0".to_string(), r_0);
+                let _ = values.insert("m".to_string(), m);
+                let _ = values.insert("n".to_string(), n);
+                let _ = values.insert("k".to_string(), k);
+                let _ = values.insert("dt".to_string(), dt);
+                values
+            }
+        }
+    }
+
     /// Text representation of this object
     pub fn __repr__(&self) -> String {
         match self.0 {
-            NonGravModel::Dust { beta} => format!(
-                "kete.propagation.NonGravModel.new_dust(beta={:?})",
-                beta
-            ),
+            NonGravModel::Dust { beta } => {
+                format!("kete.propagation.NonGravModel.new_dust(beta={:?})", beta)
+            }
             NonGravModel::JplComet {
                 a1,
                 a2,
