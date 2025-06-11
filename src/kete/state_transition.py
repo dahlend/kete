@@ -1,8 +1,8 @@
 import numpy as np
 from numpy.typing import NDArray
-from .vector import State
 
 from . import _core
+from .vector import State
 
 
 def compute_stm(state: State, jd_end: float) -> NDArray:

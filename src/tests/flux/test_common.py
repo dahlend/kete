@@ -1,13 +1,13 @@
 import numpy as np
 import pytest
-from kete import constants, Vector, conversion
 
+from kete import Vector, constants, conversion
 from kete.flux import (
     black_body_flux,
-    sub_solar_temperature,
     hg_apparent_flux,
-    hg_phase_curve_correction,
     hg_apparent_mag,
+    hg_phase_curve_correction,
+    sub_solar_temperature,
 )
 
 

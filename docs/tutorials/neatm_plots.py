@@ -1,8 +1,8 @@
-import numpy as np
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-import matplotlib.pyplot as plt
 import matplotlib as mpl
 import matplotlib.cm as cm
+import matplotlib.pyplot as plt
+import numpy as np
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 import kete
 

@@ -6,9 +6,10 @@ Calculate the distance NEOs are from the galactic center over one month.
 Plot the on sky distribution of all NEOs along with the galactic and ecliptic planes.
 """
 
-import kete
 import matplotlib.pyplot as plt
 import numpy as np
+
+import kete
 
 jd_start = kete.Time.from_ymd(2025, 3, 1).jd
 jd_end = kete.Time.from_ymd(2025, 4, 1).jd

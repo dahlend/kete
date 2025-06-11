@@ -1,5 +1,6 @@
-import kete
 import numpy as np
+
+import kete
 
 
 def test_triangle_ellipsoid():

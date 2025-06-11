@@ -1,5 +1,6 @@
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
+
 import kete
 
 lon_steps = np.linspace(0, 360, 1000)

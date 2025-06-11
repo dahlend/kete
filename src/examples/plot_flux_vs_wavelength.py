@@ -8,8 +8,9 @@ geometric albedos. This plot appears in several papers.
 Color bands correspond to NEO Surveyor IR observation bands NC1 and NC2 respectively.
 """
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
+
 import kete
 
 

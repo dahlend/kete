@@ -7,9 +7,10 @@ This will open an interactive 3d plot of the solar system.
 This plots all of the Hildas from the MPC, along with the last 90 days of their orbit.
 """
 
-import kete
 import matplotlib.pyplot as plt
 import numpy as np
+
+import kete
 
 # Set the X/Y/Z scale
 zoom = 4.0

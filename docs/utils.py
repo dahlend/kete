@@ -13,6 +13,7 @@ To run all tutorials:
 
 import glob
 import os
+
 import click
 from docutils.core import publish_doctree
 
@@ -70,7 +71,7 @@ def build(tutorial):
 
     for file in py_files:
         click.echo(f"Running code from : {file}")
-        with open(file, "r", encoding="utf-8") as f:
+        with open(file, encoding="utf-8") as f:
             code = f.readlines()
         code = "".join([t for t in code if t.strip() != "" and t.strip()[0] != "#"])
         # pylint: disable-next=exec-used
@@ -93,7 +94,7 @@ def collect_code(file):
 
     This will join all of the codeblocks together into one text string.
     """
-    with open(file, "r", encoding="UTF8") as f:
+    with open(file, encoding="UTF8") as f:
         contents = f.read()
     doc = publish_doctree(contents)
     text = []

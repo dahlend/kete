@@ -1,4 +1,5 @@
 import numpy as np
+
 import kete
 
 SUN2OBS = [0, 1, 0]

@@ -1,6 +1,0 @@
-# This is a config file for flake-8, a python tool to detect linting issues.
-# Basically a grammar checker for code, below E203 is turned off since it conflicts with
-# Black formatting.
-[flake8]
-ignore = E203, W503
-max-line-length = 88

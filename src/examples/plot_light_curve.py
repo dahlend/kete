@@ -5,10 +5,10 @@ Plot a Light Curve
 This is an example plot of a light curve using NEATM.
 """
 
-import kete
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 
+import kete
 
 # Using ceres as a source for a state vector
 state = kete.spice.get_state("ceres", 2460000.5)

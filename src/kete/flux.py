@@ -28,23 +28,22 @@ recommended not to use these directly in most cases:
 """
 
 from ._core import (
-    lambertian_flux,
-    solar_flux,
-    hg_phase_curve_correction,
+    FrmParams,
+    ModelResults,
+    NeatmParams,
+    black_body_flux,
+    comet_apparent_mags,
+    frm_facet_temps,
+    frm_flux,
     hg_apparent_flux,
     hg_apparent_mag,
-    comet_apparent_mags,
+    hg_phase_curve_correction,
+    lambertian_flux,
     neatm_facet_temps,
-    frm_facet_temps,
-    FrmParams,
-    NeatmParams,
-    ModelResults,
-    black_body_flux,
-    sub_solar_temperature,
-    frm_flux,
     neatm_flux,
+    solar_flux,
+    sub_solar_temperature,
 )
-
 
 __all__ = [
     "comet_apparent_mags",

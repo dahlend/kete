@@ -3,10 +3,10 @@ Plot visible phases and mags from the MPC
 =========================================
 """
 
-import kete
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 
+import kete
 
 # Fetch known orbits from the MPC
 orbits = kete.mpc.fetch_known_orbit_data()

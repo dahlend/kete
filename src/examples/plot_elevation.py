@@ -6,17 +6,15 @@ Given an observer location, a date, and a list of objects, plot the maximum elev
 that each object gets to over the course of the night, and when it happens.
 """
 
-from zoneinfo import ZoneInfo
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
-import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+import matplotlib.pyplot as plt
 import numpy as np
-
 from labellines import labelLines
 
 import kete
-
 
 # %%
 # Inputs:

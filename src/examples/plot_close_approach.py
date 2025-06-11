@@ -5,10 +5,11 @@ Plot the trajectory of Apophis
 Plot the close approach of Apophis in 2029.
 """
 
-import kete
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
-import matplotlib
+
+import kete
 
 # load apophis from horizons
 obj = kete.HorizonsProperties.fetch("Apophis")
@@ -39,7 +40,7 @@ while cur_state.jd < jd_end:
     cur_state = kete.propagate_n_body(
         cur_state, cur_state.jd + steps, include_asteroids=True
     )
-    time.append((cur_state.jd - jd_center))
+    time.append(cur_state.jd - jd_center)
     elements.append(cur_state.elements)
     rel_earth_state = cur_state.change_center(399)
     pos.append([rel_earth_state.pos.x, rel_earth_state.pos.y])

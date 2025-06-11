@@ -4,10 +4,13 @@ models.
 """
 
 from __future__ import annotations
-import numpy as np
+
 from functools import lru_cache as cache
-from .vector import Vector
+
+import numpy as np
 from numpy.typing import ArrayLike
+
+from .vector import Vector
 
 
 class Geometry:

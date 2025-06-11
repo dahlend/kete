@@ -5,9 +5,10 @@ Solar Spectrum
 Plot the true Solar spectrum vs a black body approximation.
 """
 
-import kete
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
+
+import kete
 
 # Sample wavelengths from 200nm to 5um at 1000 points
 wavelengths = np.linspace(200, 5000, 1000)

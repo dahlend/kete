@@ -6,8 +6,9 @@ Group definitions are computed strictly from perihelion distance and eccentricit
 
 import matplotlib.pyplot as plt
 import numpy as np
-from .conversion import compute_aphelion, compute_semi_major
 from numpy.typing import NDArray
+
+from .conversion import compute_aphelion, compute_semi_major
 
 MAX_ECCENTRICITY = 0.995
 """Maximum allowed eccentricity to be considered non-hyperbolic."""

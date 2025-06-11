@@ -1,4 +1,5 @@
 import numpy as np
+
 from kete import population, power_law
 
 

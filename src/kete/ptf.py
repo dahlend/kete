@@ -3,20 +3,20 @@ PTF Observatory, the predecessor to ZTF which operated from 2009 to 2018, howeve
 the last 3 years of data are not public.
 """
 
-import os
 import logging
-from functools import lru_cache
+import os
 from collections import defaultdict
+from functools import lru_cache
+
 from astropy.io import fits
 
-from .cache import download_file
-from .fov import PtfCcd, PtfField, FOVList
-from .time import Time
-from .tap import query_tap
-from .mpc import find_obs_code
-from .vector import Vector, State
 from . import spice
-
+from .cache import download_file
+from .fov import FOVList, PtfCcd, PtfField
+from .mpc import find_obs_code
+from .tap import query_tap
+from .time import Time
+from .vector import State, Vector
 
 __all__ = ["fetch_fovs", "fetch_frame"]
 

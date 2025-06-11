@@ -1,21 +1,20 @@
 from __future__ import annotations
+
 import warnings
+
 import matplotlib.pyplot as plt
 import numpy as np
-
-
-from astropy.wcs import WCS
 from astropy.coordinates import SkyCoord
 from astropy.visualization import (
-    PowerDistStretch,
     AsymmetricPercentileInterval,
     ImageNormalize,
     LinearStretch,
+    PowerDistStretch,
     ZScaleInterval,
 )
+from astropy.wcs import WCS
 
 from .vector import Vector
-
 
 __all__ = ["plot_fits_image", "zoom_plot", "annotate_plot"]
 

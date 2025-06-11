@@ -6,12 +6,12 @@ Given a specific FITs file containing a comet, annotate the plot with orbital
 information, such as direction of motion.
 """
 
-from astropy.wcs import WCS
-import kete
 import astropy
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
+from astropy.wcs import WCS
 
+import kete
 
 # This is comet NEOWISE as observed by ZTF
 state = kete.HorizonsProperties.fetch("C/2020 F3").state

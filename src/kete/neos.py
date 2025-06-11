@@ -1,6 +1,5 @@
 import numpy as np
 
-
 __all__ = ["sunshield_rotation", "FOV_WIDTH", "FOV_HEIGHT"]
 
 
@@ -92,12 +91,10 @@ def sunshield_rotation(sun2obs, pointing):
     if r < 1e-6:
         # Safety check, this definition is bad near poles.
         raise ValueError(
-            (
-                "Nearly pointing at the pole, cannot compute within about half "
-                "an arcsecond of the pole. It is strongly recommended to not "
-                "use this angular definition so close to poles, quaternions are "
-                "the better choice."
-            )
+            "Nearly pointing at the pole, cannot compute within about half "
+            "an arcsecond of the pole. It is strongly recommended to not "
+            "use this angular definition so close to poles, quaternions are "
+            "the better choice."
         )
     obs_body_x /= r
 
