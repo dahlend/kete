@@ -8,28 +8,6 @@
 //! later.
 //!
 
-#![deny(
-    bad_style,
-    dead_code,
-    improper_ctypes,
-    non_shorthand_field_patterns,
-    no_mangle_generic_items,
-    overflowing_literals,
-    path_statements,
-    patterns_in_fns_without_body,
-    unconditional_recursion,
-    unused,
-    while_true,
-    missing_debug_implementations,
-    missing_docs,
-    trivial_casts,
-    trivial_numeric_casts,
-    unused_extern_crates,
-    unused_import_braces,
-    unused_qualifications,
-    unused_results
-)]
-
 pub mod cache;
 pub mod constants;
 pub mod desigs;
@@ -54,10 +32,10 @@ pub mod prelude {
     pub use crate::elements::CometElements;
     pub use crate::errors::{Error, KeteResult};
     pub use crate::flux::{
-        black_body_flux, frm_facet_temperature, lambertian_flux, neatm_facet_temperature,
-        CometMKParams, FrmParams, HGParams, NeatmParams,
+        CometMKParams, FrmParams, HGParams, NeatmParams, black_body_flux, frm_facet_temperature,
+        lambertian_flux, neatm_facet_temperature,
     };
-    pub use crate::frames::{Ecliptic, Equatorial, Galactic, NonInertialFrame, FK4};
+    pub use crate::frames::{Ecliptic, Equatorial, FK4, Galactic, NonInertialFrame};
     pub use crate::propagation::{propagate_n_body_spk, propagate_two_body};
     pub use crate::simult_states::SimultaneousStates;
     pub use crate::spice::{LOADED_PCK, LOADED_SPK};

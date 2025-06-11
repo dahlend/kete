@@ -54,7 +54,6 @@ pub fn median(data: &[f64]) -> KeteResult<f64> {
 ///
 /// <https://en.wikipedia.org/wiki/Median_absolute_deviation>
 ///
-#[allow(dead_code)]
 pub fn mad(data: &[f64]) -> KeteResult<f64> {
     let median = quantile(data, 0.5)?;
     let abs_deviation_from_med: Box<[f64]> = data.iter().map(|d| d - median).collect();
@@ -84,7 +83,7 @@ mod tests {
         let data = vec![f64::NAN, f64::NEG_INFINITY, f64::NEG_INFINITY];
         assert!(median(&data).is_err());
 
-        let data = vec![];
-        assert!(median(&data).is_err());
+        let data2 = vec![];
+        assert!(median(&data2).is_err());
     }
 }

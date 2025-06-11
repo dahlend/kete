@@ -16,8 +16,8 @@ pub enum NonGravModel {
     /// This model adds 3 "A" terms to the acceleration which the object feels. These
     /// A terms represent additional radial, tangential, and normal forces on the object.
     ///
-    /// accel_additional = A_1 * g(r) * r_vec + A_2 * g(r) * t_vec + A_3 * g(r) * n_vec
-    /// Where r_vec, t_vec, n_vec are the radial, tangential, and normal unit vectors for
+    /// `accel_additional = A_1 * g(r) * r_vec + A_2 * g(r) * t_vec + A_3 * g(r) * n_vec`
+    /// Where `r_vec`, `t_vec`, `n_vec` are the radial, tangential, and normal unit vectors for
     /// the object.
     ///
     /// The g(r) function is defined by the equation:
@@ -63,7 +63,7 @@ pub enum NonGravModel {
 impl NonGravModel {
     /// Construct a new non-grav model, manually specifying all parameters.
     /// Consider using the other constructors if this is a simple object.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, reason = "Not practical to avoid this")]
     pub fn new_jpl(
         a1: f64,
         a2: f64,
@@ -125,7 +125,7 @@ impl NonGravModel {
                 let scaling = GMS * beta * norm2_inv;
                 *accel += scaling
                     * ((1.0 - r_dot * C_AU_PER_DAY_INV_SQUARED) * pos_norm
-                        - vel * C_AU_PER_DAY_INV_SQUARED)
+                        - vel * C_AU_PER_DAY_INV_SQUARED);
             }
 
             Self::JplComet {

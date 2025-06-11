@@ -4,9 +4,9 @@
 use std::{convert::TryInto, marker::PhantomData};
 
 use serde::{
+    Deserialize, Deserializer, Serialize, Serializer,
     de::{SeqAccess, Visitor},
     ser::SerializeTuple,
-    Deserialize, Deserializer, Serialize, Serializer,
 };
 pub(crate) fn serialize<S: Serializer, T: Serialize, const N: usize>(
     data: &[T; N],
@@ -27,7 +27,7 @@ where
 {
     type Value = [T; N];
 
-    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&format!("an array of length {}", N))
     }
 

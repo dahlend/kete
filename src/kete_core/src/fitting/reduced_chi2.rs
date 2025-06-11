@@ -4,7 +4,11 @@ use super::newton_raphson;
 /// This computes the reduced chi squared against a single desired value.
 #[inline(always)]
 pub fn reduced_chi2(data: &[f64], sigmas: &[f64], val: f64) -> f64 {
-    debug_assert_eq!(data.len(), sigmas.len());
+    debug_assert_eq!(
+        data.len(),
+        sigmas.len(),
+        "Data and sigmas must have the same length"
+    );
     data.iter()
         .zip(sigmas)
         .map(|(d, sigma)| ((d - val) / sigma).powi(2))
@@ -14,7 +18,11 @@ pub fn reduced_chi2(data: &[f64], sigmas: &[f64], val: f64) -> f64 {
 /// Compute the derivative of reduced chi squared value with respect to the set value.
 #[inline(always)]
 pub fn reduced_chi2_der(data: &[f64], sigmas: &[f64], val: f64) -> f64 {
-    debug_assert_eq!(data.len(), sigmas.len());
+    debug_assert_eq!(
+        data.len(),
+        sigmas.len(),
+        "Data and sigmas must have the same length"
+    );
     data.iter()
         .zip(sigmas)
         .map(|(d, sigma)| 2.0 * (val - d) / sigma.powi(2))
@@ -23,7 +31,7 @@ pub fn reduced_chi2_der(data: &[f64], sigmas: &[f64], val: f64) -> f64 {
 
 /// Compute the second derivative of reduced chi squared value with respect to the set value.
 #[inline(always)]
-pub fn reduced_chi2_der_der(sigmas: &[f64]) -> f64 {
+fn reduced_chi2_der_der(sigmas: &[f64]) -> f64 {
     sigmas.iter().map(|sigma| 2.0 / sigma.powi(2)).sum::<f64>()
 }
 

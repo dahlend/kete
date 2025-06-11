@@ -15,7 +15,7 @@ mod spk_segments;
 pub use ck::*;
 pub use daf::*;
 pub use naif_ids::try_name_from_id;
-pub use obs_codes::OBS_CODES;
+pub use obs_codes::{OBS_CODES, ObsCode};
 pub use pck::*;
 pub use sclk::*;
 pub use spk::*;
@@ -46,24 +46,30 @@ mod tests {
 
     #[test]
     fn test_spice_jd_to_jd() {
-        let jd_sec = 0.0;
-        let jd = spice_jd_to_jd(jd_sec);
-        assert_eq!(jd, 2451545.0);
-
-        let jd_sec = 86400.0; // 1 day in seconds
-        let jd = spice_jd_to_jd(jd_sec);
-        assert_eq!(jd, 2451546.0);
+        {
+            let jd_sec = 0.0;
+            let jd = spice_jd_to_jd(jd_sec);
+            assert_eq!(jd, 2451545.0);
+        }
+        {
+            let jd_sec = 86400.0; // 1 day in seconds
+            let jd = spice_jd_to_jd(jd_sec);
+            assert_eq!(jd, 2451546.0);
+        }
     }
 
     #[test]
     fn test_jd_to_spice_jd() {
-        let jd = 2451545.0;
-        let jd_sec = jd_to_spice_jd(jd);
-        assert_eq!(jd_sec, 0.0);
-
-        let jd = 2451546.0; // 1 day after J2000
-        let jd_sec = jd_to_spice_jd(jd);
-        assert_eq!(jd_sec, 86400.0);
+        {
+            let jd = 2451545.0;
+            let jd_sec = jd_to_spice_jd(jd);
+            assert_eq!(jd_sec, 0.0);
+        }
+        {
+            let jd = 2451546.0; // 1 day after J2000
+            let jd_sec = jd_to_spice_jd(jd);
+            assert_eq!(jd_sec, 86400.0);
+        }
     }
 
     #[test]

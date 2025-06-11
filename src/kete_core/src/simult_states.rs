@@ -28,7 +28,7 @@ pub struct SimultaneousStates {
 impl FileIO for SimultaneousStates {}
 
 impl SimultaneousStates {
-    /// Create a new Exact SimultaneousStates
+    /// Create a new Exact `SimultaneousStates`
     /// Simultaneous States occur at the same JD, which is defined by either the time
     /// in the optional fov, or the time of the first state.
     pub fn new_exact(states: Vec<State<Equatorial>>, fov: Option<FOV>) -> KeteResult<Self> {
@@ -43,7 +43,7 @@ impl SimultaneousStates {
         };
 
         if let Some(f) = &fov {
-            jd = f.observer().jd
+            jd = f.observer().jd;
         }
 
         if states.iter().any(|state| state.center_id != center_id) {
@@ -57,7 +57,7 @@ impl SimultaneousStates {
             ));
         };
 
-        Ok(SimultaneousStates {
+        Ok(Self {
             states,
             jd,
             center_id,
@@ -80,6 +80,12 @@ impl SimultaneousStates {
         let fov = self.fov.as_ref().unwrap();
 
         let obs = fov.observer();
+
+        if obs.center_id != self.center_id {
+            return Err(Error::ValueError(
+                "Field of view center ID does not match the states center ID.".into(),
+            ));
+        }
 
         let obs_pos = obs.pos;
         let obs_vel = obs.vel;

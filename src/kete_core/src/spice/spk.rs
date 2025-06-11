@@ -1,9 +1,9 @@
 //! Loading and reading of states from JPL SPK kernel files.
 //!
 //! SPKs are intended to be loaded into a singleton which is accessible via the
-//! [`LOADED_SPK`] function defined below. This singleton is wrapped in a RwLock,
-//! meaning before its use it must by unwrapped. A vast majority of intended use cases
-//! will only be the read case.
+//! [`LOADED_SPK`] function defined below. This singleton is wrapped in a
+//! [`crossbeam::sync::ShardedLock`], meaning before its use it must by unwrapped.
+//! A vast majority of intended use cases will only be the read case.
 //!
 //! Here is a small worked example:
 //! ```
@@ -19,7 +19,7 @@
 //!
 //!
 use super::daf::DafFile;
-use super::{spice_jd_to_jd, spk_segments::SpkSegment, DAFType, SpkArray};
+use super::{DAFType, SpkArray, spice_jd_to_jd, spk_segments::SpkSegment};
 use crate::cache::cache_path;
 use crate::errors::Error;
 use crate::frames::InertialFrame;
@@ -181,7 +181,7 @@ impl SpkCollection {
                 avail_times.push(cur_segment);
                 cur_segment = *segment;
             } else {
-                cur_segment.1 = segment.1.max(cur_segment.1)
+                cur_segment.1 = segment.1.max(cur_segment.1);
             }
         }
         avail_times.push(cur_segment);
@@ -191,8 +191,8 @@ impl SpkCollection {
 
     /// Return a hash set of all unique identifies loaded in the SPKs.
     /// If include centers is true, then this additionally includes the IDs for the
-    /// center IDs. For example, if include_centers is false, then `0` will never be
-    /// included in the loaded objects set, as 0 is a privileged position at the
+    /// center IDs. For example, if ``include_centers`` is false, then `0` will never
+    /// be included in the loaded objects set, as 0 is a privileged position at the
     /// barycenter of the solar system. It is not typically defined in relation to
     /// anything else.
     pub fn loaded_objects(&self, include_centers: bool) -> HashSet<i32> {
@@ -345,7 +345,7 @@ impl SpkCollection {
 
     /// Delete all segments in the SPK singleton, equivalent to unloading all files.
     pub fn reset(&mut self) {
-        *self = SpkCollection::default();
+        *self = Self::default();
     }
 
     /// Load the core files.

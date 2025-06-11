@@ -140,7 +140,7 @@ impl Desig {
     ///     assert_eq!(desig, Ok(Desig::PlanetSat(799, 4)));
     ///
     /// ```
-    pub fn parse_mpc_designation(designation: &str) -> KeteResult<Desig> {
+    pub fn parse_mpc_designation(designation: &str) -> KeteResult<Self> {
         if designation.is_empty() {
             return Err(Error::ValueError("Designation cannot be empty".to_string()));
         };
@@ -158,7 +158,7 @@ impl Desig {
                     designation
                 ))
             })?;
-            return Ok(Desig::Perm(num));
+            return Ok(Self::Perm(num));
         } else if !designation.contains(' ') {
             // there are no spaces, so it is not a provisional designation
             // it is probably a perm comet designation
@@ -174,7 +174,7 @@ impl Desig {
                             designation
                         ))
                     })?;
-                return Ok(Desig::CometPerm(orbit_type, num, None));
+                return Ok(Self::CometPerm(orbit_type, num, None));
             } else {
                 return Err(Error::ValueError(format!(
                     "Invalid MPC Designation, sort of looks like a Comet: {}",
@@ -190,17 +190,17 @@ impl Desig {
 
         if let Ok(num) = roman_to_int(tail) {
             match header {
-                "Earth" => return Ok(Desig::PlanetSat(399, num)),
-                "Mars" => return Ok(Desig::PlanetSat(499, num)),
-                "Jupiter" => return Ok(Desig::PlanetSat(599, num)),
-                "Saturn" => return Ok(Desig::PlanetSat(699, num)),
-                "Uranus" => return Ok(Desig::PlanetSat(799, num)),
-                "Neptune" => return Ok(Desig::PlanetSat(899, num)),
+                "Earth" => return Ok(Self::PlanetSat(399, num)),
+                "Mars" => return Ok(Self::PlanetSat(499, num)),
+                "Jupiter" => return Ok(Self::PlanetSat(599, num)),
+                "Saturn" => return Ok(Self::PlanetSat(699, num)),
+                "Uranus" => return Ok(Self::PlanetSat(799, num)),
+                "Neptune" => return Ok(Self::PlanetSat(899, num)),
                 _ => {
                     return Err(Error::ValueError(format!(
                         "Invalid planetary satellite designation: {}",
                         designation
-                    )))
+                    )));
                 }
             }
         }
@@ -225,7 +225,7 @@ impl Desig {
 
         if !is_comet & (indicator.is_ascii_alphabetic() || indicator == '-') {
             // It is an asteroid provisional designation
-            Ok(Desig::Prov(designation.to_string()))
+            Ok(Self::Prov(designation.to_string()))
         } else {
             // It is a comet provisional designation
             let (des, fragment) = designation.split_once('-').unwrap_or((designation, ""));
@@ -247,7 +247,7 @@ impl Desig {
             } else {
                 Some(orbit_type.chars().next().unwrap())
             };
-            Ok(Desig::CometProv(orbit_type, des.to_string(), fragment))
+            Ok(Self::CometProv(orbit_type, des.to_string(), fragment))
         }
     }
 
@@ -330,18 +330,18 @@ impl Desig {
     /// ```
     pub fn try_pack(&self) -> KeteResult<String> {
         match self {
-            Desig::Empty => Err(Error::ValueError(
+            Self::Empty => Err(Error::ValueError(
                 "Cannot pack an empty designation".to_string(),
             )),
-            Desig::Name(s) => Err(Error::ValueError(format!(
+            Self::Name(s) => Err(Error::ValueError(format!(
                 "Cannot pack a name as a designation: {}",
                 s
             ))),
-            Desig::Naif(i) => Err(Error::ValueError(format!(
+            Self::Naif(i) => Err(Error::ValueError(format!(
                 "Cannot pack a NAIF ID as a designation: {}",
                 i
             ))),
-            Desig::ObservatoryCode(s) => {
+            Self::ObservatoryCode(s) => {
                 if s.len() != 3 {
                     return Err(Error::ValueError(format!(
                         "MPC Earth Station Designation must be 3 characters: {}",
@@ -350,7 +350,7 @@ impl Desig {
                 }
                 Ok(format!("{:0>3}", s))
             }
-            Desig::Perm(num) => {
+            Self::Perm(num) => {
                 if *num < 620_000 {
                     let idx = num / 10_000;
                     let rem = num % 10_000;
@@ -363,8 +363,8 @@ impl Desig {
                     Ok(format!("~{:0>4}", &num_to_mpc_hex(num - 620_000)))
                 }
             }
-            Desig::CometPerm(orbit_type, id, _) => Ok(format!("{:0>4}{}", id, orbit_type)),
-            Desig::PlanetSat(planet_id, sat_num) => match planet_id {
+            Self::CometPerm(orbit_type, id, _) => Ok(format!("{:0>4}{}", id, orbit_type)),
+            Self::PlanetSat(planet_id, sat_num) => match planet_id {
                 399 => Ok(format!("E{:0>3}S", sat_num)),
                 499 => Ok(format!("M{:0>3}S", sat_num)),
                 599 => Ok(format!("J{:0>3}S", sat_num)),
@@ -377,7 +377,7 @@ impl Desig {
                 ))),
             },
 
-            Desig::Prov(des) => {
+            Self::Prov(des) => {
                 if des.len() <= 6 {
                     return Err(Error::ValueError(format!(
                         "MPC Provisional Designation too short: {}",
@@ -423,7 +423,7 @@ impl Desig {
                     ))
                 }
             }
-            Desig::CometProv(orbit_type, unpacked, fragment) => {
+            Self::CometProv(orbit_type, unpacked, fragment) => {
                 let (year, des) = unpacked
                     .split_ascii_whitespace()
                     .take(2)
@@ -465,7 +465,7 @@ impl Desig {
                     ))
                 } else {
                     // its an asteroid like designation
-                    let packed = Desig::Prov(unpacked.to_string()).try_pack()?;
+                    let packed = Self::Prov(unpacked.to_string()).try_pack()?;
                     Ok(format!(
                         "{}{}",
                         orbit_type.map_or("".to_string(), |o| o.to_string()),
@@ -494,23 +494,23 @@ impl Desig {
 impl Display for Desig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&match self {
-            Desig::Empty => "None".to_string(),
-            Desig::Prov(s) => s.clone(),
-            Desig::Name(s) => s.clone(),
-            Desig::ObservatoryCode(s) => s.clone(),
-            Desig::Perm(i) => i.to_string(),
-            Desig::Naif(i) => i.to_string(),
-            Desig::CometPerm(orbit_type, id, fragment) => {
-                let frag_str = fragment.map_or("".to_string(), |f| format!(" {}", f));
+            Self::Empty => "None".to_string(),
+            Self::Prov(s) => s.clone(),
+            Self::Name(s) => s.clone(),
+            Self::ObservatoryCode(s) => s.clone(),
+            Self::Perm(i) => i.to_string(),
+            Self::Naif(i) => i.to_string(),
+            Self::CometPerm(orbit_type, id, fragment) => {
+                let frag_str = fragment.map_or("".to_string(), |x| format!(" {}", x));
                 format!("{}{}{}", id, orbit_type, frag_str)
             }
-            Desig::CometProv(orbit_type, id, fragment) => {
+            Self::CometProv(orbit_type, id, fragment) => {
                 let orbit_str = orbit_type.map_or("".to_string(), |o| o.to_string() + "/");
                 let frag_str =
-                    fragment.map_or("".to_string(), |f| "-".to_string() + &f.to_string());
+                    fragment.map_or("".to_string(), |x| "-".to_string() + &x.to_string());
                 format!("{}{}{}", orbit_str, id, frag_str)
             }
-            Desig::PlanetSat(planet_id, sat_num) => {
+            Self::PlanetSat(planet_id, sat_num) => {
                 let roman = int_to_roman(*sat_num).map_err(|_| std::fmt::Error)?;
                 match planet_id {
                     399 => format!("Earth {}", roman),
@@ -558,7 +558,7 @@ pub fn num_to_mpc_hex(mut num: u32) -> String {
 ///    assert_eq!(largest, Ok(916132831));
 /// ```
 pub fn mpc_hex_to_num(hex: &str) -> KeteResult<u32> {
-    let mut result = 0u32;
+    let mut result = 0_u32;
     for c in hex.chars() {
         if let Some(pos) = MPC_HEX.find(c) {
             result = result * 62 + pos as u32;

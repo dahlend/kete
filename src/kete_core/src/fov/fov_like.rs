@@ -20,7 +20,7 @@ pub trait FovLike: Sync + Sized {
     /// Position of the observer.
     fn observer(&self) -> &State<Equatorial>;
 
-    /// Is the specified vector contained within this FOVLike object.
+    /// Is the specified vector contained within this [`FovLike`].
     /// A [`Contains`] is returned for each sky patch.
     fn contains(&self, obs_to_obj: &Vector<Equatorial>) -> (usize, Contains);
 
@@ -182,7 +182,7 @@ pub trait FovLike: Sync + Sized {
 
         let mut detector_states = vec![Vec::<State<_>>::new(); self.n_patches()];
         for (idx, state) in final_states.into_iter() {
-            detector_states[idx].push(state)
+            detector_states[idx].push(state);
         }
 
         detector_states
@@ -235,7 +235,7 @@ pub trait FovLike: Sync + Sized {
 
         pos.iter().enumerate().for_each(|(vec_idx, p)| {
             if let (patch_idx, Contains::Inside) = self.check_static(p) {
-                visible[patch_idx].push(vec_idx)
+                visible[patch_idx].push(vec_idx);
             }
         });
 

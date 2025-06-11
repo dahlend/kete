@@ -78,7 +78,7 @@ pub fn solar_flux_black_body(dist: f64, wavelength: f64) -> f64 {
 /// <https://www.nrel.gov/grid/solar-resource/spectra-astm-e490.html>
 ///
 /// First column is wavelength in um, second column is Watts / m^2 / micron at 1 AU.
-pub const E490_DATA: &[[f64; 2]] = &[
+const E490_DATA: &[[f64; 2]] = &[
     [0.1195, 0.0619],
     [0.1205, 0.5614],
     [0.1215, 4.901],

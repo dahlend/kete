@@ -242,7 +242,7 @@ pub fn sub_solar_temperature(
 /// * `mag` - Magnitude.
 /// * `zero_mag_flux` - Flux in Jy at which the Magnitude is 0.
 pub fn mag_to_flux(mag: f64, mag_zero_flux: f64) -> f64 {
-    10f64.powf(mag / -2.5) * mag_zero_flux
+    10_f64.powf(mag / -2.5) * mag_zero_flux
 }
 
 /// Given a flux in Hy and a zero point magnitude in Jy, return the magnitude.

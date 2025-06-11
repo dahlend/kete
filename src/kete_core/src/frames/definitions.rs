@@ -11,8 +11,8 @@
 //!
 use crate::errors::{Error, KeteResult};
 use crate::spice::{CkArray, LOADED_CK};
-use crate::time::scales::TDB;
 use crate::time::Time;
+use crate::time::scales::TDB;
 use lazy_static::lazy_static;
 use nalgebra::{Matrix3, Rotation3, Vector3};
 use serde::{Deserialize, Serialize};
@@ -205,7 +205,10 @@ impl NonInertialFrame {
     }
 
     /// Convert a vector from the equatorial frame to this frame.
-    #[allow(clippy::wrong_self_convention)]
+    #[allow(
+        clippy::wrong_self_convention,
+        reason = "Always need position and velocity together"
+    )]
     pub fn from_equatorial(
         &self,
         pos: Vector3<f64>,
@@ -239,8 +242,8 @@ impl NonInertialFrame {
 /// however these are used for compatibility with JPL Horizons and Spice.
 ///
 /// See:
-///     - https://en.wikipedia.org/wiki/Axial_tilt#Short_term
-///     - https://ssd.jpl.nasa.gov/horizons/manual.html#defs
+///     - <https://en.wikipedia.org/wiki/Axial_tilt#Short_term>
+///     - <https://ssd.jpl.nasa.gov/horizons/manual.html#defs>
 const OBLIQUITY: f64 = 0.40909280422232897;
 
 /// Compute the angle of obliquity of Earth.
@@ -379,7 +382,7 @@ mod tests {
         let pos = [1.0, 2.0, 3.0].into();
         let vel = [0.1, 0.2, 0.3].into();
         let frame =
-            NonInertialFrame::from_euler::<'Z', 'X', 'Z'>(0f64.into(), angles, rates, 17, 100);
+            NonInertialFrame::from_euler::<'Z', 'X', 'Z'>(0_f64.into(), angles, rates, 17, 100);
         let (r_pos, r_vel) = frame.to_equatorial(pos, vel).unwrap();
         let (pos_return, vel_return) = frame.from_equatorial(r_pos, r_vel).unwrap();
 

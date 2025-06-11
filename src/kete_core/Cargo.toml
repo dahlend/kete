@@ -1,13 +1,20 @@
 [package]
 name = "kete_core"
-version = "1.1.0"
-edition = "2021"
 readme = "README.md"
-license = "BSD-3-Clause"
-keywords = ["physics", "simulation", "astronomy"]
+keywords = ["physics", "simulation", "astronomy", "asteroid", "comet"]
+categories = ["Aerospace", "Science", "Simulation"]
+description = "Kete - Simulator of telescope surveys of the Solar System."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [lib]
 name = "kete_core"
+
+[lints]
+workspace = true
 
 [dependencies]
 argmin = "^0.10.0"

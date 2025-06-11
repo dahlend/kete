@@ -2,7 +2,7 @@
 
 use std::{fmt::Display, str::FromStr};
 
-use super::{closest_inside, Contains, FovLike, OnSkyRectangle, SkyPatch, FOV};
+use super::{Contains, FOV, FovLike, OnSkyRectangle, SkyPatch, closest_inside};
 use crate::{frames::Vector, prelude::*};
 use serde::{Deserialize, Serialize};
 
@@ -25,10 +25,10 @@ pub enum PTFFilter {
 impl Display for PTFFilter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PTFFilter::G => f.write_str("G"),
-            PTFFilter::R => f.write_str("R"),
-            PTFFilter::HA656 => f.write_str("HA656"),
-            PTFFilter::HA663 => f.write_str("HA663"),
+            Self::G => f.write_str("G"),
+            Self::R => f.write_str("R"),
+            Self::HA656 => f.write_str("HA656"),
+            Self::HA663 => f.write_str("HA663"),
         }
     }
 }
@@ -37,10 +37,10 @@ impl FromStr for PTFFilter {
     type Err = Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_uppercase().as_str() {
-            "G" => Ok(PTFFilter::G),
-            "R" => Ok(PTFFilter::R),
-            "HA656" => Ok(PTFFilter::HA656),
-            "HA663" => Ok(PTFFilter::HA663),
+            "G" => Ok(Self::G),
+            "R" => Ok(Self::R),
+            "HA656" => Ok(Self::HA656),
+            "HA663" => Ok(Self::HA663),
             _ => Err(Error::ValueError(
                 "PTF Filter has to be one of ('G', 'R', 'HA656', 'HA663')".into(),
             )),
@@ -78,7 +78,6 @@ pub struct PtfCcd {
 
 impl PtfCcd {
     /// Create a Ptf field of view
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         corners: [Vector<Equatorial>; 4],
         observer: State<Equatorial>,
@@ -154,7 +153,7 @@ pub struct PtfField {
 }
 
 impl PtfField {
-    /// Construct a new PtfField from a list of ccds.
+    /// Construct a new [`PtfField`] from a list of ccds.
     /// These ccds must be from the same field and having matching value as
     /// appropriate.
     pub fn new(ccds: Vec<PtfCcd>) -> KeteResult<Self> {

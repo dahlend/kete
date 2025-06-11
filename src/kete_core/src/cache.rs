@@ -1,7 +1,7 @@
-//! Management of the cached files
+//! # Management of the cached files
 //!
 //! kete saves files in a cache directory, which by default exists in the
-//! home directory of the user. This can be changed by setting the KETE_CACHE_DIR
+//! home directory of the user. This can be changed by setting the ``KETE_CACHE_DIR``
 //! environment variable. The cache directory is used to store files that are
 //! downloaded from the internet, for example the SPICE kernels.
 
@@ -19,11 +19,11 @@ use crate::errors::{Error, KeteResult};
 
 /// Get the cache directory for kete.
 ///
-/// This first checks if the KETE_CACHE_DIR environment variable is set.
+/// This first checks if the ``KETE_CACHE_DIR`` environment variable is set.
 /// If it is set, it checks if the directory exists. If it does not exist,
 /// it panics. If it does exist, it returns the path.
 ///
-/// If the KETE_CACHE_DIR environment variable is not set, it
+/// If the ``KETE_CACHE_DIR`` environment variable is not set, it
 /// creates a directory in the home directory of the user.
 pub fn cache_dir() -> KeteResult<PathBuf> {
     env::var("KETE_CACHE_DIR")

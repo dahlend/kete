@@ -21,9 +21,9 @@ pub enum Contains {
 }
 
 impl Contains {
-    /// Returns true if is_inside.
+    /// Returns true if the vector is inside the area.
     pub fn is_inside(&self) -> bool {
-        matches!(self, Contains::Inside)
+        matches!(self, Self::Inside)
     }
 }
 
@@ -35,7 +35,7 @@ pub(super) fn closest_inside(contains: &[Contains]) -> (usize, Contains) {
             Contains::Inside => return (idx, Contains::Inside),
             Contains::Outside(d) => {
                 if d < &best.1 {
-                    best = (idx, *d)
+                    best = (idx, *d);
                 }
             }
         }
@@ -93,8 +93,8 @@ impl OnSkyRectangle {
 
     /// Construct a rectangular spherical polygon.
     ///
-    /// This constructs a new SphericalPolygon made up of a rectangular shape on the unit
-    /// sphere. Where the edges of the rectangle are great circle arcs.
+    /// This constructs a new [`SphericalPolygon`] made up of a rectangular shape on
+    /// the unit sphere. Where the edges of the rectangle are great circle arcs.
     ///
     /// # Arguments
     ///
@@ -192,7 +192,7 @@ impl OnSkyRectangle {
 }
 
 impl<const D: usize> SkyPatch for SphericalPolygon<D> {
-    /// Is the obs_to_obj vector inside of the polygon.
+    /// Is the vector inside of the polygon.
     fn contains(&self, obs_to_obj: &Vector<Equatorial>) -> Contains {
         let mut closest_edge = f64::NEG_INFINITY;
         for normal in self.edge_normals.iter() {
@@ -253,7 +253,7 @@ impl SphericalCone {
 }
 
 impl SkyPatch for SphericalCone {
-    /// Is the obs_to_obj vector inside of the cone.
+    /// Is the vector inside of the cone.
     fn contains(&self, obs_to_obj: &Vector<Equatorial>) -> Contains {
         let dist = self.pointing.dot(&obs_to_obj.normalize()).acos().abs();
         match dist {
@@ -292,11 +292,11 @@ mod tests {
 
     #[test]
     fn test_rectangular_patch() {
-        let rot = (45f64).to_radians();
+        let rot = (45_f64).to_radians();
         let inside = [1.0, 0.01, 0.01].into();
         let outside = [1.0, 0.1, 0.0].into();
-        let just_inside = [1.0, (0.05f64).sin() * 0.99, (0.05f64).sin() * 0.99].into();
-        let just_outside = [1.0, (0.05f64).sin() * 1.01, (0.05f64).sin() * 1.01].into();
+        let just_inside = [1.0, (0.05_f64).sin() * 0.99, (0.05_f64).sin() * 0.99].into();
+        let just_outside = [1.0, (0.05_f64).sin() * 1.01, (0.05_f64).sin() * 1.01].into();
         let fov = OnSkyRectangle::new([1.0, 0.0, 0.0].into(), 0.0, 0.1, 0.1);
         let fov_rot = OnSkyRectangle::new([1.0, 0.0, 0.0].into(), rot, 0.1, 0.1);
 
@@ -312,7 +312,7 @@ mod tests {
 
     #[test]
     fn test_rectangular_patch_latlon() {
-        let rot = (45f64).to_radians();
+        let rot = (45_f64).to_radians();
         let fov = OnSkyRectangle::new([1.0, 0.0, 0.0].into(), 0.0, 0.1, 0.2);
         let fov_rot = OnSkyRectangle::new([1.0, 0.0, 0.0].into(), rot, 0.1, 0.2);
 

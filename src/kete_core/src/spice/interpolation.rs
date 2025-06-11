@@ -22,8 +22,8 @@ use nalgebra::DVector;
 /// * `coefz`    - Slice of coefficients of the chebyshev polynomials.
 ///
 #[inline(always)]
-pub fn chebyshev_evaluate_both(
-    x: f64,
+pub(crate) fn chebyshev_evaluate_both(
+    t: f64,
     coefx: &[f64],
     coefy: &[f64],
     coefz: &[f64],
@@ -36,15 +36,15 @@ pub fn chebyshev_evaluate_both(
                 .into(),
         ))?;
     }
-    let x2 = 2.0 * x;
+    let x2 = 2.0 * t;
 
     let mut val = [
-        coefx[0] + coefx[1] * x,
-        coefy[0] + coefy[1] * x,
-        coefz[0] + coefz[1] * x,
+        coefx[0] + coefx[1] * t,
+        coefy[0] + coefy[1] * t,
+        coefz[0] + coefz[1] * t,
     ];
     let mut second_t = 1.0;
-    let mut last_t = x;
+    let mut last_t = t;
     let mut next_t;
 
     // The derivative of the first kind is defined by the recurrence relation:
@@ -93,8 +93,8 @@ pub fn chebyshev_evaluate_both(
 /// * `coefz`    - Slice of coefficients of the chebyshev polynomials.
 ///
 #[inline(always)]
-pub fn chebyshev_evaluate(
-    x: f64,
+pub(crate) fn chebyshev_evaluate(
+    t: f64,
     coefx: &[f64],
     coefy: &[f64],
     coefz: &[f64],
@@ -107,15 +107,15 @@ pub fn chebyshev_evaluate(
                 .into(),
         ))?;
     }
-    let x2 = 2.0 * x;
+    let x2 = 2.0 * t;
 
     let mut val = [
-        coefx[0] + coefx[1] * x,
-        coefy[0] + coefy[1] * x,
-        coefz[0] + coefz[1] * x,
+        coefx[0] + coefx[1] * t,
+        coefy[0] + coefy[1] * t,
+        coefz[0] + coefz[1] * t,
     ];
     let mut second_t = 1.0;
-    let mut last_t = x;
+    let mut last_t = t;
     let mut next_t;
 
     for ((x, y), z) in coefx.iter().zip(coefy).zip(coefz).skip(2) {
@@ -140,9 +140,14 @@ pub fn chebyshev_evaluate(
 /// * `dy` - The values of the derivative of the function `f`.
 /// * `eval_time` - Time at which to evaluate the interpolation function.
 #[inline(always)]
-pub fn hermite_interpolation(times: &[f64], y: &[f64], dy: &[f64], eval_time: f64) -> (f64, f64) {
-    debug_assert_eq!(times.len(), y.len());
-    debug_assert_eq!(times.len(), dy.len());
+pub(crate) fn hermite_interpolation(
+    times: &[f64],
+    y: &[f64],
+    dy: &[f64],
+    eval_time: f64,
+) -> (f64, f64) {
+    debug_assert_eq!(times.len(), y.len(), "Input lengths must match");
+    debug_assert_eq!(times.len(), dy.len(), "Input lengths must match");
 
     let n = y.len();
 
@@ -196,8 +201,8 @@ pub fn hermite_interpolation(times: &[f64], y: &[f64], dy: &[f64], eval_time: f6
 /// * `times` - Times where the function `f` is evaluated at.
 /// * `y_vals` - The values of the function `f` at the specified times.
 /// * `eval_time` - Time at which to evaluate the interpolation function.
-pub fn lagrange_interpolation(x: &[f64], y: &mut [f64], eval_time: f64) -> f64 {
-    debug_assert_eq!(x.len(), y.len());
+pub(crate) fn lagrange_interpolation(x: &[f64], y: &mut [f64], eval_time: f64) -> f64 {
+    debug_assert_eq!(x.len(), y.len(), "Input lengths must match");
 
     // implementation of newton interpolation
     for idx in 1..x.len() {
@@ -228,7 +233,7 @@ mod tests {
             assert!((interp - eval_time).abs() < 1e-12);
         }
 
-        let y: Vec<_> = times
+        let y1: Vec<_> = times
             .iter()
             .map(|x| x + 1.75 * x.powi(2) - 3.0 * x.powi(3) - 11.0 * x.powi(4))
             .collect();
@@ -236,7 +241,7 @@ mod tests {
         for v in 0..100 {
             let x = (v as f64) / 100. * 9.0;
             let expected = x + 1.75 * x.powi(2) - 3.0 * x.powi(3) - 11.0 * x.powi(4);
-            let interp = lagrange_interpolation(&times, &mut y.clone(), x);
+            let interp = lagrange_interpolation(&times, &mut y1.clone(), x);
             assert!(
                 (interp - expected).abs() < 1e-10,
                 "x={} interp={} expected={} diff={}",

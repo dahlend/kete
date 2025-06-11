@@ -1,6 +1,6 @@
 //! # ZTF Fov definitions.
 
-use super::{closest_inside, Contains, FovLike, OnSkyRectangle, SkyPatch, FOV};
+use super::{Contains, FOV, FovLike, OnSkyRectangle, SkyPatch, closest_inside};
 use crate::{frames::Vector, prelude::*};
 use serde::{Deserialize, Serialize};
 
@@ -41,7 +41,6 @@ pub struct ZtfCcdQuad {
 
 impl ZtfCcdQuad {
     /// Create a ZTF field of view
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         corners: [Vector<Equatorial>; 4],
         observer: State<Equatorial>,
@@ -127,7 +126,7 @@ pub struct ZtfField {
 }
 
 impl ZtfField {
-    /// Construct a new ZtfField from a list of ccd quads.
+    /// Construct a new [`ZtfField`] from a list of ccd quads.
     /// These ccd quads must be from the same field and having matching value as
     /// appropriate.
     pub fn new(ccd_quads: Vec<ZtfCcdQuad>) -> KeteResult<Self> {

@@ -1,6 +1,7 @@
 use super::{
-    common::{black_body_flux, lambertian_vis_scale_factor, sub_solar_temperature, ModelResults},
-    flux_to_mag, HGParams, ObserverBands, DEFAULT_SHAPE,
+    DEFAULT_SHAPE, HGParams, ObserverBands,
+    common::{ModelResults, black_body_flux, lambertian_vis_scale_factor, sub_solar_temperature},
+    flux_to_mag,
 };
 use crate::{constants::V_MAG_ZERO, io::FileIO};
 
@@ -50,9 +51,9 @@ pub struct NeatmParams {
 impl FileIO for NeatmParams {}
 
 impl NeatmParams {
-    /// Create new NeatmParams with WISE band and zero mags
+    /// Create new [`NeatmParams`] with WISE band and zero mags
     pub fn new_wise(albedos: [f64; 4], beaming: f64, hg_params: HGParams, emissivity: f64) -> Self {
-        NeatmParams {
+        Self {
             obs_bands: ObserverBands::Wise,
             band_albedos: albedos.to_vec(),
             beaming,
@@ -61,9 +62,9 @@ impl NeatmParams {
         }
     }
 
-    /// Create new NeatmParams with NEOS band and zero mags
+    /// Create new [`NeatmParams`] with NEOS band and zero mags
     pub fn new_neos(albedos: [f64; 2], beaming: f64, hg_params: HGParams, emissivity: f64) -> Self {
-        NeatmParams {
+        Self {
             obs_bands: ObserverBands::Neos,
             band_albedos: albedos.to_vec(),
             beaming,

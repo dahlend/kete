@@ -1,11 +1,26 @@
 
 [package]
 name = "_core"
-version = "1.1.0"
-edition = "2021"
 readme = "README.md"
-license = "BSD-3-Clause"
 keywords = ["physics", "simulation", "astronomy"]
+description = "Python bindings to kete_core"
+categories = ["Aerospace", "Science", "Simulation"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[workspace]
+members = ["src/kete_core"]
+default-members = ["src/kete_core"]
+
+[workspace.package]
+version = "1.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "BSD-3-Clause"
+repository = "https://github.com/dahlend/kete"
 
 [dependencies]
 kete_core = { version = "*", path = "src/kete_core", features=["pyo3", "polars"]}
@@ -25,10 +40,62 @@ name = "_core"
 path = "src/kete/rust/lib.rs"
 crate-type = ["cdylib", "lib"]
 
-[workspace]
-members = ["src/kete_core"]
-default-members = ["src/kete_core"]
-
 [profile.release]
 opt-level = 3
 codegen-units = 1
+
+[workspace.lints]
+rust.keyword_idents_2024 = "deny"
+rust.non_ascii_idents = "deny"
+rust.non_local_definitions = "deny"
+rust.unsafe_op_in_unsafe_fn = "deny"
+rust.missing_debug_implementations = "deny"
+rust.missing_docs = "deny"
+rust.dead_code = "deny"
+rust.bad_style = "deny"
+rust.improper_ctypes = "deny"
+rust.while_true = "deny"
+rust.patterns_in_fns_without_body = "deny"
+rust.path_statements = "deny"
+rust.overflowing_literals = "deny"
+rust.no_mangle_generic_items = "deny"
+rust.non_shorthand_field_patterns = "deny"
+rust.unused_extern_crates = "deny"
+rust.unused_import_braces = "deny"
+rust.unused_qualifications = "deny"
+rust.unused_results = "deny"
+rust.unnameable_types = "deny"
+rust.unreachable_pub = "deny"
+rust.unused_lifetimes = "deny"
+rust.unused_macro_rules = "deny"
+rust.unused = "deny"
+rust.unconditional_recursion = "deny"
+rust.trivial_numeric_casts = "deny"
+rust.trivial_casts = "deny"
+rust.elided_lifetimes_in_paths = "deny"
+rust.unexpected_cfgs = "deny"
+
+clippy.too_many_arguments = "allow"
+clippy.type_complexity = "allow"
+
+clippy.allow_attributes_without_reason = "warn"
+clippy.collection_is_never_read = "warn"
+clippy.dbg_macro = "warn"
+clippy.debug_assert_with_mut_call = "warn"
+clippy.doc_markdown = "warn"
+clippy.fn_to_numeric_cast_any = "warn"
+clippy.infinite_loop = "warn"
+clippy.large_stack_arrays = "warn"
+clippy.mismatching_type_param_order = "warn"
+clippy.missing_assert_message = "warn"
+clippy.missing_fields_in_debug = "warn"
+clippy.same_functions_in_if_condition = "warn"
+clippy.semicolon_if_nothing_returned = "warn"
+clippy.should_panic_without_expect = "warn"
+clippy.todo = "warn"
+clippy.unseparated_literal_suffix = "warn"
+clippy.use_self = "warn"
+clippy.cargo_common_metadata = "warn"
+clippy.negative_feature_names = "warn"
+clippy.redundant_feature_names = "warn"
+clippy.wildcard_dependencies = "warn"

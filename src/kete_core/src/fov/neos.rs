@@ -1,5 +1,5 @@
 //! # NEOS field of views
-use super::{closest_inside, Contains, FovLike, OnSkyRectangle, SkyPatch, FOV};
+use super::{Contains, FOV, FovLike, OnSkyRectangle, SkyPatch, closest_inside};
 use crate::constants::{NEOS_HEIGHT, NEOS_WIDTH};
 use crate::frames::Vector;
 use crate::prelude::*;
@@ -45,7 +45,6 @@ pub struct NeosCmos {
 
 impl NeosCmos {
     /// Create a NEOS FOV
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         pointing: Vector<Equatorial>,
         rotation: f64,
@@ -145,7 +144,7 @@ pub struct NeosVisit {
 }
 
 impl NeosVisit {
-    /// Construct a new NeosVisit from a list of cmos fovs.
+    /// Construct a new [`NeosVisit`] from a list of cmos fovs.
     /// These cmos fovs must be from the same metadata when appropriate.
     pub fn new(chips: Vec<NeosCmos>) -> KeteResult<Self> {
         if chips.len() != 4 {
@@ -197,8 +196,16 @@ impl NeosVisit {
         })
     }
 
-    /// x_width is the longer dimension in radians
-    #[allow(clippy::too_many_arguments)]
+    /// `x_width` is the longer dimension in radians
+    ///
+    /// +-------+-+-------+-+-------+-+-------+   ^
+    /// |       |g|       |g|       |g|       |   |
+    /// |   1   |a|   2   |a|   3   |a|   4   |   y
+    /// |       |p|       |p|       |p|       |   |
+    /// +-------+-+-------+-+-------+-+-------+   -
+    /// |            <---- x ----->           |
+    ///
+    /// Pointing vector is in the middle of the 'a' in the central gap.
     pub fn from_pointing(
         x_width: f64,
         y_width: f64,
@@ -226,15 +233,6 @@ impl NeosVisit {
         // construct a new up vector which is in the same plane as it was before, but now
         // orthogonal to the two existing vectors.
         let up_vec = pointing.cross(&left_vec);
-
-        // +-------+-+-------+-+-------+-+-------+   ^
-        // |       |g|       |g|       |g|       |   |
-        // |   1   |a|   2   |a|   3   |a|   4   |   y
-        // |       |p|       |p|       |p|       |   |
-        // +-------+-+-------+-+-------+-+-------+   -
-        // |            <---- x ----->           |
-        //
-        // Pointing vector is in the middle of the 'a' in the central gap.
 
         // the Y direction is bounded by 2 planes, calculate them one time
         let y_top = up_vec.rotate_around(left_vec, y_width / 2.0);

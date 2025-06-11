@@ -21,13 +21,13 @@ pub struct LeapSecond {
 impl FromStr for LeapSecond {
     type Err = Error;
 
-    /// Load an LeapSecond from a single string.
+    /// Load a [`LeapSecond`] from a single string.
     fn from_str(row: &str) -> KeteResult<Self> {
         let (mjd, _, _, _, tai_m_utc) = row.split_whitespace().next_tuple().ok_or(
             Error::IOError("Leap Second file incorrectly formatted.".into()),
         )?;
 
-        Ok(LeapSecond {
+        Ok(Self {
             mjd: mjd.parse()?,
             tai_m_utc: tai_m_utc.parse::<f64>()? / 86400.0,
         })
@@ -73,13 +73,16 @@ mod tests {
 
     #[test]
     fn test_leap_second() {
-        let t = &LEAP_SECONDS[0];
-        assert!(t.tai_m_utc == 10.0 / 86400.0);
-        assert!(t.mjd == 41317.0);
-
-        let t = &LEAP_SECONDS[27];
-        assert!(t.tai_m_utc == 37.0 / 86400.0);
-        assert!(t.mjd == 57754.0);
+        {
+            let t = &LEAP_SECONDS[0];
+            assert!(t.tai_m_utc == 10.0 / 86400.0);
+            assert!(t.mjd == 41317.0);
+        }
+        {
+            let t = &LEAP_SECONDS[27];
+            assert!(t.tai_m_utc == 37.0 / 86400.0);
+            assert!(t.mjd == 57754.0);
+        }
     }
 
     #[test]

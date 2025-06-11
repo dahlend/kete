@@ -117,7 +117,7 @@ pub fn propagation_n_body_spk_py(
     let mut res: Vec<PyState> = Vec::new();
     let jd = jd.jd();
 
-    // propagation is broken into chunks of 1000 states, every time a chunk is completed
+    // propagation is broken into chunks of 100 states, every time a chunk is completed
     // python is checked for signals. This allows keyboard interrupts to be caught
     // and the process interrupted.
 
@@ -125,7 +125,7 @@ pub fn propagation_n_body_spk_py(
         .into_iter()
         .zip(non_gravs.into_iter())
         .collect_vec()
-        .chunks(1000)
+        .chunks(100)
     {
         py.check_signals()?;
 

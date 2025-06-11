@@ -4,7 +4,7 @@ use nalgebra::{Rotation3, UnitVector3, Vector3};
 use serde::Deserialize;
 
 use crate::desigs::Desig;
-use crate::frames::{ecef_to_geodetic_lat_lon, EARTH_A};
+use crate::frames::{EARTH_A, ecef_to_geodetic_lat_lon};
 use crate::prelude::{Error, KeteResult};
 use std::str;
 use std::str::FromStr;
@@ -31,24 +31,24 @@ pub struct ObsCode {
 impl FromStr for ObsCode {
     type Err = Error;
 
-    /// Load an ObsCode from a single string.
+    /// Load an [`ObsCode`] from a single string.
     fn from_str(row: &str) -> KeteResult<Self> {
         let code = row[0..3].to_string();
-        let lon = f64::from_str(row[3..13].trim())?;
+        let rec_lon = f64::from_str(row[3..13].trim())?;
         let cos = f64::from_str(row[13..21].trim())?;
         let sin = f64::from_str(row[21..30].trim())?;
         let vec = Vector3::new(cos, 0.0, sin) * EARTH_A;
 
         let rot = Rotation3::from_axis_angle(
             &UnitVector3::new_normalize([0.0, 0.0, 1.0].into()),
-            lon.to_radians(),
+            rec_lon.to_radians(),
         );
         let vec = rot.transform_vector(&vec);
 
         let (lat, lon, altitude) = ecef_to_geodetic_lat_lon(vec.x, vec.y, vec.z);
 
         let name = row[30..].trim().to_string();
-        Ok(ObsCode {
+        Ok(Self {
             code: Desig::ObservatoryCode(code),
             lon: lon.to_degrees(),
             lat: lat.to_degrees(),

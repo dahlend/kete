@@ -1,7 +1,7 @@
 use crate::errors::{Error, KeteResult};
 use crate::frames::NonInertialFrame;
-use crate::time::scales::TDB;
 use crate::time::Time;
+use crate::time::scales::TDB;
 use nalgebra::{Quaternion, Rotation3, Unit, UnitQuaternion};
 
 use super::CkArray;
@@ -14,7 +14,7 @@ pub(crate) enum CkSegment {
 }
 
 impl CkSegment {
-    pub fn try_get_orientation(
+    pub(crate) fn try_get_orientation(
         &self,
         instrument_id: i32,
         time: Time<TDB>,
@@ -28,8 +28,8 @@ impl CkSegment {
         }
 
         match self {
-            CkSegment::Type3(seg) => seg.try_get_orientation(time),
-            CkSegment::Type2(seg) => seg.try_get_orientation(time),
+            Self::Type3(seg) => seg.try_get_orientation(time),
+            Self::Type2(seg) => seg.try_get_orientation(time),
         }
     }
 }
@@ -57,8 +57,8 @@ impl TryFrom<CkArray> for CkSegment {
 
     fn try_from(array: CkArray) -> Result<Self, Self::Error> {
         match array.segment_type {
-            2 => Ok(CkSegment::Type2(array.try_into()?)),
-            3 => Ok(CkSegment::Type3(array.try_into()?)),
+            2 => Ok(Self::Type2(array.try_into()?)),
+            3 => Ok(Self::Type3(array.try_into()?)),
             v => Err(Error::IOError(format!(
                 "CK Segment type {:?} not supported.",
                 v
@@ -74,10 +74,9 @@ impl TryFrom<CkArray> for CkSegment {
 /// as a quaternion, and then a vector defining the axis of rotation, then
 /// the last value is the angular rate of rotation in SCLK ticks per second.
 ///
-/// https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/ck.html#Data%20Type%202
+/// <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/ck.html#Data%20Type%202>
 
 #[derive(Debug)]
-#[allow(unused)]
 pub(crate) struct CkSegmentType2 {
     array: CkArray,
 
@@ -106,7 +105,7 @@ impl CkSegmentType2 {
         }
     }
 
-    pub fn try_get_orientation(
+    pub(crate) fn try_get_orientation(
         &self,
         time: Time<TDB>,
     ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
@@ -192,7 +191,7 @@ impl TryFrom<CkArray> for CkSegmentType2 {
 
         let time_start_idx = n_records * 10;
 
-        Ok(CkSegmentType2 {
+        Ok(Self {
             array,
             n_records,
             time_start_idx,
@@ -214,10 +213,9 @@ impl TryFrom<CkArray> for CkSegmentType2 {
 /// Single points of data are allowed (no interpolation as long as it is within
 /// the tolerance).
 ///
-/// https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/ck.html#Data%20Type%203
+/// <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/ck.html#Data%20Type%203>
 
 #[derive(Debug)]
-#[allow(unused)]
 pub(crate) struct CkSegmentType3 {
     array: CkArray,
     n_intervals: usize,
@@ -228,9 +226,8 @@ pub(crate) struct CkSegmentType3 {
     time_start_idx: usize,
 }
 
-#[allow(unused)]
 impl CkSegmentType3 {
-    fn get_record(&self, idx: usize) -> Type3RecordView {
+    fn get_record(&self, idx: usize) -> Type3RecordView<'_> {
         unsafe {
             let rec = self
                 .array
@@ -293,7 +290,7 @@ impl CkSegmentType3 {
         Ok((&record_times[start_idx..stop_idx], start_idx))
     }
 
-    pub fn try_get_orientation(
+    pub(crate) fn try_get_orientation(
         &self,
         time: Time<TDB>,
     ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
@@ -319,8 +316,7 @@ impl CkSegmentType3 {
     /// This will return the best effort record, along with the time of
     /// the record. If the requested time is outside of any interval, this
     /// will return the closest record.
-    #[allow(clippy::type_complexity)]
-    pub fn get_quaternion_at_time(
+    pub(crate) fn get_quaternion_at_time(
         &self,
         time: Time<TDB>,
     ) -> KeteResult<(Time<TDB>, UnitQuaternion<f64>, Option<[f64; 3]>)> {
@@ -384,7 +380,7 @@ struct Type3RecordView<'a> {
 }
 
 impl From<Type3RecordView<'_>> for (Quaternion<f64>, Option<[f64; 3]>) {
-    fn from(record: Type3RecordView) -> Self {
+    fn from(record: Type3RecordView<'_>) -> Self {
         let quaternion: [f64; 4] = record.quaternion.try_into().unwrap();
         let quaternion =
             Quaternion::new(quaternion[0], quaternion[1], quaternion[2], quaternion[3]);
@@ -442,7 +438,7 @@ impl TryFrom<CkArray> for CkSegmentType3 {
         let time_start_idx = n_records * rec_size;
         let interval_start_idx = time_start_idx + n_records + time_dir_size;
 
-        Ok(CkSegmentType3 {
+        Ok(Self {
             array,
             n_intervals,
             n_records,

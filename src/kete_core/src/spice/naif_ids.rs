@@ -10,22 +10,22 @@ use std::str::FromStr;
 
 /// NAIF ID information
 #[derive(Debug, Deserialize)]
-pub struct NaifId {
+struct NaifId {
     /// NAIF id
-    pub id: i32,
+    id: i32,
 
     /// name of the object
-    pub name: String,
+    name: String,
 }
 
 impl FromStr for NaifId {
     type Err = Error;
 
-    /// Load an NaifId from a single string.
+    /// Load an [`NaifId`] from a single string.
     fn from_str(row: &str) -> KeteResult<Self> {
         let id = i32::from_str(row[0..10].trim()).unwrap();
         let name = row[11..].trim().to_string();
-        Ok(NaifId { id, name })
+        Ok(Self { id, name })
     }
 }
 
@@ -33,7 +33,7 @@ const PRELOAD_IDS: &[u8] = include_bytes!("../../data/naif_ids.csv");
 
 lazy_static! {
     /// NAIF Ids
-    pub static ref NAIF_IDS: Box<[NaifId]> = {
+    static ref NAIF_IDS: Box<[NaifId]> = {
         let mut ids = Vec::new();
         let text = str::from_utf8(PRELOAD_IDS).unwrap().split('\n');
         for row in text.skip(1) {

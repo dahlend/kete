@@ -76,13 +76,7 @@ pub fn propagate_n_body_spk(
     let spk = &LOADED_SPK.try_read().unwrap();
     spk.try_change_center(&mut state, 0)?;
 
-    let mass_list = {
-        if include_extended {
-            MASSES
-        } else {
-            PLANETS
-        }
-    };
+    let mass_list = { if include_extended { MASSES } else { PLANETS } };
 
     let metadata = AccelSPKMeta {
         close_approach: None,
@@ -128,7 +122,7 @@ pub fn propagation_central(state: &State<Equatorial>, jd_final: f64) -> KeteResu
 
 /// Propagate using n-body mechanics but skipping SPK queries.
 /// This will propagate all planets and the Moon, so it may vary from SPK states slightly.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, reason = "Not practical to avoid this")]
 pub fn propagate_n_body_vec(
     states: Vec<State<Equatorial>>,
     jd_final: f64,
@@ -190,7 +184,7 @@ pub fn propagate_n_body_vec(
         if state.center_id != 10 {
             Err(Error::ValueError(
                 "Center of all states must be 10 (the Sun).".into(),
-            ))?
+            ))?;
         }
         pos.append(&mut state.pos.into());
         vel.append(&mut state.vel.into());

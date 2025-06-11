@@ -9,7 +9,7 @@ pub const WISE_BANDS: [f64; 4] = [3352.6, 4602.8, 11560.8, 22088.3];
 pub const WISE_BANDS_300K: [f64; 4] = [3352.6, 4602.8, 11560.8 * 0.96, 22088.3 * 1.025];
 
 /// WISE cryo effective zero magnitudes for W1, W2, W3, W4 for stellar sources
-/// Magnitude can then be computed via -2.5 log10(flux Jy / zero_point)
+/// Magnitude can then be computed via `-2.5 log10(flux Jy / zero_point)`
 pub const WISE_ZERO_MAG: [f64; 4] = [306.681, 170.663, 29.0448, 8.2839];
 
 /// WISE cryo effective zero magnitudes for W1, W2, W3, W4 for 300K sources

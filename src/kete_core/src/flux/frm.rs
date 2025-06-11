@@ -1,6 +1,7 @@
 use super::{
-    common::{black_body_flux, lambertian_vis_scale_factor, sub_solar_temperature, ModelResults},
-    flux_to_mag, HGParams, ObserverBands, DEFAULT_SHAPE,
+    DEFAULT_SHAPE, HGParams, ObserverBands,
+    common::{ModelResults, black_body_flux, lambertian_vis_scale_factor, sub_solar_temperature},
+    flux_to_mag,
 };
 use crate::{constants::V_MAG_ZERO, io::FileIO};
 
@@ -51,7 +52,7 @@ pub struct FrmParams {
 impl FileIO for FrmParams {}
 
 impl FrmParams {
-    /// Create new FrmParams with WISE band and zero mags
+    /// Create new [`FrmParams`] with WISE band and zero mags
     pub fn new_wise(albedos: [f64; 4], hg_params: HGParams, emissivity: f64) -> Self {
         Self {
             obs_bands: ObserverBands::Wise,
@@ -61,7 +62,7 @@ impl FrmParams {
         }
     }
 
-    /// Create new FrmParams with NEOS band and zero mags
+    /// Create new [`FrmParams`] with NEOS band and zero mags
     pub fn new_neos(albedos: [f64; 2], hg_params: HGParams, emissivity: f64) -> Self {
         Self {
             obs_bands: ObserverBands::Neos,

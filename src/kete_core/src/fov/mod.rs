@@ -64,64 +64,64 @@ impl FOV {
         include_asteroids: bool,
     ) -> Vec<Option<SimultaneousStates>> {
         match self {
-            FOV::Wise(fov) => fov.check_visible(states, dt_limit, include_asteroids),
-            FOV::NeosCmos(fov) => fov.check_visible(states, dt_limit, include_asteroids),
-            FOV::ZtfCcdQuad(fov) => fov.check_visible(states, dt_limit, include_asteroids),
-            FOV::GenericCone(fov) => fov.check_visible(states, dt_limit, include_asteroids),
-            FOV::GenericRectangle(fov) => fov.check_visible(states, dt_limit, include_asteroids),
-            FOV::ZtfField(fov) => fov.check_visible(states, dt_limit, include_asteroids),
-            FOV::NeosVisit(fov) => fov.check_visible(states, dt_limit, include_asteroids),
-            FOV::OmniDirectional(fov) => fov.check_visible(states, dt_limit, include_asteroids),
-            FOV::PtfCcd(fov) => fov.check_visible(states, dt_limit, include_asteroids),
-            FOV::PtfField(fov) => fov.check_visible(states, dt_limit, include_asteroids),
+            Self::Wise(fov) => fov.check_visible(states, dt_limit, include_asteroids),
+            Self::NeosCmos(fov) => fov.check_visible(states, dt_limit, include_asteroids),
+            Self::ZtfCcdQuad(fov) => fov.check_visible(states, dt_limit, include_asteroids),
+            Self::GenericCone(fov) => fov.check_visible(states, dt_limit, include_asteroids),
+            Self::GenericRectangle(fov) => fov.check_visible(states, dt_limit, include_asteroids),
+            Self::ZtfField(fov) => fov.check_visible(states, dt_limit, include_asteroids),
+            Self::NeosVisit(fov) => fov.check_visible(states, dt_limit, include_asteroids),
+            Self::OmniDirectional(fov) => fov.check_visible(states, dt_limit, include_asteroids),
+            Self::PtfCcd(fov) => fov.check_visible(states, dt_limit, include_asteroids),
+            Self::PtfField(fov) => fov.check_visible(states, dt_limit, include_asteroids),
         }
     }
 
     /// Observer position in this FOV
     pub fn observer(&self) -> &State<Equatorial> {
         match self {
-            FOV::Wise(fov) => fov.observer(),
-            FOV::NeosCmos(fov) => fov.observer(),
-            FOV::ZtfCcdQuad(fov) => fov.observer(),
-            FOV::GenericCone(fov) => fov.observer(),
-            FOV::GenericRectangle(fov) => fov.observer(),
-            FOV::ZtfField(fov) => fov.observer(),
-            FOV::NeosVisit(fov) => fov.observer(),
-            FOV::OmniDirectional(fov) => fov.observer(),
-            FOV::PtfCcd(fov) => fov.observer(),
-            FOV::PtfField(fov) => fov.observer(),
+            Self::Wise(fov) => fov.observer(),
+            Self::NeosCmos(fov) => fov.observer(),
+            Self::ZtfCcdQuad(fov) => fov.observer(),
+            Self::GenericCone(fov) => fov.observer(),
+            Self::GenericRectangle(fov) => fov.observer(),
+            Self::ZtfField(fov) => fov.observer(),
+            Self::NeosVisit(fov) => fov.observer(),
+            Self::OmniDirectional(fov) => fov.observer(),
+            Self::PtfCcd(fov) => fov.observer(),
+            Self::PtfField(fov) => fov.observer(),
         }
     }
 
     /// Check if any loaded SPK objects are visible to this FOV
     pub fn check_spks(&self, obj_ids: &[i32]) -> Vec<Option<SimultaneousStates>> {
         match self {
-            FOV::Wise(fov) => fov.check_spks(obj_ids),
-            FOV::NeosCmos(fov) => fov.check_spks(obj_ids),
-            FOV::ZtfCcdQuad(fov) => fov.check_spks(obj_ids),
-            FOV::GenericCone(fov) => fov.check_spks(obj_ids),
-            FOV::GenericRectangle(fov) => fov.check_spks(obj_ids),
-            FOV::ZtfField(fov) => fov.check_spks(obj_ids),
-            FOV::NeosVisit(fov) => fov.check_spks(obj_ids),
-            FOV::OmniDirectional(fov) => fov.check_spks(obj_ids),
-            FOV::PtfCcd(fov) => fov.check_spks(obj_ids),
-            FOV::PtfField(fov) => fov.check_spks(obj_ids),
+            Self::Wise(fov) => fov.check_spks(obj_ids),
+            Self::NeosCmos(fov) => fov.check_spks(obj_ids),
+            Self::ZtfCcdQuad(fov) => fov.check_spks(obj_ids),
+            Self::GenericCone(fov) => fov.check_spks(obj_ids),
+            Self::GenericRectangle(fov) => fov.check_spks(obj_ids),
+            Self::ZtfField(fov) => fov.check_spks(obj_ids),
+            Self::NeosVisit(fov) => fov.check_spks(obj_ids),
+            Self::OmniDirectional(fov) => fov.check_spks(obj_ids),
+            Self::PtfCcd(fov) => fov.check_spks(obj_ids),
+            Self::PtfField(fov) => fov.check_spks(obj_ids),
         }
     }
 
     /// Check if static sources are visible in this FOV.
-    pub fn check_statics(&self, pos: &[Vector<Equatorial>]) -> Vec<Option<(Vec<usize>, FOV)>> {
+    pub fn check_statics(&self, pos: &[Vector<Equatorial>]) -> Vec<Option<(Vec<usize>, Self)>> {
         match self {
-            FOV::Wise(fov) => fov.check_statics(pos),
-            FOV::NeosCmos(fov) => fov.check_statics(pos),
-            FOV::ZtfCcdQuad(fov) => fov.check_statics(pos),
-            FOV::GenericCone(fov) => fov.check_statics(pos),
-            FOV::GenericRectangle(fov) => fov.check_statics(pos),
-            FOV::ZtfField(fov) => fov.check_statics(pos),
-            FOV::NeosVisit(fov) => fov.check_statics(pos),
-            FOV::OmniDirectional(fov) => fov.check_statics(pos),
-            FOV::PtfCcd(fov) => fov.check_statics(pos),
-            FOV::PtfField(fov) => fov.check_statics(pos),
+            Self::Wise(fov) => fov.check_statics(pos),
+            Self::NeosCmos(fov) => fov.check_statics(pos),
+            Self::ZtfCcdQuad(fov) => fov.check_statics(pos),
+            Self::GenericCone(fov) => fov.check_statics(pos),
+            Self::GenericRectangle(fov) => fov.check_statics(pos),
+            Self::ZtfField(fov) => fov.check_statics(pos),
+            Self::NeosVisit(fov) => fov.check_statics(pos),
+            Self::OmniDirectional(fov) => fov.check_statics(pos),
+            Self::PtfCcd(fov) => fov.check_statics(pos),
+            Self::PtfField(fov) => fov.check_statics(pos),
         }
     }
 }
