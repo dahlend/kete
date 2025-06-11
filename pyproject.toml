@@ -31,7 +31,7 @@ python-source = "src"
 module-name = "kete._core"
 
 [project.optional-dependencies]
-dev = ["black>=23.1.0",
+dev = ["ruff",
        "pytest",
        "pytest-cov",
        "sphinx",
@@ -40,7 +40,7 @@ dev = ["black>=23.1.0",
        "mypy",
        "types-requests",
        "sphinx_rtd_theme",
-        "click",
+       "click",
        ]
 docs = ["sphinx",
         "autodoc",
@@ -87,6 +87,7 @@ select = [
     # isort
     "I",
 ]
+exclude = ["src/examples/*"]
 
 [tool.mypy]
 plugins = "numpy.typing.mypy_plugin"

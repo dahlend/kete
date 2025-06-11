@@ -181,12 +181,12 @@ class TriangleEllipsoid(TriangleFaceted):
         matrix = []
         for i in range(0, n_div + 1):
             row = []
-            for j in range(0, 4 * i + 1):
+            for _ in range(0, 4 * i + 1):
                 row.append(0)
             matrix.append(row)
         for i in range(n_div - 1, -1, -1):
             row = []
-            for j in range(0, 4 * i + 1):
+            for _ in range(0, 4 * i + 1):
                 row.append(0)
             matrix.append(row)
 

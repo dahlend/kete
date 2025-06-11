@@ -3,6 +3,7 @@ Interface functions and classes to JPL Horizons web services.
 """
 
 import base64
+import contextlib
 import gzip
 import json
 import os
@@ -217,10 +218,8 @@ def _fetch_json(
             pass
 
     if isinstance(name, str):
-        try:
+        with contextlib.suppress(ValueError):
             name = unpack_designation(name)
-        except ValueError:
-            pass
     else:
         name = str(name)
     query = "des" if exact_name else "sstr"
@@ -413,12 +412,8 @@ def fetch_spice_kernel(
         jd_end = Time(jd_end)
 
     if isinstance(name, str):
-        try:
+        with contextlib.suppress(ValueError):
             name = unpack_designation(name)
-        except (SyntaxError, ValueError):
-            pass
-    else:
-        name = str(name)
 
     query = "des" if exact_name else "sstr"
     # Name resolution using the sbdb database

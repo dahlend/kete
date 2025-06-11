@@ -64,11 +64,8 @@ def plot_fits_image(fit, percentiles=(0.1, 99.95), power_stretch=0.5, cmap="gray
     ax = fig.add_subplot(rows, cols, start + 1, projection=wcs)
     ax.set_aspect("equal", adjustable="box")
     fig.axes[start] = ax
-
-    if power_stretch == 1:
-        stretch = LinearStretch()
-    else:
-        stretch = PowerDistStretch(power_stretch)
+    
+    stretch = LinearStretch() if power_stretch == 1 else PowerDistStretch(power_stretch)
 
     if percentiles is None:
         interval = ZScaleInterval()
