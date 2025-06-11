@@ -5,8 +5,10 @@ This may be used to draw samples fairly from a broken power law.
 """
 
 from __future__ import annotations
-import numpy as np
+
 from functools import partial
+
+import numpy as np
 from numpy.typing import NDArray
 
 

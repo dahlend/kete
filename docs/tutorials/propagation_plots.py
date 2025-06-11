@@ -1,5 +1,6 @@
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
+
 import kete
 
 kete.spice.kernel_reload(["./data/20000042.bsp"])

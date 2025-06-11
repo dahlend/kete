@@ -2,22 +2,23 @@
 Interface functions and classes to JPL Horizons web services.
 """
 
-import gzip
-import requests
-import os
-from typing import Union, Optional
-from functools import lru_cache
-
 import base64
+import contextlib
+import gzip
 import json
+import os
+from functools import lru_cache
+from typing import Optional, Union
+
 import numpy as np
 import pandas as pd
+import requests
 
-from ._core import HorizonsProperties, Covariance, NonGravModel, CometElements
-from .mpc import unpack_designation, pack_designation
-from .time import Time
+from ._core import CometElements, Covariance, HorizonsProperties, NonGravModel
 from .cache import cache_path
 from .covariance import generate_sample_from_cov
+from .mpc import pack_designation, unpack_designation
+from .time import Time
 
 __all__ = ["HorizonsProperties", "fetch_spice_kernel", "fetch_known_orbit_data"]
 
@@ -203,7 +204,7 @@ def _fetch_json(
     dir_path = os.path.join(cache_path(), "horizons_props")
     try:
         filename = os.path.join(dir_path, f"{pack_designation(name)}.json")
-    except (SyntaxError, ValueError):
+    except ValueError:
         filename = os.path.join(dir_path, f"{name.replace('/', '_')}.json")
 
     if not os.path.isdir(dir_path) and cache:
@@ -211,16 +212,14 @@ def _fetch_json(
 
     if os.path.isfile(filename) and cache and not update_cache:
         try:
-            with open(filename, "r", encoding="utf8") as f:
+            with open(filename, encoding="utf8") as f:
                 return json.load(f)
         except Exception:  # pylint: disable=broad-except
             pass
 
     if isinstance(name, str):
-        try:
+        with contextlib.suppress(ValueError):
             name = unpack_designation(name)
-        except (SyntaxError, ValueError):
-            pass
     else:
         name = str(name)
     query = "des" if exact_name else "sstr"
@@ -413,12 +412,8 @@ def fetch_spice_kernel(
         jd_end = Time(jd_end)
 
     if isinstance(name, str):
-        try:
+        with contextlib.suppress(ValueError):
             name = unpack_designation(name)
-        except (SyntaxError, ValueError):
-            pass
-    else:
-        name = str(name)
 
     query = "des" if exact_name else "sstr"
     # Name resolution using the sbdb database
@@ -474,7 +469,7 @@ def fetch_spice_kernel(
         f.write(base64.b64decode(response.json()["spk"]))
 
 
-@lru_cache()
+@lru_cache
 def fetch_known_orbit_data(update_cache=False):
     """
     Fetch the known orbit data from JPL Horizons for all known asteroids and comets.

@@ -3,25 +3,26 @@ Field of view definitions, along with tests for checks to see if objects are wit
 FOVs.
 """
 
+from . import spice
 from ._core import (
+    ConeFOV,
+    FOVList,
     NeosCmos,
     NeosVisit,
-    WiseCmos,
-    ZtfCcdQuad,
-    ZtfField,
+    OmniDirectionalFOV,
     PtfCcd,
     PtfField,
     RectangleFOV,
-    ConeFOV,
-    OmniDirectionalFOV,
-    FOVList,
-    fov_static_check,
+    WiseCmos,
+    ZtfCcdQuad,
+    ZtfField,
     fov_state_check,
+    fov_static_check,
+)
+from ._core import (
     fov_spk_check as _fov_spk_check,
 )
 from .vector import State, Vector
-from . import spice
-
 
 __all__ = [
     "NeosCmos",

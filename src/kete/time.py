@@ -3,9 +3,11 @@ Time conversion support, primarily provided by the :py:class:`Time` class.
 """
 
 from __future__ import annotations
+
 import calendar
 import datetime
 from zoneinfo import ZoneInfo
+
 from ._core import Time
 
 __all__ = ["Time", "d_h_m_s_to_float_days", "days_in_year"]

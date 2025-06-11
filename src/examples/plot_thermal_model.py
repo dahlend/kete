@@ -7,12 +7,13 @@ part of a spherical asteroid in both models, and plots the results.
 The geometry is such that the sun is 1 AU away from the asteroid along the X-axis.
 """
 
-import kete
-import numpy as np
 import matplotlib as mpl
 import matplotlib.cm as cm
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import matplotlib.pyplot as plt
+import numpy as np
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+
+import kete
 
 # Compute the temperatures of each facet of an object and plot it in 3d
 # Set the physical parameters used for the simulation

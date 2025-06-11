@@ -31,7 +31,7 @@ python-source = "src"
 module-name = "kete._core"
 
 [project.optional-dependencies]
-dev = ["black>=23.1.0",
+dev = ["ruff",
        "pytest",
        "pytest-cov",
        "sphinx",
@@ -40,7 +40,7 @@ dev = ["black>=23.1.0",
        "mypy",
        "types-requests",
        "sphinx_rtd_theme",
-        "click",
+       "click",
        ]
 docs = ["sphinx",
         "autodoc",
@@ -69,21 +69,25 @@ omit = ["*/kete/mpc.py",
         "*/kete/data/*",
         "*/examples/*",]
 
-# See https://github.com/psf/black/blob/main/pyproject.toml for more details
-[tool.black]
+[tool.ruff]
 line-length = 88
-target_version = ["py39"]
-exclude = '''
-(
-  /(
-      \.eggs         # exclude a few common directories in the
-    | \.git          # root of the project
-  )/
-)
-'''
 
-[tool.pylint.imports]
-ignored-modules=["_core", "kete._core"]
+[tool.ruff.lint]
+select = [
+    # pycodestyle
+    "E",
+    # Pyflakes
+    "F",
+    # pyupgrade
+    "UP",
+    # flake8-bugbear
+    "B",
+    # flake8-simplify
+    "SIM",
+    # isort
+    "I",
+]
+exclude = ["src/examples/*"]
 
 [tool.mypy]
 plugins = "numpy.typing.mypy_plugin"

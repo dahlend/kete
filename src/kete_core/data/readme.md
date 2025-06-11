@@ -5,7 +5,7 @@ These are loaded and packed into the final rust binary, and are included automat
 
 `mpc_obs.tsv` - Downloaded from https://minorplanetcenter.net/iau/lists/ObsCodes.html
     Contains obs codes and locations. These are loaded and compiled into the final
-    binary. Entries with gaps, such as spacecraft are ignored.
+    binary. Entries with gaps, such as spacecraft, will return with NAN values.
 
 `naif_ids.csv` - CSV containing a table of many of the known NAIF identifiers to full
     names. This is not 100% guaranteed to match, as JPL may decide to renumber objects.

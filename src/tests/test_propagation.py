@@ -1,14 +1,15 @@
-import pytest
 import numpy as np
+import pytest
+
 from kete import (
-    constants,
-    spice,
-    propagate_two_body,
-    propagate_n_body,
-    moid,
-    Vector,
     State,
     Time,
+    Vector,
+    constants,
+    moid,
+    propagate_n_body,
+    propagate_two_body,
+    spice,
 )
 from kete.propagation import NonGravModel
 

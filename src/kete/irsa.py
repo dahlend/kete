@@ -6,10 +6,10 @@ This will be removed in a future version.
 """
 
 from __future__ import annotations
-from .deprecation import rename
-from .plot import plot_fits_image, zoom_plot, annotate_plot
-from .tap import tap_column_info, query_tap
 
+from .deprecation import rename
+from .plot import annotate_plot, plot_fits_image, zoom_plot
+from .tap import query_tap, tap_column_info
 
 # rename the function to match the new location
 plot_fits_image = rename(

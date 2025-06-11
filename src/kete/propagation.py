@@ -7,12 +7,11 @@ from __future__ import annotations
 
 from ._core import (
     NonGravModel,
+    moid,
     propagate_n_body,
     propagate_n_body_long,
     propagate_two_body,
-    moid,
 )
-
 
 __all__ = [
     "propagate_n_body",

@@ -1,32 +1,29 @@
 from __future__ import annotations
 
-
-import os
 import logging
+import os
 from collections import namedtuple
 from functools import lru_cache
-from typing import Optional, Union
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-
 from astropy.io import fits
 
 from . import spice
-from .cache import cache_path, download_file
-from .deprecation import rename
-from .time import Time
-from .vector import Vector, Frames
-from .plot import plot_fits_image, zoom_plot, annotate_plot
-from .tap import query_tap, IRSA_URL
-from .fov import WiseCmos, FOVList
-
 from ._core import (
     w1_color_correction,
     w2_color_correction,
     w3_color_correction,
     w4_color_correction,
 )
+from .cache import cache_path, download_file
+from .deprecation import rename
+from .fov import FOVList, WiseCmos
+from .plot import annotate_plot, plot_fits_image, zoom_plot
+from .tap import IRSA_URL, query_tap
+from .time import Time
+from .vector import Frames, Vector
 
 __all__ = [
     "fetch_frame",
@@ -253,7 +250,7 @@ def mission_phase_from_jd(jd: float):
     return None
 
 
-def mission_phase_from_scan(scan_id: str) -> Optional[MissionPhase]:
+def mission_phase_from_scan(scan_id: str) -> None | MissionPhase:
     """
     Return the mission phase for WISE from the provided scan id.
 
@@ -333,9 +330,7 @@ def mission_phase_from_scan(scan_id: str) -> Optional[MissionPhase]:
             return MISSION_PHASES["Reactivation_2021"]
         elif scan_num <= 46370:
             return MISSION_PHASES["Reactivation_2022"]
-        elif scan_num <= 57041:
-            return MISSION_PHASES["Reactivation_2023"]
-        elif scan_num <= 57626:
+        elif scan_num <= 57041 or scan_num <= 57626:
             return MISSION_PHASES["Reactivation_2023"]
         elif scan_num <= 64272:
             return MISSION_PHASES["Reactivation_2024"]
@@ -440,10 +435,10 @@ def fetch_frame(
 def plot_frames(
     scan_id,
     frame_num=None,
-    ra: Optional[float | list[float]] = None,
-    dec: Optional[float | list[float]] = None,
-    zoom: Union[bool | float] = True,
-    bands: Optional[list[int]] = None,
+    ra: None | float | list[float] = None,
+    dec: None | float | list[float] = None,
+    zoom: bool | float = True,
+    bands: None | list[int] = None,
     cmap="gray_r",
     annotate=True,
 ):

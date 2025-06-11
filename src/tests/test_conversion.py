@@ -1,21 +1,21 @@
 import numpy as np
 import pytest
+
 from kete import constants
 from kete.conversion import (
     compute_albedo,
     compute_diameter,
     compute_earth_radius,
-    compute_h_mag,
     compute_eccentric_anomaly,
+    compute_h_mag,
     compute_tisserand,
-    ra_degrees_to_hms,
-    ra_hms_to_degrees,
     dec_degrees_to_dms,
     dec_dms_to_degrees,
     flux_to_mag,
     mag_to_flux,
+    ra_degrees_to_hms,
+    ra_hms_to_degrees,
 )
-
 
 # eccentricity, mean_anomaly, eccentric_anomaly
 ECC_ANOM_VALUES = [

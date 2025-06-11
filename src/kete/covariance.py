@@ -1,5 +1,6 @@
-from scipy.stats import chi2
 import numpy as np
+from scipy.stats import chi2
+
 import kete
 
 

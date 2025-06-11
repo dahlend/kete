@@ -6,22 +6,22 @@ The imaging sensor is made up of a 4x4 grid of CCDs, which are further subdivide
 2x2 "Quads", meaning each image that is captured is returned as 64 frames.
 """
 
-import os
 import logging
-from functools import lru_cache
+import os
 from collections import defaultdict
-from astropy.io import fits
+from functools import lru_cache
+
 import pandas as pd
+from astropy.io import fits
 
-from .cache import download_file, cache_path
-from .deprecation import rename
-from .fov import ZtfCcdQuad, ZtfField, FOVList
-from .time import Time
-from .tap import query_tap
-from .mpc import find_obs_code
-from .vector import Vector, State
 from . import spice
-
+from .cache import cache_path, download_file
+from .deprecation import rename
+from .fov import FOVList, ZtfCcdQuad, ZtfField
+from .mpc import find_obs_code
+from .tap import query_tap
+from .time import Time
+from .vector import State, Vector
 
 __all__ = ["fetch_fovs", "fetch_frame", "fetch_file"]
 

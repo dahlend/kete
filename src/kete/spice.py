@@ -1,21 +1,22 @@
 from __future__ import annotations
-from typing import Union, Optional
-from collections import namedtuple
-import requests
+
 import glob
 import os
-import numpy as np
+from collections import namedtuple
 
-from .time import Time
+import numpy as np
+import requests
+
 from . import _core
-from .constants import AU_KM
-from .cache import download_file, cache_path
-from .vector import Frames, State
 from ._core import (
-    state_to_earth_pos,
     instrument_equatorial_to_frame,
     instrument_frame_to_equatorial,
+    state_to_earth_pos,
 )
+from .cache import cache_path, download_file
+from .constants import AU_KM
+from .time import Time
+from .vector import Frames, State
 
 __all__ = [
     "SpkInfo",
@@ -46,7 +47,7 @@ SpkInfo.frame.__doc__ = "Frame of reference."
 SpkInfo.spk_type.__doc__ = "SPK Segment Type ID."
 
 
-def _validate_time(time: Union[float, Time]) -> float:
+def _validate_time(time: float | Time) -> float:
     """
     Verifies that the time provided is either a `float` or
     :class:`~kete.time.Time` object.
@@ -81,8 +82,8 @@ _NAME_CACHE: dict = {}
 
 
 def get_state(
-    target: Union[str, int],
-    jd: Union[float, Time],
+    target: str | int,
+    jd: float | Time,
     center: str = "Sun",
     frame: Frames = Frames.Ecliptic,
 ) -> State:
@@ -121,7 +122,7 @@ def get_state(
     return _core.spk_state(ids, jd, center_id, frame)
 
 
-def name_lookup(name: Union[int, str]) -> tuple[str, int]:
+def name_lookup(name: int | str) -> tuple[str, int]:
     """
     Given the provided partial name or integer, find the full name contained within
     the loaded SPICE kernels.
@@ -198,7 +199,7 @@ def loaded_objects() -> list[tuple[str, int]]:
     return [(_core.spk_get_name_from_id(o), o) for o in objects]
 
 
-def loaded_object_info(desig: Union[int, str]) -> list[SpkInfo]:
+def loaded_object_info(desig: int | str) -> list[SpkInfo]:
     """
     Return the available SPK information for the target object.
 
@@ -227,7 +228,7 @@ def kernel_fetch_from_url(url, force_download: bool = False):
 
 
 def kernel_reload(
-    filenames: Optional[list[str]] = None, include_cache=False, include_planets=True
+    filenames: list[str] | None = None, include_cache=False, include_planets=True
 ):
     """
     Load the specified spice kernels into memory, this resets the currently loaded
@@ -335,7 +336,7 @@ def kernel_header_comments(filename: str):
 
 
 def mpc_code_to_ecliptic(
-    obs_code: str, jd: Union[float, Time], center: str = "Sun", full_name=False
+    obs_code: str, jd: float | Time, center: str = "Sun", full_name=False
 ) -> State:
     """
     Load an MPC Observatory code as an ecliptic state.
@@ -375,11 +376,11 @@ def mpc_code_to_ecliptic(
 
 
 def earth_pos_to_ecliptic(
-    jd: Union[float, Time],
+    jd: float | Time,
     geodetic_lat: float,
     geodetic_lon: float,
     height_above_surface: float,
-    name: Optional[str] = None,
+    name: str | None = None,
     center: str = "Sun",
 ) -> State:
     """
@@ -423,7 +424,7 @@ def earth_pos_to_ecliptic(
     return _core.pck_earth_frame_to_ecliptic(pos, jd, center_id, name)
 
 
-def moon_illumination_frac(jd: Union[float, Time], observer: str = "399"):
+def moon_illumination_frac(jd: float | Time, observer: str = "399"):
     """
     Compute the fraction of the moon which is illuminated at the specified time.
 

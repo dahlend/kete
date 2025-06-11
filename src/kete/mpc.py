@@ -1,20 +1,18 @@
 from __future__ import annotations
+
 import logging
-from functools import lru_cache
 from dataclasses import dataclass
-import pandas as pd
+from functools import lru_cache
+
 import numpy as np
+import pandas as pd
 
-
-from . import conversion, constants, deprecation
-from .time import Time
-from .vector import Vector, Frames
+from . import _core, constants, conversion, deprecation
+from ._core import pack_designation, unpack_designation
 from .cache import download_json
 from .conversion import table_to_states
-
-from . import _core
-from ._core import unpack_designation, pack_designation
-
+from .time import Time
+from .vector import Frames, Vector
 
 __all__ = [
     "unpack_designation",
@@ -69,7 +67,7 @@ def find_obs_code(name: str):
         raise ValueError(f"Found multiple codes: \n{found_str}")
 
 
-@lru_cache()
+@lru_cache
 def fetch_known_designations(force_download=False):
     """
     Download the most recent copy of the MPCs known ID mappings in their unpacked
@@ -147,7 +145,7 @@ def fetch_known_packed_to_full_names(force_download=False):
     return lookup
 
 
-@lru_cache()
+@lru_cache
 def fetch_known_orbit_data(url=None, force_download=False):
     """
     Download the orbital elements from the MPC at the specified URL.
@@ -212,7 +210,7 @@ def fetch_known_orbit_data(url=None, force_download=False):
     return pd.DataFrame.from_records(objects)
 
 
-@lru_cache()
+@lru_cache
 def fetch_known_comet_orbit_data(force_download=False):
     """
     Download the orbital elements for comets from the MPC at the specified URL.

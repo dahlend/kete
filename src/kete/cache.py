@@ -1,15 +1,17 @@
 from __future__ import annotations
-import requests
-import requests.adapters
+
 import gzip
 import json
 import logging
-import urllib
 import os
 import shutil
-from urllib3.util.retry import Retry
-from ._core import cache_path
+import urllib
 
+import requests
+import requests.adapters
+from urllib3.util.retry import Retry
+
+from ._core import cache_path
 
 logger = logging.getLogger(__name__)
 
@@ -28,9 +30,8 @@ def _zip_existing(path):
     logger.info(
         "Unzipped version of file found, zipping it before continuing. \n%s", path
     )
-    with open(path, "rb") as f_in:
-        with gzip.open(path + ".gz", "wb") as f_out:
-            shutil.copyfileobj(f_in, f_out)
+    with open(path, "rb") as f_in, gzip.open(path + ".gz", "wb") as f_out:
+        shutil.copyfileobj(f_in, f_out)
     os.remove(path)
 
 

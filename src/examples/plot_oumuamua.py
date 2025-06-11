@@ -6,9 +6,10 @@ This will open an interactive 3d plot of the solar system with the object plotte
 between the specified dates.
 """
 
-import kete
 import matplotlib.pyplot as plt
 import numpy as np
+
+import kete
 
 # %%
 # Inputs

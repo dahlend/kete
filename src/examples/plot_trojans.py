@@ -3,9 +3,10 @@ Plotting Jupiter Trojans
 ========================
 """
 
-import kete
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
+
+import kete
 
 # Load orbit data and select just the jupiter trojans
 orbs = kete.mpc.fetch_known_orbit_data()

@@ -19,9 +19,10 @@ specified elevation. The dotted black line corresponds to the total length of th
 as defined exactly sunset and sunrise at the observers location.
 """
 
-import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+import matplotlib.pyplot as plt
 import numpy as np
+
 import kete
 
 # Inputs:

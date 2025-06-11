@@ -18,9 +18,10 @@ Units of position are in AU and velocity is AU / Day.
 # Basic Geometry
 # --------------
 
-import kete
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
+
+import kete
 
 # Lets construct an object circular orbit
 # Recall that an object in circular orbit has a speed of sqrt(GM / r) where r is the

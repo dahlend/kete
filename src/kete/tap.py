@@ -3,19 +3,21 @@ Query tools for TAP services such as IRSA
 """
 
 from __future__ import annotations
-import io
-import os
-import json
+
 import gzip
 import hashlib
-from functools import lru_cache
-import time
+import io
+import json
 import logging
+import os
+import time
+from functools import lru_cache
 from xml.etree import ElementTree
-import requests
-import pandas as pd
-from .cache import cache_path
 
+import pandas as pd
+import requests
+
+from .cache import cache_path
 
 __all__ = ["tap_column_info", "query_tap"]
 
@@ -27,7 +29,7 @@ CADC_TAP_URL = "https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/argus/async"
 logger = logging.getLogger(__name__)
 
 
-@lru_cache()
+@lru_cache
 def tap_column_info(table_name, base_url=IRSA_TAP_URL, auth=None):
     """
     Retrieve the column data for a specified TAP table.
