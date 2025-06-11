@@ -5,9 +5,9 @@
 <a href="https://doi.org/10.5281/zenodo.15259732"><img src="https://zenodo.org/badge/DOI/10.5281/zenodo.15259732.svg"></a>
 </p> 
 
-# **Kete** - Solar System Survey Simulation Software
+# *Kete*
 
-## Introduction
+Solar System Survey Simulation Software.
 
 The kete tools are intended to enable the simulation of all-sky surveys of minor
 planets. This includes multi-body physics orbital dynamics, thermal and optical modeling
