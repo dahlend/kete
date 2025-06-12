@@ -5,9 +5,16 @@ description = "Kete Asteroid Survey Tools"
 readme = "README.md"
 authors = [{name = "Dar Dahlen", email = "dardahlen@gmail.com"},
           ]
-license = {text = "License :: OSI Approved :: BSD License"}
+license = {text = "BSD", file = "LICENSE"}
 requires-python = ">=3.9"
-classifiers=["Programming Language :: Python :: 3"]
+classifiers=[
+    "Programming Language :: Python :: 3",
+    "Intended Audience :: Education",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Scientific/Engineering :: Physics",
+]
 dependencies = ["astropy>=5.3.4",
                 "matplotlib",
                 "matplotlib-label-lines<=0.8.0",
@@ -29,6 +36,7 @@ build-backend = "maturin"
 [tool.maturin]
 python-source = "src"
 module-name = "kete._core"
+manifest-path = "Cargo.toml"
 
 [project.optional-dependencies]
 dev = ["ruff",
