@@ -25,7 +25,7 @@ __all__ = [
 
 table_to_states = deprecation.rename(
     table_to_states,
-    "1.2.0",
+    "2.0.0",
     old_name="table_to_states",
     additional_msg="Use `kete.conversion.table_to_states` instead.",
 )

@@ -618,6 +618,6 @@ def fetch_fovs(phase):
 
 fetch_WISE_fovs = rename(
     fetch_fovs,
-    "1.2.0",
+    "2.0.0",
     old_name="fetch_WISE_fovs",
 )

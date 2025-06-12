@@ -29,7 +29,10 @@ use std::fmt::Display;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
-use crate::errors::{Error, KeteResult};
+use crate::{
+    errors::{Error, KeteResult},
+    spice::try_name_from_id,
+};
 
 static MPC_HEX: &str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
@@ -82,6 +85,19 @@ impl Desig {
     /// Return a full string representation of the designation, including the type.
     pub fn full_string(&self) -> String {
         format!("{:?}", self)
+    }
+
+    /// Try to convert a naif ID into a name.
+    pub fn try_naif_id_to_name(&self) -> Self {
+        if let Self::Naif(id) = self {
+            if let Some(name) = try_name_from_id(*id) {
+                Self::Name(name)
+            } else {
+                self.clone()
+            }
+        } else {
+            self.clone()
+        }
     }
 
     /// parse an MPC unpacked designation string into a [`Desig`].

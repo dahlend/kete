@@ -22,7 +22,6 @@ use std::fmt::Debug;
 use crate::desigs::Desig;
 use crate::errors::{Error, KeteResult};
 use crate::frames::{InertialFrame, Vector};
-use crate::spice;
 
 /// Exact State of an object.
 ///
@@ -140,13 +139,8 @@ impl<T: InertialFrame> State<T> {
     }
 
     /// Attempt to update the designation from a naif id to a name.
-    pub fn try_naif_id_to_name(&mut self) -> Option<()> {
-        if let Desig::Naif(id) = self.desig {
-            self.desig = Desig::Name(spice::try_name_from_id(id)?);
-            Some(())
-        } else {
-            None
-        }
+    pub fn try_naif_id_to_name(&mut self) {
+        self.desig = self.desig.try_naif_id_to_name();
     }
 
     /// Convert the state into a new frame.
@@ -214,7 +208,7 @@ mod tests {
             [0.0, 1.0, 0.0].into(),
             0,
         );
-        assert!(a.try_naif_id_to_name().is_some());
+        a.try_naif_id_to_name();
         assert!(a.desig == Desig::Name("mercury barycenter".into()));
         assert!(a.desig.full_string() == "Name(\"mercury barycenter\")");
         assert!(a.desig.to_string() == "mercury barycenter");

@@ -140,7 +140,7 @@ def fetch_fovs(year: int):
 
 fetch_ztf_fovs = rename(
     fetch_fovs,
-    "1.2.0",
+    "2.0.0",
     old_name="fetch_ztf_fovs",
 )
 
