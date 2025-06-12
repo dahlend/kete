@@ -4,11 +4,11 @@ use nalgebra::SVector;
 /// Function will be of the form `y' = F(t, y, metadata, exact_eval)`.
 /// Metadata is passed for every evaluation. The `exact_eval` bool indicates to the
 /// function that the input parameters are known to be solutions for the IVP.
-pub type FirstOrderFunc<'a, MType, const D: usize> =
+type FirstOrderFunc<'a, MType, const D: usize> =
     &'a dyn Fn(f64, &SVector<f64, D>, &mut MType, bool) -> KeteResult<SVector<f64, D>>;
 
 /// Integrator will return a result of this type.
-pub type FirstOrderResult<MType, const D: usize> = KeteResult<(SVector<f64, D>, MType)>;
+type FirstOrderResult<MType, const D: usize> = KeteResult<(SVector<f64, D>, MType)>;
 
 /// Runge-Kutta-Fehlberg Integrator - RK4(5)
 /// <https://en.wikipedia.org/wiki/Runge%E2%80%93Kutta%E2%80%93Fehlberg_method>

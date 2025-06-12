@@ -7,7 +7,7 @@ use nom::{
 
 use crate::{
     errors::{Error, KeteResult},
-    spice::parse_num,
+    spice::sclk::parse_num,
 };
 
 /// Degree angle representation.

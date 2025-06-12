@@ -1,6 +1,6 @@
 //! # ZTF Fov definitions.
-
-use super::{Contains, FOV, FovLike, OnSkyRectangle, SkyPatch, closest_inside};
+use super::patches::closest_inside;
+use super::{Contains, FOV, FovLike, OnSkyRectangle, SkyPatch};
 use crate::{frames::Vector, prelude::*};
 use serde::{Deserialize, Serialize};
 

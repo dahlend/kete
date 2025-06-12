@@ -8,17 +8,19 @@ mod naif_ids;
 mod obs_codes;
 mod pck;
 mod pck_segments;
-mod sclk;
 mod spk;
 mod spk_segments;
 
-pub use ck::*;
-pub use daf::*;
+// slightly higher visibility as it has useful parsing methods
+pub(crate) mod sclk;
+
+pub use ck::{CkCollection, LOADED_CK};
+pub use daf::{CkArray, DAFType, DafArray, DafFile, PckArray, SpkArray};
 pub use naif_ids::try_name_from_id;
 pub use obs_codes::{OBS_CODES, ObsCode};
-pub use pck::*;
-pub use sclk::*;
-pub use spk::*;
+pub use pck::{LOADED_PCK, PckCollection};
+pub use sclk::{LOADED_SCLK, SclkCollection};
+pub use spk::{LOADED_SPK, SpkCollection};
 
 /// Convert seconds from J2000 into JD.
 ///

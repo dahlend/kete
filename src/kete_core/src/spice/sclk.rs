@@ -20,7 +20,7 @@ use crate::{
     cache::cache_path,
     errors::{Error, KeteResult},
     spice::spice_jd_to_jd,
-    time::{Time, scales::TDB},
+    time::{TDB, Time},
 };
 
 use super::jd_to_spice_jd;
@@ -33,7 +33,7 @@ pub struct SclkCollection {
 }
 
 /// Define the SCLK singleton structure.
-pub type SclkSingleton = ShardedLock<SclkCollection>;
+type SclkSingleton = ShardedLock<SclkCollection>;
 
 impl SclkCollection {
     /// Given an SCLK filename, load all the segments present inside of it.
@@ -176,7 +176,7 @@ lazy_static! {
 /// Represents a spacecraft clock kernel used in SPICE, as loaded from
 /// a spice kernel text file.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Sclk {
+struct Sclk {
     /// NAIF id of the spacecraft.
     pub naif_id: i32,
 
@@ -200,13 +200,13 @@ pub struct Sclk {
 
 impl Sclk {
     /// Given an SCLK clock string, parse it into a `Time<TDB>`.
-    pub fn string_to_time(&self, time_str: &str) -> KeteResult<Time<TDB>> {
+    fn string_to_time(&self, time_str: &str) -> KeteResult<Time<TDB>> {
         let (_, tick) = self.string_to_tick(time_str)?;
         self.tick_to_time(tick)
     }
 
     /// Convert a spacecraft clock tick (SCLK time) into a [`Time<TDB>`].
-    pub fn tick_to_time(&self, tick: f64) -> KeteResult<Time<TDB>> {
+    fn tick_to_time(&self, tick: f64) -> KeteResult<Time<TDB>> {
         let clock_rate = self.find_tick_rate(tick)?;
 
         let par_time = (tick - clock_rate[0])
@@ -217,7 +217,7 @@ impl Sclk {
     }
 
     /// Convert time in TDB to a spacecraft clock tick count.
-    pub fn time_to_tick(&self, time: Time<TDB>) -> KeteResult<f64> {
+    fn time_to_tick(&self, time: Time<TDB>) -> KeteResult<f64> {
         let jd = time.jd;
         let par_time = jd_to_spice_jd(jd);
         let clock_rate = self.find_parallel_time_rate(par_time)?;
@@ -229,7 +229,7 @@ impl Sclk {
     }
 
     /// Convert a spacecraft clock string into the partition and tick count.
-    pub fn string_to_tick(&self, time_str: &str) -> KeteResult<(usize, f64)> {
+    fn string_to_tick(&self, time_str: &str) -> KeteResult<(usize, f64)> {
         let (_, (partition, mut fields)) = parse_time_fields(time_str)
             .map_err(|_| Error::ValueError("Failed to parse time fields.".into()))?;
 

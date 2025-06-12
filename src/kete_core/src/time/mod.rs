@@ -5,13 +5,15 @@
 
 use std::marker::PhantomData;
 
-pub mod leap_second;
-pub mod scales;
+mod leap_second;
+mod scales;
 
 use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc};
-use scales::{JD_TO_MJD, TAI, TDB, TimeScale, UTC};
 
 use crate::prelude::{Error, KeteResult};
+
+// pub use self::leap_second::{};
+pub use self::scales::{JD_TO_MJD, TAI, TDB, TimeScale, UTC};
 
 /// Representation of Time.
 ///

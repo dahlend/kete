@@ -10,7 +10,7 @@ use crate::prelude::{Error, KeteResult};
 /// Leap Second Information
 /// This is parsed from the contents of the `leap_second.dat` file.
 #[derive(Debug, Deserialize)]
-pub struct LeapSecond {
+struct LeapSecond {
     ///  MJD
     pub mjd: f64,
 
@@ -39,7 +39,7 @@ const PRELOAD_LEAPSECONDS: &[u8] = include_bytes!("../../data/leap_second.dat");
 
 lazy_static! {
     /// Leap second definitions
-    pub static ref LEAP_SECONDS: Vec<LeapSecond> = {
+    static ref LEAP_SECONDS: Vec<LeapSecond> = {
         let mut codes = Vec::new();
         let text = std::str::from_utf8(PRELOAD_LEAPSECONDS).unwrap().split('\n');
         for row in text.filter(|x| !x.starts_with('#') & (!x.trim().is_empty())) {
@@ -59,7 +59,7 @@ lazy_static! {
 /// # Arguments
 ///
 /// * `MJD` - MJD in TAI scaled time.
-pub fn tai_to_utc_offset(mjd: &f64) -> f64 {
+pub(crate) fn tai_to_utc_offset(mjd: &f64) -> f64 {
     match LEAP_SECONDS.binary_search_by(|probe| probe.mjd.total_cmp(mjd)) {
         Ok(idx) => LEAP_SECONDS[idx].tai_m_utc,
         Err(0) => 0.0,

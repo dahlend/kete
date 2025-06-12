@@ -1,14 +1,10 @@
-//! # Management of the cached files
+//! # Management of cached files
 //!
 //! kete saves files in a cache directory, which by default exists in the
 //! home directory of the user. This can be changed by setting the ``KETE_CACHE_DIR``
 //! environment variable. The cache directory is used to store files that are
 //! downloaded from the internet, for example the SPICE kernels.
 
-/// BSD 3-Clause License
-///
-/// Copyright (c) 2025, Dar Dahlen
-///
 use directories::UserDirs;
 use std::{
     env::{self},

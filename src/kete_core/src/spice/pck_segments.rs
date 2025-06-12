@@ -17,8 +17,7 @@ use super::{PckArray, interpolation::*};
 use crate::errors::Error;
 use crate::frames::NonInertialFrame;
 use crate::prelude::KeteResult;
-use crate::time::Time;
-use crate::time::scales::TDB;
+use crate::time::{TDB, Time};
 use std::fmt::Debug;
 
 #[derive(Debug)]

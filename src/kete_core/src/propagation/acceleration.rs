@@ -21,7 +21,7 @@
 use crate::frames::Equatorial;
 use crate::prelude::KeteResult;
 use crate::spice::LOADED_SPK;
-use crate::{constants::*, errors::Error, propagation::nongrav::NonGravModel};
+use crate::{constants, errors::Error, propagation::nongrav::NonGravModel};
 use nalgebra::allocator::Allocator;
 use nalgebra::{DefaultAllocator, Dim, Matrix3, OVector, U1, U2, Vector3};
 use std::ops::AddAssign;
@@ -77,7 +77,7 @@ pub fn central_accel(
         meta.vel.push(*vel);
     }
 
-    Ok(-pos * pos.norm().powi(-3) * GMS)
+    Ok(-pos * pos.norm().powi(-3) * constants::GMS)
 }
 
 /// Metadata for the [`spk_accel`] function defined below.
@@ -96,7 +96,7 @@ pub struct AccelSPKMeta<'a> {
     /// This list contains the ID of the object in the SPK along with the mass and
     /// radius of the object. Mass is given in fractions of solar mass and radius is
     /// in AU.
-    pub massive_obj: &'a [GravParams],
+    pub massive_obj: &'a [constants::GravParams],
 }
 
 /// Compute the accel on an object which experiences acceleration due to all massive
@@ -180,7 +180,7 @@ pub struct AccelVecMeta<'a> {
     /// This list contains the ID of the object in the SPK along with the mass and
     /// radius of the object. Mass is given in fractions of solar mass and radius is
     /// in AU.
-    pub massive_obj: &'a [GravParams],
+    pub massive_obj: &'a [constants::GravParams],
 }
 
 /// Compute the accel on an object which experiences acceleration due to all massive
@@ -303,7 +303,7 @@ mod tests {
         let mut pos: Vec<f64> = Vec::new();
         let mut vel: Vec<f64> = Vec::new();
 
-        for obj in MASSES.iter() {
+        for obj in constants::MASSES.iter() {
             let planet = spk
                 .try_get_state_with_center::<Equatorial>(obj.naif_id, jd, 0)
                 .unwrap();
@@ -320,14 +320,14 @@ mod tests {
             &vel.into(),
             &mut AccelVecMeta {
                 non_gravs: vec![None],
-                massive_obj: MASSES,
+                massive_obj: constants::MASSES,
             },
             false,
         )
         .unwrap()
         .iter()
         .copied()
-        .skip(MASSES.len() * 3)
+        .skip(constants::MASSES.len() * 3)
         .collect_vec();
 
         let accel2 = spk_accel(
@@ -337,7 +337,7 @@ mod tests {
             &mut AccelSPKMeta {
                 close_approach: None,
                 non_grav_model: None,
-                massive_obj: MASSES,
+                massive_obj: constants::MASSES,
             },
             false,
         )

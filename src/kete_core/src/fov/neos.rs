@@ -1,5 +1,6 @@
 //! # NEOS field of views
-use super::{Contains, FOV, FovLike, OnSkyRectangle, SkyPatch, closest_inside};
+use super::patches::closest_inside;
+use super::{Contains, FOV, FovLike, OnSkyRectangle, SkyPatch};
 use crate::constants::{NEOS_HEIGHT, NEOS_WIDTH};
 use crate::frames::Vector;
 use crate::prelude::*;

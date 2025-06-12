@@ -11,8 +11,7 @@
 //!
 use crate::errors::{Error, KeteResult};
 use crate::spice::{CkArray, LOADED_CK};
-use crate::time::Time;
-use crate::time::scales::TDB;
+use crate::time::{TDB, Time};
 use lazy_static::lazy_static;
 use nalgebra::{Matrix3, Rotation3, Vector3};
 use serde::{Deserialize, Serialize};
@@ -106,15 +105,20 @@ impl InertialFrame for FK4 {
 /// General representation of a non-inertial frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NonInertialFrame {
-    time: Time<TDB>,
+    /// Time of the frame in TDB.
+    pub time: Time<TDB>,
 
-    rotation: Rotation3<f64>,
+    /// Rotation matrix from this frame to the reference frame.
+    pub rotation: Rotation3<f64>,
 
-    rotation_rate: Option<Matrix3<f64>>,
+    /// Rotation rate of this frame, if not defined, this is assumed to be zero.
+    pub rotation_rate: Option<Matrix3<f64>>,
 
-    reference_frame_id: i32,
+    /// The frame that this frame is defined relative to.
+    pub reference_frame_id: i32,
 
-    frame_id: i32,
+    /// The frame ID of this frame.
+    pub frame_id: i32,
 }
 
 impl NonInertialFrame {
@@ -274,16 +278,18 @@ pub fn calc_obliquity(jd: f64) -> f64 {
 /// within sub micro-arcsecond accuracy.
 ///
 /// This function is an implementation equation (21) from this paper:
-///     "Expressions for IAU 2000 precession quantities"
-///     Capitaine, N. ; Wallace, P. T. ; Chapront, J.
-///     Astronomy and Astrophysics, v.412, p.567-586 (2003)
+///
+/// > "Expressions for IAU 2000 precession quantities"  
+/// > Capitaine, N. ; Wallace, P. T. ; Chapront, J.  
+/// > Astronomy and Astrophysics, v.412, p.567-586 (2003)
 ///
 /// It is recommended to first look at the following paper, as it provides useful
 /// discussion to help understand the above model. This defines the model used
 /// by JPL Horizons:
-///     "Precession matrix based on IAU (1976) system of astronomical constants."
-///     Lieske, J. H.
-///     Astronomy and Astrophysics, vol. 73, no. 3, Mar. 1979, p. 282-284.
+///
+/// > "Precession matrix based on IAU (1976) system of astronomical constants."  
+/// > Lieske, J. H.  
+/// > Astronomy and Astrophysics, vol. 73, no. 3, Mar. 1979, p. 282-284.
 ///
 /// The IAU 2000 model paper improves accuracy by approximately ~300 mas/century over
 /// the 1976 model.
@@ -293,9 +299,10 @@ pub fn calc_obliquity(jd: f64) -> f64 {
 /// * `tdb_time` - Time in TDB scaled Julian Days.
 ///
 #[inline(always)]
-pub fn earth_precession_rotation(tdb_time: f64) -> Rotation3<f64> {
+pub fn earth_precession_rotation(time: Time<TDB>) -> NonInertialFrame {
     // centuries since 2000
-    let t = (tdb_time - 2451545.0) / 36525.0;
+    let jd = time.jd;
+    let t = (jd - 2451545.0) / 36525.0;
 
     // angles as defined in the cited paper, equations (21)
     // Note that equation 45 is an even more developed model, which takes into
@@ -317,9 +324,11 @@ pub fn earth_precession_rotation(tdb_time: f64) -> Rotation3<f64> {
         / 3600.0)
         .to_radians();
     let z_axis = Vector3::z_axis();
-    Rotation3::from_axis_angle(&z_axis, angle_a)
+    let rotation = Rotation3::from_axis_angle(&z_axis, angle_a)
         * Rotation3::from_axis_angle(&Vector3::y_axis(), angle_b)
-        * Rotation3::from_axis_angle(&z_axis, angle_c)
+        * Rotation3::from_axis_angle(&z_axis, angle_c);
+
+    NonInertialFrame::from_rotations(time, rotation, None, 1, 1000000000)
 }
 
 lazy_static! {

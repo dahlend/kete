@@ -55,7 +55,7 @@ pub struct SpkCollection {
 }
 
 /// Define the SPK singleton structure.
-pub type SpkSingleton = ShardedLock<SpkCollection>;
+type SpkSingleton = ShardedLock<SpkCollection>;
 
 impl SpkCollection {
     /// Get the raw state from the loaded SPK files.
