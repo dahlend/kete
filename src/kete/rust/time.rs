@@ -2,10 +2,7 @@
 
 use kete_core::{
     errors::Error,
-    time::{
-        scales::{TAI, TDB, UTC},
-        Time,
-    },
+    time::{TAI, TDB, Time, UTC},
 };
 use pyo3::prelude::*;
 
@@ -114,12 +111,12 @@ impl PyTime {
     /// Time from an ISO formatted string.
     ///
     /// ISO formatted strings are assumed to be in UTC time scaling.
-    /// 
+    ///
     /// This only supports RFC3339 - a strict subset of the ISO format which removes
     /// all ambiguity for the definition of time. There are many examples where the
     /// ISO standard does not have enough information to uniquely specify the exact
     /// time.
-    /// 
+    ///
     /// The most common issue is failing to provide a timezone offset value. Typically
     /// these are numbers at the end of the UTC ISO string "+00:00". This function will
     /// check for that and add it if not found.
@@ -133,9 +130,9 @@ impl PyTime {
         // attempt to make life easier for the user by checking if they are missing
         // the timezone information. If they are, append it and return. Otherwise
         // let the conversion fail as it normally would.
-        if !s.contains('+'){
-            if let Ok(t) = Time::<UTC>::from_iso(&(s.to_owned() + "+00:00")){
-                return Ok(PyTime(t.tdb()))
+        if !s.contains('+') {
+            if let Ok(t) = Time::<UTC>::from_iso(&(s.to_owned() + "+00:00")) {
+                return Ok(PyTime(t.tdb()));
             }
         }
         Ok(PyTime(Time::<UTC>::from_iso(s)?.tdb()))

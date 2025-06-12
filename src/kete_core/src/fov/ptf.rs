@@ -1,10 +1,10 @@
 //! # PTF Fov definitions.
 
-use std::{fmt::Display, str::FromStr};
-
-use super::{Contains, FOV, FovLike, OnSkyRectangle, SkyPatch, closest_inside};
+use super::patches::closest_inside;
+use super::{Contains, FOV, FovLike, OnSkyRectangle, SkyPatch};
 use crate::{frames::Vector, prelude::*};
 use serde::{Deserialize, Serialize};
+use std::{fmt::Display, str::FromStr};
 
 /// PTF Filters used over the course of the survey.
 #[derive(PartialEq, Clone, Copy, Debug, Serialize, Deserialize)]

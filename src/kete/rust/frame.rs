@@ -1,5 +1,8 @@
 //! Python Frame of reference support
-use kete_core::frames::*;
+use kete_core::frames::{
+    calc_obliquity, earth_precession_rotation, ecef_to_geodetic_lat_lon, geodetic_lat_lon_to_ecef,
+    geodetic_lat_to_geocentric,
+};
 use pyo3::prelude::*;
 
 /// Defined inertial frames supported by the python side of kete.
@@ -91,12 +94,14 @@ pub fn calc_obliquity_py(time: f64) -> f64 {
     calc_obliquity(time).to_degrees()
 }
 
-/// Calculate rotation matrix which transforms a vector from the J2000 Equatorial
-/// frame to the desired epoch.
+/// Calculate how far the Earth's north pole has precessed from the J2000 epoch.
 ///
 /// Earth's north pole precesses at a rate of about 50 arcseconds per year.
 /// This means there was an approximately 20 arcminute rotation of the Equatorial
 /// axis from the year 2000 to 2025.
+///
+/// This calculates the rotation matrix which transforms a vector from the J2000
+/// Equatorial frame to the desired epoch.
 ///
 /// This implementation is valid for around 200 years on either side of 2000 to
 /// within sub micro-arcsecond accuracy.
@@ -135,10 +140,8 @@ pub fn calc_obliquity_py(time: f64) -> f64 {
 ///
 ///     new_vec = rotation @ kete.Vector.from_ra_dec(20, 10)
 ///
-///     # Convert to a Vector if you want, keep in mind this is no longer an
-///     # equatorial vector as defined by kete, as it would need to be the J2000
-///     # epoch under the kete definition.
-///     new_vec = kete.Vector(new_vec, frame=kete.Frames.Undefined)
+///     # keep in mind this is no longer an equatorial vector as defined by kete,
+///     # as it would need to be the J2000 epoch under the kete definition.
 ///
 /// Parameters
 /// ----------
@@ -147,7 +150,10 @@ pub fn calc_obliquity_py(time: f64) -> f64 {
 #[pyfunction]
 #[pyo3(name = "earth_precession_rotation")]
 pub fn calc_earth_precession(time: f64) -> Vec<Vec<f64>> {
-    earth_precession_rotation(time)
+    earth_precession_rotation(time.into())
+        .rotations_to_equatorial()
+        .unwrap()
+        .0
         .matrix()
         .column_iter()
         .map(|x| x.iter().cloned().collect())

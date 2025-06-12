@@ -216,7 +216,7 @@ impl GravParams {
 ///
 /// Z is the z component of the unit vector.
 #[inline(always)]
-pub fn j2_correction(rel_pos: &Vector3<f64>, radius: &f64, j2: &f64, mass: &f64) -> Vector3<f64> {
+fn j2_correction(rel_pos: &Vector3<f64>, radius: &f64, j2: &f64, mass: &f64) -> Vector3<f64> {
     let r = rel_pos.norm();
     let z_squared = 5.0 * (rel_pos.z / r).powi(2);
 
@@ -232,7 +232,7 @@ pub fn j2_correction(rel_pos: &Vector3<f64>, radius: &f64, j2: &f64, mass: &f64)
 
 /// Add the effects of general relativistic motion to an acceleration vector
 #[inline(always)]
-pub fn apply_gr_correction(
+fn apply_gr_correction(
     accel: &mut Vector3<f64>,
     rel_pos: &Vector3<f64>,
     rel_vel: &Vector3<f64>,

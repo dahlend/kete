@@ -9,7 +9,7 @@
 use crate::{
     errors::{Error, KeteResult},
     frames::NonInertialFrame,
-    time::{Time, scales::TDB},
+    time::{TDB, Time},
 };
 
 use super::{CkArray, DAFType, DafFile, LOADED_SCLK, ck_segments::CkSegment};
@@ -24,7 +24,7 @@ pub struct CkCollection {
 }
 
 /// Define the PCK singleton structure.
-pub type CkSingleton = ShardedLock<CkCollection>;
+type CkSingleton = ShardedLock<CkCollection>;
 
 impl CkCollection {
     /// Given an CK filename, load all the segments present inside of it.

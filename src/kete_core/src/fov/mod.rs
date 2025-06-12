@@ -1,20 +1,20 @@
 //! # Field of View
 //! On-Sky field of view checks.
-pub mod fov_like;
-pub mod generic;
-pub mod neos;
-pub mod patches;
-pub mod ptf;
-pub mod wise;
-pub mod ztf;
+mod fov_like;
+mod generic;
+mod neos;
+mod patches;
+mod ptf;
+mod wise;
+mod ztf;
 
-pub use fov_like::*;
-pub use generic::*;
-pub use neos::*;
-pub use patches::*;
-pub use ptf::*;
-pub use wise::*;
-pub use ztf::*;
+pub use self::fov_like::FovLike;
+pub use self::generic::{GenericCone, GenericRectangle, OmniDirectional};
+pub use self::neos::{NeosCmos, NeosVisit};
+pub use self::patches::{Contains, OnSkyRectangle, SkyPatch, SphericalCone, SphericalPolygon};
+pub use self::ptf::{PTFFilter, PtfCcd, PtfField};
+pub use self::wise::WiseCmos;
+pub use self::ztf::{ZtfCcdQuad, ZtfField};
 
 use serde::{Deserialize, Serialize};
 

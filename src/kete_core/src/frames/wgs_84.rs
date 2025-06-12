@@ -4,7 +4,7 @@
 pub const EARTH_A: f64 = 6378.1370;
 
 /// Earth semi minor axis in km as defined by WGS84
-pub const _EARTH_B: f64 = 6356.7523142;
+const _EARTH_B: f64 = 6356.7523142;
 
 // /// Earth inverse flattening as defined by WGS84
 const _EARTH_INV_FLAT: f64 = 298.2572235629972;

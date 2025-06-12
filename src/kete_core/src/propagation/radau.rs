@@ -10,7 +10,7 @@ use nalgebra::{DefaultAllocator, Dim, OMatrix, OVector, RowSVector, SMatrix, SVe
 
 /// Function will be of the form y'' = F(t, y, y', metadata)
 /// This is the second-order general solver (class II in the Everhart paper).
-pub type RadauFunc<'a, MType, D> = &'a dyn Fn(
+type RadauFunc<'a, MType, D> = &'a dyn Fn(
     f64,
     &OVector<f64, D>,
     &OVector<f64, D>,
@@ -19,7 +19,7 @@ pub type RadauFunc<'a, MType, D> = &'a dyn Fn(
 ) -> KeteResult<OVector<f64, D>>;
 
 /// Integrator will return a result of this type.
-pub type RadauResult<MType, D> = KeteResult<(OVector<f64, D>, OVector<f64, D>, MType)>;
+type RadauResult<MType, D> = KeteResult<(OVector<f64, D>, OVector<f64, D>, MType)>;
 
 const GAUSS_RADAU_SPACINGS: [f64; 8] = [
     0.0,

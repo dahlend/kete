@@ -14,10 +14,13 @@ mod reflected;
 mod shapes;
 mod sun;
 
-pub use comets::*;
-pub use common::*;
-pub use frm::*;
-pub use neatm::*;
-pub use reflected::*;
-pub use shapes::*;
-pub use sun::{solar_flux, solar_flux_black_body};
+pub use self::comets::CometMKParams;
+pub use self::common::{
+    ColorCorrFn, ModelResults, ObserverBands, black_body_flux, flux_to_mag, lambertian_flux,
+    lambertian_vis_scale_factor, mag_to_flux, sub_solar_temperature,
+};
+pub use self::frm::{FrmParams, frm_facet_temperature};
+pub use self::neatm::{NeatmParams, neatm_facet_temperature};
+pub use self::reflected::{HGParams, hg_phase_curve_correction};
+pub use self::shapes::{ConvexShape, DEFAULT_SHAPE, Facet};
+pub use self::sun::{solar_flux, solar_flux_black_body};

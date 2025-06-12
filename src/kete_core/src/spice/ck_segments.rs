@@ -1,7 +1,6 @@
 use crate::errors::{Error, KeteResult};
 use crate::frames::NonInertialFrame;
-use crate::time::Time;
-use crate::time::scales::TDB;
+use crate::time::{TDB, Time};
 use nalgebra::{Quaternion, Rotation3, Unit, UnitQuaternion};
 
 use super::CkArray;

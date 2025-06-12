@@ -19,12 +19,18 @@ mod runge_kutta;
 mod state_transition;
 
 // expose the public methods in spk to the outside world.
-pub use acceleration::*;
-pub use kepler::*;
-pub use nongrav::*;
-pub use radau::*;
-pub use runge_kutta::*;
-pub use state_transition::*;
+pub use acceleration::{
+    AccelSPKMeta, AccelVecMeta, CentralAccelMeta, accel_grad, central_accel, central_accel_grad,
+    spk_accel, vec_accel,
+};
+pub use kepler::{
+    PARABOLIC_ECC_LIMIT, analytic_2_body, compute_eccentric_anomaly, compute_true_anomaly,
+    eccentric_anomaly_from_true, moid, propagate_two_body,
+};
+pub use nongrav::NonGravModel;
+pub use radau::RadauIntegrator;
+pub use runge_kutta::RK45Integrator;
+pub use state_transition::compute_state_transition;
 
 /// Using the Radau 15th order integrator, integrate the position and velocity of an
 /// object assuming two body mechanics with a central object located at 0, 0 with the

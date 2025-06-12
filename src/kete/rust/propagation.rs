@@ -2,16 +2,16 @@
 use itertools::Itertools;
 use kete_core::{
     errors::Error,
-    propagation::{self, moid, NonGravModel},
+    propagation::{self, NonGravModel, moid},
     spice::{self, LOADED_SPK},
     state::State,
-    time::{scales::TDB, Time},
+    time::{TDB, Time},
 };
-use pyo3::{pyfunction, PyObject, PyResult, Python};
+use pyo3::{PyObject, PyResult, Python, pyfunction};
 use rayon::prelude::*;
 
 use crate::{
-    maybe_vec::{maybe_vec_to_pyobj, MaybeVec},
+    maybe_vec::{MaybeVec, maybe_vec_to_pyobj},
     nongrav::PyNonGravModel,
     state::PyState,
     time::PyTime,

@@ -25,7 +25,7 @@ pub struct PckCollection {
 }
 
 /// Define the PCK singleton structure.
-pub type PckSingleton = ShardedLock<PckCollection>;
+type PckSingleton = ShardedLock<PckCollection>;
 
 impl PckCollection {
     /// Given an PCK filename, load all the segments present inside of it.
