@@ -6,8 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [Unreleased]
+## [v2.0.0]
 
+This version introduces significant rewrites to the rust core of kete.
+Includes complete rewrite of the internal representation of coordinate frames, a new
+internal rust class for Vectors, and how SPICE files are parsed.
+
+Unfortunately the above changes break any binary saved files which were previously
+saved by kete. Files can still be saved as binary, but the formats with the old version
+are not compatible any more.
+
+Also included in this version are quality of life changes, for example state vectors
+now expose all of the underlying orbital elements directly. Queries to services such
+as IRSA are now cached by default and will recover if the same query is issues.
 
 ### Added
 
@@ -478,6 +489,7 @@ Initial Release
 
 
 [Unreleased]: https://github.com/dahlend/kete/tree/main
+[2.0.0]: https://github.com/dahlend/kete/releases/tag/v1.1.0
 [1.1.0]: https://github.com/dahlend/kete/releases/tag/v1.1.0
 [1.0.8]: https://github.com/dahlend/kete/releases/tag/v1.0.8
 [1.0.7]: https://github.com/dahlend/kete/releases/tag/v1.0.7
