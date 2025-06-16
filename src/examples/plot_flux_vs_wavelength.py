@@ -19,7 +19,7 @@ def flux_per_wavelength(
     solar_elong=np.radians(83),
     v_albedo=0.17,
     diameter=0.140,
-    wavelength=np.logspace(np.log10(300), np.log10(30000), 100),
+    wavelength=np.logspace(np.log10(300), np.log10(30000), 1000),
 ):
     """
     Calculate the flux as a function of wavelength.

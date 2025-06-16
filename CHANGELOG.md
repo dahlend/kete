@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+### Changed
+
+- Optical flux calculations now use the reference solar spectrum, and not the black
+  body assumption for the Sun.
+
+
 ## [v2.0.0]
 
 This version introduces significant rewrites to the rust core of kete.

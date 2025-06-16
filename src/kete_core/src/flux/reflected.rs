@@ -1,4 +1,4 @@
-use super::sun::solar_flux_black_body;
+use super::solar_flux;
 use crate::{
     constants::{AU_KM, C_V},
     prelude::{Error, KeteResult},
@@ -274,13 +274,11 @@ impl HGParams {
     ///
     /// This flux calculation accepts a wavelength, which can be used to estimate the
     /// flux outside of band definition which is implicit in the HG system when querying the
-    /// Minor Planet Center or JPL Horizons. The assumptions made here are that the Sun is an
-    /// ideal black body, and the the phase correction curve defined by the G parameter is
-    /// valid for the wavelength provided. Neither of these are precisely true, but are a
-    /// good first order approximation.
+    /// Minor Planet Center or JPL Horizons. The assumptions made here is that the phase
+    /// correction curve defined by the G parameter is valid for the wavelength provided.
     ///
-    /// This treats the sun as a flat black body disk, which is a good approximation as long
-    /// as the object is several solar radii away.
+    /// This treats the sun as an infinitesimal point source, producing the correct reference
+    /// spectrum of the sun as defined by [`solar_flux`] at the wavelength specified.
     ///
     /// The IAU model is not technically defined above 120 degrees phase, however this will
     /// continue to return values fit to the model until 160 degrees. Phases larger than
@@ -311,7 +309,7 @@ impl HGParams {
         let diameter = self.diam()?;
 
         // Jy
-        let flux_at_object = solar_flux_black_body(sun2obj.norm(), wavelength);
+        let flux_at_object = solar_flux(sun2obj.norm(), wavelength)?;
 
         // total Flux from the object, treating the object as a lambertian sphere
         // Jy * km^2
