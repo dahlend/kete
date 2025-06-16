@@ -1,7 +1,7 @@
 use crate::{frame::PyFrames, vector::VectorLike};
 use kete_core::constants;
-use kete_core::flux::hg_phase_curve_correction;
 use kete_core::flux::HGParams;
+use kete_core::flux::hg_phase_curve_correction;
 use pyo3::pyfunction;
 
 /// This computes the phase curve correction in the IAU format.
@@ -29,8 +29,9 @@ pub fn hg_phase_curve_correction_py(g_param: f64, phase_angle: f64) -> f64 {
 /// This assumes that the object is an ideal disk facing the sun and applies the IAU
 /// correction curve to the reflected light, returning units of Jy per unit frequency.
 ///
-/// This treats the sun as a flat black body disk, which is a good approximation as long
-/// as the object is several solar radii away.
+/// This treats the sun as an infinitesimal point source, which is a good approximation
+/// as long as the object is several solar radii away. This uses a reference solar
+/// spectrum at the specified wavelength.
 ///
 /// Either `h_mag` or `diameter` must be provided, but only 1 is strictly required.
 /// The other will be computed if not provided.
