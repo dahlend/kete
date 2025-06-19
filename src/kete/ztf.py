@@ -90,7 +90,8 @@ def fetch_fovs(year: int):
         )
         irsa_query.to_parquet(filename, index=False)
 
-    jds = [Time.from_iso(x + ":00").jd for x in irsa_query["obsdate"]]
+    offset = 15 / 24 / 60 / 60
+    jds = [Time.from_iso(x + ":00").jd + offset for x in irsa_query["obsdate"]]
     obs_info = find_obs_code("ZTF")
 
     # ZTF fields are made up of up to 64 individual CCD quads, here we first construct

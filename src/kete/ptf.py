@@ -124,7 +124,7 @@ def fetch_fovs(year: int):
         fov = PtfField(value)
         final_fovs.append(fov)
 
-    # finally save and return the result
+    # return the result
     fov_list = FOVList(final_fovs)
     return fov_list
 
