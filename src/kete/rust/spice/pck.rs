@@ -1,10 +1,11 @@
 use kete_core::frames::ecef_to_geodetic_lat_lon;
 use kete_core::spice::{LOADED_PCK, LOADED_SPK};
 use kete_core::{constants, prelude::*};
-use pyo3::{pyfunction, PyResult};
+use pyo3::{PyResult, pyfunction};
 
 use crate::frame::PyFrames;
 use crate::state::PyState;
+use crate::time::PyTime;
 
 /// Load all specified files into the PCK shared memory singleton.
 #[pyfunction]
@@ -41,10 +42,11 @@ pub fn pck_load_py(filenames: Vec<String>) -> PyResult<()> {
 #[pyo3(name = "pck_earth_frame_to_ecliptic", signature = (pos, jd, new_center, name=None))]
 pub fn pck_earth_frame_py(
     pos: [f64; 3],
-    jd: f64,
+    jd: PyTime,
     new_center: i32,
     name: Option<String>,
 ) -> PyResult<PyState> {
+    let jd = jd.jd();
     let desig = {
         match name {
             Some(d) => Desig::Name(d),
