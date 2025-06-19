@@ -313,6 +313,10 @@ def _sample(self, n_samples):
     n_samples :
         The number of samples to take of the covariance.
     """
+    if self.covariance is None:
+        raise ValueError(
+            "This object does not have a covariance matrix, cannot sample from it."
+        )
     matrix = self.covariance.cov_matrix
     epoch = Time(self.covariance.epoch, scaling="utc").jd
     samples = generate_sample_from_cov(n_samples, matrix)
