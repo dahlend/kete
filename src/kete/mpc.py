@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from . import constants, conversion, deprecation
-from ._core import pack_designation, unpack_designation, find_obs_code
+from ._core import find_obs_code, pack_designation, unpack_designation
 from .cache import download_json
 from .conversion import table_to_states
 from .time import Time
