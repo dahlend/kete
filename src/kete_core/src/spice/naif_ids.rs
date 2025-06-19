@@ -5,17 +5,18 @@ use lazy_static::lazy_static;
 use serde::Deserialize;
 
 use crate::prelude::{Error, KeteResult};
+use crate::util::partial_str_match;
 use std::str;
 use std::str::FromStr;
 
 /// NAIF ID information
-#[derive(Debug, Deserialize)]
-struct NaifId {
+#[derive(Debug, Deserialize, Clone)]
+pub struct NaifId {
     /// NAIF id
-    id: i32,
+    pub id: i32,
 
     /// name of the object
-    name: String,
+    pub name: String,
 }
 
 impl FromStr for NaifId {
@@ -51,4 +52,19 @@ pub fn try_name_from_id(id: i32) -> Option<String> {
         }
     }
     None
+}
+
+/// Try to find a NAIF id from a name.
+///
+/// This will return all matching IDs for the given name.
+///
+/// This does a partial string match, case insensitive.
+pub fn naif_ids_from_name(name: &str) -> Vec<NaifId> {
+    // this should be re-written to be simpler
+    let desigs: Vec<String> = NAIF_IDS.iter().map(|n| n.name.to_lowercase()).collect();
+    let desigs: Vec<&str> = desigs.iter().map(|x| x.as_str()).collect();
+    partial_str_match(&name.to_lowercase(), &desigs)
+        .into_iter()
+        .map(|(i, _)| NAIF_IDS[i].clone())
+        .collect()
 }

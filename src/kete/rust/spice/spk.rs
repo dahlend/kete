@@ -1,6 +1,7 @@
-use kete_core::spice::{try_name_from_id, LOADED_PCK, LOADED_SPK};
-use pyo3::{pyfunction, PyResult, Python};
+use kete_core::spice::{LOADED_PCK, LOADED_SPK};
+use pyo3::{PyResult, Python, pyfunction};
 
+use crate::desigs::NaifIDLike;
 use crate::frame::PyFrames;
 use crate::state::PyState;
 use crate::time::PyTime;
@@ -25,31 +26,37 @@ pub fn spk_load_py(py: Python<'_>, filenames: Vec<String>) -> PyResult<()> {
 
 /// Return all loaded SPK info on the specified NAIF ID.
 /// Loaded info contains:
-/// (JD_start, JD_end, Center Naif ID, Frame ID, SPK Segment type ID)
+/// (name, JD_start, JD_end, Center Naif ID, Frame ID, SPK Segment type ID)
 #[pyfunction]
-#[pyo3(name = "spk_available_info")]
-pub fn spk_available_info_py(naif_id: i32) -> Vec<(f64, f64, i32, i32, i32)> {
+#[pyo3(name = "_loaded_object_info")]
+pub fn spk_available_info_py(naif_id: NaifIDLike) -> Vec<(String, f64, f64, i32, i32, i32)> {
+    let (name, naif_id) = naif_id.try_into().unwrap();
     let singleton = &LOADED_SPK.try_read().unwrap();
-    singleton.available_info(naif_id)
+    singleton
+        .available_info(naif_id)
+        .into_iter()
+        .map(|(jd_start, jd_end, center_id, frame_id, segment_id)| {
+            (
+                name.clone(),
+                jd_start,
+                jd_end,
+                center_id,
+                frame_id,
+                segment_id,
+            )
+        })
+        .collect()
 }
 
 /// Return a list of all NAIF IDs currently loaded in the SPK shared memory singleton.
 #[pyfunction]
-#[pyo3(name = "spk_loaded")]
+#[pyo3(name = "loaded_objects")]
 pub fn spk_loaded_objects_py() -> Vec<i32> {
     let spk = &LOADED_SPK.try_read().unwrap();
     let loaded = spk.loaded_objects(false);
     let mut loaded: Vec<_> = loaded.into_iter().collect();
     loaded.sort();
     loaded
-}
-
-/// Convert a NAIF ID to a string if it is contained within the dictionary of known objects.
-/// If the name is not found, this just returns a string the the NAIF ID.
-#[pyfunction]
-#[pyo3(name = "spk_get_name_from_id")]
-pub fn spk_get_name_from_id_py(id: i32) -> String {
-    try_name_from_id(id).unwrap_or(id.to_string())
 }
 
 /// Reset the contents of the SPK shared memory.
@@ -80,27 +87,47 @@ pub fn spk_load_cache_py() {
     LOADED_SPK.write().unwrap().load_cache().unwrap()
 }
 
-/// Calculate the state of a given object in the target frame.
+/// Calculates the :class:`~kete.State` of the target object at the
+/// specified time `jd`.
 ///
-/// This will automatically replace the name of the object if possible.
+/// This defaults to the ecliptic heliocentric state, though other centers may be
+/// chosen.
 ///
 /// Parameters
 /// ----------
-/// id : int
-///     NAIF ID of the object.
-/// jd : float
-///     Time (JD) in TDB scaled time.
-/// center : int
-///     NAIF ID of the associated central point.
-/// frame : Frames
-///     Frame of reference for the state.
+/// target:
+///     The names of the target object, this can include any object name listed in
+///     :meth:`~kete.spice.loaded_objects`
+/// jd:
+///     Julian time (TDB) of the desired record.
+/// center:
+///     The center point, this defaults to being heliocentric.
+/// frame:
+///     Coordinate frame of the state, defaults to ecliptic.
+///
+/// Returns
+/// -------
+/// State
+///     Returns the ecliptic state of the target in AU and AU/days.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If the desired time is outside of the range of the source binary file.
 #[pyfunction]
-#[pyo3(name = "spk_state")]
-pub fn spk_state_py(id: i32, jd: PyTime, center: i32, frame: PyFrames) -> PyResult<PyState> {
+#[pyo3(name = "get_state", signature = (id, jd, center=NaifIDLike::Int(10), frame=PyFrames::Ecliptic))]
+pub fn spk_state_py(
+    id: NaifIDLike,
+    jd: PyTime,
+    center: NaifIDLike,
+    frame: PyFrames,
+) -> PyResult<PyState> {
+    let (_, id) = id.try_into()?;
     let jd = jd.jd();
+    let (_, center) = center.try_into()?;
     let spk = &LOADED_SPK.try_read().unwrap();
     let mut state = spk.try_get_state_with_center(id, jd, center)?;
-    let _ = state.try_naif_id_to_name();
+    state.try_naif_id_to_name();
     Ok(PyState {
         raw: state,
         frame,
@@ -121,7 +148,8 @@ pub fn spk_state_py(id: i32, jd: PyTime, center: i32, frame: PyFrames) -> PyResu
 ///     Time (JD) in TDB scaled time.
 #[pyfunction]
 #[pyo3(name = "spk_raw_state")]
-pub fn spk_raw_state_py(id: i32, jd: PyTime) -> PyResult<PyState> {
+pub fn spk_raw_state_py(id: NaifIDLike, jd: PyTime) -> PyResult<PyState> {
+    let (_, id) = id.try_into()?;
     let jd = jd.jd();
     let spk = &LOADED_SPK.try_read().unwrap();
     Ok(PyState {

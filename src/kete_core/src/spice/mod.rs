@@ -16,8 +16,8 @@ pub(crate) mod sclk;
 
 pub use ck::{CkCollection, LOADED_CK};
 pub use daf::{CkArray, DAFType, DafArray, DafFile, PckArray, SpkArray};
-pub use naif_ids::try_name_from_id;
-pub use obs_codes::{OBS_CODES, ObsCode};
+pub use naif_ids::{NaifId, naif_ids_from_name, try_name_from_id};
+pub use obs_codes::{OBS_CODES, ObsCode, try_obs_code_from_name};
 pub use pck::{LOADED_PCK, PckCollection};
 pub use sclk::{LOADED_SCLK, SclkCollection};
 pub use spk::{LOADED_SPK, SpkCollection};

@@ -12,11 +12,14 @@ from ._core import (
     instrument_equatorial_to_frame,
     instrument_frame_to_equatorial,
     state_to_earth_pos,
+    name_lookup,
+    get_state,
+    loaded_objects,
 )
 from .cache import cache_path, download_file
 from .constants import AU_KM
 from .time import Time
-from .vector import Frames, State
+from .vector import State
 
 __all__ = [
     "SpkInfo",
@@ -47,158 +50,6 @@ SpkInfo.frame.__doc__ = "Frame of reference."
 SpkInfo.spk_type.__doc__ = "SPK Segment Type ID."
 
 
-def _validate_time(time: float | Time) -> float:
-    """
-    Verifies that the time provided is either a `float` or
-    :class:`~kete.time.Time` object.
-
-    Parameters
-    ----------
-    jd:
-        Julian time (TDB) of the desired record.
-
-    Returns
-    -------
-    float
-        The Julian time as a float.
-
-    Raises
-    ------
-    TypeError
-        If the input time is not a `float` or `Time`.
-    """
-
-    if isinstance(time, Time):
-        return time.jd
-    elif isinstance(time, float):
-        return time
-    try:
-        return float(time)
-    except Exception as exc:
-        raise TypeError("Invalid jd type, use Time or float") from exc
-
-
-_NAME_CACHE: dict = {}
-
-
-def get_state(
-    target: str | int,
-    jd: float | Time,
-    center: str = "Sun",
-    frame: Frames = Frames.Ecliptic,
-) -> State:
-    """
-    Calculates the :class:`~kete.State` of the target object at the
-    specified time `jd`.
-
-    This defaults to the ecliptic heliocentric state, though other centers may be
-    chosen.
-
-    Parameters
-    ----------
-    target:
-        The names of the target object, this can include any object name listed in
-        :meth:`~kete.spice.loaded_objects`
-    jd:
-        Julian time (TDB) of the desired record.
-    center:
-        The center point, this defaults to being heliocentric.
-    frame:
-        Coordinate frame of the state, defaults to ecliptic.
-
-    Returns
-    -------
-    State
-        Returns the ecliptic state of the target in AU and AU/days.
-
-    Raises
-    ------
-    ValueError
-        If the desired time is outside of the range of the source binary file.
-    """
-    target, ids = name_lookup(target)
-    center, center_id = name_lookup(center)
-    jd = _validate_time(jd)
-    return _core.spk_state(ids, jd, center_id, frame)
-
-
-def name_lookup(name: int | str) -> tuple[str, int]:
-    """
-    Given the provided partial name or integer, find the full name contained within
-    the loaded SPICE kernels.
-
-    >>> kete.spice.name_lookup("jupi")
-    ('jupiter barycenter', 5)
-
-    >>> kete.spice.name_lookup(10)
-    ('sun', 10)
-
-    If there are multiple names, but an exact match, the exact match is returned. In
-    the case of ``Earth``, there is also ``Earth Barycenter``, but asking for Earth
-    will return the exact match. Putting ``eart`` will raise an exception as there
-    are 2 partial matches.
-
-    >>> kete.spice.name_lookup("Earth")
-    ('earth', 399)
-
-    >>> kete.spice.name_lookup("Earth b")
-    ('earth barycenter', 3)
-
-    Parameters
-    ----------
-    name :
-        Name, partial name, or integer id value of the object.
-
-    Returns
-    -------
-    tuple :
-        Two elements in the tuple, the full name and the integer id value.
-    """
-    if isinstance(name, str):
-        name = name.lower()
-    if name in _NAME_CACHE:
-        return _NAME_CACHE[name]
-
-    # barycenter of the solar system is special
-    if name == 0:
-        return ("ssb", 0)
-
-    try:
-        lookup_name = _core.spk_get_name_from_id(int(name))
-    except ValueError:
-        lookup_name = name
-    lookup_name = lookup_name.lower()
-
-    found = []
-    for loaded in loaded_objects():
-        loaded_lower = loaded[0].lower()
-        # If it is an exact match, finish early
-        if lookup_name == loaded_lower:
-            _NAME_CACHE[name] = loaded
-            return loaded
-        if lookup_name in loaded_lower:
-            found.append(loaded)
-    found = list(set(found))
-
-    if len(found) == 1:
-        _NAME_CACHE[name] = found[0]
-        return found[0]
-    elif len(found) > 1:
-        raise ValueError(f"Multiple objects match this name {found}")
-    raise ValueError(f"No loaded objects which match this name ({name})")
-
-
-def loaded_objects() -> list[tuple[str, int]]:
-    """
-    Return the name of all objects which are currently loaded in the SPICE kernels.
-    """
-    objects = _core.spk_loaded()
-    if len(objects) == 0:
-        kernel_reload()
-        objects = _core.spk_loaded()
-    return [(_core.spk_get_name_from_id(o), o) for o in objects]
-
-
 def loaded_object_info(desig: int | str) -> list[SpkInfo]:
     """
     Return the available SPK information for the target object.
@@ -208,8 +59,7 @@ def loaded_object_info(desig: int | str) -> list[SpkInfo]:
     desig :
         Name or integer id value of the object.
     """
-    name, naif = name_lookup(desig)
-    return [SpkInfo(name, *k) for k in _core.spk_available_info(naif)]
+    return [SpkInfo(*k) for k in _core._loaded_object_info(desig)]
 
 
 def kernel_ls():
@@ -362,8 +212,6 @@ def mpc_code_to_ecliptic(
     """
     from .mpc import find_obs_code
 
-    jd = _validate_time(jd)
-
     obs = find_obs_code(obs_code)
     return earth_pos_to_ecliptic(
         jd,
@@ -417,7 +265,6 @@ def earth_pos_to_ecliptic(
     if len(_core.pck_loaded()) == 0:
         kernel_reload()
 
-    jd = _validate_time(jd)
     pos = _core.wgs_lat_lon_to_ecef(geodetic_lat, geodetic_lon, height_above_surface)
     pos = np.array(pos) / AU_KM
     _, center_id = name_lookup(center)
@@ -446,7 +293,6 @@ def moon_illumination_frac(jd: float | Time, observer: str = "399"):
     State
         Fraction between 0 and 1 of the moons visible surface which is illuminated.
     """
-    jd = _validate_time(jd)
 
     moon2sun = -get_state("moon", jd).pos
     moon2earth = -get_state("moon", jd, center=observer).pos

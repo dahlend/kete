@@ -268,6 +268,22 @@ fn parse_str_to_floats(text: &str) -> KeteResult<(f64, f64, f64)> {
     Ok((h, m, s))
 }
 
+/// Find the entire provided string in a collection of strings which may contain
+/// partial matches.
+///
+/// Case insensitive search is performed.
+///
+/// Return all possible matches along with their indices.
+pub fn partial_str_match<'a>(needle: &str, haystack: &'a [&'a str]) -> Vec<(usize, &'a str)> {
+    let needle = needle.trim().to_lowercase();
+    haystack
+        .iter()
+        .enumerate()
+        .filter(|&(_, &hay)| hay.to_lowercase().contains(&needle))
+        .map(|(i, &hay)| (i, hay))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
