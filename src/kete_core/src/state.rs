@@ -140,7 +140,7 @@ impl<T: InertialFrame> State<T> {
 
     /// Attempt to update the designation from a naif id to a name.
     pub fn try_naif_id_to_name(&mut self) {
-        self.desig = self.desig.try_naif_id_to_name();
+        self.desig = self.desig.clone().try_naif_id_to_name();
     }
 
     /// Convert the state into a new frame.

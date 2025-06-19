@@ -9,6 +9,7 @@ import json
 import os
 from functools import lru_cache
 from typing import Optional, Union
+from warnings import warn
 
 import numpy as np
 import pandas as pd
@@ -260,8 +261,10 @@ def _json(self) -> dict:
     return _fetch_json(self.desig, update_cache=False)
 
 
-def _nongrav_params(self) -> dict:
-    # default parameters used by jpl horizons for their non-grav models.
+def _default_nongrav_params() -> dict:
+    """default parameters used by jpl horizons for their non-grav models."""
+    # This exists so that we dont have to worry about a global variable being
+    # updated by accident.
     params = {
         "a1": 0.0,
         "a2": 0.0,
@@ -273,16 +276,6 @@ def _nongrav_params(self) -> dict:
         "k": 4.6142,
         "dt": 0.0,
     }
-
-    orbit = self.json["orbit"]
-    if "model_pars" not in orbit:
-        return params
-
-    for vals in orbit["model_pars"]:
-        param_name = vals["name"].lower()
-        if param_name not in _PARAM_MAP:
-            raise ValueError("Unknown non-grav values: ", vals)
-        params[_PARAM_MAP[param_name]] = float(vals["value"])
     return params
 
 
@@ -291,7 +284,19 @@ def _nongrav(self) -> NonGravModel:
     """
     The non-gravitational forces model from the values returned from horizons.
     """
-    params = _nongrav_params(self)
+    orbit = self.json["orbit"]
+    if "model_pars" not in orbit:
+        return None
+    model_pars_json = orbit["model_pars"]
+
+    params = _default_nongrav_params()
+    for vals in model_pars_json:
+        param_name = vals["name"].lower()
+        if param_name not in _PARAM_MAP:
+            warn(f"Unknown non-grav values: {vals}", stacklevel=2)
+            continue
+        params[_PARAM_MAP[param_name]] = float(vals["value"])
+
     return NonGravModel.new_comet(**params)
 
 
@@ -308,6 +313,10 @@ def _sample(self, n_samples):
     n_samples :
         The number of samples to take of the covariance.
     """
+    if self.covariance is None:
+        raise ValueError(
+            "This object does not have a covariance matrix, cannot sample from it."
+        )
     matrix = self.covariance.cov_matrix
     epoch = Time(self.covariance.epoch, scaling="utc").jd
     samples = generate_sample_from_cov(n_samples, matrix)
@@ -321,14 +330,32 @@ def _sample(self, n_samples):
         "peri_time",
     ]
 
+    orbit = self.json["orbit"]
+    has_nongrav = "model_pars" in orbit
+    has_warned = False
+
     states = []
     non_gravs = []
     for sample in samples:
         names, vals = zip(*self.covariance.params)
-        params = dict(zip(names, np.array(vals) + sample))
-        elem_params = {x: params.pop(x) for x in elem_keywords}
+        sample_params = dict(zip(names, np.array(vals) + sample))
+        elem_params = {x: sample_params.pop(x) for x in elem_keywords}
         state = CometElements(self.desig, epoch, **elem_params).state
-        non_grav = NonGravModel.new_comet(**params)
+        if has_nongrav:
+            params = _default_nongrav_params()
+            for key, value in sample_params.items():
+                if key in _PARAM_MAP:
+                    params[_PARAM_MAP[key]] = value
+                elif not has_warned:
+                    warn(
+                        f"Unknown non-grav parameter {key} in sample, "
+                        "this may cause issues with the non-grav model.",
+                        stacklevel=2,
+                    )
+                    has_warned = True
+            non_grav = NonGravModel.new_comet(**params)
+        else:
+            non_grav = None
         states.append(state)
         non_gravs.append(non_grav)
 

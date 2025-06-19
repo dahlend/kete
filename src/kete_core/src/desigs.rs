@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     errors::{Error, KeteResult},
-    spice::try_name_from_id,
+    spice::{naif_ids_from_name, try_name_from_id},
 };
 
 static MPC_HEX: &str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
@@ -88,16 +88,33 @@ impl Desig {
     }
 
     /// Try to convert a naif ID into a name.
-    pub fn try_naif_id_to_name(&self) -> Self {
-        if let Self::Naif(id) = self {
+    pub fn try_naif_id_to_name(self) -> Self {
+        if let Self::Naif(id) = &self {
             if let Some(name) = try_name_from_id(*id) {
                 Self::Name(name)
             } else {
-                self.clone()
+                self
             }
         } else {
-            self.clone()
+            self
         }
+    }
+
+    /// Convert the Desig as close to a NAIF id as is possible.
+    /// This will lookup a NAIF id from the name if it exists.
+    pub fn try_name_to_naif_id(self) -> Self {
+        if let Self::Name(name) = &self {
+            if let Ok(id) = name.parse::<i32>() {
+                return Self::Naif(id);
+            };
+
+            let naif_ids = naif_ids_from_name(name);
+            if naif_ids.len() == 1 {
+                return Self::Naif(naif_ids[0].id);
+            }
+            // if there are multiple NAIF ids, or none, do not change the designation.
+        }
+        self
     }
 
     /// parse an MPC unpacked designation string into a [`Desig`].

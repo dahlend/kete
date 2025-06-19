@@ -57,13 +57,13 @@ class TestSpice:
         )
 
     def test_name_lookup(self):
-        assert spice.name_lookup("jupi") == ("jupiter barycenter", 5)
-        assert spice.name_lookup(0) == ("ssb", 0)
+        assert spice.name_lookup("jupiter b") == ("jupiter barycenter", 5)
+        assert spice.name_lookup(0) == ("solar system barycenter", 0)
 
-        with pytest.raises(ValueError, match="Multiple objects"):
+        with pytest.raises(ValueError, match="Multiple NAIF"):
             spice.name_lookup("ear")
 
-        with pytest.raises(ValueError, match="No loaded objects"):
+        with pytest.raises(ValueError, match="No NAIF ID found for"):
             spice.name_lookup("banana")
 
     def test_loaded_info(self):

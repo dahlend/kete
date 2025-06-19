@@ -1,4 +1,5 @@
 //! Python support for State vectors
+use crate::desigs::NaifIDLike;
 use crate::elements::PyCometElements;
 use crate::frame::*;
 use crate::time::PyTime;
@@ -52,19 +53,20 @@ impl From<State<Equatorial>> for PyState {
 impl PyState {
     /// Construct a new State
     #[new]
-    #[pyo3(signature = (desig, jd, pos, vel, frame=None, center_id=10))]
+    #[pyo3(signature = (desig, jd, pos, vel, frame=None, center_id=NaifIDLike::Int(10)))]
     pub fn new(
         desig: Option<String>,
         jd: PyTime,
         pos: VectorLike,
         vel: VectorLike,
         frame: Option<PyFrames>,
-        center_id: Option<i32>,
+        center_id: Option<NaifIDLike>,
     ) -> Self {
         let desig = match desig {
-            Some(name) =>Desig::Name(name),
+            Some(name) => Desig::Name(name),
             None => Desig::Empty,
         };
+        let center_id = center_id.map(|id| id.try_into().map(|(_, x)| x).unwrap_or(10));
 
         // if no frame is provided, but pos or vel have a frame, use that one.
         let frame = frame.unwrap_or({
@@ -82,7 +84,7 @@ impl PyState {
         let vel = vel.into_vector(frame);
 
         let center_id = center_id.unwrap_or(10);
-        let state =State::new(desig, jd.jd(), pos, vel, center_id);
+        let state = State::new(desig, jd.jd(), pos, vel, center_id);
         Self {
             raw: state,
             frame,
@@ -260,24 +262,23 @@ impl PyState {
     /// Designation of the object if defined.
     #[getter]
     pub fn desig(&self) -> String {
-        match &self.raw.desig {
-            Desig::Naif(s) => {
-                kete_core::spice::try_name_from_id(*s).unwrap_or(s.to_string())
-            }
-            _ => self.raw.desig.to_string(),
-        }
+        self.raw.desig.clone().try_naif_id_to_name().to_string()
     }
 
     /// Text representation of the state.
     pub fn __repr__(&self) -> String {
+        let center = Desig::Naif(self.raw.center_id)
+            .try_naif_id_to_name()
+            .to_string();
+
         format!(
-            "State(desig={:?}, jd={:?}, pos={:?}, vel={:?}, frame={:?}, center_id={:?})",
+            "State(desig={:?}, jd={:?}, pos={:?}, vel={:?}, frame={:?}, center={:?})",
             self.desig(),
             self.jd(),
             self.pos().raw(),
             self.vel().raw(),
             self.frame(),
-            self.center_id()
+            center
         )
     }
 }

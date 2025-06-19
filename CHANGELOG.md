@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+### Changed
+
+- Moved name lookups for SPICE and Observatory codes to the rust backend. This speeds
+  up lookup of states in python by about a factor of 2.
+
+### Fixed
+
+- `HorizonsProperties` sampling and queries to horizons is more robust to unexpected
+  responses from the Horizons service.
+
 ## [v2.0.0]
 
 This version introduces significant rewrites to the rust core of kete.

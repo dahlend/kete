@@ -20,6 +20,7 @@
 //!
 use super::daf::DafFile;
 use super::{DAFType, SpkArray, spice_jd_to_jd, spk_segments::SpkSegment};
+use super::{NaifId, naif_ids_from_name};
 use crate::cache::cache_path;
 use crate::errors::Error;
 use crate::frames::InertialFrame;
@@ -52,6 +53,9 @@ pub struct SpkCollection {
 
     /// Map from object id to all connected pairs.
     nodes: HashMap<i32, HashSet<(i32, i32)>>,
+
+    /// Cache of all loaded NAIF IDs.
+    naif_ids: HashMap<String, NaifId>,
 }
 
 /// Define the SPK singleton structure.
@@ -377,6 +381,63 @@ impl SpkCollection {
             }
         });
         Ok(())
+    }
+
+    /// Try to get the unique loaded NAIF ID for the given name.
+    ///
+    /// If no ID is found, an error is returned.
+    /// If multiple IDs are found, an error is returned.
+    ///
+    /// If there are multiple ids which match, but one of them is an exact match,
+    /// that one is returned.
+    pub fn try_id_from_name(&mut self, name: &str) -> KeteResult<NaifId> {
+        // check first for cache hit with a read only lock
+
+        if let Some(id) = self.naif_ids.get(name.to_lowercase().as_str()) {
+            return Ok(id.clone());
+        }
+
+        let mut loaded_ids = self
+            .planet_segments
+            .iter()
+            .map(|x| {
+                let arr: &SpkArray = x.into();
+                arr.object_id
+            })
+            .collect::<HashSet<i32>>();
+        loaded_ids.extend(self.segments.keys().cloned());
+
+        let mut ids = naif_ids_from_name(name);
+        // remove any IDs which are not loaded in the SPK files.
+        ids.retain(|id| loaded_ids.contains(&id.id) || id.id == 0);
+
+        if ids.is_empty() {
+            return Err(Error::ValueError(format!(
+                "No NAIF ID found for name: {}",
+                name
+            )));
+        } else if ids.len() == 1 {
+            let id = ids[0].clone();
+            let _ = self.naif_ids.insert(name.to_lowercase(), id.clone());
+            return Ok(id);
+        };
+
+        // check if any of the returned names match exactly
+        for id in ids.iter() {
+            if id.name.to_lowercase() == name.to_lowercase() {
+                let _ = self.naif_ids.insert(name.to_lowercase(), id.clone());
+                return Ok(id.clone());
+            }
+        }
+
+        Err(Error::ValueError(format!(
+            "Multiple NAIF IDs found for name '{}':\n{}",
+            name,
+            ids.iter()
+                .map(|id| id.name.to_string())
+                .collect::<Vec<String>>()
+                .join(",\n")
+        )))
     }
 }
 

@@ -7,8 +7,8 @@ from functools import lru_cache
 import numpy as np
 import pandas as pd
 
-from . import _core, constants, conversion, deprecation
-from ._core import pack_designation, unpack_designation
+from . import constants, conversion, deprecation
+from ._core import find_obs_code, pack_designation, unpack_designation
 from .cache import download_json
 from .conversion import table_to_states
 from .time import Time
@@ -31,40 +31,6 @@ table_to_states = deprecation.rename(
 )
 
 logger = logging.getLogger(__name__)
-
-
-@lru_cache
-def find_obs_code(name: str):
-    """
-    Search known observatory codes, if a single matching observatory is found, this will
-    return the [lat, lon, altitude, description, obs code] in degrees and km as
-    appropriate.
-
-    >>> kete.mpc.find_obs_code("Palomar Mountain")
-    [33.35411714, -116.86254, 1.69606288, 'Palomar Mountain', '675']
-
-    Parameters
-    ----------
-    name :
-        Name of the observatory, this can be a partial name, or obs code.
-    """
-    codes = _core.observatory_codes()
-    found = []
-    name_lower = name.lower().strip()
-    for obs in codes:
-        obs = [float(np.around(x, 8)) if isinstance(x, float) else x for x in obs]
-        if name_lower in obs[3].lower() or name_lower in obs[4].lower():
-            # If an exact match, return early.
-            if name == obs[3]:
-                return obs
-            found.append(obs)
-    if len(found) == 1:
-        return found[0]
-    elif len(found) == 0:
-        raise ValueError("Failed to find matching observatory code.")
-    else:
-        found_str = "\n".join([f"{x[3]} - {x[4]}" for x in found])
-        raise ValueError(f"Found multiple codes: \n{found_str}")
 
 
 @lru_cache

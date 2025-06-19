@@ -6,12 +6,13 @@ use serde::Deserialize;
 use crate::desigs::Desig;
 use crate::frames::{EARTH_A, ecef_to_geodetic_lat_lon};
 use crate::prelude::{Error, KeteResult};
+use crate::util::partial_str_match;
 use core::f64;
 use std::str;
 use std::str::FromStr;
 
 /// Observatory information
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct ObsCode {
     /// observatory code
     pub code: Desig,
@@ -72,6 +73,30 @@ lazy_static! {
         }
         codes
     };
+}
+
+/// Return all possible observatory code matches for a given name.
+///
+/// This does a case insensitive partial match on the observatory names.
+///
+/// This first checks the names of the observatories, then checks the codes
+/// for matches.
+///
+/// If multiple matches are found, all of them are returned.
+///
+pub fn try_obs_code_from_name(name: &str) -> Vec<ObsCode> {
+    let desigs: Vec<&str> = OBS_CODES.iter().map(|n| n.name.as_str()).collect();
+    let codes: Vec<String> = OBS_CODES.iter().map(|n| n.code.to_string()).collect();
+    let mut matches: Vec<_> = partial_str_match(name, &desigs)
+        .into_iter()
+        .map(|(i, _)| OBS_CODES[i].clone())
+        .collect();
+    matches.extend(
+        partial_str_match(name, &codes.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+            .into_iter()
+            .map(|(i, _)| OBS_CODES[i].clone()),
+    );
+    matches
 }
 
 #[cfg(test)]

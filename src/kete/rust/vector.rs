@@ -2,14 +2,12 @@
 use kete_core::frames::Vector;
 use kete_core::util::Degrees;
 use pyo3::basic::CompareOp;
-use pyo3::exceptions;
-use pyo3::exceptions::PyNotImplementedError;
+use pyo3::exceptions::{PyIndexError, PyNotImplementedError};
 use std::f64::consts::FRAC_PI_2;
 
 use crate::frame::*;
 use kete_core::prelude::*;
 use pyo3::prelude::*;
-use pyo3::PyResult;
 
 /// Vector class which is a vector along with a reference frame.
 ///
@@ -318,6 +316,7 @@ impl PyVector {
     pub fn __repr__(&self) -> String {
         // 1e-12 AU is about 15cm, this seems like a reasonable printing resolution
         let raw = self.raw();
+        // adding 0.0 will flip the sign of -0.0 to 0.0
         let x = (raw[0] * 1e12).round() / 1e12 + 0.0;
         let y = (raw[1] * 1e12).round() / 1e12 + 0.0;
         let z = (raw[2] * 1e12).round() / 1e12 + 0.0;
@@ -365,7 +364,7 @@ impl PyVector {
     #[allow(missing_docs)]
     pub fn __getitem__(&self, idx: usize) -> PyResult<f64> {
         if idx >= 3 {
-            return Err(PyErr::new::<exceptions::PyIndexError, _>(""));
+            return Err(PyErr::new::<PyIndexError, _>("Index out of bounds"));
         }
         Ok(self.raw()[idx])
     }
