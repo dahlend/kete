@@ -1,7 +1,6 @@
 //! List of NAIF ID values.
 //! This list is not comprehensive, but is more complete than the C-SPICE
 //! implementation.
-use lazy_static::lazy_static;
 use serde::Deserialize;
 
 use crate::prelude::{Error, KeteResult};
@@ -32,17 +31,15 @@ impl FromStr for NaifId {
 
 const PRELOAD_IDS: &[u8] = include_bytes!("../../data/naif_ids.csv");
 
-lazy_static! {
-    /// NAIF Ids
-    static ref NAIF_IDS: Box<[NaifId]> = {
-        let mut ids = Vec::new();
-        let text = str::from_utf8(PRELOAD_IDS).unwrap().split('\n');
-        for row in text.skip(1) {
-            ids.push(NaifId::from_str(row).unwrap());
-        }
-        ids.into()
-    };
-}
+/// Observatory Codes
+static NAIF_IDS: std::sync::LazyLock<Box<[NaifId]>> = std::sync::LazyLock::new(|| {
+    let mut ids = Vec::new();
+    let text = str::from_utf8(PRELOAD_IDS).unwrap().split('\n');
+    for row in text.skip(1) {
+        ids.push(NaifId::from_str(row).unwrap());
+    }
+    ids.into()
+});
 
 /// Return the string name of the desired ID if possible.
 pub fn try_name_from_id(id: i32) -> Option<String> {
@@ -62,7 +59,7 @@ pub fn try_name_from_id(id: i32) -> Option<String> {
 pub fn naif_ids_from_name(name: &str) -> Vec<NaifId> {
     // this should be re-written to be simpler
     let desigs: Vec<String> = NAIF_IDS.iter().map(|n| n.name.to_lowercase()).collect();
-    let desigs: Vec<&str> = desigs.iter().map(|x| x.as_str()).collect();
+    let desigs: Vec<&str> = desigs.iter().map(String::as_str).collect();
     partial_str_match(&name.to_lowercase(), &desigs)
         .into_iter()
         .map(|(i, _)| NAIF_IDS[i].clone())

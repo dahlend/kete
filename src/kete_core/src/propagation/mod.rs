@@ -63,7 +63,7 @@ pub fn propagate_linear(state: &State<Equatorial>, jd_final: f64) -> KeteResult<
         .for_each(|(p, v)| *p += v * dt);
 
     Ok(State::new(
-        state.desig.to_owned(),
+        state.desig.clone(),
         jd_final,
         pos.into(),
         state.vel,
@@ -156,7 +156,7 @@ pub fn propagate_n_body_vec(
     let planet_states = planet_states.unwrap_or_else(|| {
         let spk = &LOADED_SPK.try_read().unwrap();
         let mut planet_states = Vec::with_capacity(SIMPLE_PLANETS.len());
-        for obj in SIMPLE_PLANETS.iter() {
+        for obj in SIMPLE_PLANETS {
             let planet = spk
                 .try_get_state_with_center::<Equatorial>(obj.naif_id, jd_init, 10)
                 .expect("Failed to find state for the provided initial jd");
@@ -175,13 +175,13 @@ pub fn propagate_n_body_vec(
             "Planet states JD must match JD of input state.".into(),
         ))?;
     }
-    for planet_state in planet_states.into_iter() {
+    for planet_state in planet_states {
         pos.append(&mut planet_state.pos.into());
         vel.append(&mut planet_state.vel.into());
         desigs.push(planet_state.desig);
     }
 
-    for state in states.into_iter() {
+    for state in states {
         if jd_init != state.jd {
             Err(Error::ValueError(
                 "All input states must have the same JD".into(),

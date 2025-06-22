@@ -26,7 +26,6 @@ use crate::errors::Error;
 use crate::frames::InertialFrame;
 use crate::prelude::KeteResult;
 use crate::state::State;
-use lazy_static::lazy_static;
 use pathfinding::prelude::dijkstra;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -58,23 +57,20 @@ pub struct SpkCollection {
     naif_ids: HashMap<String, NaifId>,
 }
 
-/// Define the SPK singleton structure.
-type SpkSingleton = ShardedLock<SpkCollection>;
-
 impl SpkCollection {
     /// Get the raw state from the loaded SPK files.
     /// This state will have the center and frame of whatever was originally loaded
     /// into the file.
     #[inline(always)]
     pub fn try_get_state<T: InertialFrame>(&self, id: i32, jd: f64) -> KeteResult<State<T>> {
-        for segment in self.planet_segments.iter() {
+        for segment in &self.planet_segments {
             let arr_ref: &SpkArray = segment.into();
             if arr_ref.object_id == id && arr_ref.contains(jd) {
                 return segment.try_get_state(jd);
             }
         }
         if let Some(segments) = self.segments.get(&id) {
-            for segment in segments.iter() {
+            for segment in segments {
                 let arr_ref: &SpkArray = segment.into();
                 if arr_ref.contains(jd) {
                     return segment.try_get_state(jd);
@@ -82,8 +78,7 @@ impl SpkCollection {
             }
         }
         Err(Error::DAFLimits(format!(
-            "Object ({}) does not have an SPK record for the target JD.",
-            id
+            "Object ({id}) does not have an SPK record for the target JD."
         )))
     }
 
@@ -141,7 +136,7 @@ impl SpkCollection {
     pub fn available_info(&self, id: i32) -> Vec<(f64, f64, i32, i32, i32)> {
         let mut segment_info = Vec::<(f64, f64, i32, i32, i32)>::new();
         if let Some(segments) = self.segments.get(&id) {
-            for segment in segments.iter() {
+            for segment in segments {
                 let spk_array_ref: &SpkArray = segment.into();
                 let jds_start = spk_array_ref.jds_start;
                 let jds_end = spk_array_ref.jds_end;
@@ -202,21 +197,21 @@ impl SpkCollection {
     pub fn loaded_objects(&self, include_centers: bool) -> HashSet<i32> {
         let mut found = HashSet::new();
 
-        self.planet_segments.iter().for_each(|x| {
-            let spk_array_ref: &SpkArray = x.into();
+        for seg in &self.planet_segments {
+            let spk_array_ref: &SpkArray = seg.into();
             let _ = found.insert(spk_array_ref.object_id);
             if include_centers {
                 let _ = found.insert(spk_array_ref.center_id);
-            };
-        });
+            }
+        }
 
         self.segments.iter().for_each(|(obj_id, segs)| {
             let _ = found.insert(*obj_id);
             if include_centers {
-                segs.iter().for_each(|seg| {
+                for seg in segs {
                     let spk_array_ref: &SpkArray = seg.into();
                     let _ = found.insert(spk_array_ref.center_id);
-                });
+                }
             }
         });
         found
@@ -245,8 +240,7 @@ impl SpkCollection {
             Ok(v.iter().skip(1).map(|x| x.1).collect())
         } else {
             Err(Error::DAFLimits(format!(
-                "SPK files are missing information to be able to map from obj {} to obj {}",
-                start, goal
+                "SPK files are missing information to be able to map from obj {start} to obj {goal}"
             )))
         }
     }
@@ -288,13 +282,13 @@ impl SpkCollection {
             .iter()
             .for_each(|x| update_nodes(x, &mut nodes));
 
-        for (_, segs) in self.segments.iter() {
+        for segs in self.segments.values() {
             segs.iter().for_each(|x| update_nodes(x, &mut nodes));
         }
 
         let loaded = self.loaded_objects(true);
 
-        for &start in loaded.iter() {
+        for &start in &loaded {
             for &goal in PRECACHE {
                 let key = (start, goal);
 
@@ -328,8 +322,7 @@ impl SpkCollection {
 
         if !matches!(file.daf_type, DAFType::Spk) {
             Err(Error::IOError(format!(
-                "File {:?} is not a PCK formatted file.",
-                filename
+                "File {filename:?} is not a PCK formatted file."
             )))?;
         }
         for daf_array in file.arrays {
@@ -375,7 +368,7 @@ impl SpkCollection {
                 let filename = path.to_str().unwrap();
                 if filename.to_lowercase().ends_with(".bsp") {
                     if let Err(err) = self.load_file(filename) {
-                        eprintln!("Failed to load SPK file {}: {}", filename, err);
+                        eprintln!("Failed to load SPK file {filename}: {err}");
                     }
                 }
             }
@@ -405,7 +398,7 @@ impl SpkCollection {
                 arr.object_id
             })
             .collect::<HashSet<i32>>();
-        loaded_ids.extend(self.segments.keys().cloned());
+        loaded_ids.extend(self.segments.keys().copied());
 
         let mut ids = naif_ids_from_name(name);
         // remove any IDs which are not loaded in the SPK files.
@@ -413,17 +406,16 @@ impl SpkCollection {
 
         if ids.is_empty() {
             return Err(Error::ValueError(format!(
-                "No NAIF ID found for name: {}",
-                name
+                "No NAIF ID found for name: {name}"
             )));
         } else if ids.len() == 1 {
             let id = ids[0].clone();
             let _ = self.naif_ids.insert(name.to_lowercase(), id.clone());
             return Ok(id);
-        };
+        }
 
         // check if any of the returned names match exactly
-        for id in ids.iter() {
+        for id in &ids {
             if id.name.to_lowercase() == name.to_lowercase() {
                 let _ = self.naif_ids.insert(name.to_lowercase(), id.clone());
                 return Ok(id.clone());
@@ -441,13 +433,12 @@ impl SpkCollection {
     }
 }
 
-lazy_static! {
-    /// SPK singleton.
-    /// This is a RwLock protected SPKCollection, and must be `.try_read().unwrapped()` for any
-    /// read-only cases.
-    pub static ref LOADED_SPK: SpkSingleton = {
+/// SPK singleton.
+/// This is a lock protected [`SpkCollection`], and must be `.try_read().unwrapped()` for any
+/// read-only cases.
+pub static LOADED_SPK: std::sync::LazyLock<ShardedLock<SpkCollection>> =
+    std::sync::LazyLock::new(|| {
         let mut singleton = SpkCollection::default();
         let _ = singleton.load_core();
         ShardedLock::new(singleton)
-    };
-}
+    });

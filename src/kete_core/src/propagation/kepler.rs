@@ -3,12 +3,12 @@
 //! such as the solar system.
 //!
 
+use crate::constants::{GMS, GMS_SQRT};
 use crate::errors::Error;
 use crate::fitting::newton_raphson;
 use crate::frames::InertialFrame;
-use crate::prelude::CometElements;
+use crate::prelude::{CometElements, KeteResult};
 use crate::state::State;
-use crate::{constants::*, prelude::KeteResult};
 use argmin::core::{CostFunction, Error as ArgminErr, Executor};
 use argmin::solver::neldermead::NelderMead;
 use core::f64;
@@ -259,7 +259,7 @@ pub fn analytic_2_body(
     vel: &Vector3<f64>,
     depth: Option<usize>,
 ) -> KeteResult<(Vector3<f64>, Vector3<f64>)> {
-    let mut depth = depth.to_owned().unwrap_or(0);
+    let mut depth = depth.unwrap_or(0);
     if depth >= 10 {
         Err(Error::Convergence(
             "Two body recursion depth reached.".into(),
@@ -317,7 +317,7 @@ pub fn propagate_two_body<T: InertialFrame>(
     )?;
 
     Ok(State::new(
-        state.desig.to_owned(),
+        state.desig.clone(),
         jd_final,
         pos.into(),
         vel.into(),
@@ -349,12 +349,12 @@ impl<T: InertialFrame> CostFunction for MoidCost<T> {
 /// Compute the MOID between two states in au.
 /// MOID = Minimum Orbital Intersection Distance
 pub fn moid<T: InertialFrame>(mut state_a: State<T>, mut state_b: State<T>) -> KeteResult<f64> {
+    const N_STEPS: i32 = 50;
+
     let elements_a = CometElements::from_state(&state_a.clone().into_frame());
     state_a = propagate_two_body(&state_a, elements_a.peri_time)?;
     let elements_b = CometElements::from_state(&state_b.clone().into_frame());
     state_b = propagate_two_body(&state_b, elements_b.peri_time)?;
-
-    const N_STEPS: i32 = 50;
 
     let state_a_step_size = match elements_a.orbital_period() {
         p if p.is_finite() => p / N_STEPS as f64,
@@ -414,8 +414,8 @@ mod tests {
 
     #[test]
     fn test_kepler_circular() {
-        for r in [0.2, 0.5, 1.0, 2.0].iter() {
-            let pos = Vector3::new(0.0, *r, 0.0);
+        for r in [0.2, 0.5, 1.0, 2.0] {
+            let pos = Vector3::new(0.0, r, 0.0);
             let vel = Vector3::new(-GMS_SQRT / r.sqrt(), 0.0, 0.0);
             let year = TAU / GMS_SQRT * r.powf(3.0 / 2.0);
             let res = analytic_2_body(year, &pos, &vel, None).unwrap();
@@ -435,8 +435,7 @@ mod tests {
             let mean_anom = mean_anom as f64;
             assert!(
                 compute_eccentric_anomaly(2.0, mean_anom, 0.1).is_ok(),
-                "Mean Anom: {}",
-                mean_anom
+                "Mean Anom: {mean_anom}"
             );
         }
     }

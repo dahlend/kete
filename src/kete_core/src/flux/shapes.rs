@@ -1,13 +1,11 @@
 //! Basic Shape Models
 use crate::constants::GOLDEN_RATIO;
-use lazy_static::lazy_static;
 use nalgebra::{Unit, UnitVector3, Vector3};
 use std::f64::consts::TAU;
 
-lazy_static! {
-    /// Pre-compute a default shape.
-    pub static ref DEFAULT_SHAPE: ConvexShape = ConvexShape::new_fibonacci_lattice(2048);
-}
+/// Pre-compute a default shape.
+pub static DEFAULT_SHAPE: std::sync::LazyLock<ConvexShape> =
+    std::sync::LazyLock::new(|| ConvexShape::new_fibonacci_lattice(2048));
 
 /// Facet of a shape.
 #[derive(Debug, Clone)]

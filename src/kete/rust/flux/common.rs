@@ -1,12 +1,12 @@
 use crate::{frame::PyFrames, vector::VectorLike};
 use itertools::Itertools;
 use kete_core::constants::{
-    w1_color_correction, w2_color_correction, w3_color_correction, w4_color_correction, C_V,
+    C_V, w1_color_correction, w2_color_correction, w3_color_correction, w4_color_correction,
 };
 use kete_core::flux::*;
 use kete_core::prelude::Error;
 use nalgebra::UnitVector3;
-use pyo3::{pyfunction, PyResult};
+use pyo3::{PyResult, pyfunction};
 
 /// Calculate the visible flux at the observer assuming a convex faceted object made up
 /// of a collection of lambertian surfaces.

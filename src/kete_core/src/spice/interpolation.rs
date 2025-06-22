@@ -179,7 +179,7 @@ pub(crate) fn hermite_interpolation(
     work[2 * n - 2] += work[2 * n - 1] * (eval_time - times[n - 1]);
 
     for idj in 2..(2 * n) {
-        for idi in 1..(2 * n - idj + 1) {
+        for idi in 1..=(2 * n - idj) {
             let xi = idi.div_ceil(2);
             let xij = (idi + idj).div_ceil(2);
             let c1 = times[xij - 1] - eval_time;

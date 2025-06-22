@@ -17,7 +17,7 @@ pub(crate) const TT_TO_TAI: f64 = 32.184 / 86400.0;
 /// Offset from JD to MJD
 ///
 /// ``MJD = JD + JD_TO_MJD``
-pub const JD_TO_MJD: f64 = -2400000.5;
+pub const JD_TO_MJD: f64 = -2_400_000.5;
 
 /// Time Scaling support, all time scales must implement this.
 pub trait TimeScale {
@@ -62,10 +62,10 @@ impl TimeScale for UTC {
     fn to_tdb(mut jd: f64) -> f64 {
         // move to tai first
         // Guess the tai time that this UTC time came from
-        let offset = tai_to_utc_offset(&(jd + JD_TO_MJD));
+        let offset = tai_to_utc_offset(jd + JD_TO_MJD);
 
         // use that guess to update the TAI guess to fix the leap second offset
-        let offset = tai_to_utc_offset(&(jd + JD_TO_MJD + offset));
+        let offset = tai_to_utc_offset(jd + JD_TO_MJD + offset);
         jd += offset;
 
         // then tai to tdb
@@ -78,7 +78,7 @@ impl TimeScale for UTC {
 
         // Time is now TAI
         // calculate leap seconds for that time to convert from TAI to UTC
-        let offset = tai_to_utc_offset(&(jd + JD_TO_MJD));
+        let offset = tai_to_utc_offset(jd + JD_TO_MJD);
         jd -= offset;
         jd
     }

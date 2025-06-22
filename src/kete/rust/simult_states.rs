@@ -5,7 +5,7 @@ use kete_core::simult_states::SimultaneousStates;
 use kete_core::spice::LOADED_SPK;
 use pyo3::exceptions;
 use pyo3::prelude::*;
-use pyo3::{pyclass, pymethods, PyResult};
+use pyo3::{PyResult, pyclass, pymethods};
 
 use crate::vector::PyVector;
 use crate::{fovs::AllowedFOV, state::PyState};

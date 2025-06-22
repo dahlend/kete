@@ -110,13 +110,10 @@ impl<T: InertialFrame> State<T> {
             return Err(Error::ValueError("States don't have matching jds.".into()));
         }
 
-        let state_id = match state.desig {
-            Desig::Naif(id) => id,
-            _ => {
-                return Err(Error::ValueError(
-                    "Changing centers only works on states with NAIF Ids.".into(),
-                ));
-            }
+        let Desig::Naif(state_id) = state.desig else {
+            return Err(Error::ValueError(
+                "Changing centers only works on states with NAIF Ids.".into(),
+            ));
         };
 
         // target state does not match at all, error

@@ -1,7 +1,7 @@
 use crate::{frame::PyFrames, vector::VectorLike};
 use kete_core::constants;
-use kete_core::flux::hg_phase_curve_correction;
 use kete_core::flux::HGParams;
+use kete_core::flux::hg_phase_curve_correction;
 use pyo3::pyfunction;
 
 /// This computes the phase curve correction in the IAU format.

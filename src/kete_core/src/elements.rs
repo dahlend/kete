@@ -47,7 +47,7 @@ impl CometElements {
     /// Create cometary elements from a state.
     pub fn from_state(state: &State<Ecliptic>) -> Self {
         Self::from_pos_vel(
-            state.desig.to_owned(),
+            state.desig.clone(),
             state.jd,
             &state.pos.into(),
             &state.vel.into(),
@@ -166,7 +166,7 @@ impl CometElements {
     pub fn try_to_state(&self) -> KeteResult<State<Ecliptic>> {
         let [pos, vel] = self.to_pos_vel()?;
         Ok(State::new(
-            self.desig.to_owned(),
+            self.desig.clone(),
             self.epoch,
             pos.into(),
             vel.into(),
@@ -179,18 +179,20 @@ impl CometElements {
     fn to_pos_vel(&self) -> KeteResult<[[f64; 3]; 2]> {
         let elliptical = self.eccentricity < 1.0 - PARABOLIC_ECC_LIMIT;
         let hyperbolic = self.eccentricity > 1.0 + PARABOLIC_ECC_LIMIT;
-        let parabolic = !elliptical & !hyperbolic;
+        let parabolic = !elliptical && !hyperbolic;
 
         // these handle parabolic in a non-standard way which allows for the
         // eccentric anomaly calculation to be useful later.
-        let semi_major = match parabolic {
-            true => 0.0,
-            false => self.peri_dist / (1.0 - self.eccentricity),
+        let semi_major = if parabolic {
+            0.0
+        } else {
+            self.peri_dist / (1.0 - self.eccentricity)
         };
 
-        let mean_motion = match parabolic {
-            true => GMS_SQRT,
-            false => semi_major.abs().powf(-1.5) * GMS_SQRT,
+        let mean_motion = if parabolic {
+            GMS_SQRT
+        } else {
+            semi_major.abs().powf(-1.5) * GMS_SQRT
         };
 
         let mean_anom = mean_motion * (self.epoch - self.peri_time);

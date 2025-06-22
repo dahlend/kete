@@ -51,7 +51,7 @@ pub fn quaternion_to_euler<const E1: char, const E2: char, const E3: char>(
 
     let proper = const { E1 == E3 };
 
-    let epsilon = ((i - j) * (j - k) * (k - i) / 2) as f64;
+    let epsilon = f64::from((i - j) * (j - k) * (k - i) / 2);
 
     let i = i as usize;
     let j = j as usize;

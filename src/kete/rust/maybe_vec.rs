@@ -4,8 +4,8 @@
 
 use std::fmt::Debug;
 
-use pyo3::types::PyList;
 use pyo3::IntoPyObjectExt;
+use pyo3::types::PyList;
 use pyo3::{FromPyObject, IntoPyObject, PyObject, PyResult, Python};
 
 /// Polymorphic support for a single value or a vector of values.

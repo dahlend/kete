@@ -79,6 +79,9 @@ rust.unexpected_cfgs = "deny"
 clippy.too_many_arguments = "allow"
 clippy.type_complexity = "allow"
 
+clippy.perf = { level = "deny", priority = 1 }
+# clippy.pedantic = { level = "warn", priority = 1 }
+
 clippy.allow_attributes_without_reason = "warn"
 clippy.collection_is_never_read = "warn"
 clippy.dbg_macro = "warn"

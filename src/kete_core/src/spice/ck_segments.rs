@@ -59,8 +59,7 @@ impl TryFrom<CkArray> for CkSegment {
             2 => Ok(Self::Type2(array.try_into()?)),
             3 => Ok(Self::Type3(array.try_into()?)),
             v => Err(Error::IOError(format!(
-                "CK Segment type {:?} not supported.",
-                v
+                "CK Segment type {v:?} not supported.",
             ))),
         }
     }
@@ -138,8 +137,7 @@ impl CkSegmentType2 {
 
         if dt < 0.0 {
             return Err(Error::DAFLimits(format!(
-                "Requested time {} is before the start of the segment.",
-                record_idx
+                "Requested time {record_idx} is before the start of the segment."
             )));
         }
         let mut rotation = Unit::from_quaternion(quaternion).to_rotation_matrix();
@@ -181,12 +179,12 @@ impl TryFrom<CkArray> for CkSegmentType2 {
                 "CK File is not formatted correctly, directory size of segments appear incorrect."
                     .into(),
             ));
-        };
+        }
         if n_records == 0 {
             return Err(Error::DAFLimits(
                 "CK File does not contain any records.".into(),
             ));
-        };
+        }
 
         let time_start_idx = n_records * 10;
 
@@ -266,12 +264,12 @@ impl CkSegmentType3 {
     ///
     /// If the time requested is not within any interval, return the closest
     /// interval, and the start index of the associated clock times.
-    fn get_times_in_interval(&self, time_sclk: f64) -> KeteResult<(&[f64], usize)> {
+    fn get_times_in_interval(&self, time_sclk: f64) -> (&[f64], usize) {
         // first, check if the time is inside a known interval
         let interval_starts = self.interval_starts();
         if self.n_intervals == 1 {
             // If there is only one interval, return its times
-            return Ok((self.record_times(), 0));
+            return (self.record_times(), 0);
         }
         let mut interval_idx = interval_starts.partition_point(|&x| x <= time_sclk);
 
@@ -286,7 +284,7 @@ impl CkSegmentType3 {
         let record_times = self.record_times();
         let start_idx = record_times.partition_point(|&x| x < interval_start_time);
         let stop_idx = record_times.partition_point(|&x| x <= interval_stop_time);
-        Ok((&record_times[start_idx..stop_idx], start_idx))
+        (&record_times[start_idx..stop_idx], start_idx)
     }
 
     pub(crate) fn try_get_orientation(
@@ -332,7 +330,7 @@ impl CkSegmentType3 {
             return Ok((t, Unit::from_quaternion(quat), accel));
         }
 
-        let (interval_times, start_idx) = self.get_times_in_interval(tick)?;
+        let (interval_times, start_idx) = self.get_times_in_interval(tick);
 
         // find the closest two times in the interval
         let mut idx = interval_times.partition_point(|&x| x <= tick);

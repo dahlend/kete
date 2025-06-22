@@ -138,7 +138,7 @@ pub fn spk_accel(
 
     let spk = &LOADED_SPK.try_read().unwrap();
 
-    for grav_params in meta.massive_obj.iter() {
+    for grav_params in meta.massive_obj {
         let id = grav_params.naif_id;
         let radius = grav_params.radius;
         let state = spk.try_get_state_with_center::<Equatorial>(id, time, 0)?;
@@ -148,7 +148,7 @@ pub fn spk_accel(
         if exact_eval {
             let r = rel_pos.norm();
             if let Some(close_approach) = meta.close_approach.as_mut() {
-                if close_approach.2 == r {
+                if close_approach.2 >= r {
                     *close_approach = (id, r, time);
                 }
             }
@@ -255,11 +255,11 @@ where
 pub fn central_accel_grad(
     _time: f64,
     pos: &Vector3<f64>,
-    _vel: &Vector3<f64>,
+    vel: &Vector3<f64>,
     meta: &mut CentralAccelMeta,
 ) -> Matrix3<f64> {
     let zeros = Vector3::<f64>::zeros();
-    accel_grad(pos, _vel, &zeros, &zeros, meta.mass_scaling)
+    accel_grad(pos, vel, &zeros, &zeros, meta.mass_scaling)
 }
 
 /// Calculate the Jacobian for the [`central_accel`] function.
@@ -303,7 +303,7 @@ mod tests {
         let mut pos: Vec<f64> = Vec::new();
         let mut vel: Vec<f64> = Vec::new();
 
-        for obj in constants::MASSES.iter() {
+        for obj in constants::MASSES {
             let planet = spk
                 .try_get_state_with_center::<Equatorial>(obj.naif_id, jd, 0)
                 .unwrap();

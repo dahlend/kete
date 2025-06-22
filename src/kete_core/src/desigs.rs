@@ -88,6 +88,7 @@ impl Desig {
     }
 
     /// Try to convert a naif ID into a name.
+    #[must_use]
     pub fn try_naif_id_to_name(self) -> Self {
         if let Self::Naif(id) = &self {
             if let Some(name) = try_name_from_id(*id) {
@@ -102,11 +103,12 @@ impl Desig {
 
     /// Convert the Desig as close to a NAIF id as is possible.
     /// This will lookup a NAIF id from the name if it exists.
+    #[must_use]
     pub fn try_name_to_naif_id(self) -> Self {
         if let Self::Name(name) = &self {
             if let Ok(id) = name.parse::<i32>() {
                 return Self::Naif(id);
-            };
+            }
 
             let naif_ids = naif_ids_from_name(name);
             if naif_ids.len() == 1 {
@@ -173,10 +175,11 @@ impl Desig {
     ///     assert_eq!(desig, Ok(Desig::PlanetSat(799, 4)));
     ///
     /// ```
+    #[must_use = "This function returns a Result, so it should be used."]
     pub fn parse_mpc_designation(designation: &str) -> KeteResult<Self> {
         if designation.is_empty() {
             return Err(Error::ValueError("Designation cannot be empty".to_string()));
-        };
+        }
 
         // if it has a slash, its a comet /
         // if it has a dash, its a fragmented comet
@@ -187,8 +190,7 @@ impl Desig {
             // its a permanent designation
             let num = designation.parse::<u32>().map_err(|_| {
                 Error::ValueError(format!(
-                    "Failed to parse MPC Permanent Designation: {}",
-                    designation
+                    "Failed to parse MPC Permanent Designation: {designation}"
                 ))
             })?;
             return Ok(Self::Perm(num));
@@ -203,23 +205,20 @@ impl Desig {
                     .parse::<u32>()
                     .map_err(|_| {
                         Error::ValueError(format!(
-                            "Failed to parse MPC Comet Permanent Designation: {}",
-                            designation
+                            "Failed to parse MPC Comet Permanent Designation: {designation}"
                         ))
                     })?;
                 return Ok(Self::CometPerm(orbit_type, num, None));
-            } else {
-                return Err(Error::ValueError(format!(
-                    "Invalid MPC Designation, sort of looks like a Comet: {}",
-                    designation
-                )));
             }
+            return Err(Error::ValueError(format!(
+                "Invalid MPC Designation, sort of looks like a Comet: {designation}"
+            )));
         }
 
         // It is some form of provisional designation or planetary satellite designation.
-        let (header, tail) = designation.split_once(' ').ok_or_else(|| {
-            Error::ValueError(format!("Invalid MPC Designation: {}", designation))
-        })?;
+        let (header, tail) = designation
+            .split_once(' ')
+            .ok_or_else(|| Error::ValueError(format!("Invalid MPC Designation: {designation}")))?;
 
         if let Ok(num) = roman_to_int(tail) {
             match header {
@@ -231,8 +230,7 @@ impl Desig {
                 "Neptune" => return Ok(Self::PlanetSat(899, num)),
                 _ => {
                     return Err(Error::ValueError(format!(
-                        "Invalid planetary satellite designation: {}",
-                        designation
+                        "Invalid planetary satellite designation: {designation}"
                     )));
                 }
             }
@@ -240,14 +238,14 @@ impl Desig {
 
         if (header.len() < 4) || (tail.len() < 2) {
             return Err(Error::ValueError(format!(
-                "Invalid MPC Designation header: {}",
-                header
+                "Invalid MPC Designation header: {header}"
             )));
         }
 
-        let indicator = tail.chars().nth(1).ok_or_else(|| {
-            Error::ValueError(format!("Invalid MPC Designation: {}", designation))
-        })?;
+        let indicator = tail
+            .chars()
+            .nth(1)
+            .ok_or_else(|| Error::ValueError(format!("Invalid MPC Designation: {designation}")))?;
         let is_comet = header.contains('/') | indicator.is_ascii_digit();
 
         // if this indicator can be used to determine the type of designation
@@ -266,8 +264,7 @@ impl Desig {
             let (orbit_type, des) = des.split_once('/').unwrap_or(("", des));
             if (fragment.len() > 1) || (orbit_type.len()) > 1 {
                 return Err(Error::ValueError(format!(
-                    "Invalid MPC Designation, looks like a comet provisional: {}",
-                    designation
+                    "Invalid MPC Designation, looks like a comet provisional: {designation}"
                 )));
             }
             let fragment = if fragment.is_empty() {
@@ -528,30 +525,27 @@ impl Display for Desig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&match self {
             Self::Empty => "None".to_string(),
-            Self::Prov(s) => s.clone(),
-            Self::Name(s) => s.clone(),
-            Self::ObservatoryCode(s) => s.clone(),
+            Self::Prov(s) | Self::Name(s) | Self::ObservatoryCode(s) => s.clone(),
             Self::Perm(i) => i.to_string(),
             Self::Naif(i) => i.to_string(),
             Self::CometPerm(orbit_type, id, fragment) => {
-                let frag_str = fragment.map_or("".to_string(), |x| format!(" {}", x));
-                format!("{}{}{}", id, orbit_type, frag_str)
+                let frag_str = fragment.map_or(String::new(), |x| format!(" {x}"));
+                format!("{id}{orbit_type}{frag_str}")
             }
             Self::CometProv(orbit_type, id, fragment) => {
-                let orbit_str = orbit_type.map_or("".to_string(), |o| o.to_string() + "/");
-                let frag_str =
-                    fragment.map_or("".to_string(), |x| "-".to_string() + &x.to_string());
-                format!("{}{}{}", orbit_str, id, frag_str)
+                let orbit_str = orbit_type.map_or(String::new(), |o| o.to_string() + "/");
+                let frag_str = fragment.map_or(String::new(), |x| "-".to_string() + &x.to_string());
+                format!("{orbit_str}{id}{frag_str}")
             }
             Self::PlanetSat(planet_id, sat_num) => {
                 let roman = int_to_roman(*sat_num).map_err(|_| std::fmt::Error)?;
                 match planet_id {
-                    399 => format!("Earth {}", roman),
-                    499 => format!("Mars {}", roman),
-                    599 => format!("Jupiter {}", roman),
-                    699 => format!("Saturn {}", roman),
-                    799 => format!("Uranus {}", roman),
-                    899 => format!("Neptune {}", roman),
+                    399 => format!("Earth {roman}"),
+                    499 => format!("Mars {roman}"),
+                    599 => format!("Jupiter {roman}"),
+                    699 => format!("Saturn {roman}"),
+                    799 => format!("Uranus {roman}"),
+                    899 => format!("Neptune {roman}"),
                     _ => return Err(std::fmt::Error),
                 }
             }
@@ -597,8 +591,7 @@ pub fn mpc_hex_to_num(hex: &str) -> KeteResult<u32> {
             result = result * 62 + pos as u32;
         } else {
             return Err(Error::IOError(format!(
-                "Invalid character in MPC hexadecimal string: {}",
-                c
+                "Invalid character in MPC hexadecimal string: {c}"
             )));
         }
     }
@@ -659,14 +652,12 @@ pub fn unpack_perm_designation(designation: &str) -> KeteResult<Desig> {
         // take all but the last character from remaining and parse it to a u32
         let num = remaining[..3].parse::<u32>().map_err(|e| {
             Error::ValueError(format!(
-                "Failed to parse planetary satellite designation: {} {}",
-                e, remaining
+                "Failed to parse planetary satellite designation: {e} {remaining}"
             ))
         })?;
         if !(1..=3999).contains(&num) {
             return Err(Error::ValueError(format!(
-                "Planetary satellite number must be between 1 and 3999: {}",
-                num
+                "Planetary satellite number must be between 1 and 3999: {num}"
             )));
         }
         match first_char {
@@ -677,8 +668,7 @@ pub fn unpack_perm_designation(designation: &str) -> KeteResult<Desig> {
             "U" => Ok(Desig::PlanetSat(799, num)),
             "N" => Ok(Desig::PlanetSat(899, num)),
             _ => Err(Error::ValueError(format!(
-                "Invalid first character for planetary satellite designation: {}",
-                first_char
+                "Invalid first character for planetary satellite designation: {first_char}"
             ))),
         }
     } else if designation.ends_with('A')
@@ -689,10 +679,7 @@ pub fn unpack_perm_designation(designation: &str) -> KeteResult<Desig> {
     {
         // comets
         let num = designation[..4].parse::<u32>().map_err(|e| {
-            Error::ValueError(format!(
-                "Failed to parse comet permanent designation: {}",
-                e
-            ))
+            Error::ValueError(format!("Failed to parse comet permanent designation: {e}"))
         })?;
         Ok(Desig::CometPerm(
             designation.chars().last().unwrap(),
@@ -705,13 +692,12 @@ pub fn unpack_perm_designation(designation: &str) -> KeteResult<Desig> {
         if let Some(pos) = MPC_HEX.find(first_char) {
             let first_num = pos as u32 * 10_000;
             let rest_num = remaining.parse::<u32>().map_err(|e| {
-                Error::ValueError(format!("Failed to parse rest of designation: {}", e))
+                Error::ValueError(format!("Failed to parse rest of designation: {e}"))
             })?;
             Ok(Desig::Perm(first_num + rest_num))
         } else {
             Err(Error::ValueError(format!(
-                "Invalid character in MPC Permanent Designation: {}",
-                first_char
+                "Invalid character in MPC Permanent Designation: {first_char}"
             )))
         }
     }
@@ -791,8 +777,7 @@ pub fn unpack_prov_designation(designation: &str) -> KeteResult<Desig> {
         {
             if designation[3..].chars().all(|c| !c.is_ascii_digit()) {
                 return Err(Error::ValueError(format!(
-                    "Provisional designation appears to be a survey but incorrectly formatted: {}",
-                    designation
+                    "Provisional designation appears to be a survey but incorrectly formatted: {designation}"
                 )));
             }
             return Ok(Desig::Prov(format!(
@@ -814,8 +799,7 @@ pub fn unpack_prov_designation(designation: &str) -> KeteResult<Desig> {
                 (Some(first), rest, true)
             } else {
                 return Err(Error::ValueError(format!(
-                    "Invalid MPC Provisional Designation: {}",
-                    designation
+                    "Invalid MPC Provisional Designation: {designation}"
                 )));
             }
         }
@@ -829,8 +813,7 @@ pub fn unpack_prov_designation(designation: &str) -> KeteResult<Desig> {
 
     let err = || {
         Error::ValueError(format!(
-            "Invalid MPC Provisional Designation: {}",
-            designation
+            "Invalid MPC Provisional Designation: {designation}"
         ))
     };
     if is_comet {
@@ -844,12 +827,12 @@ pub fn unpack_prov_designation(designation: &str) -> KeteResult<Desig> {
         match frag {
             '0' => Ok(Desig::CometProv(
                 orbit_type,
-                format!("{} {}{}", year, half_month, comet_num),
+                format!("{year} {half_month}{comet_num}"),
                 None,
             )),
             x if x.is_ascii_lowercase() => Ok(Desig::CometProv(
                 orbit_type,
-                format!("{} {}{}", year, half_month, comet_num),
+                format!("{year} {half_month}{comet_num}"),
                 Some(x.to_ascii_uppercase()),
             )),
             _ => {
@@ -872,8 +855,7 @@ fn unpack_ast_prov_desig(designation: &str) -> KeteResult<Desig> {
     let order = designation.chars().nth(6).unwrap();
     let err = || {
         Error::ValueError(format!(
-            "Invalid MPC Provisional Designation: {}",
-            designation
+            "Invalid MPC Provisional Designation: {designation}"
         ))
     };
     let century = MPC_HEX.find(&designation[..1]).ok_or_else(err)? as u32 * 100;
@@ -881,17 +863,17 @@ fn unpack_ast_prov_desig(designation: &str) -> KeteResult<Desig> {
     let year = if year < 1925 {
         format!("A{}", year % 1000)
     } else {
-        format!("{}", year)
+        year.to_string()
     };
     let obs_num = MPC_HEX.find(&designation[4..5]).ok_or_else(err)? as u32 * 10
         + designation[5..6].parse::<u32>().map_err(|_| err())?;
     let obs_str = if obs_num == 0 {
-        "".to_string()
+        String::new()
     } else {
-        format!("{}", obs_num)
+        obs_num.to_string()
     };
     let tmp = designation.chars().nth(3).unwrap();
-    Ok(Desig::Prov(format!("{} {}{}{}", year, tmp, order, obs_str)))
+    Ok(Desig::Prov(format!("{year} {tmp}{order}{obs_str}")))
 }
 
 static ROMAN_PAIRS: [(u32, &str); 13] = [
@@ -941,7 +923,7 @@ pub fn int_to_roman(mut num: u32) -> KeteResult<String> {
         ));
     }
     let mut result = String::new();
-    for &(value, symbol) in ROMAN_PAIRS.iter() {
+    for &(value, symbol) in &ROMAN_PAIRS {
         while num >= value {
             result.push_str(symbol);
             num -= value;
@@ -979,8 +961,7 @@ pub fn roman_to_int(roman: &str) -> KeteResult<u32> {
             .iter()
             .find(|&&(_, symbol)| symbol == character)
             .ok_or(Error::ValueError(format!(
-                "Invalid character in roman numeral: {}",
-                character
+                "Invalid character in roman numeral: {character}"
             )))?
             .0;
         if val > last_value {
@@ -995,8 +976,7 @@ pub fn roman_to_int(roman: &str) -> KeteResult<u32> {
     // Validate the result is a valid roman numeral
     if int_to_roman(result) != Ok(roman.to_string()) {
         return Err(Error::ValueError(format!(
-            "Invalid roman numeral: {} {}",
-            roman, result
+            "Invalid roman numeral: {roman} {result}"
         )));
     }
     Ok(result)

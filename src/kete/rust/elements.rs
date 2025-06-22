@@ -1,7 +1,7 @@
 //! Python support for orbital elements
 use kete_core::elements;
 use kete_core::prelude;
-use pyo3::{pyclass, pymethods, PyResult};
+use pyo3::{PyResult, pyclass, pymethods};
 
 use crate::state::PyState;
 
@@ -186,6 +186,16 @@ impl PyCometElements {
     }
 
     fn __repr__(&self) -> String {
-        format!("CometElements(desig={:?}, epoch={}, eccentricity={}, inclination={}, lon_of_ascending={}, peri_time={}, peri_arg={}, peri_dist={})", self.desig(), self.epoch(), self.eccentricity(), self.inclination(), self.lon_of_ascending(), self.peri_time(), self.peri_arg(), self.peri_dist())
+        format!(
+            "CometElements(desig={:?}, epoch={}, eccentricity={}, inclination={}, lon_of_ascending={}, peri_time={}, peri_arg={}, peri_dist={})",
+            self.desig(),
+            self.epoch(),
+            self.eccentricity(),
+            self.inclination(),
+            self.lon_of_ascending(),
+            self.peri_time(),
+            self.peri_arg(),
+            self.peri_dist()
+        )
     }
 }
