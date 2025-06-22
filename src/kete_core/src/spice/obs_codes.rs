@@ -1,5 +1,4 @@
 //! Observatory codes used by the MPC
-use lazy_static::lazy_static;
 use nalgebra::{Rotation3, UnitVector3, Vector3};
 use serde::Deserialize;
 
@@ -41,11 +40,11 @@ impl FromStr for ObsCode {
         let sin = f64::from_str(row[21..30].trim()).unwrap_or(f64::NAN);
         let vec = Vector3::new(cos, 0.0, sin) * EARTH_A;
 
-        let rot = Rotation3::from_axis_angle(
+        let rotation = Rotation3::from_axis_angle(
             &UnitVector3::new_normalize([0.0, 0.0, 1.0].into()),
             rec_lon.to_radians(),
         );
-        let vec = rot.transform_vector(&vec);
+        let vec = rotation.transform_vector(&vec);
 
         let (lat, lon, altitude) = ecef_to_geodetic_lat_lon(vec.x, vec.y, vec.z);
 
@@ -62,18 +61,18 @@ impl FromStr for ObsCode {
 
 const PRELOAD_OBS: &[u8] = include_bytes!("../../data/mpc_obs.tsv");
 
-lazy_static! {
-    /// Observatory Codes
-    pub static ref OBS_CODES: Vec<ObsCode> = {
-        let mut codes = Vec::new();
-        let text = str::from_utf8(PRELOAD_OBS).unwrap().split('\n');
-        for row in text.skip(1) {
-            // entries with gaps are skipped
-            if let Ok(code) = ObsCode::from_str(row) { codes.push(code) };
+/// Observatory Codes
+pub static OBS_CODES: std::sync::LazyLock<Vec<ObsCode>> = std::sync::LazyLock::new(|| {
+    let mut codes = Vec::new();
+    let text = str::from_utf8(PRELOAD_OBS).unwrap().split('\n');
+    for row in text.skip(1) {
+        // entries with gaps are skipped
+        if let Ok(code) = ObsCode::from_str(row) {
+            codes.push(code);
         }
-        codes
-    };
-}
+    }
+    codes
+});
 
 /// Return all possible observatory code matches for a given name.
 ///
@@ -92,7 +91,7 @@ pub fn try_obs_code_from_name(name: &str) -> Vec<ObsCode> {
         .map(|(i, _)| OBS_CODES[i].clone())
         .collect();
     matches.extend(
-        partial_str_match(name, &codes.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+        partial_str_match(name, &codes.iter().map(String::as_str).collect::<Vec<_>>())
             .into_iter()
             .map(|(i, _)| OBS_CODES[i].clone()),
     );

@@ -11,7 +11,10 @@
 //!
 //! There is a lot of repetition in this file, as many of the segment types have very
 //! similar internal structures.
-use super::{SpkArray, interpolation::*};
+use super::SpkArray;
+use super::interpolation::{
+    chebyshev_evaluate, chebyshev_evaluate_both, hermite_interpolation, lagrange_interpolation,
+};
 use super::{jd_to_spice_jd, spice_jd_to_jd};
 use crate::constants::AU_KM;
 use crate::errors::Error;
@@ -49,8 +52,7 @@ impl TryFrom<SpkArray> for SpkSegment {
             18 => Ok(Self::Type18(array.try_into()?)),
             21 => Ok(Self::Type21(array.into())),
             v => Err(Error::IOError(format!(
-                "SPK Segment type {:?} not supported. Please submit a github issue!",
-                v
+                "SPK Segment type {v} not supported. Please submit a github issue!",
             ))),
         }
     }
@@ -94,10 +96,10 @@ impl SpkSegment {
             Self::Type1(v) => v.try_get_pos_vel(jds)?,
             Self::Type2(v) => v.try_get_pos_vel(jds)?,
             Self::Type3(v) => v.try_get_pos_vel(jds)?,
-            Self::Type9(v) => v.try_get_pos_vel(jds)?,
-            Self::Type10(v) => v.try_get_pos_vel(jds)?,
-            Self::Type13(v) => v.try_get_pos_vel(jds)?,
-            Self::Type18(v) => v.try_get_pos_vel(jds)?,
+            Self::Type9(v) => v.try_get_pos_vel(jds),
+            Self::Type10(v) => v.try_get_pos_vel(jds),
+            Self::Type13(v) => v.try_get_pos_vel(jds),
+            Self::Type18(v) => v.try_get_pos_vel(jds),
             Self::Type21(v) => v.try_get_pos_vel(jds)?,
         };
 
@@ -255,7 +257,7 @@ impl SpkSegmentType1 {
 
         // velocity interpolation
         let vel = std::array::from_fn(|idx| {
-            let sum: f64 = (1..(kq[idx] as usize + 1))
+            let sum: f64 = (1..=(kq[idx] as usize))
                 .rev()
                 .map(|j| divided_diff_array[15 * idx + j - 1] * w[j + ks - 1])
                 .sum();
@@ -356,9 +358,9 @@ impl TryFrom<SpkArray> for SpkSegmentType2 {
 
         Ok(Self {
             array,
+            jds_step,
             n_coef,
             record_len,
-            jds_step,
         })
     }
 }
@@ -449,9 +451,9 @@ impl TryFrom<SpkArray> for SpkSegmentType3 {
 
         Ok(Self {
             array,
+            jds_step,
             n_coef,
             record_len,
-            jds_step,
         })
     }
 }
@@ -515,7 +517,7 @@ impl SpkSegmentType9 {
     }
 
     #[inline(always)]
-    fn try_get_pos_vel(&self, jds: f64) -> KeteResult<([f64; 3], [f64; 3])> {
+    fn try_get_pos_vel(&self, jds: f64) -> ([f64; 3], [f64; 3]) {
         let times = self.get_times();
         let window_size = self.poly_degree + 1;
         let start_idx: isize = match times.binary_search_by(|probe| probe.total_cmp(&jds)) {
@@ -546,7 +548,7 @@ impl SpkSegmentType9 {
             vel[idx] = v / AU_KM * 86400.;
         }
 
-        Ok((pos, vel))
+        (pos, vel)
     }
 }
 
@@ -627,7 +629,7 @@ impl SpkSegmentType10 {
     }
 
     #[inline(always)]
-    fn try_get_pos_vel(&self, jds: f64) -> KeteResult<([f64; 3], [f64; 3])> {
+    fn try_get_pos_vel(&self, jds: f64) -> ([f64; 3], [f64; 3]) {
         // TODO: this does not yet implement the interpolation between two neighboring states
         // which is present in the cSPICE implementation.
         // This currently matches the cspice implementation to within about 20km, where the error
@@ -660,10 +662,10 @@ impl SpkSegmentType10 {
         let [x, y, z] = prediction.position;
         let [vx, vy, vz] = prediction.velocity;
         let v_scale = 86400.0 / AU_KM;
-        Ok((
+        (
             [x / AU_KM, y / AU_KM, z / AU_KM],
             [vx * v_scale, vy * v_scale, vz * v_scale],
-        ))
+        )
     }
 }
 
@@ -746,7 +748,7 @@ impl SpkSegmentType13 {
     }
 
     #[inline(always)]
-    fn try_get_pos_vel(&self, jds: f64) -> KeteResult<([f64; 3], [f64; 3])> {
+    fn try_get_pos_vel(&self, jds: f64) -> ([f64; 3], [f64; 3]) {
         let times = self.get_times();
         let start_idx: isize = match times.binary_search_by(|probe| probe.total_cmp(&jds)) {
             Ok(c) => c as isize - (self.window_size as isize) / 2,
@@ -780,7 +782,7 @@ impl SpkSegmentType13 {
             vel[idx] = v / AU_KM * 86400.;
         }
 
-        Ok((pos, vel))
+        (pos, vel)
     }
 }
 
@@ -868,7 +870,7 @@ impl SpkSegmentType18 {
     }
 
     #[inline(always)]
-    fn try_get_pos_vel(&self, jds: f64) -> KeteResult<([f64; 3], [f64; 3])> {
+    fn try_get_pos_vel(&self, jds: f64) -> ([f64; 3], [f64; 3]) {
         let times = self.get_times();
         let start_idx: isize = match times.binary_search_by(|probe| probe.total_cmp(&jds)) {
             Ok(c) => c as isize - (self.window_size as isize) / 2,
@@ -946,7 +948,7 @@ impl SpkSegmentType18 {
                 unreachable!()
             }
         }
-        Ok((pos, vel))
+        (pos, vel)
     }
 }
 

@@ -24,7 +24,6 @@ crossbeam = "^0.8.4"
 directories = "^6.0"
 itertools = "^0.14.0"
 kdtree = "^0.7.0"
-lazy_static = "^1.5.0"
 nalgebra = {version = "^0.33.0"}
 nom = "8.0.0"
 polars = {version = "0.48.1", optional=true, features=["parquet", "polars-io"]}

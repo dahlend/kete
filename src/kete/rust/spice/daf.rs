@@ -1,5 +1,5 @@
 use kete_core::spice::DafFile;
-use pyo3::{pyfunction, PyResult};
+use pyo3::{PyResult, pyfunction};
 
 /// Given a DAF file, return the comments contained within the header.
 #[pyfunction]

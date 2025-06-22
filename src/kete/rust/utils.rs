@@ -4,7 +4,7 @@ use itertools::Itertools;
 use kete_core::util::Degrees;
 use pyo3::{exceptions::PyValueError, prelude::*};
 
-use crate::maybe_vec::{maybe_vec_to_pyobj, MaybeVec};
+use crate::maybe_vec::{MaybeVec, maybe_vec_to_pyobj};
 
 /// Convert a Right Ascension in decimal degrees to an "hours minutes seconds" string.
 ///

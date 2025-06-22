@@ -8,48 +8,46 @@ use std::time::Duration;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use kete_core::prelude::*;
 use kete_core::*;
-use lazy_static::lazy_static;
 use pprof::criterion::{Output, PProfProfiler};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-lazy_static! {
-    static ref CIRCULAR: State<Ecliptic> = {
-        State::new(
-            Desig::Name("Circular".into()),
-            2451545.0,
-            [0.0, 1., 0.0].into(),
-            [-constants::GMS_SQRT, 0.0, 0.0].into(),
-            0,
-        )
-    };
-    static ref ELLIPTICAL: State<Ecliptic> = {
-        State::new(
-            Desig::Name("Elliptical".into()),
-            2451545.0,
-            [0.0, 1.5, 0.0].into(),
-            [-constants::GMS_SQRT, 0.0, 0.0].into(),
-            0,
-        )
-    };
-    static ref PARABOLIC: State<Ecliptic> = {
-        State::new(
-            Desig::Name("Parabolic".into()),
-            2451545.0,
-            [0.0, 2., 0.0].into(),
-            [-constants::GMS_SQRT, 0.0, 0.0].into(),
-            0,
-        )
-    };
-    static ref HYPERBOLIC: State<Ecliptic> = {
-        State::new(
-            Desig::Name("Hyperbolic".into()),
-            2451545.0,
-            [0.0, 3., 0.0].into(),
-            [-constants::GMS_SQRT, 0.0, 0.0].into(),
-            0,
-        )
-    };
-}
+static CIRCULAR: std::sync::LazyLock<State<Ecliptic>> = std::sync::LazyLock::new(|| {
+    State::new(
+        Desig::Name("Circular".into()),
+        2451545.0,
+        [0.0, 1., 0.0].into(),
+        [-constants::GMS_SQRT, 0.0, 0.0].into(),
+        0,
+    )
+});
+static ELLIPTICAL: std::sync::LazyLock<State<Ecliptic>> = std::sync::LazyLock::new(|| {
+    State::new(
+        Desig::Name("Elliptical".into()),
+        2451545.0,
+        [0.0, 1.5, 0.0].into(),
+        [-constants::GMS_SQRT, 0.0, 0.0].into(),
+        0,
+    )
+});
+static PARABOLIC: std::sync::LazyLock<State<Ecliptic>> = std::sync::LazyLock::new(|| {
+    State::new(
+        Desig::Name("Parabolic".into()),
+        2451545.0,
+        [0.0, 2., 0.0].into(),
+        [-constants::GMS_SQRT, 0.0, 0.0].into(),
+        0,
+    )
+});
+
+static HYPERBOLIC: std::sync::LazyLock<State<Ecliptic>> = std::sync::LazyLock::new(|| {
+    State::new(
+        Desig::Name("Hyperbolic".into()),
+        2451545.0,
+        [0.0, 3., 0.0].into(),
+        [-constants::GMS_SQRT, 0.0, 0.0].into(),
+        0,
+    )
+});
 
 fn prop_n_body_radau(state: State<Ecliptic>, dt: f64) {
     let jd = state.jd + dt;

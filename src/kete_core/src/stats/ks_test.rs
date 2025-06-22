@@ -16,14 +16,14 @@ pub fn two_sample_ks_statistic(sample_a: &[f64], sample_b: &[f64]) -> KeteResult
         .filter(|x| x.is_finite())
         .copied()
         .collect_vec();
-    sample_a.sort_by(|a, b| a.total_cmp(b));
+    sample_a.sort_by(f64::total_cmp);
 
     let mut sample_b = sample_b
         .iter()
         .filter(|x| x.is_finite())
         .copied()
         .collect_vec();
-    sample_b.sort_by(|a, b| a.total_cmp(b));
+    sample_b.sort_by(f64::total_cmp);
 
     let len_a = sample_a.len();
     let len_b = sample_b.len();

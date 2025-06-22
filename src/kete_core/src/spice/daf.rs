@@ -272,9 +272,9 @@ impl DafArray {
         let data = read_f64_vec(buffer, n_floats, little_endian)?;
 
         Ok(Self {
-            data,
             summary_floats,
             summary_ints,
+            data,
             daf_type,
         })
     }

@@ -3,11 +3,11 @@ use itertools::Itertools;
 use kete_core::frames::{Equatorial, Vector};
 use kete_core::state::State;
 use kete_core::{constants, propagation};
-use pyo3::{exceptions, PyErr, PyObject, Python};
-use pyo3::{pyfunction, PyResult};
+use pyo3::{PyErr, PyObject, Python, exceptions};
+use pyo3::{PyResult, pyfunction};
 use rayon::prelude::*;
 
-use crate::maybe_vec::{maybe_vec_to_pyobj, MaybeVec};
+use crate::maybe_vec::{MaybeVec, maybe_vec_to_pyobj};
 use crate::state::PyState;
 use crate::time::PyTime;
 use crate::vector::PyVector;

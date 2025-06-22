@@ -1,6 +1,6 @@
 //! Loading and reading of states from JPL CK kernel files.
 //!
-//! PCKs are intended to be loaded into a singleton which is accessible via the
+//! CKs are intended to be loaded into a singleton which is accessible via the
 //! [`LOADED_CK`] object defined below. This singleton is wrapped in a
 //! [`crossbeam::sync::ShardedLock`], meaning before its use it must by unwrapped.
 //! A vast majority of intended use cases will only be the read case.
@@ -14,33 +14,35 @@ use crate::{
 
 use super::{CkArray, DAFType, DafFile, LOADED_SCLK, ck_segments::CkSegment};
 use crossbeam::sync::ShardedLock;
-use lazy_static::lazy_static;
 
 /// A collection of segments.
 #[derive(Debug, Default)]
 pub struct CkCollection {
-    /// Collection of PCK file information
+    /// Collection of CK file information
     pub(crate) segments: Vec<CkSegment>,
 }
 
-/// Define the PCK singleton structure.
+/// Define the CK singleton structure.
 type CkSingleton = ShardedLock<CkCollection>;
 
 impl CkCollection {
     /// Given an CK filename, load all the segments present inside of it.
-    /// These segments are added to the PCK singleton in memory.
+    /// These segments are added to the CK singleton in memory.
+    ///
+    /// # Errors
+    /// [`Error::IOError`] if the file is not a CK formatted file.
+    ///
     pub fn load_file(&mut self, filename: &str) -> KeteResult<()> {
         let file = DafFile::from_file(filename)?;
         if !matches!(file.daf_type, DAFType::Ck) {
             return Err(Error::IOError(format!(
-                "File {:?} is not aPCK formatted file.",
-                filename
+                "File {filename:?} is not a CK formatted file."
             )))?;
         }
 
         for array in file.arrays {
-            let pck_array: CkArray = array.try_into()?;
-            let segment: CkSegment = pck_array.try_into()?;
+            let ck_array: CkArray = array.try_into()?;
+            let segment: CkSegment = ck_array.try_into()?;
             self.segments.push(segment);
         }
         Ok(())
@@ -53,6 +55,9 @@ impl CkCollection {
 
     /// Get the closest record to the given JD for the specified instrument ID.
     ///
+    /// # Errors
+    /// [`Error::DAFLimits`] if the instrument ID does not have a record for the target JD.
+    ///
     pub fn try_get_frame(
         &self,
         jd: f64,
@@ -63,7 +68,7 @@ impl CkCollection {
         let spice_id = instrument_id / 1000;
         let tick = sclk.try_time_to_tick(spice_id, time)?;
 
-        for segment in self.segments.iter() {
+        for segment in &self.segments {
             let array: &CkArray = segment.into();
             if (array.instrument_id == instrument_id) & array.contains(tick) {
                 return segment.try_get_orientation(instrument_id, time);
@@ -71,8 +76,7 @@ impl CkCollection {
         }
 
         Err(Error::DAFLimits(format!(
-            "Instrument ({}) does not have an CK record for the target JD.",
-            instrument_id
+            "Instrument ({instrument_id}) does not have an CK record for the target JD."
         )))?
     }
 
@@ -97,9 +101,7 @@ impl CkCollection {
             .iter()
             .filter_map(|s| {
                 let array: &CkArray = s.into();
-                if array.instrument_id != instrument_id {
-                    None
-                } else {
+                if array.instrument_id == instrument_id {
                     Some((
                         array.instrument_id,
                         array.reference_frame_id,
@@ -107,18 +109,18 @@ impl CkCollection {
                         array.tick_start,
                         array.tick_end,
                     ))
+                } else {
+                    None
                 }
             })
             .collect()
     }
 }
 
-lazy_static! {
-    /// PCK singleton.
-    /// This is a RwLock protected PCKCollection, and must be `.try_read().unwrapped()` for any
-    /// read-only cases.
-    pub static ref LOADED_CK: CkSingleton = {
-        let singleton = CkCollection::default();
-        ShardedLock::new(singleton)
-    };
-}
+/// CK singleton.
+/// This is a lock protected [`CkCollection`], and must be `.try_read().unwrapped()` for any
+/// read-only cases.
+pub static LOADED_CK: std::sync::LazyLock<CkSingleton> = std::sync::LazyLock::new(|| {
+    let singleton = CkCollection::default();
+    ShardedLock::new(singleton)
+});

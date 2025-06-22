@@ -1,6 +1,5 @@
 /// Parsing text of SPICE SCLK kernels.
 use crossbeam::sync::ShardedLock;
-use lazy_static::lazy_static;
 use nom::{
     IResult, Parser,
     branch::alt,
@@ -38,10 +37,13 @@ type SclkSingleton = ShardedLock<SclkCollection>;
 impl SclkCollection {
     /// Given an SCLK filename, load all the segments present inside of it.
     /// These segments are added to the SCLK singleton in memory.
+    ///
+    /// # Errors
+    /// [`Error::IOError`] if the file is not a SCLK formatted file.
     pub fn load_file(&mut self, filename: &str) -> KeteResult<()> {
         let contents = fs::read_to_string(filename)?;
         let (_, tokens) = parse_sclk_string(&contents)
-            .map_err(|_| Error::IOError(format!("Failed to parse SCLK file: {}", filename)))?;
+            .map_err(|_| Error::IOError(format!("Failed to parse SCLK file: {filename}")))?;
         let sclk: Sclk = tokens.try_into()?;
 
         let _ = self.clocks.insert(sclk.naif_id, sclk);
@@ -51,76 +53,81 @@ impl SclkCollection {
 
     /// Convert a spacecraft clock string into a [`Time<TDB>`].
     ///
-    /// Parameters
-    /// ----------
+    /// # Parameters
     /// ``id``: i32
     ///   The NAIF ID of the spacecraft clock.
     /// ``sclk_string``: &str
     ///   The spacecraft clock string to convert.
+    ///
+    /// # Errors
+    /// [`Error::ValueError`] if the SCLK clock for the given ID is not found.
+    ///
     pub fn string_get_time(&self, id: i32, sclk_string: &str) -> KeteResult<Time<TDB>> {
         if let Some(sclk) = self.clocks.get(&id) {
             sclk.string_to_time(sclk_string)
         } else {
             Err(Error::ValueError(format!(
-                "SCLK clock for spacecraft ID {} not found.",
-                id
+                "SCLK clock for spacecraft ID {id} not found."
             )))
         }
     }
 
     /// Convert a spacecraft clock string into a clock tick (SCLK float).
     ///
-    /// Parameters
-    /// ----------
+    /// # Parameters
     /// ``id``: i32
     ///     The NAIF ID of the spacecraft clock.
     /// ``sclk_string``: &str
     ///     The spacecraft clock string to convert.
+    ///
+    /// # Errors
+    /// [`Error::ValueError`] if the SCLK clock for the given ID is not found.
     pub fn try_string_to_tick(&self, id: i32, sclk_string: &str) -> KeteResult<f64> {
         if let Some(sclk) = self.clocks.get(&id) {
             sclk.string_to_tick(sclk_string).map(|x| x.1)
         } else {
             Err(Error::ValueError(format!(
-                "SCLK clock for spacecraft ID {} not found.",
-                id
+                "SCLK clock for spacecraft ID {id} not found."
             )))
         }
     }
 
     /// Convert clock tick into a time [`Time<TDB>`].
     ///
-    /// Parameters
-    /// ----------
+    /// # Parameters
     /// ``id``: i32
     ///     The NAIF ID of the spacecraft clock.
     /// ``clock_tick``: f64
     ///     The clock tick (SCLK float) to convert.
+    ///
+    /// # Errors
+    /// [`Error::ValueError`] if the SCLK clock for the given ID is not found.
     pub fn try_tick_to_time(&self, id: i32, clock_tick: f64) -> KeteResult<Time<TDB>> {
         if let Some(sclk) = self.clocks.get(&id) {
             sclk.tick_to_time(clock_tick)
         } else {
             Err(Error::ValueError(format!(
-                "SCLK clock for spacecraft ID {} not found.",
-                id
+                "SCLK clock for spacecraft ID {id} not found."
             )))
         }
     }
 
     /// Convert [`Time<TDB>`] to clock tick.
     ///
-    /// Parameters
-    /// ----------
+    /// # Parameters
     /// ``id``: i32
     ///     The NAIF ID of the spacecraft clock.
     /// ``time``: f64
     ///     The clock tick (SCLK float) to convert.
+    ///
+    /// # Errors
+    /// [`Error::ValueError`] if the SCLK clock for the given ID is not found.
     pub fn try_time_to_tick(&self, id: i32, time: Time<TDB>) -> KeteResult<f64> {
         if let Some(sclk) = self.clocks.get(&id) {
             sclk.time_to_tick(time)
         } else {
             Err(Error::ValueError(format!(
-                "SCLK clock for spacecraft ID {} not found.",
-                id
+                "SCLK clock for spacecraft ID {id} not found."
             )))
         }
     }
@@ -133,26 +140,38 @@ impl SclkCollection {
     /// Return a list of all loaded segments in the SCLK singleton.
     /// This is a list of the center NAIF IDs of the segments.
     pub fn loaded_objects(&self) -> Vec<i32> {
-        self.clocks.keys().cloned().collect()
+        self.clocks.keys().copied().collect()
     }
 
     /// Load files in the cache directory.
+    ///
+    /// # Errors
+    /// [`Error::IOError`] if the cache directory cannot be found or read.
     pub fn load_cache(&mut self) -> KeteResult<()> {
         let cache = cache_path("kernels")?;
-        self.load_directory(cache)?;
+        self.load_directory(&cache)?;
         Ok(())
     }
 
     /// Load all SCLK files from a directory.
-    pub fn load_directory(&mut self, directory: String) -> KeteResult<()> {
-        fs::read_dir(&directory)?.for_each(|entry| {
-            let entry = entry.unwrap();
+    ///
+    /// If files fail to load, an error is printed to stderr, but the loading continues.
+    ///
+    /// # Errors
+    /// [`Error::IOError`] if the directory cannot be read.
+    ///
+    /// # Panics
+    /// This can panic if the directory contents cannot be read.
+    ///
+    pub fn load_directory(&mut self, directory: &str) -> KeteResult<()> {
+        fs::read_dir(directory)?.for_each(|entry| {
+            let entry = entry.expect("Failed to read entry in directory");
             let path = entry.path();
             if path.is_file() {
                 let filename = path.to_str().unwrap();
                 if filename.to_lowercase().ends_with(".tsc") {
                     if let Err(err) = self.load_file(filename) {
-                        eprintln!("Failed to load SCLK file {}: {}", filename, err);
+                        eprintln!("Failed to load SCLK file {filename}: {err}");
                     }
                 }
             }
@@ -161,15 +180,13 @@ impl SclkCollection {
     }
 }
 
-lazy_static! {
-    /// SCLK singleton.
-    /// This is a RwLock protected [`SclkCollection`], and must be `.try_read().unwrapped()` for any
-    /// read-only cases.
-    pub static ref LOADED_SCLK: SclkSingleton = {
-        let singleton = SclkCollection::default();
-        ShardedLock::new(singleton)
-    };
-}
+/// SCLK singleton.
+/// This is a lock protected [`SclkCollection`], and must be `.try_read().unwrapped()` for any
+/// read-only cases.
+pub static LOADED_SCLK: std::sync::LazyLock<SclkSingleton> = std::sync::LazyLock::new(|| {
+    let singleton = SclkCollection::default();
+    ShardedLock::new(singleton)
+});
 
 /// A spacecraft clock (SCLK) kernel.
 ///
@@ -364,8 +381,8 @@ impl TryFrom<Vec<SclkToken>> for Sclk {
 
         for token in value {
             match token {
-                SclkToken::MagicNumber => continue,
-                SclkToken::Comments(_) => continue,
+                SclkToken::MagicNumber => (),
+                SclkToken::Comments(_) => (),
                 SclkToken::KernelID(id) => {
                     if kernel_id.is_some() {
                         return Err(Error::ValueError("Multiple SCLK_KERNEL_ID found.".into()));
@@ -844,7 +861,7 @@ mod tests {
         let (_, sclk) = partition_start(a).unwrap();
         assert_eq!(
             sclk,
-            SclkToken::PartitionStart(77, vec![0.0, 2.546544E+07, 7.2800001E+07, 1.31768E+08])
+            SclkToken::PartitionStart(77, vec![0.0, 2.546_544E+07, 7.280_000_1E+07, 1.31768E+08])
         );
 
         let (_, sclk) = time_system(
@@ -940,12 +957,12 @@ mod tests {
         );
         assert_eq!(vec[1], SclkToken::DataType(77, 1));
         assert_eq!(vec[2], SclkToken::NFields01(77, 4));
-        assert_eq!(vec[3], SclkToken::Moduli01(77, vec![16777215, 91, 10, 8]));
+        assert_eq!(vec[3], SclkToken::Moduli01(77, vec![16_777_215, 91, 10, 8]));
         assert_eq!(vec[4], SclkToken::Offsets01(77, vec![0, 0, 0, 0]));
         assert_eq!(vec[5], SclkToken::OutputDelim01(77, 2));
         assert_eq!(
             vec[6],
-            SclkToken::PartitionStart(77, vec![0.0, 2.546544E+07, 7.2800001E+07, 1.31768E+08])
+            SclkToken::PartitionStart(77, vec![0.0, 2.546_544E+07, 7.280_000_1E+07, 1.31768E+08])
         );
 
         let clock = Sclk::try_from(vec).unwrap();
@@ -960,7 +977,7 @@ mod tests {
         assert_eq!(part, 1);
         assert_eq!(count, 0.0);
 
-        let (part, count) = clock.partition_tick_count(7.2900003000000E+07).unwrap();
+        let (part, count) = clock.partition_tick_count(7.290_000_3E+07).unwrap();
         assert_eq!(part, 3);
         assert_eq!(count, -1.0);
     }

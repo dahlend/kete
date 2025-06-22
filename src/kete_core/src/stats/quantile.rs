@@ -20,7 +20,7 @@ pub fn quantile(data: &[f64], quant: f64) -> KeteResult<f64> {
         .iter()
         .filter_map(|x| if x.is_finite() { Some(*x) } else { None })
         .collect();
-    data.sort_by(|a, b| a.total_cmp(b));
+    data.sort_by(f64::total_cmp);
 
     let n_data = data.len();
 

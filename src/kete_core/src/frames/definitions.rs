@@ -12,7 +12,6 @@
 use crate::errors::{Error, KeteResult};
 use crate::spice::{CkArray, LOADED_CK};
 use crate::time::{TDB, Time};
-use lazy_static::lazy_static;
 use nalgebra::{Matrix3, Rotation3, Vector3};
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
@@ -331,29 +330,33 @@ pub fn earth_precession_rotation(time: Time<TDB>) -> NonInertialFrame {
     NonInertialFrame::from_rotations(time, rotation, None, 1, 1000000000)
 }
 
-lazy_static! {
-    static ref IDENTITY_ROT: Rotation3<f64> = Rotation3::identity();
-    static ref ECLIPTIC_EQUATORIAL_ROT: Rotation3<f64> = {
+static IDENTITY_ROT: std::sync::LazyLock<Rotation3<f64>> =
+    std::sync::LazyLock::new(Rotation3::identity);
+
+static ECLIPTIC_EQUATORIAL_ROT: std::sync::LazyLock<Rotation3<f64>> =
+    std::sync::LazyLock::new(|| {
         let x = nalgebra::Unit::new_unchecked(Vector3::x_axis());
         Rotation3::from_axis_angle(&x, OBLIQUITY)
-    };
-    static ref FK4_EQUATORIAL_ROT: Rotation3<f64> = {
-        let y = nalgebra::Unit::new_unchecked(Vector3::y_axis());
-        let z = nalgebra::Unit::new_unchecked(Vector3::z_axis());
-        let r1 = Rotation3::from_axis_angle(&z, (1152.84248596724 + 0.525) / 3600.0 * PI / 180.0);
-        let r2 = Rotation3::from_axis_angle(&y, -1002.26108439117 / 3600.0 * PI / 180.0);
-        let r3 = Rotation3::from_axis_angle(&z, 1153.04066200330 / 3600.0 * PI / 180.0);
-        r3 * r2 * r1
-    };
-    static ref GALACTIC_EQUATORIAL_ROT: Rotation3<f64> = {
+    });
+
+static FK4_EQUATORIAL_ROT: std::sync::LazyLock<Rotation3<f64>> = std::sync::LazyLock::new(|| {
+    let y = nalgebra::Unit::new_unchecked(Vector3::y_axis());
+    let z = nalgebra::Unit::new_unchecked(Vector3::z_axis());
+    let r1 = Rotation3::from_axis_angle(&z, (1152.84248596724 + 0.525) / 3600.0 * PI / 180.0);
+    let r2 = Rotation3::from_axis_angle(&y, -1002.26108439117 / 3600.0 * PI / 180.0);
+    let r3 = Rotation3::from_axis_angle(&z, 1153.04066200330 / 3600.0 * PI / 180.0);
+    r3 * r2 * r1
+});
+
+static GALACTIC_EQUATORIAL_ROT: std::sync::LazyLock<Rotation3<f64>> =
+    std::sync::LazyLock::new(|| {
         let x = nalgebra::Unit::new_unchecked(Vector3::x_axis());
         let z = nalgebra::Unit::new_unchecked(Vector3::z_axis());
         let r1 = Rotation3::from_axis_angle(&z, 1177200.0 / 3600.0 * PI / 180.0);
         let r2 = Rotation3::from_axis_angle(&x, 225360.0 / 3600.0 * PI / 180.0);
         let r3 = Rotation3::from_axis_angle(&z, 1016100.0 / 3600.0 * PI / 180.0);
         (*FK4_EQUATORIAL_ROT) * r3 * r2 * r1
-    };
-}
+    });
 
 #[cfg(test)]
 mod tests {

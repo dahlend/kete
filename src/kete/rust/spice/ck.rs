@@ -1,5 +1,5 @@
 use kete_core::spice::LOADED_CK;
-use pyo3::{pyfunction, PyResult};
+use pyo3::{PyResult, pyfunction};
 
 use crate::{
     frame::PyFrames,

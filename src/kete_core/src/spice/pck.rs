@@ -15,7 +15,6 @@ use crate::cache::cache_path;
 use crate::errors::{Error, KeteResult};
 use crate::frames::NonInertialFrame;
 use crossbeam::sync::ShardedLock;
-use lazy_static::lazy_static;
 
 /// A collection of segments.
 #[derive(Debug, Default)]
@@ -111,13 +110,11 @@ impl PckCollection {
     }
 }
 
-lazy_static! {
-    /// PCK singleton.
-    /// This is a RwLock protected PCKCollection, and must be `.try_read().unwrapped()` for any
-    /// read-only cases.
-    pub static ref LOADED_PCK: PckSingleton = {
-        let mut singleton = PckCollection::default();
-        let _ = singleton.load_core();
-        ShardedLock::new(singleton)
-    };
-}
+/// PCK singleton.
+/// This is a lock protected [`PckCollection`], and must be `.try_read().unwrapped()` for any
+/// read-only cases.
+pub static LOADED_PCK: std::sync::LazyLock<PckSingleton> = std::sync::LazyLock::new(|| {
+    let mut singleton = PckCollection::default();
+    let _ = singleton.load_core();
+    ShardedLock::new(singleton)
+});

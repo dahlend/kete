@@ -3,7 +3,6 @@
 use crate::errors::Error;
 use crate::prelude::KeteResult;
 use itertools::izip;
-use lazy_static::lazy_static;
 use nalgebra::allocator::Allocator;
 use nalgebra::*;
 use nalgebra::{DefaultAllocator, Dim, OMatrix, OVector, RowSVector, SMatrix, SVector, U1, U7};
@@ -32,40 +31,37 @@ const GAUSS_RADAU_SPACINGS: [f64; 8] = [
     0.9775206135612875,
 ];
 
-lazy_static! {
-    // this initializes w, u, c, d, r
-    static ref W_VEC: RowSVector<f64, 7> = {
-        let mut w = RowSVector::<f64, 7>::zeros();
-        for (idx, e) in w.iter_mut().enumerate() {
-            *e = (((idx + 2) * (idx + 3)) as f64).recip();
+// initialize W
+static W_VEC: std::sync::LazyLock<RowSVector<f64, 7>> = std::sync::LazyLock::new(|| {
+    let mut w = RowSVector::<f64, 7>::zeros();
+    for (idx, e) in w.iter_mut().enumerate() {
+        *e = (((idx + 2) * (idx + 3)) as f64).recip();
+    }
+    w
+});
+
+// initialize U
+static U_VEC: std::sync::LazyLock<RowSVector<f64, 7>> = std::sync::LazyLock::new(|| {
+    let mut u = RowSVector::<f64, 7>::zeros();
+    for (idx, e) in u.iter_mut().enumerate() {
+        *e = ((idx + 2) as f64).recip();
+    }
+    u
+});
+
+// initialize C
+static C_MAT: std::sync::LazyLock<SMatrix<f64, 7, 7>> = std::sync::LazyLock::new(|| {
+    let mut c = SMatrix::<f64, 7, 7>::identity();
+    for idx in 0..7 {
+        if idx > 0 {
+            c[(idx, 0)] = -GAUSS_RADAU_SPACINGS[idx] * c[(idx - 1, 0)];
         }
-        w
-    };
-
-    static ref U_VEC: RowSVector<f64, 7> = {
-        let mut u = RowSVector::<f64, 7>::zeros();
-        for (idx, e) in u.iter_mut().enumerate() {
-            *e = ((idx + 2) as f64).recip();
+        for idy in 1..idx {
+            c[(idx, idy)] = c[(idx - 1, idy - 1)] - GAUSS_RADAU_SPACINGS[idx] * c[(idx - 1, idy)];
         }
-        u
-    };
-
-
-    static ref C_MAT: SMatrix<f64, 7, 7> = {
-        let mut c = SMatrix::<f64, 7, 7>::identity();
-        for idx in 0..7 {
-            if idx > 0 {
-                c[(idx, 0)] = -GAUSS_RADAU_SPACINGS[idx] * c[(idx - 1, 0)];
-            }
-            for idy in 1..idx {
-                c[(idx, idy)] = c[(idx - 1, idy - 1)]
-                    - GAUSS_RADAU_SPACINGS[idx] * c[(idx - 1, idy)];
-            }
-        }
-        c
-    };
-
-}
+    }
+    c
+});
 
 const MIN_RATIO: f64 = 0.25;
 const EPSILON: f64 = 1e-6;

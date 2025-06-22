@@ -51,8 +51,7 @@ impl Degrees {
     pub fn try_from_degrees_minutes(mut degrees: f64, minutes: f64) -> KeteResult<Self> {
         if minutes.is_sign_negative() {
             return Err(Error::ValueError(format!(
-                "Minutes value must be non-negative: {}",
-                minutes
+                "Minutes value must be non-negative: {minutes}"
             )));
         }
         degrees += minutes.copysign(degrees) / 60.0;
@@ -68,8 +67,7 @@ impl Degrees {
     ) -> KeteResult<Self> {
         if seconds.is_sign_negative() {
             return Err(Error::ValueError(format!(
-                "Seconds value must be non-negative: {}",
-                seconds
+                "Seconds value must be non-negative: {seconds}"
             )));
         }
         degrees += (minutes as f64).copysign(degrees) / 60.0;
@@ -85,8 +83,7 @@ impl Degrees {
     ) -> KeteResult<Self> {
         if seconds.is_sign_negative() {
             return Err(Error::ValueError(format!(
-                "Seconds values must be non-negative: {}",
-                seconds
+                "Seconds values must be non-negative: {seconds}"
             )));
         }
         let minutes = (minutes as f64).copysign(hours);
@@ -101,8 +98,7 @@ impl Degrees {
     pub fn try_from_hours_minutes(hours: f64, minutes: f64) -> KeteResult<Self> {
         if minutes.is_sign_negative() {
             return Err(Error::ValueError(format!(
-                "Minutes values must be non-negative: {}",
-                minutes
+                "Minutes values must be non-negative: {minutes}"
             )));
         }
         let minutes = minutes.copysign(hours);
@@ -215,13 +211,13 @@ impl Degrees {
     /// Convert to a string in the format "+ddd mm ss.ss".
     pub fn to_dms_str(&self) -> String {
         let (d, m, s) = self.to_degrees_minutes_seconds(1e-4);
-        format!("{:+03} {:02} {:05.2}", d, m, s)
+        format!("{d:+03} {m:02} {s:05.2}")
     }
 
     /// Convert to a string in the format "hh mm ss.sss".
     pub fn to_hms_str(&self) -> String {
         let (h, m, s) = self.to_hours_minutes_seconds(1e-5);
-        format!("{:02} {:02} {:06.3}", h, m, s)
+        format!("{h:02} {m:02} {s:06.3}")
     }
 }
 
