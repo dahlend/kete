@@ -22,9 +22,6 @@ pub struct CkCollection {
     pub(crate) segments: Vec<CkSegment>,
 }
 
-/// Define the CK singleton structure.
-type CkSingleton = ShardedLock<CkCollection>;
-
 impl CkCollection {
     /// Given an CK filename, load all the segments present inside of it.
     /// These segments are added to the CK singleton in memory.
@@ -120,7 +117,8 @@ impl CkCollection {
 /// CK singleton.
 /// This is a lock protected [`CkCollection`], and must be `.try_read().unwrapped()` for any
 /// read-only cases.
-pub static LOADED_CK: std::sync::LazyLock<CkSingleton> = std::sync::LazyLock::new(|| {
-    let singleton = CkCollection::default();
-    ShardedLock::new(singleton)
-});
+pub static LOADED_CK: std::sync::LazyLock<ShardedLock<CkCollection>> =
+    std::sync::LazyLock::new(|| {
+        let singleton = CkCollection::default();
+        ShardedLock::new(singleton)
+    });

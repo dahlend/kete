@@ -23,9 +23,6 @@ pub struct PckCollection {
     segments: Vec<PckSegment>,
 }
 
-/// Define the PCK singleton structure.
-type PckSingleton = ShardedLock<PckCollection>;
-
 impl PckCollection {
     /// Given an PCK filename, load all the segments present inside of it.
     /// These segments are added to the PCK singleton in memory.
@@ -113,8 +110,9 @@ impl PckCollection {
 /// PCK singleton.
 /// This is a lock protected [`PckCollection`], and must be `.try_read().unwrapped()` for any
 /// read-only cases.
-pub static LOADED_PCK: std::sync::LazyLock<PckSingleton> = std::sync::LazyLock::new(|| {
-    let mut singleton = PckCollection::default();
-    let _ = singleton.load_core();
-    ShardedLock::new(singleton)
-});
+pub static LOADED_PCK: std::sync::LazyLock<ShardedLock<PckCollection>> =
+    std::sync::LazyLock::new(|| {
+        let mut singleton = PckCollection::default();
+        let _ = singleton.load_core();
+        ShardedLock::new(singleton)
+    });

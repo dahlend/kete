@@ -57,9 +57,6 @@ pub struct SpkCollection {
     naif_ids: HashMap<String, NaifId>,
 }
 
-/// Define the SPK singleton structure.
-type SpkSingleton = ShardedLock<SpkCollection>;
-
 impl SpkCollection {
     /// Get the raw state from the loaded SPK files.
     /// This state will have the center and frame of whatever was originally loaded
@@ -437,10 +434,11 @@ impl SpkCollection {
 }
 
 /// SPK singleton.
-/// This is a lock protected [`SpkSingleton`], and must be `.try_read().unwrapped()` for any
+/// This is a lock protected [`SpkCollection`], and must be `.try_read().unwrapped()` for any
 /// read-only cases.
-pub static LOADED_SPK: std::sync::LazyLock<SpkSingleton> = std::sync::LazyLock::new(|| {
-    let mut singleton = SpkCollection::default();
-    let _ = singleton.load_core();
-    ShardedLock::new(singleton)
-});
+pub static LOADED_SPK: std::sync::LazyLock<ShardedLock<SpkCollection>> =
+    std::sync::LazyLock::new(|| {
+        let mut singleton = SpkCollection::default();
+        let _ = singleton.load_core();
+        ShardedLock::new(singleton)
+    });

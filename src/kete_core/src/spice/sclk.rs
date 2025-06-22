@@ -31,9 +31,6 @@ pub struct SclkCollection {
     clocks: HashMap<i32, Sclk>,
 }
 
-/// Define the SCLK singleton structure.
-type SclkSingleton = ShardedLock<SclkCollection>;
-
 impl SclkCollection {
     /// Given an SCLK filename, load all the segments present inside of it.
     /// These segments are added to the SCLK singleton in memory.
@@ -183,10 +180,11 @@ impl SclkCollection {
 /// SCLK singleton.
 /// This is a lock protected [`SclkCollection`], and must be `.try_read().unwrapped()` for any
 /// read-only cases.
-pub static LOADED_SCLK: std::sync::LazyLock<SclkSingleton> = std::sync::LazyLock::new(|| {
-    let singleton = SclkCollection::default();
-    ShardedLock::new(singleton)
-});
+pub static LOADED_SCLK: std::sync::LazyLock<ShardedLock<SclkCollection>> =
+    std::sync::LazyLock::new(|| {
+        let singleton = SclkCollection::default();
+        ShardedLock::new(singleton)
+    });
 
 /// A spacecraft clock (SCLK) kernel.
 ///
