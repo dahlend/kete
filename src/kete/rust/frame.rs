@@ -1,9 +1,11 @@
 //! Python Frame of reference support
 use kete_core::frames::{
-    calc_obliquity, earth_precession_rotation, ecef_to_geodetic_lat_lon, geodetic_lat_lon_to_ecef,
-    geodetic_lat_to_geocentric,
+    approx_solar_noon, earth_obliquity, earth_precession_rotation, ecef_to_geodetic_lat_lon,
+    equation_of_time, geodetic_lat_lon_to_ecef, geodetic_lat_to_geocentric, next_sunset_sunrise,
 };
 use pyo3::prelude::*;
+
+use crate::time::PyTime;
 
 /// Defined inertial frames supported by the python side of kete.
 ///
@@ -91,7 +93,7 @@ pub fn ecef_to_wgs_lat_lon(x: f64, y: f64, z: f64) -> (f64, f64, f64) {
 #[pyfunction]
 #[pyo3(name = "compute_obliquity")]
 pub fn calc_obliquity_py(time: f64) -> f64 {
-    calc_obliquity(time).to_degrees()
+    earth_obliquity(time.into()).to_degrees()
 }
 
 /// Calculate how far the Earth's north pole has precessed from the J2000 epoch.
@@ -158,4 +160,39 @@ pub fn calc_earth_precession(time: f64) -> Vec<Vec<f64>> {
         .column_iter()
         .map(|x| x.iter().cloned().collect())
         .collect()
+}
+
+/// Compute an approximation for the time of the next solar noon at a given geodetic longitude.
+///
+#[pyfunction]
+#[pyo3(name = "next_solar_noon")]
+pub fn solar_noon_py(time: PyTime, geodetic_lon: f64) -> f64 {
+    approx_solar_noon(time.0.utc(), geodetic_lon.to_radians())
+        .tdb()
+        .jd
+}
+
+/// Compute the equation of time at a given time.
+#[pyfunction]
+#[pyo3(name = "equation_of_time")]
+pub fn equation_of_time_py(time: PyTime) -> f64 {
+    equation_of_time(time.0.utc())
+}
+
+/// Compute an approximation for the time of the next sunrise and sunset at a given
+/// geodetic latitude and longitude.
+///
+#[pyfunction]
+#[pyo3(name = "next_sunrise_sunset")]
+pub fn next_sunrise_sunset_py(
+    time: PyTime,
+    geodetic_lat: f64,
+    geodetic_lon: f64,
+) -> (PyTime, PyTime) {
+    let (set, rise) = next_sunset_sunrise(
+        geodetic_lat.to_radians(),
+        geodetic_lon.to_radians(),
+        time.0.utc(),
+    );
+    (PyTime(set.tdb()), PyTime(rise.tdb()))
 }

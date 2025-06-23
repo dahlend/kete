@@ -213,6 +213,26 @@ impl PyTime {
         PyTime(Time::<TDB>::new(2451545.0))
     }
 
+    /// Time as the UTC year in float form.
+    ///
+    /// Note that Time is TDB Scaled, causing UTC to be a few seconds different.
+    ///
+    /// >>> kete.Time.from_ymd(2010, 1, 1).year_float
+    /// 2010.0
+    ///
+    /// >>> kete.Time(2457754.5, scaling='utc').year_float
+    /// 2017.0
+    ///
+    /// 2016 was a leap year, so 366 days instead of 365.
+    ///
+    /// >>> kete.Time(2457754.5 - 366, scaling='utc').year_float
+    /// 2016.0
+    ///
+    #[getter]
+    pub fn year_float(&self) -> f64 {
+        self.0.utc().year_as_float()
+    }
+
     fn __repr__(&self) -> String {
         format!("Time({})", self.0.jd)
     }

@@ -24,6 +24,11 @@ pub struct Degrees {
 }
 
 impl Degrees {
+    /// Construct from radians.
+    pub fn from_radians(radians: f64) -> Self {
+        Self::from_degrees(radians.to_degrees())
+    }
+
     /// Converts to radians.
     pub fn to_radians(&self) -> f64 {
         self.degrees.to_radians()
@@ -34,6 +39,11 @@ impl Degrees {
         Self { degrees }
     }
 
+    /// Converts to degrees.
+    pub fn to_degrees(&self) -> f64 {
+        self.degrees
+    }
+
     /// Construct from hours.
     pub fn from_hours(hours: f64) -> Self {
         Self {
@@ -41,9 +51,9 @@ impl Degrees {
         }
     }
 
-    /// Construct from radians.
-    pub fn from_radians(radians: f64) -> Self {
-        Self::from_degrees(radians.to_degrees())
+    /// Converts to Hours as a float.
+    pub fn to_hours(&self) -> f64 {
+        self.degrees / 15.0
     }
 
     /// New Degrees from degrees and minutes.
@@ -136,11 +146,6 @@ impl Degrees {
         (h, m.trunc() as u32, s)
     }
 
-    /// Converts to Hours as a float.
-    pub fn to_hours(&self) -> f64 {
-        self.degrees / 15.0
-    }
-
     /// Converts to Degrees Minutes Seconds.
     ///
     /// Parameters
@@ -161,11 +166,6 @@ impl Degrees {
             deg += 1.0;
         }
         (deg.copysign(self.degrees), m as u32, s)
-    }
-
-    /// Converts to degrees.
-    pub fn to_degrees(&self) -> f64 {
-        self.degrees
     }
 
     /// Construct from a string containing the hours minutes and seconds
@@ -199,13 +199,15 @@ impl Degrees {
     }
 
     /// Wraps the degrees in the range [0, 360).
-    pub fn bound_to_360(&mut self) {
+    pub fn bound_to_360(&mut self) -> f64 {
         self.degrees = self.degrees.rem_euclid(360.0);
+        self.degrees
     }
 
     /// Wraps the degrees in the range [-180, 180).
-    pub fn bound_to_pm_180(&mut self) {
+    pub fn bound_to_pm_180(&mut self) -> f64 {
         self.degrees = (self.degrees + 180.0).rem_euclid(360.0) - 180.0;
+        self.degrees
     }
 
     /// Convert to a string in the format "+ddd mm ss.ss".
