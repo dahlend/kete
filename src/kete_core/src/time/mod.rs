@@ -3,7 +3,10 @@
 //! See [`TimeScale`] for a list of supported Time Scales.
 //! See [`Time`] for the representation of time itself.
 
-use std::marker::PhantomData;
+use std::{
+    marker::PhantomData,
+    ops::{Add, Sub},
+};
 
 mod leap_second;
 mod scales;
@@ -72,6 +75,18 @@ pub fn frac_day_to_hmsms(mut frac: f64) -> Option<(u32, u32, u32, u32)> {
     Some((hour, minute, second, frac as u32))
 }
 
+/// Days in the provided year.
+///
+/// Returns 366 for leap years, 365 otherwise.
+///
+/// This is a proleptic implementation, meaning it does not take into account
+/// the Gregorian calendar reform, which is correct for most applications.
+///
+fn days_in_year(year: i64) -> u64 {
+    let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+    if is_leap { 366 } else { 365 }
+}
+
 impl Time<UTC> {
     /// Read time from the standard ISO format for time.
     pub fn from_iso(s: &str) -> KeteResult<Self> {
@@ -125,6 +140,47 @@ impl Time<UTC> {
         (year, month as u32, day as u32, frac_day)
     }
 
+    /// Return the current time as a fraction of the year.
+    ///
+    /// ```
+    ///    use kete_core::time::{Time, UTC};
+    ///
+    ///    let time = Time::from_year_month_day(2010, 1, 1, 0.0);
+    ///    assert_eq!(time.year_as_float(), 2010.0);
+    ///
+    ///    let time = Time::<UTC>::new(2457754.5);
+    ///    assert_eq!(time.year_as_float(), 2017.0);
+    ///
+    ///    let time = Time::<UTC>::new(2457754.5 + 364.9999);
+    ///    assert_eq!(time.year_as_float(), 2017.999999726028);
+    ///
+    ///    let time = Time::<UTC>::new(2457754.5 + 365.0 / 2.0);
+    ///    assert_eq!(time.year_as_float(), 2017.5);
+    ///
+    ///    // 2016 was a leap year, so 366 days instead of 365.
+    ///    let time = Time::<UTC>::new(2457754.5 - 366.0);
+    ///    assert_eq!(time.year_as_float(), 2016.0);
+    ///
+    ///    let time = Time::<UTC>::new(2457754.5 - 366.0 / 2.0);
+    ///    assert_eq!(time.year_as_float(), 2016.5);
+    ///
+    /// ```
+    ///
+    pub fn year_as_float(&self) -> f64 {
+        let datetime = self.to_datetime().unwrap();
+
+        // ordinal is the integer day of the year, starting at 0.
+        let mut ordinal = datetime.ordinal0() as f64;
+
+        // we need to add the fractional day to the ordinal.
+        let (_, _, _, frac_day) = self.year_month_day();
+        ordinal += frac_day;
+
+        let year = datetime.year() as f64;
+        let days_in_year = days_in_year(datetime.year() as i64) as f64;
+        year + ordinal / days_in_year
+    }
+
     /// Create Time from the date in the Gregorian calendar.
     ///
     /// Algorithm from:
@@ -162,6 +218,7 @@ impl Time<UTC> {
     }
 
     /// J2000 reference time.
+    /// 2451545.0
     pub fn j2000() -> Time<TDB> {
         Time::<TDB>::new(2451545.0)
     }
@@ -203,11 +260,34 @@ impl<T: TimeScale> Time<T> {
     pub fn mjd(&self) -> f64 {
         self.jd + JD_TO_MJD
     }
+
+    /// Convert Time from one scale to another.
+    pub fn into<Target: TimeScale>(&self) -> Time<Target> {
+        Time::<Target>::new(Target::from_tdb(self.tdb().jd))
+    }
 }
 
 impl<T: TimeScale> From<f64> for Time<T> {
     fn from(value: f64) -> Self {
         Self::new(value)
+    }
+}
+
+impl<A: TimeScale, B: TimeScale> Sub<Time<B>> for Time<A> {
+    type Output = f64;
+
+    /// Subtract two times, returning the difference in days.
+    fn sub(self, other: Time<B>) -> Self::Output {
+        self.tdb().jd - other.tdb().jd
+    }
+}
+
+impl<A: TimeScale, B: TimeScale> Add<Time<B>> for Time<A> {
+    type Output = Self;
+
+    /// Add two times together, returning a new time in the same scale as `A`.
+    fn add(self, other: Time<B>) -> Self {
+        Self::new(A::from_tdb(self.tdb().jd + other.tdb().jd))
     }
 }
 

@@ -20,7 +20,7 @@ pub fn ra_degrees_to_hms_py(py: Python<'_>, ra: MaybeVec<f64>) -> PyResult<PyObj
         .into_iter()
         .map(|ra| {
             let mut deg = Degrees::from_degrees(ra);
-            deg.bound_to_360();
+            let _ = deg.bound_to_360();
             deg.to_hms_str()
         })
         .collect_vec();
@@ -49,7 +49,7 @@ pub fn dec_degrees_to_dms_py(py: Python<'_>, dec: MaybeVec<f64>) -> PyResult<PyO
         .into_iter()
         .map(|dec| {
             let mut deg = Degrees::from_degrees(dec);
-            deg.bound_to_pm_180();
+            let _ = deg.bound_to_pm_180();
             deg.to_dms_str()
         })
         .collect_vec();
@@ -75,7 +75,7 @@ pub fn dec_dms_to_degrees_py(py: Python<'_>, dec: MaybeVec<String>) -> PyResult<
         Degrees::try_from_dms_str(&dms)
             .map(|deg| {
                 let mut deg = deg;
-                deg.bound_to_pm_180();
+                let _ = deg.bound_to_pm_180();
                 results.push(deg.to_degrees());
             })
             .map_err(|_| {
@@ -107,7 +107,7 @@ pub fn ra_hms_to_degrees_py(py: Python<'_>, ra: MaybeVec<String>) -> PyResult<Py
         Degrees::try_from_hms_str(&hms)
             .map(|deg| {
                 let mut deg = deg;
-                deg.bound_to_360();
+                let _ = deg.bound_to_360();
                 results.push(deg.to_degrees());
             })
             .map_err(|_| {

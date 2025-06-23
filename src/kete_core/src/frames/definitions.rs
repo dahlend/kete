@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 use std::fmt::Debug;
 
+use super::earth::OBLIQUITY;
 use super::euler_rotation;
 
 /// Frame which supports vector conversion
@@ -237,97 +238,6 @@ impl NonInertialFrame {
         let new_vel = rot_dp * pos + rot_p.transform_vector(&vel);
         Ok((new_pos, new_vel))
     }
-}
-
-/// Ecliptic obliquity angle in radians at the J2000 epoch. This is using the definition
-/// from the 1984 JPL DE Series. These constants allow the conversion between Ecliptic
-/// and Equatorial frames. Note that there are more modern definitions for these values,
-/// however these are used for compatibility with JPL Horizons and Spice.
-///
-/// See:
-///     - <https://en.wikipedia.org/wiki/Axial_tilt#Short_term>
-///     - <https://ssd.jpl.nasa.gov/horizons/manual.html#defs>
-const OBLIQUITY: f64 = 0.40909280422232897;
-
-/// Compute the angle of obliquity of Earth.
-///
-/// This is only valid for several centuries near J2000.
-///
-/// The equation here is from the 2010 Astronomical Almanac.
-///
-#[inline(always)]
-pub fn calc_obliquity(jd: f64) -> f64 {
-    // centuries from j2000
-    let c = (jd - Time::j2000().jd) / 365.25 / 100.0;
-    (23.439279444444444
-        + c * (-0.013010213611111
-            + c * (-5.08611111111111e-08
-                + c * (5.565e-07 - c * (1.6e-10 + -1.1777777777777779e-11 * c)))))
-        .to_radians()
-}
-
-/// Rotation which transforms a vector from the J2000 Equatorial frame to the
-/// desired epoch.
-///
-/// Earth's north pole precesses at a rate of about 50 arcseconds per year.
-/// This means there was an approximately 20 arcminute rotation of the Equatorial
-/// axis from the year 2000 to 2025.
-///
-/// This implementation is valid for around 200 years on either side of 2000 to
-/// within sub micro-arcsecond accuracy.
-///
-/// This function is an implementation equation (21) from this paper:
-///
-/// > "Expressions for IAU 2000 precession quantities"  
-/// > Capitaine, N. ; Wallace, P. T. ; Chapront, J.  
-/// > Astronomy and Astrophysics, v.412, p.567-586 (2003)
-///
-/// It is recommended to first look at the following paper, as it provides useful
-/// discussion to help understand the above model. This defines the model used
-/// by JPL Horizons:
-///
-/// > "Precession matrix based on IAU (1976) system of astronomical constants."  
-/// > Lieske, J. H.  
-/// > Astronomy and Astrophysics, vol. 73, no. 3, Mar. 1979, p. 282-284.
-///
-/// The IAU 2000 model paper improves accuracy by approximately ~300 mas/century over
-/// the 1976 model.
-///
-/// # Arguments
-///
-/// * `tdb_time` - Time in TDB scaled Julian Days.
-///
-#[inline(always)]
-pub fn earth_precession_rotation(time: Time<TDB>) -> NonInertialFrame {
-    // centuries since 2000
-    let jd = time.jd;
-    let t = (jd - 2451545.0) / 36525.0;
-
-    // angles as defined in the cited paper, equations (21)
-    // Note that equation 45 is an even more developed model, which takes into
-    // account frame bias in addition to simple precession, however more clarity
-    // on the DE source and interpretation is probably required to take advantage
-    // of this increased precision.
-    let angle_c = -((2.5976176
-        + (2306.0809506 + (0.3019015 + (0.0179663 + (-0.0000327 - 0.0000002 * t) * t) * t) * t)
-            * t)
-        / 3600.0)
-        .to_radians();
-    let angle_a = -((-2.5976176
-        + (2306.0803226 + (1.094779 + (0.0182273 + (0.000047 - 0.0000003 * t) * t) * t) * t) * t)
-        / 3600.0)
-        .to_radians();
-    let angle_b = ((2004.1917476
-        + (-0.4269353 + (-0.0418251 + (-0.0000601 - 0.0000001 * t) * t) * t) * t)
-        * t
-        / 3600.0)
-        .to_radians();
-    let z_axis = Vector3::z_axis();
-    let rotation = Rotation3::from_axis_angle(&z_axis, angle_a)
-        * Rotation3::from_axis_angle(&Vector3::y_axis(), angle_b)
-        * Rotation3::from_axis_angle(&z_axis, angle_c);
-
-    NonInertialFrame::from_rotations(time, rotation, None, 1, 1000000000)
 }
 
 static IDENTITY_ROT: std::sync::LazyLock<Rotation3<f64>> =

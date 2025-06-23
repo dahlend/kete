@@ -8,10 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added support for computing sunrise and sunset times at any location on Earth.
+
 ### Changed
 
 - Moved name lookups for SPICE and Observatory codes to the rust backend. This speeds
   up lookup of states in python by about a factor of 2.
+- Renamed `wgs_84.rs` to `earth.rs` and moved Earth related computations into it.
 
 ### Fixed
 
