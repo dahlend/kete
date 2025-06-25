@@ -1,11 +1,12 @@
 //! Python Frame of reference support
 use kete_core::frames::{
-    approx_solar_noon, earth_obliquity, earth_precession_rotation, ecef_to_geodetic_lat_lon,
-    equation_of_time, geodetic_lat_lon_to_ecef, geodetic_lat_to_geocentric, next_sunset_sunrise,
+    approx_earth_pos_to_ecliptic, approx_solar_noon, earth_obliquity, earth_precession_rotation,
+    ecef_to_geodetic_lat_lon, equation_of_time, geodetic_lat_lon_to_ecef,
+    geodetic_lat_to_geocentric, next_sunset_sunrise,
 };
 use pyo3::prelude::*;
 
-use crate::time::PyTime;
+use crate::{state::PyState, time::PyTime};
 
 /// Defined inertial frames supported by the python side of kete.
 ///
@@ -41,7 +42,7 @@ pub enum PyFrames {
 ///     Height above the surface of the Earth in km.
 #[pyfunction]
 #[pyo3(name = "wgs_lat_lon_to_ecef")]
-pub fn wgs_lat_lon_to_ecef(lat: f64, lon: f64, h: f64) -> (f64, f64, f64) {
+pub fn wgs_lat_lon_to_ecef(lat: f64, lon: f64, h: f64) -> [f64; 3] {
     geodetic_lat_lon_to_ecef(lat.to_radians(), lon.to_radians(), h)
 }
 
@@ -195,4 +196,48 @@ pub fn next_sunrise_sunset_py(
         time.0.utc(),
     );
     (PyTime(set.tdb()), PyTime(rise.tdb()))
+}
+
+/// Compute the approximate position of a location on Earth in the Ecliptic frame.
+///
+/// :func:`kete.spice.earth_pos_to_ecliptic` should be preferred for all modern
+/// dates. *This function is only an approximation*.
+///
+/// This should be used when the desired date is before ~1970, when there are no
+/// SPICE SPK kernels for the Earth available.
+///
+/// Parameters
+/// ----------
+/// jd:
+///     Julian time (TDB) of the desired state.
+/// geodetic_lat:
+///     Latitude on Earth's surface in degrees.
+/// geodetic_lon:
+///     Latitude on Earth's surface in degrees.
+/// height:
+///     Height of the observer above the surface of the Earth in km.
+/// name :
+///     Optional name of the position on Earth.
+#[pyfunction]
+#[pyo3(name = "approx_earth_pos_to_ecliptic", signature = (jd, geodetic_lat, geodetic_lon, height, name=None))]
+pub fn approx_earth_pos_to_ecliptic_py(
+    jd: PyTime,
+    geodetic_lat: f64,
+    geodetic_lon: f64,
+    height: f64,
+    name: Option<String>,
+) -> PyResult<PyState> {
+    let desig = name
+        .map(kete_core::desigs::Desig::Name)
+        .unwrap_or(kete_core::desigs::Desig::Empty);
+    let time = jd.0;
+    let state: PyState = approx_earth_pos_to_ecliptic(
+        time,
+        geodetic_lat.to_radians(),
+        geodetic_lon.to_radians(),
+        height,
+        desig,
+    )?
+    .into();
+    state.change_center(10)
 }

@@ -2,9 +2,15 @@
 
 use nalgebra::{Rotation3, Vector3};
 
-use crate::time::{TDB, Time, UTC};
+use crate::{
+    constants::AU_KM,
+    desigs::Desig,
+    errors::KeteResult,
+    state::State,
+    time::{TDB, Time, UTC},
+};
 
-use super::NonInertialFrame;
+use super::{Ecliptic, Equatorial, NonInertialFrame};
 
 /// Earth semi major axis in km as defined by WGS84
 pub const EARTH_A: f64 = 6378.1370;
@@ -63,14 +69,14 @@ pub fn geodetic_lat_to_geocentric(geodetic_lat: f64, h: f64) -> f64 {
 }
 
 /// Compute the ECEF X/Y/Z position in km from geodetic lat/lon/height in radians/km
-pub fn geodetic_lat_lon_to_ecef(geodetic_lat: f64, geodetic_lon: f64, h: f64) -> (f64, f64, f64) {
+pub fn geodetic_lat_lon_to_ecef(geodetic_lat: f64, geodetic_lon: f64, h: f64) -> [f64; 3] {
     let n = prime_vert_radius(geodetic_lat);
     let (sin_gd_lat, cos_gd_lat) = geodetic_lat.sin_cos();
     let (sin_gd_lon, cos_gd_lon) = geodetic_lon.sin_cos();
     let x = (n + h) * cos_gd_lat * cos_gd_lon;
     let y = (n + h) * cos_gd_lat * sin_gd_lon;
     let z = ((1.0 - EARTH_E2) * n + h) * sin_gd_lat;
-    (x, y, z)
+    [x, y, z]
 }
 
 /// Compute the angle of obliquity of Earth in radians.
@@ -93,8 +99,12 @@ pub fn earth_obliquity(jd: Time<TDB>) -> f64 {
 ///
 /// The ERA is the angle between the Greenwich meridian and the vernal equinox,
 /// the Equatorial J2000 X-axis.
+///
 pub fn earth_rotation_angle(time: Time<UTC>) -> f64 {
-    let dt = time - Time::j2000();
+    // Note that second number is not j2000, its the j2000 value in UTC time.
+    let dt = time.jd - 2451545.0;
+    // this is very close to the UT1 conversion, the second value is the
+    // number of sidereal days per solar day, (about 365.25 / 364.25)
     ((0.779057273264 + 1.0027379094 * dt) * 360.0).to_radians()
 }
 
@@ -159,6 +169,32 @@ pub fn earth_precession_rotation(time: Time<TDB>) -> NonInertialFrame {
         * Rotation3::from_axis_angle(&z_axis, angle_c);
 
     NonInertialFrame::from_rotations(time, rotation, None, 1, 1000000000)
+}
+
+/// Compute the approximate position of a location on Earth in the Ecliptic frame.
+///
+/// This should be used when either SPICE is unavailable, or when the desired date
+/// is before ~1970, when there are no SPICE SPK kernels for the Earth available.
+///
+/// This will be centered at the Earth, conversion to Sun centered
+/// requires a computation of Earths position.
+pub fn approx_earth_pos_to_ecliptic(
+    time: Time<TDB>,
+    geodetic_lat: f64,
+    geodetic_lon: f64,
+    height: f64,
+    desig: Desig,
+) -> KeteResult<State<Ecliptic>> {
+    let pos: Vector3<f64> = geodetic_lat_lon_to_ecef(geodetic_lat, geodetic_lon, height).into();
+    let era = earth_rotation_angle(time.utc());
+    let rotation = Rotation3::from_axis_angle(&Vector3::z_axis(), era);
+    let pos = rotation * pos / AU_KM;
+
+    let rotation = earth_precession_rotation(time);
+
+    let (pos, vel) = rotation.to_equatorial(pos, [0.0; 3].into())?;
+
+    Ok(State::<Equatorial>::new(desig, time.tdb().jd, pos.into(), vel.into(), 399).into_frame())
 }
 
 /// Compute the next sunset and sunrise times for a given location.

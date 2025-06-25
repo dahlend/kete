@@ -2,6 +2,7 @@
 use itertools::Itertools;
 use kete_core::{
     errors::Error,
+    frames::Ecliptic,
     propagation::{self, NonGravModel, moid},
     spice::{self, LOADED_SPK},
     state::State,
@@ -129,53 +130,60 @@ pub fn propagation_n_body_spk_py(
     {
         py.check_signals()?;
 
-        let mut proc_chunk = chunk
-            .to_owned()
-            .into_par_iter()
-            .with_min_len(10)
-            .map(|(state, model)| {
-                let model = model.map(|x| x.0);
-                let center = state.center_id();
-                let frame = state.frame;
-                let state = state.raw;
-                let desig = state.desig.clone();
+        let mut proc_chunk =
+            chunk
+                .to_owned()
+                .into_par_iter()
+                .with_min_len(10)
+                .map(|(state, model)| {
+                    let model = model.map(|x| x.0);
+                    let center = state.center_id();
+                    let frame = state.frame;
+                    let state = state.raw;
+                    let desig = state.desig.clone();
 
-                // if the input has a NAN in it, skip the propagation entirely and return
-                // the nans.
-                if !state.is_finite() {
-                    if !suppress_errors {
-                        Err(Error::ValueError("Input state contains NaNs.".into()))?;
-                    };
-                    return Ok(Into::<PyState>::into(State::new_nan(desig, jd, center))
-                        .change_frame(frame));
-                }
-                match propagation::propagate_n_body_spk(state, jd, include_asteroids, model) {
-                    Ok(state) => Ok(Into::<PyState>::into(state).change_frame(frame)),
-                    Err(er) => {
+                    // if the input has a NAN in it, skip the propagation entirely and return
+                    // the nans.
+                    if !state.is_finite() {
                         if !suppress_errors {
-                            Err(er)?
-                        } else if let Error::Impact(id, time) = er {
-                            if !suppress_impact_errors {
-                                eprintln!(
-                                    "Impact detected between ({}) <-> {} at time {} ({})",
-                                    desig,
-                                    spice::try_name_from_id(id).unwrap_or(id.to_string()),
-                                    time,
-                                    Time::<TDB>::new(time).utc().to_iso().unwrap()
-                                );
+                            Err(Error::ValueError("Input state contains NaNs.".into()))?;
+                        };
+                        return Ok(Into::<PyState>::into(State::<Ecliptic>::new_nan(
+                            desig, jd, center,
+                        ))
+                        .change_frame(frame));
+                    }
+                    match propagation::propagate_n_body_spk(state, jd, include_asteroids, model) {
+                        Ok(state) => Ok(Into::<PyState>::into(state).change_frame(frame)),
+                        Err(er) => {
+                            if !suppress_errors {
+                                Err(er)?
+                            } else if let Error::Impact(id, time) = er {
+                                if !suppress_impact_errors {
+                                    eprintln!(
+                                        "Impact detected between ({}) <-> {} at time {} ({})",
+                                        desig,
+                                        spice::try_name_from_id(id).unwrap_or(id.to_string()),
+                                        time,
+                                        Time::<TDB>::new(time).utc().to_iso().unwrap()
+                                    );
+                                }
+                                // if we get an impact, we return a state with NaNs
+                                // but put the impact time into the new state.
+                                Ok(Into::<PyState>::into(State::<Ecliptic>::new_nan(
+                                    desig, time, center,
+                                ))
+                                .change_frame(frame))
+                            } else {
+                                Ok(Into::<PyState>::into(State::<Ecliptic>::new_nan(
+                                    desig, jd, center,
+                                ))
+                                .change_frame(frame))
                             }
-                            // if we get an impact, we return a state with NaNs
-                            // but put the impact time into the new state.
-                            Ok(Into::<PyState>::into(State::new_nan(desig, time, center))
-                                .change_frame(frame))
-                        } else {
-                            Ok(Into::<PyState>::into(State::new_nan(desig, jd, center))
-                                .change_frame(frame))
                         }
                     }
-                }
-            })
-            .collect::<PyResult<Vec<_>>>()?;
+                })
+                .collect::<PyResult<Vec<_>>>()?;
         res.append(&mut proc_chunk);
     }
 

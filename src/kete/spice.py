@@ -9,6 +9,7 @@ import requests
 
 from . import _core
 from ._core import (
+    approx_earth_pos_to_ecliptic,
     get_state,
     instrument_equatorial_to_frame,
     instrument_frame_to_equatorial,
@@ -22,6 +23,7 @@ from .time import Time
 from .vector import State
 
 __all__ = [
+    "approx_earth_pos_to_ecliptic",
     "SpkInfo",
     "get_state",
     "name_lookup",

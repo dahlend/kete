@@ -38,16 +38,15 @@ Limitations
 
 - Astrometry.net is using the current star catalog, meaning if there are stars in
   the field which have moved measurably, then the astrometry will be imperfect.
-- Observer position before 1972 is somewhat tricky to compute, and is currently not
-  well supported in Kete. This is a result of NASA NAIF (Navigation and Ancillary
-  Information Facility) only producing Earth orientation files back to about 1972.
-  This information can be calculated by other means with less precision, but this
-  is not currently implemented. As a result of this, the center of the Earth is used
-  as an approximation for the observers position, but this results in about an
-  arc-minute offset in calculated positions. Adding a better approximation of the
-  observer location shifts the results to sub PSF accuracy.
+- Exact observer positions before 1972 is somewhat tricky to compute. This is a
+  result of NASA NAIF (Navigation and Ancillary Information Facility) only producing
+  Earth orientation files back to about 1972. Here we use an approximation to get the
+  position of Palomar to within about 1 km.
 - Record keeping of the exact time appears to be off by a few minutes, though this
   may be an artifact of the observer position being approximate.
+- The MPC database has some truncation of the orbit fits, which lead to small errors
+  in the orbit propagation. In this analysis it shows up as a small offset, but this
+  can be re-run with a higher precision orbit fit if desired.
 
 
 FITs File
@@ -73,8 +72,11 @@ First we load a FITs file, and grab frame information from its header.
     # Taken from table A1 of the paper cited above.
     jd = kete.Time(2433622.977, scaling='utc').jd
     
-    earth = kete.spice.get_state("Earth", jd)
-    fov = kete.fov.RectangleFOV.from_wcs(wcs, earth)
+    # Here we use an approximation of the observer position, as we
+    # do not have a SPICE kernel for Earth's orientation before about 1970.
+    site = kete.mpc.find_obs_code("Palomar Mountain")
+    observer = kete.spice.approx_earth_pos_to_ecliptic(jd, *site[:-1])
+    fov = kete.fov.RectangleFOV.from_wcs(wcs, observer)
 
     # Plot the frame
     kete.plot.plot_fits_image(frame)
@@ -201,10 +203,7 @@ Zoomed
 ------
 
 Zooming in to the expected position of 382632, we see the original hand drawn arrow,
-along with correctly labeled streaking asteroid. Note the slight offset, which from
-analysis not performed here can be shown to be a result of our assumption that
-the observer is at the center of the Earth. A better assumption about observer
-position causes the alignment to match within the width of the blur.
+along with correctly labeled streaking asteroid.
 
 .. code-block:: python
 
@@ -222,47 +221,3 @@ position causes the alignment to match within the width of the blur.
 
 .. image:: ../data/full_frame_annotated_zoom.png
    :alt: Zoom in of the expected object.
-
-
-Higher Resolution
------------------
-
-A more precise estimate of the position of Palomar may be approximated using
-these functions:
-
-.. code-block:: python
-
-    def earth_rotation_angle(jd):
-        """
-        Approximation of Earth Rotation Angle (ERA) with respect to the
-        Equatorial J2000 X-Axis.
-        """
-        jd = kete.Time(jd).utc_jd - 2451545.0
-        return (0.779057273264 + 1.0027379094 * jd) * 360
-
-    def earth_pos_to_eclip_approx(jd, lat, lon, altitude):
-        """
-        Given a time and a position on Earth's surface (WGS84 lat/lon and
-        altitude in km), approximate the position of this spot on Earth in the
-        solar system.
-
-        This is good to within about 1km over a century, however it allows
-        us to estimate observer positions before ~1970, where we do not have
-        SPICE PCK files. This was validated against the PCK files provided by
-        SPICE.
-        """
-
-        rotation = np.array(kete.conversion.earth_precession_rotation(jd))
-        earth = kete.spice.get_state("Earth", jd).pos.as_equatorial
-
-        era = earth_rotation_angle(jd)
-        
-        # Compute the position in ecef
-        ecef = kete.vector.wgs_lat_lon_to_ecef(lat, lon, altitude)
-        # Rotate this around the earth's current north pole for the fraction of
-        # the day
-        ecef = np.array(kete.Vector(ecef).rotate_around((0, 0, 1), era))
-        # convert the local north to j2000 equatorial north
-        eq_ecef = kete.Vector(rotation.T @ ecef, frame=kete.Frames.Equatorial)
-
-        return earth + eq_ecef.as_ecliptic / kete.constants.AU_KM

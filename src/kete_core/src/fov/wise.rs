@@ -1,6 +1,6 @@
 //! # WISE Fov definitions.
 
-use super::{Contains, FovLike, OnSkyRectangle, SkyPatch, FOV};
+use super::{Contains, FOV, FovLike, OnSkyRectangle, SkyPatch};
 use crate::prelude::*;
 use crate::{constants::WISE_WIDTH, frames::Vector};
 use serde::{Deserialize, Serialize};

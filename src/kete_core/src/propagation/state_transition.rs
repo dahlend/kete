@@ -1,8 +1,8 @@
 use crate::constants::GMS_SQRT;
 use crate::frames::Equatorial;
 use crate::prelude::{KeteResult, State};
-use crate::propagation::{central_accel, central_accel_grad, CentralAccelMeta, RK45Integrator};
-use nalgebra::{Const, Matrix6, SVector, Vector3, U1, U6};
+use crate::propagation::{CentralAccelMeta, RK45Integrator, central_accel, central_accel_grad};
+use nalgebra::{Const, Matrix6, SVector, U1, U6, Vector3};
 
 fn stm_ivp_eqn(
     jd: f64,

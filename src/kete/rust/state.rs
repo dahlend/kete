@@ -4,6 +4,7 @@ use crate::elements::PyCometElements;
 use crate::frame::*;
 use crate::time::PyTime;
 use crate::vector::*;
+use kete_core::frames::InertialFrame;
 use kete_core::prelude::*;
 use pyo3::prelude::*;
 
@@ -37,10 +38,10 @@ pub struct PyState {
     pub elements: Option<Box<PyCometElements>>,
 }
 
-impl From<State<Equatorial>> for PyState {
-    fn from(value: State<Equatorial>) -> Self {
+impl<T: InertialFrame> From<State<T>> for PyState {
+    fn from(value: State<T>) -> Self {
         Self {
-            raw: value,
+            raw: value.into_frame(),
             // note that the raw value is always equatorial, this frame
             // only specifies how the equatorial vector is displayed in python
             frame: PyFrames::Ecliptic,
