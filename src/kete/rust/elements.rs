@@ -1,5 +1,6 @@
 //! Python support for orbital elements
 use kete_core::elements;
+use kete_core::frames::Ecliptic;
 use kete_core::prelude;
 use pyo3::{PyResult, pyclass, pymethods};
 
@@ -182,7 +183,7 @@ impl PyCometElements {
     /// Convert the orbital elements into a cartesian State.
     #[getter]
     pub fn state(&self) -> PyResult<PyState> {
-        Ok(self.0.try_to_state()?.into_frame().into())
+        Ok(self.0.try_to_state()?.into_frame::<Ecliptic>().into())
     }
 
     fn __repr__(&self) -> String {

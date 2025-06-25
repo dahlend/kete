@@ -1,6 +1,6 @@
 //! Python support for kepler orbit calculations
 use itertools::Itertools;
-use kete_core::frames::{Equatorial, Vector};
+use kete_core::frames::{Ecliptic, Equatorial, Vector};
 use kete_core::state::State;
 use kete_core::{constants, propagation};
 use pyo3::{PyErr, PyObject, Python, exceptions};
@@ -84,12 +84,14 @@ pub fn propagation_kepler_py(
             let frame = state.frame();
 
             let Some(state) = state.change_center(10).ok() else {
-                let nan_state: PyState = State::new_nan(state.raw.desig.clone(), jd, center).into();
+                let nan_state: PyState =
+                    State::<Ecliptic>::new_nan(state.raw.desig.clone(), jd, center).into();
                 return nan_state.change_frame(frame);
             };
 
             let Some(mut new_state) = propagation::propagate_two_body(&state.raw, jd).ok() else {
-                let nan_state: PyState = State::new_nan(state.raw.desig.clone(), jd, center).into();
+                let nan_state: PyState =
+                    State::<Ecliptic>::new_nan(state.raw.desig.clone(), jd, center).into();
                 return nan_state.change_frame(frame);
             };
 
@@ -107,7 +109,9 @@ pub fn propagation_kepler_py(
             new_pystate
                 .change_frame(frame)
                 .change_center(center)
-                .unwrap_or(State::new_nan(state.raw.desig, jd, state.raw.center_id).into())
+                .unwrap_or(
+                    State::<Ecliptic>::new_nan(state.raw.desig, jd, state.raw.center_id).into(),
+                )
         })
         .collect();
     maybe_vec_to_pyobj(py, states, was_vec)

@@ -5,7 +5,7 @@ use std::fmt::Debug;
 
 use serde::{Deserialize, Serialize};
 
-use super::{Contains, FovLike, OnSkyRectangle, SkyPatch, SphericalCone, FOV};
+use super::{Contains, FOV, FovLike, OnSkyRectangle, SkyPatch, SphericalCone};
 use crate::{
     errors::{Error, KeteResult},
     frames::{Equatorial, Vector},
@@ -250,11 +250,12 @@ mod tests {
             assert!(fov.check_two_body(&off_state).is_ok());
             assert!(fov.check_n_body(&off_state, false).is_ok());
 
-            assert!(fov
-                .check_visible(&[off_state], 6.0, false)
-                .first()
-                .unwrap()
-                .is_some());
+            assert!(
+                fov.check_visible(&[off_state], 6.0, false)
+                    .first()
+                    .unwrap()
+                    .is_some()
+            );
         }
     }
 
@@ -313,11 +314,12 @@ mod tests {
             // check that we are within about 150 micron
             assert!((spk_check.pos - ceres_exact.pos).norm() < 1e-12);
 
-            assert!(fov
-                .check_visible(&[ceres], 6.0, false)
-                .first()
-                .unwrap()
-                .is_some());
+            assert!(
+                fov.check_visible(&[ceres], 6.0, false)
+                    .first()
+                    .unwrap()
+                    .is_some()
+            );
         }
     }
 }
