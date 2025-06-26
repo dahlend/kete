@@ -14,3 +14,6 @@ These are loaded and packed into the final rust binary, and are included automat
 `Leap_Second.dat` - Leap seconds as provided by IERS, downloaded from:
     https://hpiers.obspm.fr/iers/bul/bulc/Leap_Second.dat
     https://data.iana.org/time-zones/data/leap-seconds.list
+
+`masses.tsv` - List of masses of asteroids from the DE441 header contents, with the very
+    distant objects removed.

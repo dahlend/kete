@@ -3,7 +3,7 @@
 //! There are multiple levels of precision available, each with different pros/cons
 //! (usually performance related).
 
-use crate::constants::{MASSES, PLANETS, SIMPLE_PLANETS};
+use crate::constants::GravParams;
 use crate::errors::Error;
 use crate::frames::Equatorial;
 use crate::prelude::{Desig, KeteResult};
@@ -82,7 +82,13 @@ pub fn propagate_n_body_spk(
     let spk = &LOADED_SPK.try_read().unwrap();
     spk.try_change_center(&mut state, 0)?;
 
-    let mass_list = { if include_extended { MASSES } else { PLANETS } };
+    let mass_list = {
+        if include_extended {
+            &GravParams::selected_masses()
+        } else {
+            &GravParams::planets()
+        }
+    };
 
     let metadata = AccelSPKMeta {
         close_approach: None,
@@ -155,8 +161,8 @@ pub fn propagate_n_body_vec(
 
     let planet_states = planet_states.unwrap_or_else(|| {
         let spk = &LOADED_SPK.try_read().unwrap();
-        let mut planet_states = Vec::with_capacity(SIMPLE_PLANETS.len());
-        for obj in SIMPLE_PLANETS {
+        let mut planet_states = Vec::new();
+        for obj in GravParams::simplified_planets() {
             let planet = spk
                 .try_get_state_with_center::<Equatorial>(obj.naif_id, jd_init, 10)
                 .expect("Failed to find state for the provided initial jd");
@@ -165,7 +171,7 @@ pub fn propagate_n_body_vec(
         planet_states
     });
 
-    if planet_states.len() != SIMPLE_PLANETS.len() {
+    if planet_states.len() != GravParams::simplified_planets().len() {
         Err(Error::ValueError(
             "Input planet states must contain the correct number of states.".into(),
         ))?;
@@ -199,7 +205,7 @@ pub fn propagate_n_body_vec(
 
     let meta = AccelVecMeta {
         non_gravs,
-        massive_obj: SIMPLE_PLANETS,
+        massive_obj: &GravParams::simplified_planets(),
     };
 
     let (pos, vel, _) = {
@@ -221,6 +227,6 @@ pub fn propagate_n_body_vec(
         let state = State::new(desig, jd_final, pos.into(), vel.into(), 10);
         all_states.push(state);
     }
-    let final_states = all_states.split_off(SIMPLE_PLANETS.len());
+    let final_states = all_states.split_off(GravParams::simplified_planets().len());
     Ok((final_states, all_states))
 }

@@ -153,12 +153,13 @@ pub fn spk_accel(
                 }
             }
 
-            if r <= radius {
+            if r as f32 <= radius {
                 Err(Error::Impact(id, time))?;
             }
         }
         grav_params.add_acceleration(&mut accel, &rel_pos, &rel_vel);
 
+        // If the center is the sun, add non-gravitational forces
         if grav_params.naif_id == 10 {
             if let Some(non_grav) = &meta.non_grav_model {
                 non_grav.add_acceleration(&mut accel, &rel_pos, &rel_vel);
@@ -232,11 +233,12 @@ where
             let rel_pos = pos_idx - pos_idy;
             let rel_vel = vel_idx - vel_idy;
 
-            if exact_eval & (rel_pos.norm() <= radius) {
+            if exact_eval & (rel_pos.norm() as f32 <= radius) {
                 Err(Error::Impact(grav_params.naif_id, time))?;
             }
             grav_params.add_acceleration(&mut accel_working, &rel_pos, &rel_vel);
 
+            // If the center is the sun, add non-gravitational forces
             if (grav_params.naif_id == 10) & (idx > n_massive) {
                 if let Some(non_grav) = &meta.non_gravs[idx - n_massive] {
                     non_grav.add_acceleration(&mut accel_working, &rel_pos, &rel_vel);
@@ -303,7 +305,7 @@ mod tests {
         let mut pos: Vec<f64> = Vec::new();
         let mut vel: Vec<f64> = Vec::new();
 
-        for obj in constants::MASSES {
+        for obj in constants::GravParams::planets() {
             let planet = spk
                 .try_get_state_with_center::<Equatorial>(obj.naif_id, jd, 0)
                 .unwrap();
@@ -320,14 +322,14 @@ mod tests {
             &vel.into(),
             &mut AccelVecMeta {
                 non_gravs: vec![None],
-                massive_obj: constants::MASSES,
+                massive_obj: &constants::GravParams::planets(),
             },
             false,
         )
         .unwrap()
         .iter()
         .copied()
-        .skip(constants::MASSES.len() * 3)
+        .skip(constants::GravParams::planets().len() * 3)
         .collect_vec();
 
         let accel2 = spk_accel(
@@ -337,7 +339,7 @@ mod tests {
             &mut AccelSPKMeta {
                 close_approach: None,
                 non_grav_model: None,
-                massive_obj: constants::MASSES,
+                massive_obj: &constants::GravParams::planets(),
             },
             false,
         )

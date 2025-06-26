@@ -23,6 +23,7 @@
     unused_results
 )]
 
+use kete_core::constants::{known_masses, register_custom_mass, register_mass, registered_masses};
 use pyo3::prelude::*;
 use state::PyState;
 
@@ -86,6 +87,11 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<horizons::HorizonsProperties>()?;
 
     m.add_class::<covariance::Covariance>()?;
+
+    m.add_function(wrap_pyfunction!(known_masses, m)?)?;
+    m.add_function(wrap_pyfunction!(register_mass, m)?)?;
+    m.add_function(wrap_pyfunction!(register_custom_mass, m)?)?;
+    m.add_function(wrap_pyfunction!(registered_masses, m)?)?;
 
     m.add_function(wrap_pyfunction!(frame::wgs_lat_lon_to_ecef, m)?)?;
     m.add_function(wrap_pyfunction!(frame::ecef_to_wgs_lat_lon, m)?)?;
