@@ -30,8 +30,7 @@ impl PckCollection {
         let file = DafFile::from_file(filename)?;
         if !matches!(file.daf_type, DAFType::Pck) {
             return Err(Error::IOError(format!(
-                "File {:?} is not a PCK formatted file.",
-                filename
+                "File {filename:?} is not a PCK formatted file."
             )))?;
         }
 
@@ -54,8 +53,7 @@ impl PckCollection {
         }
 
         Err(Error::DAFLimits(format!(
-            "Object ({}) does not have an PCK record for the target JD.",
-            id
+            "Object ({id}) does not have an PCK record for the target JD."
         )))?
     }
 
@@ -98,7 +96,7 @@ impl PckCollection {
                 let filename = path.to_str().unwrap();
                 if filename.to_lowercase().ends_with(".bpc") {
                     if let Err(err) = self.load_file(filename) {
-                        eprintln!("Failed to load PCK file {}: {}", filename, err);
+                        eprintln!("Failed to load PCK file {filename}: {err}");
                     }
                 }
             }

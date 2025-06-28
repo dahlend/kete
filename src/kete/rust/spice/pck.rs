@@ -15,7 +15,7 @@ pub fn pck_load_py(filenames: Vec<String>) -> PyResult<()> {
     for filename in filenames.iter() {
         let load = (*singleton).load_file(filename);
         if let Err(err) = load {
-            eprintln!("{} failed to load. {}", filename, err);
+            eprintln!("{filename} failed to load. {err}");
         }
     }
     Ok(())
@@ -86,7 +86,9 @@ pub fn pck_earth_frame_py(
 #[pyo3(name = "state_to_earth_pos")]
 pub fn pck_state_to_earth(state: PyState) -> PyResult<(f64, f64, f64)> {
     let pcks = LOADED_PCK.try_read().unwrap();
-    let state = state.change_center(399)?.raw;
+    let state = state
+        .change_center(crate::desigs::NaifIDLike::Int(399))?
+        .raw;
     let frame = pcks.try_get_orientation(3000, state.jd)?;
 
     let (pos, _) = frame.from_equatorial(state.pos.into(), state.vel.into())?;

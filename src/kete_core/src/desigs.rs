@@ -84,7 +84,7 @@ pub enum Desig {
 impl Desig {
     /// Return a full string representation of the designation, including the type.
     pub fn full_string(&self) -> String {
-        format!("{:?}", self)
+        format!("{self:?}")
     }
 
     /// Try to convert a naif ID into a name.
@@ -364,21 +364,18 @@ impl Desig {
                 "Cannot pack an empty designation".to_string(),
             )),
             Self::Name(s) => Err(Error::ValueError(format!(
-                "Cannot pack a name as a designation: {}",
-                s
+                "Cannot pack a name as a designation: {s}"
             ))),
             Self::Naif(i) => Err(Error::ValueError(format!(
-                "Cannot pack a NAIF ID as a designation: {}",
-                i
+                "Cannot pack a NAIF ID as a designation: {i}"
             ))),
             Self::ObservatoryCode(s) => {
                 if s.len() != 3 {
                     return Err(Error::ValueError(format!(
-                        "MPC Earth Station Designation must be 3 characters: {}",
-                        s
+                        "MPC Earth Station Designation must be 3 characters: {s}",
                     )));
                 }
-                Ok(format!("{:0>3}", s))
+                Ok(format!("{s:0>3}"))
             }
             Self::Perm(num) => {
                 if *num < 620_000 {
@@ -393,25 +390,23 @@ impl Desig {
                     Ok(format!("~{:0>4}", &num_to_mpc_hex(num - 620_000)))
                 }
             }
-            Self::CometPerm(orbit_type, id, _) => Ok(format!("{:0>4}{}", id, orbit_type)),
+            Self::CometPerm(orbit_type, id, _) => Ok(format!("{id:0>4}{orbit_type}")),
             Self::PlanetSat(planet_id, sat_num) => match planet_id {
-                399 => Ok(format!("E{:0>3}S", sat_num)),
-                499 => Ok(format!("M{:0>3}S", sat_num)),
-                599 => Ok(format!("J{:0>3}S", sat_num)),
-                699 => Ok(format!("S{:0>3}S", sat_num)),
-                799 => Ok(format!("U{:0>3}S", sat_num)),
-                899 => Ok(format!("N{:0>3}S", sat_num)),
+                399 => Ok(format!("E{sat_num:0>3}S")),
+                499 => Ok(format!("M{sat_num:0>3}S")),
+                599 => Ok(format!("J{sat_num:0>3}S")),
+                699 => Ok(format!("S{sat_num:0>3}S")),
+                799 => Ok(format!("U{sat_num:0>3}S")),
+                899 => Ok(format!("N{sat_num:0>3}S")),
                 _ => Err(Error::ValueError(format!(
-                    "Invalid planetary satellite center NAIF ID: {}",
-                    planet_id
+                    "Invalid planetary satellite center NAIF ID: {planet_id}"
                 ))),
             },
 
             Self::Prov(des) => {
                 if des.len() <= 6 {
                     return Err(Error::ValueError(format!(
-                        "MPC Provisional Designation too short: {}",
-                        des
+                        "MPC Provisional Designation too short: {des}",
                     )));
                 }
                 let (year, des) = des
@@ -440,17 +435,13 @@ impl Desig {
                     ];
                     let century = YEAR_LOOKUP.iter().find(|&&x| x.0 == &year[0..2]).map_or(
                         Err(Error::ValueError(format!(
-                            "Invalid year in MPC Provisional Designation: {}",
-                            year
+                            "Invalid year in MPC Provisional Designation: {year}",
                         ))),
                         |&(_, c)| Ok(c),
                     )?;
                     let decade = &year[2..4];
                     let half_month = &des[..1];
-                    Ok(format!(
-                        "{}{}{}{}{}{}",
-                        century, decade, half_month, idx, idy, order
-                    ))
+                    Ok(format!("{century}{decade}{half_month}{idx}{idy}{order}"))
                 }
             }
             Self::CometProv(orbit_type, unpacked, fragment) => {
@@ -460,8 +451,7 @@ impl Desig {
                     .collect_tuple()
                     .ok_or_else(|| {
                         Error::ValueError(format!(
-                            "Invalid MPC Comet Provisional Designation: {}",
-                            unpacked
+                            "Invalid MPC Comet Provisional Designation: {unpacked}"
                         ))
                     })?;
 
@@ -470,8 +460,7 @@ impl Desig {
                     // 2033 L89-C
                     let num = des[1..].parse::<u32>().map_err(|_| {
                         Error::ValueError(format!(
-                            "Invalid MPC Comet Provisional Designation: {} {}",
-                            des, unpacked
+                            "Invalid MPC Comet Provisional Designation: {des} {unpacked}",
                         ))
                     })?;
                     let outnum = if num > 99 {
@@ -481,7 +470,7 @@ impl Desig {
                             num % 10
                         )
                     } else {
-                        format!("{:>02}", num)
+                        format!("{num:>02}")
                     };
 
                     Ok(format!(

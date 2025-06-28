@@ -83,7 +83,7 @@ pub fn propagation_kepler_py(
             let center = state.center_id();
             let frame = state.frame();
 
-            let Some(state) = state.change_center(10).ok() else {
+            let Some(state) = state.change_center(crate::desigs::NaifIDLike::Int(10)).ok() else {
                 let nan_state: PyState =
                     State::<Ecliptic>::new_nan(state.raw.desig.clone(), jd, center).into();
                 return nan_state.change_frame(frame);
@@ -108,7 +108,7 @@ pub fn propagation_kepler_py(
 
             new_pystate
                 .change_frame(frame)
-                .change_center(center)
+                .change_center(crate::desigs::NaifIDLike::Int(center))
                 .unwrap_or(
                     State::<Ecliptic>::new_nan(state.raw.desig, jd, state.raw.center_id).into(),
                 )

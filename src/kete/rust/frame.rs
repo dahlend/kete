@@ -239,5 +239,5 @@ pub fn approx_earth_pos_to_ecliptic_py(
         desig,
     )?
     .into();
-    state.change_center(10)
+    state.change_center(crate::desigs::NaifIDLike::Int(10))
 }

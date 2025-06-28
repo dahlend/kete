@@ -27,8 +27,7 @@ pub fn cache_dir() -> KeteResult<PathBuf> {
             let path = PathBuf::from(env_path);
             if !path.exists() {
                 return Err(Error::IOError(format!(
-                    "KETE_CACHE_DIR does not exist: {:?}",
-                    path
+                    "KETE_CACHE_DIR does not exist: {path:?}"
                 )));
             }
             Ok(path)

@@ -155,7 +155,7 @@ impl HorizonsProperties {
         fn cleanup<T: Debug>(opt: Option<T>) -> String {
             match opt {
                 None => "None".into(),
-                Some(val) => format!("{:?}", val),
+                Some(val) => format!("{val:?}"),
             }
         }
 

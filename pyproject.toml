@@ -28,7 +28,7 @@ dependencies = ["astropy>=5.3.4",
 homepage = "https://github.com/dahlend/kete"
 
 [build-system]
-requires = ["maturin>=1.0",
+requires = ["maturin>=1.9",
             "wheel",
             ]
 build-backend = "maturin"

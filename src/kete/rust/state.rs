@@ -96,10 +96,11 @@ impl PyState {
     /// Change the center ID of the state from the current state to the target state.
     ///
     /// If the desired state is not a known NAIF id this will raise an exception.
-    pub fn change_center(&self, naif_id: i32) -> PyResult<Self> {
+    pub fn change_center(&self, naif_id: NaifIDLike) -> PyResult<Self> {
+        let naif_id: (String, i32) = naif_id.try_into()?;
         let mut state = self.raw.clone();
         let spk = LOADED_SPK.try_read().unwrap();
-        spk.try_change_center(&mut state, naif_id)?;
+        spk.try_change_center(&mut state, naif_id.1)?;
         Ok(Self {
             raw: state,
             frame: self.frame,

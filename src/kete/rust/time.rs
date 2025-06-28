@@ -76,8 +76,7 @@ impl PyTime {
             "tai" => PyTime(Time::<TAI>::new(jd).tdb()),
             "utc" => PyTime(Time::<UTC>::new(jd).tdb()),
             s => Err(Error::ValueError(format!(
-                "Scaling of type ({:?}) is not supported, must be one of: 'tt', 'tdb', 'tcb', 'tai', 'utc'",
-                s
+                "Scaling of type ({s}) is not supported, must be one of: 'tt', 'tdb', 'tcb', 'tai', 'utc'",
             )))?,
         })
     }
@@ -102,8 +101,7 @@ impl PyTime {
             "tai" => PyTime(Time::<TAI>::from_mjd(mjd).tdb()),
             "utc" => PyTime(Time::<UTC>::from_mjd(mjd).tdb()),
             s => Err(Error::ValueError(format!(
-                "Scaling of type ({:?}) is not supported, must be one of: 'tt', 'tdb', 'tai', 'utc'",
-                s
+                "Scaling of type ({s}) is not supported, must be one of: 'tt', 'tdb', 'tai', 'utc'",
             )))?,
         })
     }
