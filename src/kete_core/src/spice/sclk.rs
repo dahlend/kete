@@ -325,8 +325,7 @@ impl Sclk {
 
         if idx == 0 || idx > self.partition_start.len() {
             return Err(Error::ValueError(format!(
-                "Time {} is outside of the partition range.",
-                tick
+                "Time {tick} is outside of the partition range.",
             )));
         }
         let mut count = 0.0;
@@ -395,8 +394,7 @@ impl TryFrom<Vec<SclkToken>> for Sclk {
                     naif_id = Some(id);
                     if dtype != 1 {
                         return Err(Error::ValueError(format!(
-                            "SCLK clock type must be 1, found {}.",
-                            dtype
+                            "SCLK clock type must be 1, found {dtype}.",
                         )));
                     }
                 } // Data type is always 1
@@ -410,8 +408,7 @@ impl TryFrom<Vec<SclkToken>> for Sclk {
                     }
                     if n < 1 {
                         return Err(Error::ValueError(format!(
-                            "SCLK N_FIELDS must be at least 1, found {}.",
-                            n
+                            "SCLK N_FIELDS must be at least 1, found {n}.",
                         )));
                     }
                     naif_id = Some(id);
@@ -513,14 +510,13 @@ impl TryFrom<Vec<SclkToken>> for Sclk {
                     // require that val be either 1 or 2
                     if val != 1 && val != 2 {
                         return Err(Error::ValueError(format!(
-                            "SCLK Time System must be 1 (TDB) or 2 (TT), found {}.",
-                            val
+                            "SCLK Time System must be 1 (TDB) or 2 (TT), found {val}.",
                         )));
                     }
                     tdb = Some(val == 1);
                 }
                 SclkToken::Unknown(s) => {
-                    return Err(Error::ValueError(format!("Unknown SCLK line: {}", s)));
+                    return Err(Error::ValueError(format!("Unknown SCLK line: {s}")));
                 }
             }
         }

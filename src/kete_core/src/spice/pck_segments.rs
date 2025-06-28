@@ -40,8 +40,7 @@ impl TryFrom<PckArray> for PckSegment {
         match array.segment_type {
             2 => Ok(Self::Type2(array.try_into()?)),
             v => Err(Error::IOError(format!(
-                "PCK Segment type {:?} not supported.",
-                v
+                "PCK Segment type {v:?} not supported."
             ))),
         }
     }

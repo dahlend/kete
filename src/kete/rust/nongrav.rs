@@ -210,7 +210,7 @@ impl PyNonGravModel {
     pub fn __repr__(&self) -> String {
         match self.0 {
             NonGravModel::Dust { beta } => {
-                format!("kete.propagation.NonGravModel.new_dust(beta={:?})", beta)
+                format!("kete.propagation.NonGravModel.new_dust(beta={beta:?})")
             }
             NonGravModel::JplComet {
                 a1,
@@ -223,8 +223,7 @@ impl PyNonGravModel {
                 k,
                 dt,
             } => format!(
-                "kete.propagation.NonGravModel.new_comet(a1={:?}, a2={:?}, a3={:?}, alpha={:?}, r_0={:?}, m={:?}, n={:?}, k={:?}, dt={:?})",
-                a1, a2, a3, alpha, r_0, m, n, k, dt
+                "kete.propagation.NonGravModel.new_comet(a1={a1:?}, a2={a2:?}, a3={a3:?}, alpha={alpha:?}, r_0={r_0:?}, m={m:?}, n={n:?}, k={k:?}, dt={dt:?})",
             ),
         }
     }

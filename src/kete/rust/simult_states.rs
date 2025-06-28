@@ -257,10 +257,7 @@ impl PySimultaneousStates {
             None => "None".into(),
             Some(f) => f.__repr__(),
         };
-        format!(
-            "SimultaneousStates(states=<{} States>, fov={})",
-            n_states, fov_str
-        )
+        format!("SimultaneousStates(states=<{n_states} States>, fov={fov_str})",)
     }
 
     /// Save a list to a binary file.

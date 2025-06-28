@@ -75,8 +75,7 @@ impl FromStr for GravParams {
         let radius = iter.next().unwrap_or("0.0");
         if naif_id.is_none() || mass.is_none() {
             return Err(Error::IOError(format!(
-                "GravParams row incorrectly formatted. {}",
-                row
+                "GravParams row incorrectly formatted. {row}",
             )));
         }
         let mass: f64 = mass.unwrap().parse()?;
@@ -143,7 +142,7 @@ pub fn register_mass(naif_id: i32) {
         params.register();
         return;
     }
-    panic!("Failed to find mass for NAIF ID {}", naif_id);
+    panic!("Failed to find mass for NAIF ID {naif_id}");
 }
 
 /// List the massive objects in the extended list of objects to be used during orbit propagation.

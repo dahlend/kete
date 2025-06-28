@@ -70,8 +70,7 @@ pub fn find_obs_code_py(name: &str) -> PyResult<(f64, f64, f64, String, String)>
             .collect::<Vec<_>>()
             .join(",\n");
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "Multiple observatory codes found for the given name:\n{}",
-            possible_matches
+            "Multiple observatory codes found for the given name:\n{possible_matches}",
         )));
     }
     let obs_code = obs_codes[0].clone();

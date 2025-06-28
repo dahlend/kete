@@ -15,7 +15,7 @@ pub fn ck_load_py(filenames: Vec<String>) -> PyResult<()> {
     for filename in filenames.iter() {
         let load = (*singleton).load_file(filename);
         if let Err(err) = load {
-            eprintln!("{} failed to load. {}", filename, err);
+            eprintln!("{filename} failed to load. {err}");
         }
     }
     Ok(())

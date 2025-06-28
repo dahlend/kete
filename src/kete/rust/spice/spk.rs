@@ -1,3 +1,4 @@
+use kete_core::desigs::Desig;
 use kete_core::spice::{LOADED_PCK, LOADED_SPK};
 use pyo3::{PyResult, Python, pyfunction};
 
@@ -18,7 +19,7 @@ pub fn spk_load_py(py: Python<'_>, filenames: Vec<String>) -> PyResult<()> {
         py.check_signals()?;
         let load = (*singleton).load_file(filename);
         if let Err(err) = load {
-            eprintln!("{} failed to load. {}", filename, err);
+            eprintln!("{filename} failed to load. {err}");
         }
     }
     Ok(())
@@ -48,15 +49,19 @@ pub fn spk_available_info_py(naif_id: NaifIDLike) -> Vec<(String, f64, f64, i32,
         .collect()
 }
 
-/// Return a list of all NAIF IDs currently loaded in the SPK shared memory singleton.
+/// Return a list of all NAIF objects currently loaded in the SPICE shared memory singleton.
+///
 #[pyfunction]
 #[pyo3(name = "loaded_objects")]
-pub fn spk_loaded_objects_py() -> Vec<i32> {
+pub fn spk_loaded_objects_py() -> Vec<String> {
     let spk = &LOADED_SPK.try_read().unwrap();
     let loaded = spk.loaded_objects(false);
     let mut loaded: Vec<_> = loaded.into_iter().collect();
     loaded.sort();
     loaded
+        .into_iter()
+        .map(|spkid| Desig::Naif(spkid).try_naif_id_to_name().to_string())
+        .collect()
 }
 
 /// Reset the contents of the SPK shared memory.

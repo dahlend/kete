@@ -476,7 +476,14 @@ pub(in crate::spice) struct SpkSegmentType9 {
 impl From<SpkArray> for SpkSegmentType9 {
     fn from(array: SpkArray) -> Self {
         let n_records = array.daf[array.daf.len() - 1] as usize;
-        let poly_degree = array.daf[array.daf.len() - 2] as usize;
+        let mut poly_degree = array.daf[array.daf.len() - 2] as usize;
+
+        if poly_degree + 1 > n_records {
+            eprintln!(
+                "Spk Segment Type 9 must have at least as many records as the polynomial degree, n_records={n_records}, poly_degree={poly_degree}",
+            );
+            poly_degree = n_records - 1;
+        }
 
         Self {
             array,
@@ -707,7 +714,14 @@ pub(in crate::spice) struct SpkSegmentType13 {
 impl From<SpkArray> for SpkSegmentType13 {
     fn from(array: SpkArray) -> Self {
         let n_records = array.daf[array.daf.len() - 1] as usize;
-        let window_size = array.daf[array.daf.len() - 2] as usize;
+        let mut window_size = array.daf[array.daf.len() - 2] as usize;
+
+        if window_size > n_records {
+            eprintln!(
+                "Spk Segment Type 13 must have at least as many records as the window size, n_records={n_records}, window_size={window_size}",
+            );
+            window_size = n_records;
+        }
 
         Self {
             array,
@@ -812,7 +826,7 @@ impl TryFrom<SpkArray> for SpkSegmentType18 {
     type Error = Error;
     fn try_from(array: SpkArray) -> KeteResult<Self> {
         let n_records = array.daf[array.daf.len() - 1] as usize;
-        let window_size = array.daf[array.daf.len() - 2] as usize;
+        let mut window_size = array.daf[array.daf.len() - 2] as usize;
         let subtype = array.daf[array.daf.len() - 3] as usize;
         let record_size = {
             if subtype == 0 {
@@ -825,6 +839,12 @@ impl TryFrom<SpkArray> for SpkSegmentType18 {
                 ));
             }
         };
+        if window_size > n_records {
+            eprintln!(
+                "Spk Segment Type 18 must have at least as many records as the window size, n_records={n_records}, window_size={window_size}",
+            );
+            window_size = n_records;
+        }
 
         Ok(Self {
             array,

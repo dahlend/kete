@@ -236,12 +236,11 @@ fn parse_str_to_floats(text: &str) -> KeteResult<(f64, f64, f64)> {
         space0,
     )
     .parse(text)
-    .map_err(|_| Error::ValueError(format!("Failed to parse string: {}", text)))?;
+    .map_err(|_| Error::ValueError(format!("Failed to parse string: {text}")))?;
 
     if !rem.trim().is_empty() {
         return Err(Error::ValueError(format!(
-            "Failed to parse: {} parsing failed at {}",
-            text, rem
+            "Failed to parse: {text} parsing failed at {rem}",
         )));
     }
 
@@ -251,16 +250,14 @@ fn parse_str_to_floats(text: &str) -> KeteResult<(f64, f64, f64)> {
         3 => (hms[0], hms[1], hms[2]),
         _ => {
             return Err(Error::ValueError(format!(
-                "String has too many numbers: {}",
-                text
+                "String has too many numbers: {text}",
             )));
         }
     };
 
     if m.is_sign_negative() || s.is_sign_negative() {
         return Err(Error::ValueError(format!(
-            "String has negative values in the second or third terms: {}",
-            text
+            "String has negative values in the second or third terms: {text}"
         )));
     }
     Ok((h, m, s))
@@ -294,10 +291,7 @@ mod tests {
             let converted_deg = hms.to_degrees();
             assert!(
                 (converted_deg - deg).abs() < 1e-10,
-                "Failed for deg: {} != {}  {:?}",
-                deg,
-                converted_deg,
-                hms,
+                "Failed for deg: {deg} != {converted_deg}  {hms:?}",
             );
         }
     }
@@ -310,9 +304,7 @@ mod tests {
             let converted_deg = hms.to_degrees();
             assert!(
                 (converted_deg - deg).abs() < 1e-10,
-                "Failed for deg: {} != {}",
-                deg,
-                converted_deg
+                "Failed for deg: {deg} != {converted_deg}",
             );
         }
     }
@@ -433,16 +425,13 @@ mod tests {
                     let second = second as f64 + 0.123;
                     let hms = Degrees::try_from_hours_minutes_seconds(hour as f64, minute, second)
                         .unwrap();
-                    let hms_str = format!("{:02} {:02} {:06.3}", hour, minute, second);
+                    let hms_str = format!("{hour:02} {minute:02} {second:06.3}");
                     assert!(
                         (hms.to_degrees()
                             - Degrees::try_from_hms_str(&hms_str).unwrap().to_degrees())
                         .abs()
                             < 1e-8,
-                        "Failed for {}:{}:{}",
-                        hour,
-                        minute,
-                        second
+                        "Failed for {hour}:{minute}:{second}",
                     );
                 }
             }
@@ -459,16 +448,13 @@ mod tests {
                     let dms: Degrees =
                         Degrees::try_from_degrees_minutes_seconds(degree as f64, minute, second)
                             .unwrap();
-                    let dms_str = format!("{:02} {:02} {:06.3}", degree, minute, second);
+                    let dms_str = format!("{degree:02} {minute:02} {second:06.3}");
                     assert!(
                         (dms.to_degrees()
                             - Degrees::try_from_dms_str(&dms_str).unwrap().to_degrees())
                         .abs()
                             < 1e-8,
-                        "Failed for {}:{}:{}",
-                        degree,
-                        minute,
-                        second,
+                        "Failed for {degree}:{minute}:{second}",
                     );
                 }
             }

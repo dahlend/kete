@@ -431,13 +431,7 @@ mod tests {
                                     for idx in 0..3 {
                                         assert!(
                                             (new_pos[idx] - pos[idx]).abs() < 1e-7,
-                                            "\n{:?}\n{:?}\n {:?}\n {:?}\n {:?}\n {:?}",
-                                            elem,
-                                            new_elem,
-                                            pos,
-                                            new_pos,
-                                            vel,
-                                            new_vel
+                                            "\n{elem:?}\n{new_elem:?}\n {pos:?}\n {new_pos:?}\n {vel:?}\n {new_vel:?}",
                                         );
                                         assert!((new_vel[idx] - vel[idx]).abs() < 1e-7);
                                     }
@@ -496,23 +490,11 @@ mod tests {
                                 for idx in 0..3 {
                                     assert!(
                                         (new_pos[idx] - pos[idx]).abs() < 1e-7,
-                                        "\n{:?}\n{:?}\n{:?}\n {:?}\n {:?}\n {:?}\n",
-                                        elem,
-                                        new_elem,
-                                        pos,
-                                        new_pos,
-                                        vel,
-                                        new_vel,
+                                        "\n{elem:?}\n{new_elem:?}\n{pos:?}\n {new_pos:?}\n {vel:?}\n {new_vel:?}",
                                     );
                                     assert!(
                                         (new_vel[idx] - vel[idx]).abs() < 1e-7,
-                                        "\n{:?}\n{:?}\n{:?}\n {:?}\n {:?}\n {:?}",
-                                        elem,
-                                        new_elem,
-                                        pos,
-                                        new_pos,
-                                        vel,
-                                        new_vel,
+                                        "\n{elem:?}\n{new_elem:?}\n{pos:?}\n {new_pos:?}\n {vel:?}\n {new_vel:?}",
                                     );
                                     assert!(
                                         (elem.true_anomaly().unwrap() - elem.mean_anomaly()).abs()
