@@ -174,6 +174,12 @@ impl PyCometElements {
         self.0.mean_anomaly().to_degrees()
     }
 
+    /// Aphelion in degrees.
+    #[getter]
+    pub fn aphelion(&self) -> f64 {
+        self.0.aphelion().to_degrees()
+    }
+
     /// True Anomaly in degrees.
     #[getter]
     pub fn true_anomaly(&self) -> PyResult<f64> {

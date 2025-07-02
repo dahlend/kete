@@ -283,6 +283,14 @@ impl CometElements {
         }
     }
 
+    /// Compute the Aphelion distance in AU.
+    pub fn aphelion(&self) -> f64 {
+        match self.eccentricity {
+            ecc if ((ecc - 1.0).abs() <= PARABOLIC_ECC_LIMIT) => f64::NAN,
+            ecc => self.peri_dist * (1.0 + ecc) / (1.0 - ecc),
+        }
+    }
+
     /// Compute the mean motion in radians per day.
     pub fn mean_motion(&self) -> f64 {
         match self.eccentricity {
