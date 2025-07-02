@@ -227,7 +227,7 @@ def _fetch_json(
     response = requests.get(
         f"https://ssd-api.jpl.nasa.gov/sbdb.api?{query}={name}"
         "&phys-par=true&full-prec=true&cov=mat"
-        "&alt-des=true&alt-spk=true&alt-orbits=true",
+        "&alt-des=true&alt-spk=true&alt-orbits=true&discovery=true",
         timeout=30,
     )
 
