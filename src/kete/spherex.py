@@ -4,8 +4,10 @@ Spherex Related Functions and Data.
 
 from collections import defaultdict
 
+import numpy as np
 import pandas as pd
 from astropy.io import fits
+from scipy.interpolate import RegularGridInterpolator
 
 from .cache import download_file
 from .fov import FOVList, SpherexCmos, SpherexField
@@ -14,7 +16,13 @@ from .tap import query_tap
 from .time import Time
 from .vector import Vector
 
-__all__ = ["fetch_fovs", "fetch_observation_table", "SpherexCmos", "SpherexField"]
+__all__ = [
+    "fetch_fovs",
+    "fetch_observation_table",
+    "fetch_spectral_image",
+    "SpherexCmos",
+    "SpherexField",
+]
 
 
 def fetch_frame(fov, index=1):
@@ -36,6 +44,29 @@ def fetch_frame(fov, index=1):
     url = f"https://irsa.ipac.caltech.edu/{fov.uri}"
     frame = download_file(url, auto_zip=True, subfolder="spherex_frames")
     return fits.open(frame)[index]
+
+
+def fetch_spectral_image(fov):
+    """
+    Construct an two simulated images, where the values of each pixel corresponds
+    to the central wavelength and the bandwidth for the linear variable filter.
+
+    This will return 2 matrices, first is the central wavelength, the second is
+    the bandwidth.
+    """
+    frame = fetch_frame(fov, index=6)
+    x = frame.data[0][0]
+    y = frame.data[0][1]
+    fq = frame.data[0][2]
+
+    interp = RegularGridInterpolator([x, y], fq)
+
+    # +1 is because spice is 1 indexed
+    freqs, width = interp(
+        np.indices(frame[1].data.shape).transpose(1, 2, 0) + 1
+    ).transpose(2, 0, 1)
+
+    return freqs, width
 
 
 def fetch_fovs(update_cache=False):
