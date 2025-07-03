@@ -19,13 +19,13 @@ from .vector import Vector
 __all__ = ["plot_fits_image", "zoom_plot", "annotate_plot"]
 
 
-def plot_fits_image(fit, percentiles=(0.1, 99.95), power_stretch=0.5, cmap="gray"):
+def plot_fits_image(fit, percentiles=(0.1, 99.95), power_stretch=1.0, cmap="gray"):
     """
     Plot a FITS image, returning a WCS object which may be used to plot future points
     correctly onto the current image.
 
-    This estimates the standard deviation, subtracts the median, and scales the
-    displayed image by number of standard deviations from the median value.
+    This is a basic set of image visualization defaults. This normalizes the image,
+    clip the values to a range and optionally performs a power stretch.
 
     This returns the WCS which is constructed during the plotting process.
 
@@ -72,8 +72,11 @@ def plot_fits_image(fit, percentiles=(0.1, 99.95), power_stretch=0.5, cmap="gray
     else:
         interval = AsymmetricPercentileInterval(*percentiles)
 
-    norm = ImageNormalize(fit.data, interval=interval, stretch=stretch)
-    data = np.nan_to_num(fit.data, nan=np.nanpercentile(fit.data, 5))
+    data = fit.data
+    data /= np.nanmax(data)
+
+    norm = ImageNormalize(data, interval=interval, stretch=stretch)
+    data = np.nan_to_num(data, nan=np.nanpercentile(fit.data, 5))
 
     ax.imshow(data, origin="lower", norm=norm, cmap=cmap)
     ax.set_xlabel("RA")
