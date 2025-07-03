@@ -75,6 +75,8 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<fovs::PyZtfField>()?;
     m.add_class::<fovs::PyPtfCcd>()?;
     m.add_class::<fovs::PyPtfField>()?;
+    m.add_class::<fovs::PySpherexCmos>()?;
+    m.add_class::<fovs::PySpherexField>()?;
     m.add_class::<fovs::PyGenericRectangle>()?;
     m.add_class::<fovs::PyGenericCone>()?;
     m.add_class::<fovs::PyOmniDirectional>()?;
@@ -165,6 +167,8 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(spice::daf_header_info_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::obs_codes, m)?)?;
     m.add_function(wrap_pyfunction!(spice::find_obs_code_py, m)?)?;
+
+    m.add_function(wrap_pyfunction!(spice::predict_tle, m)?)?;
 
     m.add_function(wrap_pyfunction!(state_transition::compute_stm_py, m)?)?;
 

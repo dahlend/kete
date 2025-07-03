@@ -173,6 +173,19 @@ pub struct PyPtfField(pub fov::PtfField);
 #[allow(clippy::upper_case_acronyms)]
 pub struct PyPtfCcd(pub fov::PtfCcd);
 
+/// Field of view of multiple Spherex CMOS at one time.
+/// This is a meta collection of individual Spherex CMOS FOVs.
+#[pyclass(module = "kete", frozen, name = "SpherexField", sequence)]
+#[derive(Clone, Debug)]
+#[allow(clippy::upper_case_acronyms)]
+pub struct PySpherexField(pub fov::SpherexField);
+
+/// Field of view of a Single Spherex cmos.
+#[pyclass(module = "kete", frozen, name = "SpherexCmos")]
+#[derive(Clone, Debug)]
+#[allow(clippy::upper_case_acronyms)]
+pub struct PySpherexCmos(pub fov::SpherexCmos);
+
 /// Generic Rectangular Field of view.
 ///
 /// There are other constructors for this, for example the
@@ -237,6 +250,8 @@ pub enum AllowedFOV {
     OmniDirectional(PyOmniDirectional),
     PTF(PyPtfCcd),
     PTFField(PyPtfField),
+    SPHEREx(PySpherexCmos),
+    SPHERExField(PySpherexField),
 }
 
 impl AllowedFOV {
@@ -253,6 +268,8 @@ impl AllowedFOV {
             AllowedFOV::OmniDirectional(fov) => fov.0.observer().jd,
             AllowedFOV::PTF(fov) => fov.0.observer().jd,
             AllowedFOV::PTFField(fov) => fov.0.observer().jd,
+            AllowedFOV::SPHEREx(fov) => fov.0.observer().jd,
+            AllowedFOV::SPHERExField(fov) => fov.0.observer().jd,
         }
     }
 
@@ -270,6 +287,8 @@ impl AllowedFOV {
             AllowedFOV::OmniDirectional(fov) => fov.0.get_fov(idx),
             AllowedFOV::PTF(fov) => fov.0.get_fov(idx),
             AllowedFOV::PTFField(fov) => fov.0.get_fov(idx),
+            AllowedFOV::SPHEREx(fov) => fov.0.get_fov(idx),
+            AllowedFOV::SPHERExField(fov) => fov.0.get_fov(idx),
         }
     }
 
@@ -286,6 +305,8 @@ impl AllowedFOV {
             AllowedFOV::OmniDirectional(fov) => fov::FOV::OmniDirectional(fov.0),
             AllowedFOV::PTF(fov) => fov::FOV::PtfCcd(fov.0),
             AllowedFOV::PTFField(fov) => fov::FOV::PtfField(fov.0),
+            AllowedFOV::SPHEREx(fov) => fov::FOV::SpherexCmos(fov.0),
+            AllowedFOV::SPHERExField(fov) => fov::FOV::SpherexField(fov.0),
         }
     }
 
@@ -302,6 +323,8 @@ impl AllowedFOV {
             AllowedFOV::OmniDirectional(fov) => fov.__repr__(),
             AllowedFOV::PTF(fov) => fov.__repr__(),
             AllowedFOV::PTFField(fov) => fov.__repr__(),
+            AllowedFOV::SPHEREx(fov) => fov.__repr__(),
+            AllowedFOV::SPHERExField(fov) => fov.__repr__(),
         }
     }
 }
@@ -319,6 +342,8 @@ impl From<fov::FOV> for AllowedFOV {
             fov::FOV::OmniDirectional(fov) => AllowedFOV::OmniDirectional(PyOmniDirectional(fov)),
             fov::FOV::PtfCcd(fov) => AllowedFOV::PTF(PyPtfCcd(fov)),
             fov::FOV::PtfField(fov) => AllowedFOV::PTFField(PyPtfField(fov)),
+            fov::FOV::SpherexCmos(fov) => AllowedFOV::SPHEREx(PySpherexCmos(fov)),
+            fov::FOV::SpherexField(fov) => AllowedFOV::SPHERExField(PySpherexField(fov)),
         }
     }
 }
@@ -1298,6 +1323,181 @@ impl PyPtfField {
             self.observer().__repr__(),
             self.filter(),
             self.field(),
+        )
+    }
+}
+
+#[pymethods]
+#[allow(clippy::too_many_arguments)]
+impl PySpherexCmos {
+    /// Construct a new PTF CCD FOV from the corners.
+    /// The corners must be provided in clockwise order.
+    ///
+    /// Parameters
+    /// ----------
+    /// corners :
+    ///     4 Vectors which represent the corners of the FOV, these must be provided in clockwise order.
+    /// observer :
+    ///     Position of the observer as a State.
+    /// uri:
+    ///     Location of the frame in IRSA
+    /// plane_id:
+    ///     planeid in the spherex.plane database table in IRSA.
+    #[new]
+    pub fn new(corners: [VectorLike; 4], observer: PyState, uri: String, plane_id: String) -> Self {
+        let corners = corners
+            .into_iter()
+            .map(|v| v.into_vector(observer.frame()))
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+        PySpherexCmos(fov::SpherexCmos::new(
+            corners,
+            observer.raw,
+            uri.into_boxed_str(),
+            plane_id.into_boxed_str(),
+        ))
+    }
+
+    /// State of the observer for this FOV.
+    #[getter]
+    pub fn observer(&self) -> PyState {
+        self.0.observer().clone().into()
+    }
+
+    /// JD of the observer location.
+    #[getter]
+    pub fn jd(&self) -> f64 {
+        self.0.observer().jd
+    }
+
+    /// Metadata about where this FOV is in the Survey.
+    #[getter]
+    pub fn plane_id(&self) -> String {
+        self.0.plane_id.clone().into()
+    }
+
+    /// Direction that the observer is looking.
+    #[getter]
+    pub fn pointing(&self) -> PyVector {
+        self.0.pointing().unwrap().into()
+    }
+
+    /// Metadata about where this FOV is in the Survey.
+    #[getter]
+    pub fn uri(&self) -> String {
+        self.0.uri.clone().into()
+    }
+
+    /// Corners of this FOV
+    #[getter]
+    pub fn corners(&self) -> Vec<PyVector> {
+        self.0
+            .corners()
+            .unwrap()
+            .into_iter()
+            .map(|x| x.into())
+            .collect()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SpherexCmos(observer={}, plane_id={}, uri={:?})",
+            self.observer().__repr__(),
+            self.plane_id(),
+            self.uri(),
+        )
+    }
+}
+
+#[pymethods]
+#[allow(clippy::too_many_arguments)]
+impl PySpherexField {
+    /// Representation of an entire PTF Field, made up of multiple CCDs.
+    ///
+    /// Parameters
+    /// ----------
+    /// ptf_ccd_fields :
+    ///     List containing all of the CCD FOVs.
+    ///     These must have matching metadata.
+    /// obsid:
+    ///     Observation GUID used in the IRSA tables.
+    /// observation_id:
+    ///     Also called `obs_id`, this is not the same as obsid. This is another
+    ///     identified in the IRSA tables, there is a 1-to-1 matching between the two.
+    #[new]
+    pub fn new(ptf_ccd_fields: Vec<PySpherexCmos>, obsid: String, observation_id: String) -> Self {
+        PySpherexField(
+            fov::SpherexField::new(
+                ptf_ccd_fields.into_iter().map(|x| x.0).collect(),
+                obsid.into_boxed_str(),
+                observation_id.into_boxed_str(),
+            )
+            .unwrap(),
+        )
+    }
+
+    /// State of the observer for this FOV.
+    #[getter]
+    pub fn observer(&self) -> PyState {
+        self.0.observer().clone().into()
+    }
+
+    /// JD of the observer location.
+    #[getter]
+    pub fn jd(&self) -> f64 {
+        self.0.observer().jd
+    }
+
+    /// Metadata about where this FOV is in the Survey.
+    #[getter]
+    pub fn obsid(&self) -> String {
+        self.0.obsid.to_string()
+    }
+
+    /// Metadata about where this FOV is in the Survey.
+    #[getter]
+    pub fn observation_id(&self) -> String {
+        self.0.observationid.to_string()
+    }
+
+    /// Return all of the individual CMOS frames present in this field.
+    #[getter]
+    pub fn cmos(&self) -> Vec<PySpherexCmos> {
+        (0..self.0.n_patches())
+            .map(|idx| {
+                PySpherexCmos(match self.0.get_fov(idx) {
+                    fov::FOV::SpherexCmos(fov) => fov,
+                    _ => unreachable!(),
+                })
+            })
+            .collect()
+    }
+
+    #[allow(missing_docs)]
+    pub fn __len__(&self) -> usize {
+        self.0.n_patches()
+    }
+
+    /// Retrieve a specific CMOS FOV from the contained list of FOVs.
+    pub fn __getitem__(&self, idx: usize) -> PyResult<PySpherexCmos> {
+        if idx >= self.__len__() {
+            return Err(PyErr::new::<exceptions::PyIndexError, _>(""));
+        }
+
+        Ok(PySpherexCmos(match self.0.get_fov(idx) {
+            fov::FOV::SpherexCmos(fov) => fov,
+            _ => unreachable!(),
+        }))
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PtfField(ccd_quads=<{} frames>, observer={}, obs_id={:?}, observation_id={})",
+            self.0.n_patches(),
+            self.observer().__repr__(),
+            self.obsid(),
+            self.observation_id(),
         )
     }
 }

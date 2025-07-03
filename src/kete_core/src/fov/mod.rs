@@ -5,6 +5,7 @@ mod generic;
 mod neos;
 mod patches;
 mod ptf;
+mod spherex;
 mod wise;
 mod ztf;
 
@@ -13,6 +14,7 @@ pub use self::generic::{GenericCone, GenericRectangle, OmniDirectional};
 pub use self::neos::{NeosCmos, NeosVisit};
 pub use self::patches::{Contains, OnSkyRectangle, SkyPatch, SphericalCone, SphericalPolygon};
 pub use self::ptf::{PTFFilter, PtfCcd, PtfField};
+pub use self::spherex::{SpherexCmos, SpherexField};
 pub use self::wise::WiseCmos;
 pub use self::ztf::{ZtfCcdQuad, ZtfField};
 
@@ -53,6 +55,12 @@ pub enum FOV {
 
     /// Full PTF field of multiple ccd images.
     PtfField(PtfField),
+
+    /// Spherex CMOS
+    SpherexCmos(SpherexCmos),
+
+    /// Spherex Field, containing up to 6 CMOS frames.
+    SpherexField(SpherexField),
 }
 
 impl FOV {
@@ -74,6 +82,8 @@ impl FOV {
             Self::OmniDirectional(fov) => fov.check_visible(states, dt_limit, include_asteroids),
             Self::PtfCcd(fov) => fov.check_visible(states, dt_limit, include_asteroids),
             Self::PtfField(fov) => fov.check_visible(states, dt_limit, include_asteroids),
+            Self::SpherexCmos(fov) => fov.check_visible(states, dt_limit, include_asteroids),
+            Self::SpherexField(fov) => fov.check_visible(states, dt_limit, include_asteroids),
         }
     }
 
@@ -90,6 +100,8 @@ impl FOV {
             Self::OmniDirectional(fov) => fov.observer(),
             Self::PtfCcd(fov) => fov.observer(),
             Self::PtfField(fov) => fov.observer(),
+            Self::SpherexCmos(fov) => fov.observer(),
+            Self::SpherexField(fov) => fov.observer(),
         }
     }
 
@@ -106,6 +118,8 @@ impl FOV {
             Self::OmniDirectional(fov) => fov.check_spks(obj_ids),
             Self::PtfCcd(fov) => fov.check_spks(obj_ids),
             Self::PtfField(fov) => fov.check_spks(obj_ids),
+            Self::SpherexCmos(fov) => fov.check_spks(obj_ids),
+            Self::SpherexField(fov) => fov.check_spks(obj_ids),
         }
     }
 
@@ -122,6 +136,8 @@ impl FOV {
             Self::OmniDirectional(fov) => fov.check_statics(pos),
             Self::PtfCcd(fov) => fov.check_statics(pos),
             Self::PtfField(fov) => fov.check_statics(pos),
+            Self::SpherexCmos(fov) => fov.check_statics(pos),
+            Self::SpherexField(fov) => fov.check_statics(pos),
         }
     }
 }
