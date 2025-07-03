@@ -70,7 +70,13 @@ def fetch_spectral_image(fov):
 
 
 def fetch_fovs(update_cache=False):
-    """Download every Spherex Field of View from IRSA."""
+    """
+    Download every public Spherex Field of View from IRSA.
+
+    Currently the position of Spherex is not publicly available, so
+    the fields of view are constructed with the observer position being at the
+    center of the Earth.
+    """
     table = fetch_observation_table(update_cache=update_cache)
     table = table[[s is not None for s in table["s_region"]]]
     fields = defaultdict(list)

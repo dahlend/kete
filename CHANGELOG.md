@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added support for SPHEREx public data.
 - Added support for computing sunrise and sunset times at any location on Earth.
 - Added support for approximate earth location computation, to enable precovery work
   on frames from before 1972.
