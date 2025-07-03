@@ -5,8 +5,10 @@ Spherex Related Functions and Data.
 from collections import defaultdict
 
 import pandas as pd
+from astropy.io import fits
 
-from ._core import SpherexCmos, SpherexField
+from .cache import download_file
+from .fov import FOVList, SpherexCmos, SpherexField
 from .spice import get_state
 from .tap import query_tap
 from .time import Time
@@ -15,9 +17,31 @@ from .vector import Vector
 __all__ = ["fetch_fovs", "fetch_observation_table", "SpherexCmos", "SpherexField"]
 
 
+def fetch_frame(fov, index=1):
+    """
+    Download the level 2 frame from IRSA.
+
+    SPHEREx level 2 frames are made up of 7 sections:
+    0 - Metadata.
+    1 - Actual Image (MJy/sr)
+    2 - Pixel bitwise flags.
+    3 - Per pixel variance (MJy/sr)^2.
+    4 - Model estimated zodiacal light (MJy/sr).
+    5 - Over-sampled PSF, 101x101 pixels
+    6 - Binary Table containing the WCS-WAVE Spectral coordinate system.
+
+    By default this function will return the image itself.
+
+    """
+    url = f"https://irsa.ipac.caltech.edu/{fov.uri}"
+    frame = download_file(url, auto_zip=True, subfolder="spherex_frames")
+    return fits.open(frame)[index]
+
+
 def fetch_fovs(update_cache=False):
     """Download every Spherex Field of View from IRSA."""
     table = fetch_observation_table(update_cache=update_cache)
+    table = table[[s is not None for s in table["s_region"]]]
     fields = defaultdict(list)
 
     for row in table.itertuples():
@@ -35,6 +59,9 @@ def fetch_fovs(update_cache=False):
     full_fields = []
     for (obs_id, observerid), frames in fields.items():
         full_fields.append(SpherexField(frames, obs_id, observerid))
+    full_fields = FOVList(full_fields)
+    full_fields.sort()
+    return full_fields
 
 
 def fetch_observation_table(update_cache=False):
