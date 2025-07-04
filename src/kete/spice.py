@@ -306,3 +306,7 @@ def moon_illumination_frac(jd: float | Time, observer: str = "399"):
     moon2earth = -get_state("moon", jd, center=observer).pos
     perc = 1.0 - moon2sun.angle_between(moon2earth) / 180
     return 0.5 - np.cos(np.pi * perc) / 2
+
+
+# Download missing files on import
+_download_core_files()
