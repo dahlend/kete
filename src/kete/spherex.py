@@ -88,7 +88,7 @@ def fetch_fovs(update_cache=False):
         else:
             time = (row.time_bounds_lower + row.time_bounds_lower) / 2
             jd = Time.from_mjd(time, scaling="UTC").jd
-            observer = get_state("Earth", jd)
+            observer = get_state("spherex", jd)
         cmos = SpherexCmos(region, observer, row.uri, row.planeid)
         fields[(row.obs_id, row.obsid)].append(cmos)
     fields = dict(fields)
