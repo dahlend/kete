@@ -12,4 +12,5 @@ These are more in-depth worked examples.
    neatm
    palomar
    kona
+   spherex
    wise

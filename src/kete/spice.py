@@ -128,6 +128,9 @@ def _download_core_files():
     # required files:
     de440 = "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de440s.bsp"
     wise = "https://github.com/Caltech-IPAC/kete/raw/refs/heads/main/src/kete_core/data/wise.bsp"
+    spherex = (
+        "https://github.com/dahlend/kete/raw/refs/heads/main/docs/data/spherex.bsp"
+    )
 
     if not any(["de440s.bsp" in file for file in cache_files]):
         # Cannot find the de440s file, so download it
@@ -135,6 +138,9 @@ def _download_core_files():
     if not any(["wise.bsp" in file for file in cache_files]):
         # Cannot find the wise file, so download it
         download_file(wise, subfolder="kernels/core")
+    if not any(["spherex.bsp" in file for file in cache_files]):
+        # Cannot find the wise file, so download it
+        download_file(spherex, subfolder="kernels/core")
 
     required_asteroids = [1, 2, 4, 10, 704]
     for asteroid in required_asteroids:
