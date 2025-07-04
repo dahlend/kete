@@ -140,7 +140,7 @@ def _download_core_files():
         download_file(wise, subfolder="kernels/core")
     if not any(["spherex.bsp" in file for file in cache_files]):
         # Cannot find the wise file, so download it
-        download_file(wise, subfolder="kernels/core")
+        download_file(spherex, subfolder="kernels/core")
 
     required_asteroids = [1, 2, 4, 10, 704]
     for asteroid in required_asteroids:
