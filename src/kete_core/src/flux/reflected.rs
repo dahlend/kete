@@ -264,7 +264,7 @@ impl HGParams {
         }
 
         let correction = hg_phase_curve_correction(self.g_param, phase).log10();
-        self.h_mag + 5.0 * (obj_r * obj2obs_r).log10() + 2.5 * correction
+        self.h_mag + 5.0 * (obj_r * obj2obs_r).log10() - 2.5 * correction
     }
 
     /// Calculate the reflected light flux from an object using the IAU phase correction curve.
