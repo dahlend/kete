@@ -198,13 +198,13 @@ impl PyState {
     /// Inclination of the orbit in degrees.
     #[getter]
     pub fn inclination(&mut self) -> f64 {
-        self.elements().inclination().to_degrees()
+        self.elements().inclination()
     }
 
     /// Longitude of the ascending node of the orbit in degrees.
     #[getter]
     pub fn lon_of_ascending(&mut self) -> f64 {
-        self.elements().lon_of_ascending().to_degrees()
+        self.elements().lon_of_ascending()
     }
 
     /// Perihelion time of the orbit in JD.
@@ -216,7 +216,7 @@ impl PyState {
     /// Argument of Perihelion of the orbit in degrees.
     #[getter]
     pub fn peri_arg(&mut self) -> f64 {
-        self.elements().peri_arg().to_degrees()
+        self.elements().peri_arg()
     }
 
     /// Distance of Perihelion of the orbit in au.
@@ -234,7 +234,7 @@ impl PyState {
     /// Mean Motion of the orbit in degrees.
     #[getter]
     pub fn mean_motion(&mut self) -> f64 {
-        self.elements().mean_motion().to_degrees()
+        self.elements().mean_motion()
     }
 
     /// Orbital Period in days, nan if non-elliptical.
@@ -246,19 +246,19 @@ impl PyState {
     /// Eccentric Anomaly in degrees.
     #[getter]
     pub fn eccentric_anomaly(&mut self) -> PyResult<f64> {
-        self.elements().eccentric_anomaly().map(|x| x.to_degrees())
+        self.elements().eccentric_anomaly()
     }
 
     /// Mean Anomaly in degrees.
     #[getter]
     pub fn mean_anomaly(&mut self) -> f64 {
-        self.elements().mean_anomaly().to_degrees()
+        self.elements().mean_anomaly()
     }
 
     /// True Anomaly in degrees.
     #[getter]
     pub fn true_anomaly(&mut self) -> PyResult<f64> {
-        self.elements().true_anomaly().map(|x| x.to_degrees())
+        self.elements().true_anomaly()
     }
 
     /// Designation of the object if defined.

@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [v2.1.1]
+
+### Fixed
+
+- Fixed the angle calculations of orbital elements in `State` objects where they were
+  being converted to degrees twice, causing them to be multiplied by 360/2pi.
+
 ## [v2.1.0]
 
 ### Added

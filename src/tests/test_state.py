@@ -18,21 +18,29 @@ class TestlState:
             epoch=123456,
             desig="test",
             eccentricity=0.1,
-            inclination=0,
+            inclination=10,
             peri_dist=0.45,
-            peri_arg=0,
-            lon_of_ascending=0,
+            peri_arg=30,
+            lon_of_ascending=45,
             peri_time=123456,
         ).state
         assert vs.jd == 123456
         elem = vs.elements
         assert np.isclose(elem.eccentricity, 0.1)
-        assert np.isclose(elem.inclination, 0)
-        assert np.isclose(elem.peri_arg, 0)
-        assert np.isclose(elem.lon_of_ascending, 0)
+        assert np.isclose(elem.inclination, 10)
+        assert np.isclose(elem.peri_arg, 30)
+        assert np.isclose(elem.lon_of_ascending, 45)
         assert np.isclose(elem.peri_time, 123456)
         assert np.isclose(elem.peri_dist, 0.45)
         assert np.isclose(elem.semi_major, 0.5)
+
+        assert np.isclose(vs.eccentricity, 0.1)
+        assert np.isclose(vs.inclination, 10)
+        assert np.isclose(vs.peri_arg, 30)
+        assert np.isclose(vs.lon_of_ascending, 45)
+        assert np.isclose(vs.peri_time, 123456)
+        assert np.isclose(vs.peri_dist, 0.45)
+        assert np.isclose(vs.semi_major, 0.5)
 
     @pytest.mark.parametrize("ecc", [0.1, 0.5, 1.0, 1.3])
     @pytest.mark.parametrize("inc", [0.1, 2])

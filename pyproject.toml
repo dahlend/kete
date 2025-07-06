@@ -37,6 +37,7 @@ build-backend = "maturin"
 python-source = "src"
 module-name = "kete._core"
 manifest-path = "Cargo.toml"
+sdist-include = ["LICENSE", "Readme.md"]
 
 [project.optional-dependencies]
 dev = ["ruff",
