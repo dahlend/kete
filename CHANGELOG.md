@@ -12,7 +12,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Fixed the angle calculations of orbital elements in `State` objects where they were
   being converted to degrees twice, causing them to be multiplied by 360/2pi.
-- Fixed a sign error in the phase correction curve for V mag estimations.
 
 ## [v2.1.0]
 
