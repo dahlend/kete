@@ -225,6 +225,12 @@ impl PyState {
         self.elements().peri_dist()
     }
 
+    /// Distance of Aphelion of the orbit in au.
+    #[getter]
+    pub fn aphelion(&mut self) -> f64 {
+        self.elements().aphelion()
+    }
+
     /// Semi Major Axis of the orbit in au.
     #[getter]
     pub fn semi_major(&mut self) -> f64 {
