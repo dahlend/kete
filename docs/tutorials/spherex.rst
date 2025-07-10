@@ -28,9 +28,10 @@ for SPHEREx.
     # Download all of the fields of view from IRSA.
     # This does not download the images! This only downloads the metadata
     # which describes the position on sky of every frame.
-    # Currently this is an approximation, as the SPICE kernel for SPHEREx
-    # is not public, so these FOVs use the Earth center as a stand-in for
-    # the position of the telescope.
+    # The SPICE kernel for SPHEREx is not publicly available, as a result of this
+    # This uses a custom SPICE kernel, built from publicly available data.
+    # THIS IS NOT AN OFFICIAL KERNEL! However it matches the positions available
+    # on JPL Horizons to within about 30km.
     fovs = kete.spherex.fetch_fovs()
 
     # Load the list of all known objects from the MPC.

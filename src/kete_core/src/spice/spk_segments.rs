@@ -148,6 +148,9 @@ impl SpkSegment {
 ///
 /// <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/spk.html#Type%201:%20Modified%20Difference%20Arrays>
 ///
+// This format might be derived from works related to this paper:
+// Recurrence Relations for Computing With Modified Divided Differences*
+// Fred Krogh 1979
 #[derive(Debug)]
 pub(in crate::spice) struct SpkSegmentType1 {
     array: SpkArray,
