@@ -74,8 +74,9 @@ def fetch_fovs(update_cache=False):
     Download every public Spherex Field of View from IRSA.
 
     Currently the position of Spherex is not publicly available, so
-    the fields of view are constructed with the observer position being at the
-    center of the Earth.
+    kete uses a custom SPICE kernel which has been reconstructed from publicly
+    available data. This SPICE kernel is NOT official, and matches JPL Horizons
+    values to within about 30km.
     """
     table = fetch_observation_table(update_cache=update_cache)
     table = table[[s is not None for s in table["s_region"]]]
