@@ -99,6 +99,7 @@ static MASSES_KNOWN: std::sync::LazyLock<ShardedLock<Vec<GravParams>>> =
             let code = GravParams::from_str(row).unwrap();
             singleton.push(code);
         }
+        singleton.sort_by(|a, b| a.mass.total_cmp(&b.mass));
         ShardedLock::new(singleton)
     });
 
@@ -117,6 +118,7 @@ static MASSES_SELECTED: std::sync::LazyLock<ShardedLock<Vec<GravParams>>> =
                 singleton.push(*param);
             }
         }
+        singleton.sort_by(|a, b| a.mass.total_cmp(&b.mass));
         ShardedLock::new(singleton)
     });
 
@@ -209,9 +211,7 @@ impl GravParams {
         rel_pos: &Vector3<f64>,
         rel_vel: &Vector3<f64>,
     ) {
-        // Basic newtonian gravity
         let mass = self.mass;
-        *accel -= &(rel_pos * (mass * rel_pos.norm().powi(-3)));
 
         // Special cases for different objects
         match self.naif_id {
@@ -244,6 +244,9 @@ impl GravParams {
             399 => *accel += j2_correction(rel_pos, self.radius, &EARTH_J2, &mass),
             _ => (),
         }
+
+        // Basic newtonian gravity
+        *accel -= &(rel_pos * (mass * rel_pos.norm().powi(-3)));
     }
 
     /// Add this [`GravParams`] to the singleton.
@@ -252,6 +255,7 @@ impl GravParams {
         // Check if the GravParams already exists
         if !params.iter().any(|p| p.naif_id == self.naif_id) {
             params.push(self);
+            params.sort_by(|a, b| a.mass.total_cmp(&b.mass));
         }
     }
 
