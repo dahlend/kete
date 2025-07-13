@@ -162,7 +162,7 @@ impl Vector<Equatorial> {
             dec = TAU - dec;
             ra += PI;
         }
-        (ra, PI / 2.0 - dec)
+        (ra.rem_euclid(TAU), PI / 2.0 - dec)
     }
 }
 

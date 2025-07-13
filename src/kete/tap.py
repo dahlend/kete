@@ -19,18 +19,30 @@ import requests
 
 from .cache import cache_path
 
-__all__ = ["tap_column_info", "query_tap"]
+__all__ = ["tap_column_info", "query_tap", "TAP_SERVERS"]
 
 IRSA_URL = "https://irsa.ipac.caltech.edu"
 IRSA_TAP_URL = "https://irsa.ipac.caltech.edu/TAP/async"
 CADC_TAP_URL = "https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/argus/async"
+GAIA_TAP_URL = "https://gaia.aip.de/tap/async"
 
+TAP_SERVERS = {
+    "IRSA": IRSA_TAP_URL,
+    "CADC": CADC_TAP_URL,
+    "GAIA": GAIA_TAP_URL,
+}
+"""
+Defined TAP servers for easy lookup.
+
+If you have a TAP compliant server that you would like to add to this list, please
+submit a github issue with the URL.
+"""
 
 logger = logging.getLogger(__name__)
 
 
 @lru_cache
-def tap_column_info(table_name, base_url=IRSA_TAP_URL, auth=None):
+def tap_column_info(table_name, service="IRSA", auth=None):
     """
     Retrieve the column data for a specified TAP table.
 
@@ -40,14 +52,37 @@ def tap_column_info(table_name, base_url=IRSA_TAP_URL, auth=None):
     ----------
     table_name :
         The name of the table to query the columns of.
-    base_url :
-        The URL of the TAPS service to query, this defaults to IRSA.
+    service :
+        The URL or known name of the TAPS service to query, this defaults to IRSA.
     auth :
         An optional (username, password), this may be used to access restricted data.
     """
+    service = TAP_SERVERS.get(service.upper(), service)
     return query_tap(
         f"""SELECT * FROM TAP_SCHEMA.columns WHERE table_name='{table_name}'""",
-        base_url=base_url,
+        service=service,
+        auth=auth,
+    )
+
+
+@lru_cache
+def tap_table_info(service="IRSA", auth=None):
+    """
+    Retrieve the available tables provided by the specified TAP service.
+
+    This will return a dataframe containing the tables available from the TAP service.
+
+    Parameters
+    ----------
+    service :
+        The URL or known name of the TAPS service to query, this defaults to IRSA.
+    auth :
+        An optional (username, password), this may be used to access restricted data.
+    """
+    service = TAP_SERVERS.get(service.upper(), service)
+    return query_tap(
+        """SELECT * FROM TAP_SCHEMA.tables""",
+        service=service,
         auth=auth,
     )
 
@@ -55,7 +90,7 @@ def tap_column_info(table_name, base_url=IRSA_TAP_URL, auth=None):
 def query_tap(
     query,
     upload_table=None,
-    base_url=IRSA_TAP_URL,
+    service="IRSA",
     auth=None,
     timeout=None,
     verbose=False,
@@ -122,8 +157,8 @@ def query_tap(
         An SQL text query.
     upload_table :
         An optional pandas dataframe.
-    base_url :
-        The URL of the TAPS service to query, this defaults to IRSA.
+    service :
+        The URL or known name of the TAPS service to query, this defaults to IRSA.
     auth :
         An optional (username, password), this may be used to access restricted data.
     timeout :
@@ -138,10 +173,11 @@ def query_tap(
         updated. IE: previous query results are ignored and resubmitted to the TAP
         service.
     """
+    service = TAP_SERVERS.get(service.upper(), service)
     query = AsyncTapQuery(
         query=query,
         upload_table=upload_table,
-        base_url=base_url,
+        service=service,
         auth=auth,
         timeout=timeout,
         verbose=verbose,
@@ -164,13 +200,14 @@ class AsyncTapQuery:
         self,
         query,
         upload_table=None,
-        base_url=IRSA_TAP_URL,
+        service="IRSA",
         auth=None,
         timeout=None,
         verbose=False,
         cache=True,
         update_cache=False,
     ):
+        base_url = TAP_SERVERS.get(service.upper(), service)
         self.query = query
         self.upload_table = upload_table
         self.base_url = base_url
@@ -192,11 +229,13 @@ class AsyncTapQuery:
         self._files = files
         if files is not None:
             _hash = int(
-                hashlib.md5(str((query, tuple(files.values()))).encode()).hexdigest(),
+                hashlib.md5(
+                    str((base_url, query, tuple(files.values()))).encode()
+                ).hexdigest(),
                 16,
             )
         else:
-            _hash = int(hashlib.md5(str(query).encode()).hexdigest(), 16)
+            _hash = int(hashlib.md5(str((base_url, query)).encode()).hexdigest(), 16)
         self._hash = str(abs(_hash))[:16]
         path = cache_path(sub_path="tap")
         path = os.path.join(path, f"{self._hash[:3]}")

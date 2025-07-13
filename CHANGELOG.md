@@ -6,12 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+### Added
+
+- Added GAIA TAP server to kete's TAP functionality.
+
+
 ## [v2.1.1]
 
 ### Fixed
 
 - Fixed the angle calculations of orbital elements in `State` objects where they were
   being converted to degrees twice, causing them to be multiplied by 360/2pi.
+
 
 ## [v2.1.0]
 
@@ -33,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `HorizonsProperties` sampling and queries to horizons is more robust to unexpected
   responses from the Horizons service.
+
 
 ## [v2.0.0]
 
@@ -105,6 +114,7 @@ as IRSA are now cached by default and will recover if the same query is issues.
 - Parsing some non-gravitational forces from JPL Horizons was not correctly resolving
   parameter names, this is now fixed.
 
+
 ## [v1.1.0]
 
 Announcement: Author of Kete (Dar Dahlen) has left IPAC Caltech to begin a PhD at
@@ -115,6 +125,7 @@ Caltech, and future development of this fork will occur as a personal project.
 
 - SPICE kernels were removed for the repository, and now automatically download on
   first use.
+
 
 ## [v1.0.8]
 
@@ -517,6 +528,7 @@ Initial Release
 
 
 [Unreleased]: https://github.com/dahlend/kete/tree/main
+[2.1.1]: https://github.com/dahlend/kete/releases/tag/v2.1.1
 [2.1.0]: https://github.com/dahlend/kete/releases/tag/v2.1.0
 [2.0.0]: https://github.com/dahlend/kete/releases/tag/v2.0.0
 [1.1.0]: https://github.com/dahlend/kete/releases/tag/v1.1.0
