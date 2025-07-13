@@ -1,6 +1,7 @@
 use crate::{frame::PyFrames, vector::VectorLike};
 use kete_core::constants;
 use kete_core::flux::HGParams;
+use kete_core::flux::cometary_dust_phase_curve_correction;
 use kete_core::flux::hg_phase_curve_correction;
 use pyo3::pyfunction;
 
@@ -12,7 +13,7 @@ use pyo3::pyfunction;
 ///     The G parameter of the object.
 /// phase_angle :
 ///     The angular separation between the sun and observer as viewed from the object,
-///    units of degrees.
+///     units of degrees.
 ///
 /// Returns
 /// -------
@@ -22,6 +23,33 @@ use pyo3::pyfunction;
 #[pyo3(name = "hg_phase_curve_correction")]
 pub fn hg_phase_curve_correction_py(g_param: f64, phase_angle: f64) -> f64 {
     hg_phase_curve_correction(g_param, phase_angle.to_radians())
+}
+
+/// Phase correction curve for cometary dust from the following paper:
+///
+/// A composite phase function for cometary dust comae
+/// Bertini, Ivano, et al.
+/// Planetary and Space Science (2025): 106164.
+///
+/// This uses the fitted values from the paper for `k=0.80`, `g_f=0.944`, `g_b=-0.542`.
+///
+/// An additional normalization has been applied so that the value of this is 1.0 at
+/// 0.0 phase angle.
+///
+/// Parameters
+/// ----------
+/// phase_angle :
+///     The angular separation between the sun and observer as viewed from the dust,
+///     units of degrees.
+///
+/// Returns
+/// -------
+/// float
+///     The phase curve correction.
+#[pyfunction]
+#[pyo3(name = "comet_dust_phase_curve_correction")]
+pub fn comet_dust_phase_curve_correction_py(phase_angle: f64) -> f64 {
+    cometary_dust_phase_curve_correction(phase_angle.to_radians())
 }
 
 /// Calculate the reflected flux from an object using the HG asteroid model.

@@ -33,6 +33,39 @@ pub fn hg_phase_curve_correction(g_param: f64, phase: f64) -> f64 {
         + g_param * helper(1.862, 1.218, 0.238, phase)
 }
 
+/// Phase correction curve for cometary dust from the following paper:
+///
+/// A composite phase function for cometary dust comae
+/// Bertini, Ivano, et al.
+/// Planetary and Space Science (2025): 106164.
+///
+/// This uses the fitted values from the paper for `k=0.80`, `g_f=0.944`, `g_b=-0.542`.
+///
+/// An additional normalization has been applied so that the value of this is 1.0 at
+/// 0.0 phase angle.
+///
+/// # Arguments
+/// * `phase_angle` - Phase angle in radians.
+///
+#[cfg_attr(feature = "pyo3", pyo3::pyfunction)]
+pub fn cometary_dust_phase_curve_correction(phase_angle: f64) -> f64 {
+    const K: f64 = 0.80;
+    const G_F: f64 = 0.944;
+    const G_B: f64 = -0.542;
+
+    // normalization constant to make this function return 1.0 at 0 phase angle
+    const NORM: f64 = 3.3466826486608836;
+    // Equation (3) from the paper.
+    // Note that phase_angle is 180 - scattering angle, so cos -> -cos
+    fn hg_normalized(phase_angle: f64, g: f64) -> f64 {
+        let g2 = g.powi(2);
+        ((1.0 + g2) / (1.0 + g2 + 2.0 * g * phase_angle.cos())).powf(1.5)
+    }
+    // Equation (4)
+    let v = K * hg_normalized(phase_angle, G_F) + (1.0 - K) * hg_normalized(phase_angle, G_B);
+    v / NORM
+}
+
 /// Reflected light properties of an asteroid under the H/G magnitude system.
 ///
 /// H, Albedo, and Diameter are all related by the relation:

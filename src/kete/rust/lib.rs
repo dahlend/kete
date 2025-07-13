@@ -133,6 +133,10 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(flux::comet_mags_py, m)?)?;
     m.add_function(wrap_pyfunction!(flux::fib_lattice_vecs_py, m)?)?;
     m.add_function(wrap_pyfunction!(flux::solar_flux_py, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        flux::comet_dust_phase_curve_correction_py,
+        m
+    )?)?;
 
     m.add_function(wrap_pyfunction!(spice::spk_load_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::spk_loaded_objects_py, m)?)?;
