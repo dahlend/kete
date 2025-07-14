@@ -256,14 +256,12 @@ pub fn approx_sun_dec(time: Time<UTC>) -> f64 {
     let mean_anom = (357.529 + 0.98560028 * time_since_j2000)
         .rem_euclid(360.0)
         .to_radians();
-    let app_eclip_lon = (mean_lon_of_sun
-        + 1.9148 * mean_anom.sin()
-        + 0.0200 * (2.0 * mean_anom).sin()
-        + 0.0003 * (3.0 * mean_anom).sin())
-    .rem_euclid(360.0)
-    .to_radians();
+    let app_eclip_lon =
+        (mean_lon_of_sun + 1.915 * mean_anom.sin() + 0.020 * (2.0 * mean_anom).sin())
+            .rem_euclid(360.0)
+            .to_radians();
 
-    (obliquity * app_eclip_lon.sin()).asin()
+    (obliquity.sin() * app_eclip_lon.sin()).asin()
 }
 
 /// Approximate the Equation of Time at a given time.
