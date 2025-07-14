@@ -101,9 +101,10 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(frame::calc_earth_precession, m)?)?;
     m.add_function(wrap_pyfunction!(frame::geodetic_lat_to_geocentric_py, m)?)?;
     m.add_function(wrap_pyfunction!(frame::solar_noon_py, m)?)?;
-    m.add_function(wrap_pyfunction!(frame::next_sunrise_sunset_py, m)?)?;
+    m.add_function(wrap_pyfunction!(frame::next_sunset_sunrise_py, m)?)?;
     m.add_function(wrap_pyfunction!(frame::equation_of_time_py, m)?)?;
     m.add_function(wrap_pyfunction!(frame::approx_earth_pos_to_ecliptic_py, m)?)?;
+    m.add_function(wrap_pyfunction!(frame::approx_solar_dec_py, m)?)?;
 
     m.add_function(wrap_pyfunction!(kepler::compute_eccentric_anomaly_py, m)?)?;
     m.add_function(wrap_pyfunction!(kepler::propagation_kepler_py, m)?)?;
@@ -133,6 +134,10 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(flux::comet_mags_py, m)?)?;
     m.add_function(wrap_pyfunction!(flux::fib_lattice_vecs_py, m)?)?;
     m.add_function(wrap_pyfunction!(flux::solar_flux_py, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        flux::comet_dust_phase_curve_correction_py,
+        m
+    )?)?;
 
     m.add_function(wrap_pyfunction!(spice::spk_load_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::spk_loaded_objects_py, m)?)?;

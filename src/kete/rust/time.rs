@@ -231,12 +231,16 @@ impl PyTime {
         self.0.utc().year_as_float()
     }
 
-    fn __add__(&self, other: f64) -> Self {
-        (self.0.jd + other).into()
+    fn __add__(&self, other: PyTime) -> Self {
+        (self.0.jd + other.0.jd).into()
     }
 
-    fn __sub__(&self, other: f64) -> Self {
-        (self.0.jd - other).into()
+    fn __sub__(&self, other: PyTime) -> Self {
+        (self.0.jd - other.0.jd).into()
+    }
+
+    fn __rsub__(&self, other: PyTime) -> Self {
+        (other.0.jd - self.0.jd).into()
     }
 
     fn __repr__(&self) -> String {

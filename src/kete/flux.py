@@ -33,6 +33,7 @@ from ._core import (
     NeatmParams,
     black_body_flux,
     comet_apparent_mags,
+    comet_dust_phase_curve_correction,
     frm_facet_temps,
     frm_flux,
     hg_apparent_flux,
@@ -47,6 +48,7 @@ from ._core import (
 
 __all__ = [
     "comet_apparent_mags",
+    "comet_dust_phase_curve_correction",
     "frm_facet_temps",
     "frm_flux",
     "FrmParams",

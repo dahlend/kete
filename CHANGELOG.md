@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Added GAIA TAP server to kete's TAP functionality.
+- Added phase correction model for comet dust.
+
+### Fixed
+
+- Next solar noon calculation fixed to always be the future noon.
 
 
 ## [v2.1.1]

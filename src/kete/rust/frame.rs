@@ -1,8 +1,8 @@
 //! Python Frame of reference support
 use kete_core::frames::{
-    approx_earth_pos_to_ecliptic, approx_solar_noon, earth_obliquity, earth_precession_rotation,
-    ecef_to_geodetic_lat_lon, equation_of_time, geodetic_lat_lon_to_ecef,
-    geodetic_lat_to_geocentric, next_sunset_sunrise,
+    approx_earth_pos_to_ecliptic, approx_solar_noon, approx_sun_dec, earth_obliquity,
+    earth_precession_rotation, ecef_to_geodetic_lat_lon, equation_of_time,
+    geodetic_lat_lon_to_ecef, geodetic_lat_to_geocentric, next_sunset_sunrise,
 };
 use pyo3::prelude::*;
 
@@ -180,12 +180,19 @@ pub fn equation_of_time_py(time: PyTime) -> f64 {
     equation_of_time(time.0.utc())
 }
 
-/// Compute an approximation for the time of the next sunrise and sunset at a given
+/// Compute the approximate solar dec.
+#[pyfunction]
+#[pyo3(name = "approx_solar_dec")]
+pub fn approx_solar_dec_py(time: PyTime) -> f64 {
+    approx_sun_dec(time.0.utc())
+}
+
+/// Compute an approximation for the time of the next sunset and sunrise at a given
 /// geodetic latitude and longitude.
 ///
 #[pyfunction]
-#[pyo3(name = "next_sunrise_sunset")]
-pub fn next_sunrise_sunset_py(
+#[pyo3(name = "next_sunset_sunrise")]
+pub fn next_sunset_sunrise_py(
     time: PyTime,
     geodetic_lat: f64,
     geodetic_lon: f64,

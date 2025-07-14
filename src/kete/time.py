@@ -7,9 +7,9 @@ from __future__ import annotations
 import datetime
 from zoneinfo import ZoneInfo
 
-from ._core import Time, next_solar_noon, next_sunrise_sunset
+from ._core import Time, next_solar_noon, next_sunset_sunrise
 
-__all__ = ["Time", "next_sunrise_sunset", "next_solar_noon"]
+__all__ = ["Time", "next_sunset_sunrise", "next_solar_noon"]
 
 
 def _local_time(self, timezone=None) -> str:
