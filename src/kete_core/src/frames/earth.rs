@@ -297,14 +297,18 @@ pub fn equation_of_time(time: Time<UTC>) -> f64 {
 pub fn approx_solar_noon(time: Time<UTC>, geodetic_lon: f64) -> Time<UTC> {
     // compute the next clock noon after the given time
     let noon = {
-        let (y, m, d, df) = time.year_month_day();
+        let (y, m, d, _) = time.year_month_day();
 
         let frac_of_earth = -geodetic_lon.to_degrees().rem_euclid(360.0) / 360.0;
-        let df = df + frac_of_earth;
-        let jd = Time::<UTC>::from_year_month_day(y, m, d, 0.5 + frac_of_earth).jd;
-
-        if df < 0.5 { jd } else { jd + 1.0 }
+        Time::<UTC>::from_year_month_day(y, m, d, 0.5 + frac_of_earth).jd
     };
-    let dt = equation_of_time(Time::<UTC>::new(noon));
-    Time::<UTC>::new(noon + dt)
+    let mut noon = noon + equation_of_time(Time::<UTC>::new(noon));
+    while noon <= time.jd {
+        noon += 1.0;
+    }
+
+    while noon > time.jd + 1.0 {
+        noon -= 1.0;
+    }
+    Time::<UTC>::new(noon)
 }

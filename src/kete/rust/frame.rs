@@ -180,12 +180,12 @@ pub fn equation_of_time_py(time: PyTime) -> f64 {
     equation_of_time(time.0.utc())
 }
 
-/// Compute an approximation for the time of the next sunrise and sunset at a given
+/// Compute an approximation for the time of the next sunset and sunrise at a given
 /// geodetic latitude and longitude.
 ///
 #[pyfunction]
-#[pyo3(name = "next_sunrise_sunset")]
-pub fn next_sunrise_sunset_py(
+#[pyo3(name = "next_sunset_sunrise")]
+pub fn next_sunset_sunrise_py(
     time: PyTime,
     geodetic_lat: f64,
     geodetic_lon: f64,

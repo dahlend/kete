@@ -101,7 +101,7 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(frame::calc_earth_precession, m)?)?;
     m.add_function(wrap_pyfunction!(frame::geodetic_lat_to_geocentric_py, m)?)?;
     m.add_function(wrap_pyfunction!(frame::solar_noon_py, m)?)?;
-    m.add_function(wrap_pyfunction!(frame::next_sunrise_sunset_py, m)?)?;
+    m.add_function(wrap_pyfunction!(frame::next_sunset_sunrise_py, m)?)?;
     m.add_function(wrap_pyfunction!(frame::equation_of_time_py, m)?)?;
     m.add_function(wrap_pyfunction!(frame::approx_earth_pos_to_ecliptic_py, m)?)?;
 
