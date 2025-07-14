@@ -561,12 +561,16 @@ def fetch_fovs(phase):
             "w1dec4",
             "crota",
         ]
-        mjd_start = Time(phase.jd_start).mjd
-        mjd_end = Time(phase.jd_end).mjd
+
+        if "Reactivation_" in phase.name:
+            mjd_start = Time(phase.jd_start).mjd
+            mjd_end = Time(phase.jd_end).mjd
+            mjd_limits = f"WHERE mjd >= {mjd_start} and mjd < {mjd_end}"
+        else:
+            mjd_limits = ""
 
         res = query_tap(
-            f"SELECT {', '.join(cols)} FROM {table} "
-            f"WHERE mjd >= {mjd_start} and mjd < {mjd_end}",
+            f"SELECT {', '.join(cols)} FROM {table} {mjd_limits}",
             cache=False,
             verbose=True,
         )

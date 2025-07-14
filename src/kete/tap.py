@@ -208,7 +208,7 @@ class AsyncTapQuery:
         update_cache=False,
     ):
         base_url = TAP_SERVERS.get(service.upper(), service)
-        self.query = query
+        self.query = " ".join(query.split().strip())
         self.upload_table = upload_table
         self.base_url = base_url
         self.auth = auth
