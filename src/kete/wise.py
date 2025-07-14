@@ -565,7 +565,7 @@ def fetch_fovs(phase):
         if "Reactivation_" in phase.name:
             mjd_start = Time(phase.jd_start).mjd
             mjd_end = Time(phase.jd_end).mjd
-            mjd_limits = f"WHERE mjd >= {mjd_start} and mjd < {mjd_end}"
+            mjd_limits = f"WHERE mjd between {mjd_start} and {mjd_end}"
         else:
             mjd_limits = ""
 
