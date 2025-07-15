@@ -1,5 +1,5 @@
 <p align="center">
-<img src="docs/_static/kete.svg" style="width:20%">
+<img src="https://github.com/dahlend/kete/blob/main/docs/_static/kete.svg" style="width:20%">
 </p> 
 
 # *Kete*
