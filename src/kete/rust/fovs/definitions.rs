@@ -467,14 +467,23 @@ impl PyGenericRectangle {
     /// Parameters
     /// ----------
     /// corners :
-    ///     4 Vectors which represent the corners of the FOV, these must be provided in order.
+    ///     4 Vectors which represent the corners of the FOV, these must be provided in
+    ///     order.
     /// observer :
-    ///     The observer as a State, this defines the time and position of the observer.
+    ///     The observer as a State, the time and position of the observer.
+    /// expand_angle :
+    ///     Expand the specified corners by this angle (degrees). This will move the
+    ///     corners away from the middle of the FoV by the specified angle.
     #[staticmethod]
-    pub fn from_corners(corners: [VectorLike; 4], observer: PyState) -> Self {
+    #[pyo3(signature=(corners, observer, expand_angle=0.0))]
+    pub fn from_corners(corners: [VectorLike; 4], observer: PyState, expand_angle: f64) -> Self {
         let corners: [Vector<_>; 4] =
             corners.map(|x| x.into_vector(crate::frame::PyFrames::Equatorial));
-        PyGenericRectangle(fov::GenericRectangle::from_corners(corners, observer.raw))
+        PyGenericRectangle(fov::GenericRectangle::from_corners(
+            corners,
+            observer.raw,
+            expand_angle.to_radians(),
+        ))
     }
 
     /// The observer State.

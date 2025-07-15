@@ -42,8 +42,12 @@ impl GenericRectangle {
     }
 
     /// Create a Field of view from a collection of corners.
-    pub fn from_corners(corners: [Vector<Equatorial>; 4], observer: State<Equatorial>) -> Self {
-        let patch = OnSkyRectangle::from_corners(corners);
+    pub fn from_corners(
+        corners: [Vector<Equatorial>; 4],
+        observer: State<Equatorial>,
+        expand_angle: f64,
+    ) -> Self {
+        let patch = OnSkyRectangle::from_corners(corners, expand_angle);
         Self {
             patch,
             observer,

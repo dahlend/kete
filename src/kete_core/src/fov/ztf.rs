@@ -53,7 +53,7 @@ impl ZtfCcdQuad {
         maglimit: f64,
         fid: u64,
     ) -> Self {
-        let patch = OnSkyRectangle::from_corners(corners);
+        let patch = OnSkyRectangle::from_corners(corners, 0.0);
         Self {
             patch,
             observer,

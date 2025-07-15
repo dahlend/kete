@@ -46,7 +46,7 @@ impl WiseCmos {
         frame_num: u64,
         scan_id: Box<str>,
     ) -> Self {
-        let patch = OnSkyRectangle::from_corners(corners);
+        let patch = OnSkyRectangle::from_corners(corners, 60_f64.recip().to_radians());
         Self {
             patch,
             observer,

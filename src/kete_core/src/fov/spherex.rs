@@ -30,7 +30,7 @@ impl SpherexCmos {
         uri: Box<str>,
         plane_id: Box<str>,
     ) -> Self {
-        let patch = OnSkyRectangle::from_corners(corners);
+        let patch = OnSkyRectangle::from_corners(corners, 0.0);
         Self {
             patch,
             observer,

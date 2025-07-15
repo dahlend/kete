@@ -5,13 +5,13 @@ description = "Kete Asteroid Survey Tools"
 readme = "README.md"
 authors = [{name = "Dar Dahlen", email = "dardahlen@gmail.com"},
           ]
-license = {text = "BSD", file = "LICENSE"}
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
 requires-python = ">=3.9"
 classifiers=[
     "Programming Language :: Python :: 3",
     "Intended Audience :: Education",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: BSD License",
     "Topic :: Scientific/Engineering :: Mathematics",
     "Topic :: Scientific/Engineering :: Physics",
 ]
@@ -37,7 +37,7 @@ build-backend = "maturin"
 python-source = "src"
 module-name = "kete._core"
 manifest-path = "Cargo.toml"
-sdist-include = ["LICENSE", "Readme.md"]
+include = ["LICENSE"]
 
 [project.optional-dependencies]
 dev = ["ruff",
