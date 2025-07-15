@@ -472,7 +472,7 @@ impl PyGenericRectangle {
     /// observer :
     ///     The observer as a State, the time and position of the observer.
     /// expand_angle :
-    ///     Expand the spcified corners by this angle (degrees). This will move the
+    ///     Expand the specified corners by this angle (degrees). This will move the
     ///     corners away from the middle of the FoV by the specified angle.
     #[staticmethod]
     #[pyo3(signature=(corners, observer, expand_angle=0.0))]
