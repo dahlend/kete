@@ -23,7 +23,7 @@ from .fov import FOVList, WiseCmos
 from .plot import annotate_plot, plot_fits_image, zoom_plot
 from .tap import IRSA_URL, query_tap
 from .time import Time
-from .vector import Frames, Vector
+from .vector import Vector
 
 __all__ = [
     "fetch_frame",
@@ -229,7 +229,7 @@ for year in range(2015, 2024):
 MISSION_PHASES = dict(sorted(MISSION_PHASES.items(), key=lambda x: x[1].jd_start))
 
 
-def mission_phase_from_jd(jd: float):
+def mission_phase_from_jd(jd: float) -> None | MissionPhase:
     """
     Return which mission phase is associated with the provided JD. Returns None if no
     matching mission phase.
@@ -588,6 +588,7 @@ def fetch_fovs(phase):
         # Kete represents all bands simultaneously, so this information is not kept
         # track of. In order to deal with this, here we load the W1 ra/dec, and then
         # push the corners out by 1 arc-minute to act as a bit of a buffer region.
+        # this 1 arc-minute offset is in the rust constructor for WISECmos objects.
 
         corners = []
         for i in range(4):
@@ -598,17 +599,8 @@ def fetch_fovs(phase):
                 )
             )
 
-        pointing = np.mean(corners, axis=0)
-        pointing = Vector(pointing, frame=Frames.Equatorial)
-
-        # shifting the corners out by 1 arc-minute
-        shifted_corners = []
-        for corner in corners:
-            rot_vec = np.cross(pointing, corner)
-            shifted_corners.append(corner.rotate_around(rot_vec, 1 / 60))
-
         fov = WiseCmos(
-            shifted_corners[::-1],
+            corners[::-1],
             state,
             row.frame_num,
             row.scan_id,

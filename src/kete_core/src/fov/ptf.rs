@@ -88,7 +88,7 @@ impl PtfCcd {
         info_bits: u32,
         seeing: f32,
     ) -> Self {
-        let patch = OnSkyRectangle::from_corners(corners);
+        let patch = OnSkyRectangle::from_corners(corners, 0.0);
         Self {
             patch,
             observer,

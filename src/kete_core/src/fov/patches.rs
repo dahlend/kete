@@ -54,12 +54,13 @@ pub trait SkyPatch: Sized {
 
 /// A Spherical Polygon as represented by a series of planes through the central axis.
 ///
-/// Conceptually the spherical polygon as defined here can be thought of as a unit sphere
-/// with a polygon drawn on it. This polygon has sides defined by great circle lines.
-/// If these great circle lines were continued all the way around the sphere, they would
-/// define planes which cut the circle. Defining surface normals to each of these planes
-/// enables us to define an "inside" and "outside" of the polygon, where inside is
-/// defined by having all of the unit vectors pointing toward the inside of the polygon.
+/// Conceptually the spherical polygon as defined here can be thought of as a unit
+/// sphere with a polygon drawn on it. This polygon has sides defined by great circle
+/// lines. If these great circle lines were continued all the way around the sphere,
+/// they would define planes which cut the circle. Defining surface normals to each of
+/// these planes enables us to define an "inside" and "outside" of the polygon, where
+/// inside is defined by having all of the unit vectors pointing toward the inside of
+/// the polygon.
 ///
 /// To test if a point on the unit circle is inside of the polygon, all that is
 /// required is it multiply each surface normal against the vector which defines the
@@ -67,8 +68,8 @@ pub trait SkyPatch: Sized {
 /// within the polygon. If any are negative, then the point must be outside of the
 /// polygon.
 ///
-/// Note that the surface normals are defined by planes through the center of the sphere
-/// meaning that constructed polygons can only have great circle edges.
+/// Note that the surface normals are defined by planes through the center of the
+/// sphere meaning that constructed polygons can only have great circle edges.
 ///
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SphericalPolygon<const N_SIDES: usize> {
@@ -120,12 +121,13 @@ impl OnSkyRectangle {
         let left_vec = pointing.cross(up_vec);
 
         // Given the new left vector, and the existing orthogonal pointing vector,
-        // construct a new up vector which is in the same plane as it was before, but now
-        // orthogonal to the two existing vectors.
+        // construct a new up vector which is in the same plane as it was before, but
+        // now orthogonal to the two existing vectors.
         // up = cross(pointing, left)
         let up_vec = pointing.cross(&left_vec);
 
-        // These have to be enumerated in clockwise order for the pointing calculation to be correct.
+        // These have to be enumerated in clockwise order for the pointing calculation
+        // to be correct.
         let n1 = left_vec.rotate_around(up_vec, -lon_width / 2.0);
         let n2 = up_vec.rotate_around(left_vec, lat_width / 2.0);
         let n3 = (-left_vec).rotate_around(up_vec, lon_width / 2.0);
@@ -138,30 +140,49 @@ impl OnSkyRectangle {
     }
 
     /// Construct the patch from the 4 corners of the field of view.
-    /// The corners have to be provided in order, either clockwise or counter-clockwise.
-    /// This only works for fields of view where the largest angle is less than 180 degrees,
-    /// if the field is wider than that, this will flip the field in the other direction.
-    pub fn from_corners(corners: [Vector<Equatorial>; 4]) -> Self {
+    /// The corners have to be provided in order, either clockwise or
+    /// counter-clockwise.
+    ///
+    /// This only works for fields of view where the largest angle is less than 180
+    /// degrees, if the field is wider than that, this will flip the field in the other
+    /// direction.
+    ///
+    /// # Arguments
+    ///
+    /// * `corners` - 4 vectors which define the corners of the fov, must be provided
+    ///   in order.
+    /// * `expand_angle` - Expand the fov by the specified angle away from the center,
+    ///   units of radians.
+    ///
+    pub fn from_corners(corners: [Vector<Equatorial>; 4], expand_angle: f64) -> Self {
+        // compute the pointing vector from the corners
+        let pointing = {
+            let mut point: Vector<Equatorial> = [0.0; 3].into();
+            corners.iter().for_each(|c| point += c);
+            point.normalize()
+        };
+
         let n1 = corners[0].cross(&corners[1]).normalize();
         let n2 = corners[1].cross(&corners[2]).normalize();
         let n3 = corners[2].cross(&corners[3]).normalize();
         let n4 = corners[3].cross(&corners[0]).normalize();
 
-        let mut new = Self {
-            edge_normals: [n1, n2, n3, n4],
-        };
+        let mut edge_normals = [n1, n2, n3, n4];
 
-        // If the pointing vector is the wrong direction, we flip signs and re-order the edges.
-        // This will flip the pointing vector the correct way. This is equivalent to calling
-        // from corners with the reversed corner list.
-        if corners[0].dot(&new.pointing()).is_sign_negative() {
-            new.edge_normals
-                .iter_mut()
-                .for_each(|corner| *corner = corner.neg());
-            new.edge_normals.reverse();
-        };
+        // check the direction of the normals, if they are too far away from the
+        // pointing vector, then we need to flip the signs.
+        if n1.dot(&pointing).is_sign_negative() {
+            edge_normals.iter_mut().for_each(|x| *x = x.neg());
+            edge_normals.reverse();
+        }
 
-        new
+        // move the normals away from the pointing vector by the specified angle.
+        for v in edge_normals.iter_mut() {
+            let rot_vec = v.cross(&pointing);
+            *v = v.rotate_around(rot_vec, expand_angle);
+        }
+
+        Self { edge_normals }
     }
 
     /// Return the 4 corners of the patch.
