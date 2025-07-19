@@ -35,6 +35,7 @@ use crate::{
 };
 
 static MPC_HEX: &str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+static ORDER_CHARS: &str = "ABCDEFGHJKLMNOPQRSTUVWXYZ";
 
 /// Designations for an object.
 ///
@@ -150,6 +151,22 @@ impl Desig {
     ///
     ///     let desig = Desig::parse_mpc_designation("A801 AA");
     ///     assert_eq!(desig, Ok(Desig::Prov("A801 AA".to_string())));
+    ///
+    ///    let desig = Desig::parse_mpc_designation("2026 CZ619");
+    ///    assert_eq!(desig, Ok(Desig::Prov("2026 CZ619".to_string())));
+    ///
+    ///    // Extended Provisional (2025-2035)
+    ///    let desig = Desig::parse_mpc_designation("2026 CA620");
+    ///    assert_eq!(desig, Ok(Desig::Prov("2026 CA620".to_string())));
+    ///
+    ///    let desig = Desig::parse_mpc_designation("2028 EA339749");
+    ///    assert_eq!(desig, Ok(Desig::Prov("2028 EA339749".to_string())));
+    ///
+    ///    let desig = Desig::parse_mpc_designation("2026 CL591673");
+    ///    assert_eq!(desig, Ok(Desig::Prov("2026 CL591673".to_string())));
+    ///
+    ///    let desig = Desig::parse_mpc_designation("2029 FL591673");
+    ///    assert_eq!(desig, Ok(Desig::Prov("2029 FL591673".to_string())));
     ///
     ///     // Comet provisional designations
     ///     let desig = Desig::parse_mpc_designation("1996 N2");
@@ -317,6 +334,22 @@ impl Desig {
     ///    let packed = Desig::Prov("2016 JB1".to_string()).try_pack();
     ///    assert_eq!(packed, Ok("K16J01B".to_string()));
     ///
+    ///    let packed = Desig::Prov("2026 CZ619".to_string()).try_pack();
+    ///    assert_eq!(packed, Ok("K26Cz9Z".to_string()));
+    ///
+    ///    // Extended Provisional (2025-2035)
+    ///    let packed = Desig::Prov("2026 CA620".to_string()).try_pack();
+    ///    assert_eq!(packed, Ok("_QC0000".to_string()));
+    ///
+    ///    let packed = Desig::Prov("2028 EA339749".to_string()).try_pack();
+    ///    assert_eq!(packed, Ok("_SEZZZZ".to_string()));
+    ///
+    ///    let packed = Desig::Prov("2026 CL591673".to_string()).try_pack();
+    ///    assert_eq!(packed, Ok("_QCzzzz".to_string()));
+    ///
+    ///    let packed = Desig::Prov("2029 FL591673".to_string()).try_pack();
+    ///    assert_eq!(packed, Ok("_TFzzzz".to_string()));
+    ///
     ///    // Surveys
     ///    let packed = Desig::Prov("2040 P-L".to_string()).try_pack();
     ///    assert_eq!(packed, Ok("PLS2040".to_string()));
@@ -424,24 +457,42 @@ impl Desig {
                 } else {
                     let order = des.chars().nth(1).unwrap();
                     let num: u32 = if des.len() == 2 { 0 } else { des[2..].parse()? };
-                    let idx = MPC_HEX.chars().nth(num as usize / 10).unwrap();
-                    let idy = num % 10;
-                    static YEAR_LOOKUP: &[(&str, &str); 5] = &[
-                        ("18", "I"),
-                        ("19", "J"),
-                        ("20", "K"),
-                        ("A9", "J"),
-                        ("A8", "I"),
-                    ];
-                    let century = YEAR_LOOKUP.iter().find(|&&x| x.0 == &year[0..2]).map_or(
-                        Err(Error::ValueError(format!(
-                            "Invalid year in MPC Provisional Designation: {year}",
-                        ))),
-                        |&(_, c)| Ok(c),
-                    )?;
-                    let decade = &year[2..4];
-                    let half_month = &des[..1];
-                    Ok(format!("{century}{decade}{half_month}{idx}{idy}{order}"))
+                    match num {
+                        num if (num >= 620) => {
+                            // order counts A = 1, B = 2 ... skipping I
+                            let single_count = ORDER_CHARS.find(order).unwrap() as u32;
+
+                            let total_num = 25 * num + single_count;
+                            let num_packed = num_to_mpc_hex(total_num - 15_500);
+                            let decade: u32 = year[2..4].parse()?;
+                            let decade_packed = num_to_mpc_hex(decade);
+
+                            let half_month = &des[..1];
+                            Ok(format!("_{decade_packed}{half_month}{num_packed:0>4}"))
+                        }
+                        _ => {
+                            // unlike the `order`, this DOES include I...
+                            let idx = MPC_HEX.chars().nth(num as usize / 10).unwrap();
+                            let idy = num % 10;
+                            static YEAR_LOOKUP: &[(&str, &str); 5] = &[
+                                ("18", "I"),
+                                ("19", "J"),
+                                ("20", "K"),
+                                ("A9", "J"),
+                                ("A8", "I"),
+                            ];
+                            let century =
+                                YEAR_LOOKUP.iter().find(|&&x| x.0 == &year[0..2]).map_or(
+                                    Err(Error::ValueError(format!(
+                                        "Invalid year in MPC Provisional Designation: {year}",
+                                    ))),
+                                    |&(_, c)| Ok(c),
+                                )?;
+                            let decade = &year[2..4];
+                            let half_month = &des[..1];
+                            Ok(format!("{century}{decade}{half_month}{idx}{idy}{order}"))
+                        }
+                    }
                 }
             }
             Self::CometProv(orbit_type, unpacked, fragment) => {
@@ -692,7 +743,7 @@ pub fn unpack_perm_designation(designation: &str) -> KeteResult<Desig> {
     }
 }
 
-/// Unpack a comet provisional designation.
+/// Unpack a provisional designation.
 ///
 /// ```
 ///     use kete_core::desigs::{unpack_prov_designation, Desig};
@@ -731,6 +782,16 @@ pub fn unpack_perm_designation(designation: &str) -> KeteResult<Desig> {
 ///
 ///     let desig = unpack_prov_designation("K16J01B").unwrap();
 ///     assert_eq!(desig, Desig::Prov("2016 JB1".to_string()));
+///
+///     // Extended Provisional Designations
+///     let desig = unpack_prov_designation("_SEZZZZ").unwrap();
+///     assert_eq!(desig, Desig::Prov("2028 EA339749".to_string()));
+///
+///     let desig = unpack_prov_designation("_TFzzzz").unwrap();
+///     assert_eq!(desig, Desig::Prov("2029 FL591673".to_string()));
+///
+///     let desig = unpack_prov_designation("_RD0aEM").unwrap();
+///     assert_eq!(desig, Desig::Prov("2027 DZ6190".to_string()));
 ///
 ///     // pre 1925
 ///     let desig = unpack_prov_designation("I01A00A").unwrap();
@@ -779,7 +840,7 @@ pub fn unpack_prov_designation(designation: &str) -> KeteResult<Desig> {
         7 => (
             None,
             designation,
-            order.is_ascii_digit() || order.is_ascii_lowercase(),
+            !designation.starts_with('_') & (order.is_ascii_digit() || order.is_ascii_lowercase()),
         ),
         8 => {
             let (first, rest) = designation.split_at(1);
@@ -841,6 +902,9 @@ pub fn unpack_prov_designation(designation: &str) -> KeteResult<Desig> {
 /// may have an asteroid provisional designation, with a comet orbit type
 /// in front.
 fn unpack_ast_prov_desig(designation: &str) -> KeteResult<Desig> {
+    if designation.starts_with('_') {
+        return unpack_ast_extended_prov_des(designation);
+    }
     let order = designation.chars().nth(6).unwrap();
     let err = || {
         Error::ValueError(format!(
@@ -861,8 +925,33 @@ fn unpack_ast_prov_desig(designation: &str) -> KeteResult<Desig> {
     } else {
         obs_num.to_string()
     };
-    let tmp = designation.chars().nth(3).unwrap();
-    Ok(Desig::Prov(format!("{year} {tmp}{order}{obs_str}")))
+    let half_month = designation.chars().nth(3).unwrap();
+    Ok(Desig::Prov(format!("{year} {half_month}{order}{obs_str}")))
+}
+
+/// Unpack the extended asteroid provisional designation
+///
+///
+fn unpack_ast_extended_prov_des(designation: &str) -> KeteResult<Desig> {
+    let is_extended = designation.starts_with('_');
+    let err = || {
+        Error::ValueError(format!(
+            "Invalid MPC Extended Provisional Designation: {designation}"
+        ))
+    };
+    if !is_extended || designation.len() != 7 {
+        return Err(err());
+    }
+    let year = 2000 + MPC_HEX.find(&designation[1..2]).ok_or_else(err)? as u32;
+    let half_month = designation.chars().nth(2).unwrap();
+    let total_count = mpc_hex_to_num(&designation[3..])? + 15_500;
+    let count = total_count.div_euclid(25);
+    let order = ORDER_CHARS
+        .chars()
+        .nth(total_count.rem_euclid(25) as usize)
+        .unwrap();
+
+    Ok(Desig::Prov(format!("{year} {half_month}{order}{count}")))
 }
 
 static ROMAN_PAIRS: [(u32, &str); 13] = [
