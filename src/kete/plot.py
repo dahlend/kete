@@ -72,15 +72,15 @@ def plot_fits_image(fit, percentiles=(0.1, 99.95), power_stretch=1.0, cmap="gray
     else:
         interval = AsymmetricPercentileInterval(*percentiles)
 
-    data = fit.data
+    data = fit.data.copy().astype(float)
     data /= np.nanmax(data)
 
     norm = ImageNormalize(data, interval=interval, stretch=stretch)
-    data = np.nan_to_num(data, nan=np.nanpercentile(fit.data, 5))
+    data = np.nan_to_num(data, nan=np.nanpercentile(data, 5))
 
     ax.imshow(data, origin="lower", norm=norm, cmap=cmap)
-    ax.set_xlabel("RA")
-    ax.set_ylabel("DEC")
+    ax.set_xlabel(wcs.axis_type_names[0])
+    ax.set_ylabel(wcs.axis_type_names[1])
     ax.set_aspect("equal", adjustable="box")
     return wcs
 
