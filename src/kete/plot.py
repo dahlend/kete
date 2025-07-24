@@ -13,10 +13,12 @@ from astropy.visualization import (
     ZScaleInterval,
 )
 from astropy.wcs import WCS
+from scipy.optimize import minimize
 
+from .propagation import propagate_n_body, propagate_two_body
 from .vector import Vector
 
-__all__ = ["plot_fits_image", "zoom_plot", "annotate_plot"]
+__all__ = ["plot_fits_image", "zoom_plot", "annotate_plot", "annotate_orbit"]
 
 
 def plot_fits_image(fit, percentiles=(0.1, 99.95), power_stretch=1.0, cmap="gray"):
@@ -183,3 +185,94 @@ def annotate_plot(
 
     if text:
         plt.text(x + text_dx, y + text_dy, text, c=text_color, fontsize=text_fs)
+
+
+def annotate_orbit(wcs, state, observer, **kwargs):
+    """
+    Annotate the path of the orbit specified in the image.
+
+    This computes the position of the object with two body propagation along
+    its orbit path. These positions are then plotted in the pixel space defined
+    by the provided wcs.
+
+    This requires more information than other plotting tools, as orbit propagation
+    must be done.
+
+    Parameters
+    ==========
+    wcs :
+        The World Coordinate System of the figure.
+    state :
+        :py:class:`kete.State` of the object to overplot.
+    observer :
+        :py:class:`kete.State` of the position of the observer.
+    **kwargs :
+        All additional args are passed directly to matplotlib plotting.
+    """
+
+    state = propagate_n_body(state, observer.jd)
+    size = wcs.pixel_shape
+
+    def check_in_frame(wcs, vec):
+        """Helper function to check if a vector is in the frame"""
+        if size is None:
+            raise ValueError("WCS must have a defined pixel shape.")
+        try:
+            px = wcs.world_to_pixel_values(vec.ra, vec.dec)
+        except Exception:
+            return None, None
+        if px[0] < 0 or px[1] < 0 or px[0] > size[0] or px[1] > size[1]:
+            return None, None
+        dist_x_edge = min(abs(px[0] - size[0]), abs(px[0]))
+        dist_y_edge = min(abs(px[1] - size[1]), abs(px[1]))
+        return px, min(dist_x_edge, dist_y_edge)
+
+    # first, propagate the orbit until it lands somewhere in the frame.
+    for corner in [[0, 0], [0, size[1]], [size[0], 0], size]:
+        vec = Vector.from_ra_dec(
+            *wcs.pixel_to_world_values(corner[0] / 2, corner[1] / 2)
+        )
+
+        def _cost(dt, state, vec):
+            s = propagate_two_body(state, state.jd + dt.ravel()[0]).pos - observer.pos
+            return s.angle_between(vec)
+
+        dt = minimize(_cost, 0, args=(state, vec)).x[0]
+        state = propagate_two_body(state, state.jd + dt)
+        px, dist = check_in_frame(wcs, state.pos - observer.pos)
+        if px is not None:
+            break
+    if px is None:
+        raise ValueError("State not in frame")
+
+    # state is in the frame, now we have to find the edges of the frame
+    # We will step backward and forward until the edge is hit.
+    edges = []
+    for stepsize in [-0.1, 0.1]:
+        last_stepsize = 0
+        for _ in range(200):
+            tmp_state = propagate_two_body(state, state.jd + stepsize)
+            tmp_vec = tmp_state.pos - observer.pos
+            px, dist = check_in_frame(wcs, tmp_vec)
+            if px is None:
+                stepsize = (stepsize + last_stepsize) / 2
+            else:
+                last_stepsize = stepsize
+                if dist > 2:
+                    stepsize *= 1.2
+                else:
+                    break
+        edges.append(stepsize)
+
+    # if edges are not found, insert the original states time
+    edges = [e if e is not None else state.jd for e in edges]
+
+    steps = np.linspace(*edges, 100)
+    states = [
+        propagate_two_body(state, state.jd + jd).pos - observer.pos for jd in steps
+    ]
+
+    ra = [v.ra for v in states]
+    dec = [v.dec for v in states]
+    px = wcs.world_to_pixel_values(ra, dec)
+    plt.plot(*px, **kwargs)

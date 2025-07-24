@@ -21,7 +21,12 @@ from .covariance import generate_sample_from_cov
 from .mpc import pack_designation, unpack_designation
 from .time import Time
 
-__all__ = ["HorizonsProperties", "fetch_spice_kernel", "fetch_known_orbit_data"]
+__all__ = [
+    "HorizonsProperties",
+    "fetch_spice_kernel",
+    "fetch_known_orbit_data",
+    "fetch",
+]
 
 
 _PARAM_MAP = {
