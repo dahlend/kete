@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     errors::{Error, KeteResult},
-    spice::{naif_ids_from_name, try_name_from_id},
+    spice::{naif_ids_from_name, try_name_from_id, try_obs_code_from_name},
 };
 
 static MPC_HEX: &str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
@@ -120,6 +120,19 @@ impl Desig {
         self
     }
 
+    /// Convert the ``Name`` into an ``ObservatoryCode`` if possible.
+    #[must_use]
+    pub fn try_name_to_obs_code(self) -> Self {
+        if let Self::Name(name) = &self {
+            let obs_codes = try_obs_code_from_name(name);
+            if obs_codes.len() == 1 {
+                return Self::ObservatoryCode(obs_codes[0].name.clone());
+            }
+            // if there are multiple NAIF ids, or none, do not change the designation.
+        }
+        self
+    }
+
     /// parse an MPC unpacked designation string into a [`Desig`].
     ///
     /// ```
@@ -192,7 +205,6 @@ impl Desig {
     ///     assert_eq!(desig, Ok(Desig::PlanetSat(799, 4)));
     ///
     /// ```
-    #[must_use = "This function returns a Result, so it should be used."]
     pub fn parse_mpc_designation(designation: &str) -> KeteResult<Self> {
         if designation.is_empty() {
             return Err(Error::ValueError("Designation cannot be empty".to_string()));

@@ -1,9 +1,12 @@
+use kete_core::constants::AU_KM;
 use kete_core::desigs::Desig;
+use kete_core::frames::geodetic_lat_lon_to_ecef;
 use kete_core::spice::{LOADED_PCK, LOADED_SPK};
 use pyo3::{PyResult, Python, pyfunction};
 
 use crate::desigs::NaifIDLike;
 use crate::frame::PyFrames;
+use crate::spice::{find_obs_code_py, pck_earth_frame_py};
 use crate::state::PyState;
 use crate::time::PyTime;
 
@@ -127,17 +130,30 @@ pub fn spk_state_py(
     center: NaifIDLike,
     frame: PyFrames,
 ) -> PyResult<PyState> {
-    let (_, id) = id.try_into()?;
     let jd = jd.jd();
     let (_, center) = center.try_into()?;
-    let spk = &LOADED_SPK.try_read().unwrap();
-    let mut state = spk.try_get_state_with_center(id, jd, center)?;
-    state.try_naif_id_to_name();
-    Ok(PyState {
-        raw: state,
-        frame,
-        elements: None,
-    })
+    match id.clone().try_into() {
+        Ok((_, id)) => {
+            let spk = &LOADED_SPK.try_read().unwrap();
+            let mut state = spk.try_get_state_with_center(id, jd, center)?;
+            state.try_naif_id_to_name();
+            Ok(PyState {
+                raw: state,
+                frame,
+                elements: None,
+            })
+        }
+        Err(e) => {
+            if let NaifIDLike::String(name) = id {
+                let (lat, lon, h, name, _) = find_obs_code_py(&name)?;
+                let mut ecef = geodetic_lat_lon_to_ecef(lat.to_radians(), lon.to_radians(), h);
+                ecef.iter_mut().for_each(|x| *x /= AU_KM);
+
+                return pck_earth_frame_py(ecef, jd.into(), center, Some(name));
+            }
+            Err(e.clone().into())
+        }
+    }
 }
 
 /// Return the raw state of an object as encoded in the SPK Kernels.
