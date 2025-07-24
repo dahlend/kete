@@ -11,6 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Added support for MPC Extended Packed Provisional designations.
+- Added plotting tool for annotating orbits on a fits file.
+
+### Changed
+
+- `kete.spice.get_state` now accepts MPC Observatory codes as well.
+
+### Fixed
+
+- Plotting no longer rescales the image in place.
+- Plotting now works with integer valued data.
+- Plotting correctly displays the names of the coordinate frame used.
 
 
 ## [v2.1.2]

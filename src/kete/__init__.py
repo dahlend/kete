@@ -1,3 +1,4 @@
+import importlib
 import logging
 
 from . import (
@@ -142,3 +143,4 @@ def set_logging(level=logging.INFO, fmt="%(asctime)s - %(message)s"):
 
 
 set_logging()
+__version__ = importlib.metadata.version(__name__)
