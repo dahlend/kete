@@ -127,7 +127,7 @@ def _download_core_files():
 
     # required files:
     de440 = "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de440s.bsp"
-    wise = "https://github.com/dahlend/kete/blob/main/docs/data/wise.bsp"
+    wise = "https://github.com/dahlend/kete/raw/refs/heads/main/docs/data/wise.bsp"
     spherex = (
         "https://github.com/dahlend/kete/raw/refs/heads/main/docs/data/spherex.bsp"
     )
