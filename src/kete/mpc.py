@@ -188,7 +188,7 @@ def fetch_known_comet_orbit_data(force_download=False):
     objs = download_json(url, force_download)
     objects = []
     for comet in objs:
-        name = pack_designation(comet.get("Designation_and_name").split("(")[0])
+        name = comet.get("Designation_and_name").split("(")[0]
         peri_time = (
             comet["Year_of_perihelion"],
             comet["Month_of_perihelion"],

@@ -475,8 +475,8 @@ def fetch_spice_kernel(
     if not os.path.isdir(dir_path):
         os.makedirs(dir_path)
 
-    jd_s_str = jd_start.to_datetime().strftime("%Y-%m-%d")
-    jd_e_str = jd_end.to_datetime().strftime("%Y-%m-%d")
+    jd_s_str = "{:d}-{:02d}-{:0.0f}".format(*jd_start.ymd)
+    jd_e_str = "{:d}-{:02d}-{:0.0f}".format(*jd_end.ymd)
     cap = f"CAP<{apparition_year}%3B" if comet else ""
     response = requests.get(
         f"https://ssd.jpl.nasa.gov/api/horizons.api?COMMAND='DES={spk_id}%3B{cap}'"

@@ -20,7 +20,7 @@ use crate::{simult_states::PySimultaneousStates, vector::VectorLike};
 /// dt: float
 ///     Length of time in days where 2-body mechanics is a good approximation.
 /// include_asteroids: bool
-///     Include the 5 largest asteroids during the computation.
+///     Include the additional registered gravitational masses during the computation.
 #[pyfunction]
 #[pyo3(name = "fov_state_check", signature = (obj_state, fovs, dt_limit=3.0, include_asteroids=false))]
 pub fn fov_checks_py(
