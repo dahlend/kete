@@ -47,7 +47,7 @@ pub fn obs_codes() -> Vec<(f64, f64, f64, String, String)> {
 /// name :
 ///     Name of the observatory, this can be a partial name, or obs code.
 #[pyfunction]
-#[pyo3(name = "find_obs_code")]
+#[pyo3(name = "_find_obs_code")]
 pub fn find_obs_code_py(name: &str) -> PyResult<(f64, f64, f64, String, String)> {
     let obs_codes = try_obs_code_from_name(name);
 

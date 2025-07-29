@@ -5,7 +5,7 @@ Plot observability of an object
 Plot the observability of a given object from a position on the Earth.
 
 Given the following information:
-  - Observers location on Earth in latitude/longitude.
+  - Observers location on Earth.
   - Name of the object.
   - A start and stop date range.
 
@@ -19,65 +19,127 @@ specified elevation. The dotted black line corresponds to the total length of th
 as defined exactly sunset and sunrise at the observers location.
 """
 
+import kete
+import numpy as np
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
-import numpy as np
-
-import kete
 
 # Inputs:
 # -------
 obj = kete.HorizonsProperties.fetch("Eros", update_name=False)
 
-start_time = kete.Time.from_ymd(2024, 11, 1).jd
-end_time = kete.Time.from_ymd(2025, 11, 1).jd
+start_time = kete.Time.from_ymd(2026, 11, 1).jd
+end_time = kete.Time.from_ymd(2027, 11, 1).jd
 
 # Observers position:
 site = "Palomar Mountain"
 
-# Plotting:
-# ---------
-n_steps = 1000
-times = np.linspace(start_time, end_time, n_steps)
+# Calculate the values:
+# ---------------------
 
-g_phase = 0.15 if obj.g_phase is None or np.isnan(obj.g_phase) else obj.g_phase
-if obj.g_phase is None:
-    print("Horizons doesn't contain a g parameter for this object, assuming 0.15!")
-if obj.h_mag is None:
-    print("Horizons doesn't have an h mag for this object, no mags will be computed!")
 
+def estimate_mag(states):
+    """
+    Given a list of simultaneous states, estimate the apparent magnitudes of the object/
+    """
+    obj = kete.horizons.fetch(states[0][0].desig, update_name=False)
+    h = obj.h_mag
+    g = obj.g_phase if obj.g_phase else 0.15
+
+    params = obj.json["phys_par"]
+    mks = []
+    for idx in [1, 2]:
+        for mk in "MK":
+            for param in params:
+                if param.get("name", "") == f"{mk}{idx}":
+                    mks.append(float(param.get("value", np.nan)))
+                    break
+            else:
+                mks.append(np.nan)
+    mk1 = mks[:2]
+    mk2 = mks[2:]
+
+    # if any mk values are defined, assume comet mags
+    # otherwise always compute using an H, even if H is nan.
+    if all(np.isnan(mks)):
+        mags = [
+            kete.flux.hg_apparent_mag(state[0].pos, state.fov.observer.pos, h, g)
+            for state in states
+        ]
+        return {None: mags}
+    else:
+        mags = [
+            kete.flux.comet_apparent_mags(
+                state[0].pos, state.fov.observer.pos, mk1, mk2
+            )
+            for state in states
+        ]
+        mags = np.array(mags).T
+        total_mags = mags[0]
+        nucl_mags = mags[1]
+        result = {}
+        result["Comet Mag (Total)"] = total_mags
+        if not all(np.isnan(nucl_mags)):
+            result["Comet Mag (Nucleus)"] = nucl_mags
+        return result
+
+
+# Move times to the next solar noon for both start and end so that
+# we land on noons when we step 1 day at a time later.
+_, site_lon, *_ = kete.mpc.find_obs_code(site)
+start_time = kete.time.next_solar_noon(start_time, site_lon)
+end_time = kete.time.next_solar_noon(end_time, site_lon)
 state = kete.propagate_n_body(obj.state, start_time)
 
-mags = []
-solar_elon = []
-phases = []
-dist = []
-sun_dist = []
-for t in times:
-    # For each time, compute the geometry, then compute the mag as well as all of the
-    # various angle and distance values.
-    state = kete.propagate_n_body(state, t)
-    sun2obs = kete.spice.mpc_code_to_ecliptic(site, t).pos
-    earth2obs = kete.spice.mpc_code_to_ecliptic(site, t, center="399").pos
+times = np.arange(start_time, end_time, 1)
 
-    sun2obj = state.pos
-    obs2obj = -sun2obs + sun2obj
+fovs = [
+    kete.OmniDirectionalFOV(kete.spice.mpc_code_to_ecliptic(site, jd)) for jd in times
+]
+vis = kete.fov_state_check([obj.state], fovs)
 
-    # if we cannot compute mag, set the mag to NAN and keep moving
-    if obj.h_mag is not None:
-        mag = kete.flux.hg_apparent_mag(
-            sun2obj=sun2obj, sun2obs=sun2obs, h_mag=obj.h_mag, g_param=g_phase
-        )
-        mag = np.clip(mag, -1000, 1000)
-    else:
-        mag = np.nan
+mags = estimate_mag(vis)
 
-    mags.append(mag)
-    sun_dist.append(sun2obj.r)
-    solar_elon.append((-sun2obs).angle_between(obs2obj))
-    phases.append((-sun2obj).angle_between(-obs2obj))
-    dist.append(obs2obj.r)
+r_h = [state[0].pos.r for state in vis]
+delta = [state.obs_vecs[0].r for state in vis]
+phase = [state.phase_angles[0] for state in vis]
+elong = [state.fov.observer.pos.angle_between(-state.obs_vecs[0]) for state in vis]
 
+# For each day, step this frequently to compute the elevations and night durations
+step_size = 3 / 60 / 24
+elevations = []
+night_durations = []
+for day in times:
+    fovs = []
+    day_jds = np.arange(day, day + 1, step_size)
+    state = kete.propagate_n_body(state, day)
+    for jd in day_jds:
+        observer = kete.spice.mpc_code_to_ecliptic(site, jd)
+        zenith = kete.spice.mpc_code_to_ecliptic(site, jd, center="earth").pos
+        fovs.append(kete.ConeFOV(zenith, 180, observer))
+
+    day_vis = kete.fov_state_check([state], fovs)
+
+    day_sun_elev = [
+        90 - s.fov.pointing.angle_between(-s.fov.observer.pos) for s in day_vis
+    ]
+    night_mask = np.array(day_sun_elev) < -3
+    night_duration = (max(day_jds[night_mask]) - min(day_jds[night_mask])) * 24
+
+    obj_elev = [
+        90 - state.fov.pointing.angle_between(state.obs_vecs[0]) for state in day_vis
+    ]
+    obj_elev = np.array(obj_elev)
+    obj_elev[~night_mask] = 0.0
+    obj_elev[obj_elev < 0.0] = 0.0
+
+    night_durations.append(night_duration)
+    elevations.append(obj_elev)
+
+elevations = np.array(elevations)
+
+# Plot the results
+# ----------------
 dates = [kete.Time(t).to_datetime() for t in times]
 plt.figure(dpi=150, figsize=(8, 5))
 
@@ -85,23 +147,26 @@ plt.suptitle(f"{obj.desig}")
 
 plt.subplot(221)
 
-plt.plot(dates, sun_dist, c="C2", label=r"$r_H$")
-plt.plot(dates, dist, c="C3", label=r"$\Delta$")
+plt.plot(dates, r_h, c="C2", label=r"$r_H$")
+plt.plot(dates, delta, c="C3", label=r"$\Delta$")
 plt.ylabel("Distance (AU)")
 plt.legend()
 plt.xticks([])
 
 plt.subplot(222)
-plt.plot(dates, solar_elon, c="C1", label="Elongation")
-plt.plot(dates, phases, c="C4", label="Phase")
+plt.plot(dates, elong, c="C1", label="Elongation")
+plt.plot(dates, phase, c="C4", label="Phase")
 plt.ylabel("Angle (deg)")
 plt.legend()
 plt.xticks([])
 
 
 plt.subplot(223)
+for mag_name, mags_vals in mags.items():
+    plt.plot(dates, mags_vals, label=mag_name)
+if mag_name:
+    plt.legend()
 
-plt.plot(dates, mags)
 plt.gca().invert_yaxis()
 plt.ylabel("Mag")
 plt.gca().xaxis.set_major_formatter(mdates.DateFormatter("%Y/%m/%d"))
@@ -111,57 +176,27 @@ plt.gca().xaxis.set_minor_locator(mdates.MonthLocator())
 
 plt.subplot(224)
 
-# Final plot is more complicated, it requires looking at batched intervals of time that
-# are at least 1 full day, preferably several days.
-# During this interval, the average length of time the object is visible is computed
-# during local night at the observers location.
-step_size = 3
-day_steps = np.arange(start_time, end_time, step_size)
+plt.plot(dates, np.array(night_durations), ls="--", c="k", label="Night")
 
-# Substeps are done at 6 minute intervals
-substeps = np.linspace(0, step_size, 24 * 10 * step_size)
-substep_time = np.diff(substeps)[0]
+plt.plot(
+    dates,
+    [sum(np.array(a) > 0) * step_size * 24 for a in elevations],
+    label=r"Horizon",
+    c="k",
+)
 
-elevations = []
-night_len = []
-for t in day_steps:
-    elevation = []
-
-    state = kete.propagate_n_body(state, t + substep_time / 2)
-    nights = []
-    for subrange in substeps:
-        approx_state = kete.propagate_two_body(state, t + subrange)
-        sun2obs = kete.spice.mpc_code_to_ecliptic(site, t + subrange).pos
-        earth2obs = kete.spice.mpc_code_to_ecliptic(
-            site, t + subrange, center="399"
-        ).pos
-
-        sun2obj = approx_state.pos
-        obs2obj = sun2obj - sun2obs
-
-        cur_alt = 90 - earth2obs.angle_between(obs2obj)
-        night = earth2obs.angle_between(-sun2obs) > 90
-        nights.append(night)
-        if night:
-            elevation.append(cur_alt)
-    night_len.append(sum(nights) * substep_time)
-    elevations.append(elevation)
-
-dates = [kete.Time(t + step_size / 2).to_datetime() for t in day_steps]
-for ang in [0, 15, 30, 45, 60, 75]:
+for ang in [20, 40, 60, 80]:
     plt.plot(
         dates,
-        [sum(np.array(a) > ang) * substep_time * 24 / step_size for a in elevations],
+        [sum(np.array(a) > ang) * step_size * 24 for a in elevations],
         label=f"{ang}" + r"$^{\circ}$",
     )
 
-plt.plot(dates, np.array(night_len) * 24 / step_size, ls="--", c="k", label="Night")
+
 plt.gca().legend(loc="center left", bbox_to_anchor=(1, 0.5))
 plt.gca().xaxis.set_major_formatter(mdates.DateFormatter("%Y/%m/%d"))
 plt.gca().xaxis.set_major_locator(mdates.AutoDateLocator())
 plt.gca().xaxis.set_minor_locator(mdates.MonthLocator())
 plt.gcf().autofmt_xdate()
 plt.ylabel("Hours above Altitude")
-
 plt.tight_layout()
-plt.show()
