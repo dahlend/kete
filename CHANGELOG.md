@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `kete.spice.get_state` now accepts MPC Observatory codes as well.
+- WISE SPICE kernel download location moved.
 
 ### Fixed
 
