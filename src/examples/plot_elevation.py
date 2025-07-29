@@ -115,22 +115,24 @@ plt.ylim(0, 90)
 
 # plot each of the elevation lines
 for elev, name in zip(elevation.T, object_names):
-    plt.plot(dates, elev, label=name)
+    (line,) = plt.plot(dates, elev, label=name)
 
-# Add labels at the top of the elevation lines
-lines = plt.gca().get_lines()
-max_elev = []
-for idx, line in zip(np.argmax(np.array(elevation).T, axis=1), lines):
-    max_elev.append(line._x[idx])
-labelLines(lines, xvals=max_elev, zorder=2.5)
+    # Add labels at the top of the elevation lines
+    idx = np.argmax(elev)
+    if idx == 0:
+        idx = 1
+    labelLines([line], xvals=line._x[idx], zorder=2.5)
+
 
 line = plt.plot(
     dates, moon_elevation, label=f"Moon ({moon_frac:0.0%})", ls="--", c="k", lw=1
 )[0]
-labelLines([line], xvals=line._x[np.argmax(moon_elevation)], zorder=2.45, fontsize=8)
+idx = np.argmax(moon_elevation)
+if idx == 0:
+    idx = 1
+labelLines([line], xvals=line._x[idx], zorder=2.45, fontsize=8)
 
 plt.axvline(midnight, c="k", zorder=2)
-
 
 plt.xlabel(
     "Local Time - "
