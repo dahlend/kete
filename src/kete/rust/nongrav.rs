@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 
 use kete_core::{errors::Error, propagation::NonGravModel};
-use pyo3::{PyResult, pyclass, pymethods};
+use pyo3::{PyResult, exceptions::PyValueError, pyclass, pymethods};
 
 /// Non-gravitational force models.
 ///
@@ -71,9 +71,40 @@ impl PyNonGravModel {
     ///     
     ///     \text{accel} = \frac{\beta G}{r^2} \bigg((1 - \frac{\dot{r}}{c}) \vec{S} - \vec{v} / c \bigg)
     ///
+    /// Parameters
+    /// ==========
+    /// beta:
+    ///     Beta value of the dust, if this is specified, all other inputs are ignored.
+    ///     If this value is specified, diameter cannot be specified.
+    /// diameter :
+    ///     Diameter of the dust particle in meters, this uses the following parameters to estimate
+    ///     the beta value. If beta is specified, this cannot be specified.
+    /// density:
+    ///     Density in kg/m^3, defaults to 1000 kg/m^3
+    /// c_pr:
+    ///     Radiation pressure coefficient, defaults to 1.19 kg/m^2
+    /// q_pr:
+    ///     Scattering efficiency for radiation pressure, defaults to 1.0
+    ///     1.0 is a good estimate for particles larger than 1um (Burns, Lamy & Soter 1979)
     #[staticmethod]
-    pub fn new_dust(beta: f64) -> Self {
-        Self(NonGravModel::Dust { beta })
+    #[pyo3(signature=(beta=None, diameter=None, density=1000.0, c_pr=1.19, q_pr=1.0))]
+    pub fn new_dust(
+        beta: Option<f64>,
+        diameter: Option<f64>,
+        density: f64,
+        c_pr: f64,
+        q_pr: f64,
+    ) -> PyResult<Self> {
+        match (beta, diameter) {
+            (None, None) => Err(PyValueError::new_err("Must specify beta or diameter."))?,
+            (Some(_), Some(_)) => Err(PyValueError::new_err(
+                "Cannot specify both beta and diameter.",
+            ))?,
+            (Some(beta), None) => Ok(Self(NonGravModel::Dust { beta })),
+            (None, Some(diameter)) => Ok(Self(NonGravModel::Dust {
+                beta: (c_pr * q_pr) / (diameter * density),
+            })),
+        }
     }
 
     #[getter]
@@ -81,6 +112,27 @@ impl PyNonGravModel {
     pub fn beta(&self) -> f64 {
         match self.0 {
             NonGravModel::Dust { beta } => beta,
+            _ => f64::NAN,
+        }
+    }
+
+    /// Estimate the diameter of the dust particle in meters.
+    ///
+    /// Only works for dust models, returns NaN for asteroid/comet models.
+    ///
+    /// Parameters
+    /// ==========
+    /// density:
+    ///     Density in kg/m^3, defaults to 1000 kg/m^3
+    /// c_pr:
+    ///     Radiation pressure coefficient, defaults to 1.19 kg/m^2
+    /// q_pr:
+    ///     Scattering efficiency for radiation pressure, defaults to 1.0
+    ///     1.0 is a good estimate for particles larger than 1um (Burns, Lamy & Soter 1979)
+    #[pyo3(signature=(density=1000.0, c_pr=1.19, q_pr=1.0))]
+    pub fn diameter(&self, density: f64, c_pr: f64, q_pr: f64) -> f64 {
+        match self.0 {
+            NonGravModel::Dust { beta } => (c_pr * q_pr) / (beta * density),
             _ => f64::NAN,
         }
     }
