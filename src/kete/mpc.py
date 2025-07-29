@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from . import constants, conversion, deprecation
-from ._core import find_obs_code, pack_designation, unpack_designation
+from ._core import _find_obs_code, pack_designation, unpack_designation
 from .cache import download_json
 from .conversion import table_to_states
 from .time import Time
@@ -31,6 +31,14 @@ table_to_states = deprecation.rename(
 )
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache
+def find_obs_code(site):
+    return _find_obs_code(site)
+
+
+find_obs_code.__doc__ = _find_obs_code.__doc__
 
 
 @lru_cache

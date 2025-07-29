@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import glob
 import os
 from collections import namedtuple
@@ -134,13 +135,16 @@ def _download_core_files():
 
     if not any(["de440s.bsp" in file for file in cache_files]):
         # Cannot find the de440s file, so download it
-        download_file(de440, subfolder="kernels/core")
+        with contextlib.suppress(Exception):
+            download_file(de440, subfolder="kernels/core")
     if not any(["wise.bsp" in file for file in cache_files]):
         # Cannot find the wise file, so download it
-        download_file(wise, subfolder="kernels/core")
+        with contextlib.suppress(Exception):
+            download_file(wise, subfolder="kernels/core")
     if not any(["spherex.bsp" in file for file in cache_files]):
         # Cannot find the wise file, so download it
-        download_file(spherex, subfolder="kernels/core")
+        with contextlib.suppress(Exception):
+            download_file(spherex, subfolder="kernels/core")
 
     required_asteroids = [1, 2, 4, 10, 704]
     for asteroid in required_asteroids:
@@ -148,12 +152,13 @@ def _download_core_files():
         if not any([expected_name in file for file in cache_files]):
             from .horizons import fetch_spice_kernel
 
-            fetch_spice_kernel(
-                asteroid,
-                jd_start=Time.from_ymd(1900, 1, 1).jd,
-                jd_end=Time.from_ymd(2100, 1, 1).jd,
-                cache_dir="kernels/core",
-            )
+            with contextlib.suppress(Exception):
+                fetch_spice_kernel(
+                    asteroid,
+                    jd_start=Time.from_ymd(1900, 1, 1).jd,
+                    jd_end=Time.from_ymd(2100, 1, 1).jd,
+                    cache_dir="kernels/core",
+                )
 
     # Look for PCK files
     cache_files = glob.glob(os.path.join(cache_path(), "kernels/core", "*.bpc"))
@@ -162,19 +167,23 @@ def _download_core_files():
 
         # cannot find the combined file, so download it
         # first we download the index page and parse it for the filename
-        res = requests.get(pck_path)
-        res.raise_for_status()
-        filename = [
-            x for x in res.content.decode().split('"') if "combined.bpc" in x[-12:]
-        ]
-        # if parsing was successful, download the file
+
+        with contextlib.suppress(Exception):
+            res = requests.get(pck_path)
+            res.raise_for_status()
+            filename = [
+                x for x in res.content.decode().split('"') if "combined.bpc" in x[-12:]
+            ]
+            pck_path = pck_path + filename[0]
+            # if parsing was successful, download the file
+            download_file(pck_path, subfolder="kernels/core")
+            return
+
         if len(filename) == 0:
             raise ValueError(
                 "Failed to find Earth orientation file on NAIF website, please"
                 "submit a github issue! NAIF may have moved filenames or location."
             )
-        pck_path = pck_path + filename[0]
-        download_file(pck_path, subfolder="kernels/core")
 
 
 def kernel_header_comments(filename: str):
