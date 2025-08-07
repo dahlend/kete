@@ -1,8 +1,6 @@
 Installation
 ============
 
-These instructions are the method to install kete.
-
 Requirements
 ------------
 
