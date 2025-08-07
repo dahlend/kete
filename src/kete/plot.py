@@ -210,7 +210,7 @@ def annotate_orbit(wcs, state, observer, **kwargs):
         All additional args are passed directly to matplotlib plotting.
     """
 
-    state = propagate_n_body(state, observer.jd)
+    input_state = propagate_n_body(state, observer.jd)
     size = wcs.pixel_shape
 
     def check_in_frame(wcs, vec):
@@ -237,8 +237,8 @@ def annotate_orbit(wcs, state, observer, **kwargs):
             s = propagate_two_body(state, state.jd + dt.ravel()[0]).pos - observer.pos
             return s.angle_between(vec)
 
-        dt = minimize(_cost, 0, args=(state, vec)).x[0]
-        state = propagate_two_body(state, state.jd + dt)
+        dt = minimize(_cost, 0, args=(input_state, vec)).x[0]
+        state = propagate_two_body(input_state, input_state.jd + dt)
         px, dist = check_in_frame(wcs, state.pos - observer.pos)
         if px is not None:
             break
@@ -251,7 +251,7 @@ def annotate_orbit(wcs, state, observer, **kwargs):
     for stepsize in [-0.1, 0.1]:
         last_stepsize = 0
         for _ in range(200):
-            tmp_state = propagate_two_body(state, state.jd + stepsize)
+            tmp_state = propagate_two_body(input_state, input_state.jd + stepsize)
             tmp_vec = tmp_state.pos - observer.pos
             px, dist = check_in_frame(wcs, tmp_vec)
             if px is None:
@@ -268,9 +268,12 @@ def annotate_orbit(wcs, state, observer, **kwargs):
     edges = [e if e is not None else state.jd for e in edges]
 
     steps = np.linspace(*edges, 100)
-    states = [
-        propagate_two_body(state, state.jd + jd).pos - observer.pos for jd in steps
-    ]
+    states = []
+    for jd in steps:
+        state = propagate_n_body(input_state, input_state.jd + jd)
+        state = propagate_two_body(state, input_state.jd + jd, observer.pos)
+        state = propagate_two_body(state, input_state.jd + jd, observer.pos)
+        states.append(state.pos - observer.pos)
 
     ra = [v.ra for v in states]
     dec = [v.dec for v in states]
