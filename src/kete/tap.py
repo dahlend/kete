@@ -25,11 +25,14 @@ IRSA_URL = "https://irsa.ipac.caltech.edu"
 IRSA_TAP_URL = "https://irsa.ipac.caltech.edu/TAP/async"
 CADC_TAP_URL = "https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/argus/async"
 GAIA_TAP_URL = "https://gaia.aip.de/tap/async"
+MAST_TAP_URL = "https://mast.stsci.edu/vo-tap/api/v0.1/caom/async"
+
 
 TAP_SERVERS = {
     "IRSA": IRSA_TAP_URL,
     "CADC": CADC_TAP_URL,
     "GAIA": GAIA_TAP_URL,
+    "MAST": MAST_TAP_URL,
 }
 """
 Defined TAP servers for easy lookup.
@@ -217,7 +220,7 @@ class AsyncTapQuery:
         self.update_cache = update_cache
         self.cache = cache
 
-        self.data = dict(FORMAT="CSV", QUERY=query, LANG="ADQL", REQUEST="doQuery")
+        self.data = dict(FORMAT="csv", QUERY=query, LANG="ADQL", REQUEST="doQuery")
         files = None
         if upload_table is not None:
             self.data["UPLOAD"] = "my_table,param:table.tbl"
