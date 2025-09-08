@@ -8,6 +8,7 @@ Predict orbits of asteroids and comets at large scales.
 
 ![Github Actions](https://github.com/dahlend/kete/actions/workflows/test-lint.yml/badge.svg?branch=main)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.15259732.svg)](https://doi.org/10.5281/zenodo.15259732)
+[![arXiv](https://img.shields.io/badge/arXiv-2509.04666-00ff00.svg)](http://arxiv.org/abs/2509.04666)
 
 The kete tools are intended to enable the simulation of all-sky surveys of minor
 planets. This includes multi-body physics orbital dynamics, thermal and optical modeling
