@@ -16,7 +16,7 @@ members = ["src/kete_core"]
 default-members = ["src/kete_core"]
 
 [workspace.package]
-version = "2.1.4"
+version = "2.1.5"
 edition = "2024"
 rust-version = "1.85"
 license = "BSD-3-Clause"
