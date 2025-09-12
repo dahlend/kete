@@ -102,7 +102,8 @@ impl FromStr for GravParams {
         let mut iter = row.split_whitespace();
         let naif_id = iter.next();
         let mass = iter.next();
-        let radius = iter.next().unwrap_or("0.0");
+        // default to 100m if not present
+        let radius = iter.next().unwrap_or("6.684587122268446e-10");
         if naif_id.is_none() || mass.is_none() {
             return Err(Error::IOError(format!(
                 "GravParams row incorrectly formatted. {row}",
@@ -333,7 +334,7 @@ fn j2_correction(rel_pos: &Vector3<f64>, radius: f32, j2: &f64, mass: &f64) -> V
     let z_squared = 5.0 * (rel_pos.z / r).powi(2);
 
     // this is formatted a little funny in an attempt to reduce numerical noise
-    // 3/2 * j2 * mass * earth_r^2 / distance^5
+    // 3/2 * j2 * mass * radius^2 / distance^5
     let coef = 1.5 * j2 * mass * (radius as f64 / r).powi(2) * r.powi(-3);
     Vector3::<f64>::new(
         rel_pos.x * coef * (z_squared - 1.0),
