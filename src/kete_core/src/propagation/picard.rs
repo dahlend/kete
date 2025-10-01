@@ -64,23 +64,87 @@ use std::f64::consts::PI;
 use itertools::Itertools;
 use nalgebra::{SMatrix, SVector};
 
+use crate::errors::KeteResult;
+
+/// Function will be of the form y' = F(t, y, metadata)
+/// This is the first-order general solver.
+type PicardFunc<'a, MType, const DIM: usize> =
+    &'a dyn Fn(f64, &SVector<f64, DIM>, &mut MType, bool) -> KeteResult<SVector<f64, DIM>>;
+
 /// Container for the pre-computed matrices used by the picard-chebyschev integrator.
 #[derive(Debug, Clone)]
 #[allow(unused, reason = "debugging")]
 pub struct PicardCoefficients<const N: usize, const NM1: usize> {
     c: SMatrix<f64, N, N>,
 
-    a: SMatrix<f64, NM1, N>,
+    a: SMatrix<f64, N, NM1>,
 
     sa: SVector<f64, N>,
 
     tau: [f64; N],
 }
 
-impl<const N: usize, const NM1: usize> PicardCoefficients<N, NM1> {
+#[allow(unused, reason = "debugging")]
+impl<'a, const N: usize, const NM1: usize> PicardCoefficients<N, NM1> {
     /// foo
     pub fn test(&self) -> [f64; N] {
         self.sa.into()
+    }
+
+    /// Given the start and stop times of a desired integration, return the actual
+    /// times where the function will be evaluated starting at t0 and ending at t1.
+    pub fn sample_points(&self, t0: f64, t1: f64) -> [f64; N] {
+        let w2 = (t1 - t0) / 2.0;
+        let w1 = (t1 + t0) / 2.0;
+        let mut times = self.tau;
+        times.iter_mut().for_each(|mut x| *x = w2 * (*x) + w1);
+        times
+    }
+
+    /// Single fallible step of the integrator
+    /// `initial_pos` will be mutated in place, except for the zero index value.
+    pub fn step<const DIM: usize, MType>(
+        &self,
+        func: PicardFunc<'a, MType, DIM>,
+        t0: f64,
+        t1: f64,
+        mut initial_pos: SMatrix<f64, DIM, N>,
+        metadata: &mut MType,
+    ) -> KeteResult<PicardStep<N, DIM>> {
+        let mut b: SMatrix<f64, DIM, N> = SMatrix::zeros();
+        let mut last_pos: SMatrix<f64, DIM, N> = SMatrix::zeros();
+        let mut f: SMatrix<f64, DIM, N> = SMatrix::zeros();
+        let times = self.sample_points(t0, t1);
+        let w2 = (t1 + t0) / 2.0;
+        for _ in 0..100 {
+            for ((&time, y), mut f_row) in times
+                .iter()
+                .zip(initial_pos.column_iter())
+                .zip(f.column_iter_mut())
+            {
+                f_row.set_column(0, &(w2 * func(time, &y.into(), metadata, false)?));
+            }
+
+            b.set_column(0, &(f * self.sa + 2.0 * initial_pos.column(0)));
+
+            b.fixed_view_mut::<DIM, NM1>(0, 1)
+                .iter_mut()
+                .zip((f * self.a).into_iter())
+                .for_each(|(x, &n)| *x = n);
+
+            last_pos = initial_pos;
+            initial_pos = b * self.c;
+        }
+        let result = PicardStep {
+            b,
+            y: initial_pos,
+            prev_y: last_pos,
+            t0,
+            t1,
+            error: 0.0,
+        };
+
+        Ok(result)
     }
 }
 
@@ -145,7 +209,12 @@ impl<const N: usize, const NM1: usize> Default for PicardCoefficients<N, NM1> {
             .try_into()
             .unwrap();
 
-        Self { a, sa, c, tau }
+        Self {
+            a: a.transpose(),
+            sa,
+            c: c.transpose(),
+            tau,
+        }
     }
 }
 
@@ -156,6 +225,24 @@ pub static PC15: std::sync::LazyLock<PicardCoefficients<15, 14>> =
 /// `PicardCoefficients` for a 24th order fit
 pub static PC25: std::sync::LazyLock<PicardCoefficients<25, 24>> =
     std::sync::LazyLock::new(PicardCoefficients::default);
+
+/// A single stop of the Picard Integrator
+#[derive(Debug, Clone)]
+#[allow(unused, reason = "debugging")]
+pub struct PicardStep<const N: usize, const DIM: usize> {
+    b: SMatrix<f64, DIM, N>,
+
+    /// Final result
+    pub y: SMatrix<f64, DIM, N>,
+
+    prev_y: SMatrix<f64, DIM, N>,
+
+    t0: f64,
+
+    t1: f64,
+
+    error: f64,
+}
 
 // def exponential_decay(y, t):
 //     return -y
