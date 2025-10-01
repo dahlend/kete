@@ -43,6 +43,7 @@ use nalgebra::{DVector, Vector3};
 mod acceleration;
 mod kepler;
 mod nongrav;
+mod picard;
 mod radau;
 mod runge_kutta;
 mod state_transition;
@@ -57,6 +58,7 @@ pub use kepler::{
     eccentric_anomaly_from_true, moid, propagate_two_body,
 };
 pub use nongrav::NonGravModel;
+pub use picard::{PC15, PC25, PicardCoefficients};
 pub use radau::RadauIntegrator;
 pub use runge_kutta::RK45Integrator;
 pub use state_transition::compute_state_transition;

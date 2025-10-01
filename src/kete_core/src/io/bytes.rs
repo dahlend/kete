@@ -57,7 +57,7 @@ pub(crate) fn bytes_to_f64(bytes: &[u8], little_endian: bool) -> KeteResult<f64>
 /// Change a collection of bytes into a vector of f64s.
 pub(crate) fn bytes_to_f64_vec(bytes: &[u8], little_endian: bool) -> KeteResult<Box<[f64]>> {
     let byte_len = bytes.len();
-    if byte_len % 8 != 0 {
+    if byte_len.is_multiple_of(8) {
         Err(Error::IOError("File is not correctly formatted".into()))?;
     }
     let res: Box<[f64]> = (0..byte_len / 8)
@@ -69,7 +69,7 @@ pub(crate) fn bytes_to_f64_vec(bytes: &[u8], little_endian: bool) -> KeteResult<
 /// Change a collection of bytes into a vector of i32s.
 pub(crate) fn bytes_to_i32_vec(bytes: &[u8], little_endian: bool) -> KeteResult<Box<[i32]>> {
     let byte_len = bytes.len();
-    if byte_len % 4 != 0 {
+    if byte_len.is_multiple_of(4) {
         Err(Error::IOError("File is not correctly formatted".into()))?;
     }
     let res: Box<[i32]> = (0..byte_len / 4)

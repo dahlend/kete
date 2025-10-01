@@ -3,7 +3,7 @@ use itertools::Itertools;
 use kete_core::{
     errors::Error,
     frames::Ecliptic,
-    propagation::{self, NonGravModel, moid},
+    propagation::{self, NonGravModel, PC15, moid},
     spice::{self, LOADED_SPK},
     state::State,
     time::{TDB, Time},
@@ -283,4 +283,11 @@ pub fn propagation_n_body_py(
         final_planets = planet;
     }
     Ok((final_states, final_planets))
+}
+
+/// Debugging for picard
+#[pyfunction]
+pub fn picard() -> Vec<f64> {
+    let p = &PC15;
+    p.test().into()
 }

@@ -396,10 +396,10 @@ impl SpkCollection {
             let path = entry.path();
             if path.is_file() {
                 let filename = path.to_str().unwrap();
-                if filename.to_lowercase().ends_with(".bsp") {
-                    if let Err(err) = self.load_file(filename) {
-                        eprintln!("Failed to load SPK file {filename}: {err}");
-                    }
+                if filename.to_lowercase().ends_with(".bsp")
+                    && let Err(err) = self.load_file(filename)
+                {
+                    eprintln!("Failed to load SPK file {filename}: {err}");
                 }
             }
         });

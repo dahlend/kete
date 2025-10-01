@@ -182,10 +182,10 @@ pub trait FovLike: Sync + Sized {
 
                 if (state.jd - obs_state.jd).abs() < dt_limit {
                     let (_, contains, _) = self.check_linear(state);
-                    if let Contains::Outside(dist) = contains {
-                        if dist > max_dist {
-                            return None;
-                        }
+                    if let Contains::Outside(dist) = contains
+                        && dist > max_dist
+                    {
+                        return None;
                     }
                     let (idx, contains, state) = self.check_two_body(state).ok()?;
                     match contains {
@@ -194,10 +194,10 @@ pub trait FovLike: Sync + Sized {
                     }
                 } else {
                     let (_, contains, _) = self.check_two_body(state).ok()?;
-                    if let Contains::Outside(dist) = contains {
-                        if dist > max_dist {
-                            return None;
-                        }
+                    if let Contains::Outside(dist) = contains
+                        && dist > max_dist
+                    {
+                        return None;
                     }
                     let (idx, contains, state) =
                         self.check_n_body(state, include_asteroids).ok()?;

@@ -158,12 +158,11 @@ pub fn spk_accel(
 ) -> KeteResult<Vector3<f64>> {
     let mut accel = Vector3::<f64>::zeros();
 
-    if exact_eval {
-        if let Some(close_approach) = meta.close_approach.as_mut() {
-            if close_approach.2 == 0.0 {
-                *close_approach = (-1, 1000000.0, 0.0);
-            }
-        }
+    if exact_eval
+        && let Some(close_approach) = meta.close_approach.as_mut()
+        && close_approach.2 == 0.0
+    {
+        *close_approach = (-1, 1000000.0, 0.0);
     }
 
     let spk = &LOADED_SPK.try_read().unwrap();
@@ -177,10 +176,10 @@ pub fn spk_accel(
 
         if exact_eval {
             let r = rel_pos.norm();
-            if let Some(close_approach) = meta.close_approach.as_mut() {
-                if close_approach.2 >= r {
-                    *close_approach = (id, r, time);
-                }
+            if let Some(close_approach) = meta.close_approach.as_mut()
+                && close_approach.2 >= r
+            {
+                *close_approach = (id, r, time);
             }
 
             if r as f32 <= radius {
@@ -190,10 +189,10 @@ pub fn spk_accel(
         grav_params.add_acceleration(&mut accel, &rel_pos, &rel_vel);
 
         // If the center is the sun, add non-gravitational forces
-        if grav_params.naif_id == 10 {
-            if let Some(non_grav) = &meta.non_grav_model {
-                non_grav.add_acceleration(&mut accel, &rel_pos, &rel_vel);
-            }
+        if grav_params.naif_id == 10
+            && let Some(non_grav) = &meta.non_grav_model
+        {
+            non_grav.add_acceleration(&mut accel, &rel_pos, &rel_vel);
         }
     }
     Ok(accel)
@@ -269,11 +268,12 @@ where
             grav_params.add_acceleration(&mut accel_working, &rel_pos, &rel_vel);
 
             // If the center is the sun, add non-gravitational forces
-            if (grav_params.naif_id == 10) & (idx > n_massive) {
-                if let Some(non_grav) = &meta.non_gravs[idx - n_massive] {
-                    non_grav.add_acceleration(&mut accel_working, &rel_pos, &rel_vel);
-                }
+            if (grav_params.naif_id == 10) & (idx > n_massive)
+                && let Some(non_grav) = &meta.non_gravs[idx - n_massive]
+            {
+                non_grav.add_acceleration(&mut accel_working, &rel_pos, &rel_vel);
             }
+
             accel.fixed_rows_mut::<3>(idx * 3).add_assign(accel_working);
         }
     }
