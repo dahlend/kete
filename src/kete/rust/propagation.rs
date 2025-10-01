@@ -1,13 +1,14 @@
 //! Python support for n body propagation
 use itertools::Itertools;
 use kete_core::{
-    errors::Error,
+    errors::{Error, KeteResult},
     frames::Ecliptic,
     propagation::{self, NonGravModel, PC15, moid},
     spice::{self, LOADED_SPK},
     state::State,
     time::{TDB, Time},
 };
+use nalgebra::{SMatrix, SVector};
 use pyo3::{PyObject, PyResult, Python, pyfunction};
 use rayon::prelude::*;
 
@@ -287,7 +288,14 @@ pub fn propagation_n_body_py(
 
 /// Debugging for picard
 #[pyfunction]
-pub fn picard() -> Vec<f64> {
+pub fn picard(t0: f64, t1: f64) -> Vec<f64> {
     let p = &PC15;
-    p.test().into()
+
+    fn func(_: f64, vals: &SVector<f64, 1>, _: &mut (), _: bool) -> KeteResult<SVector<f64, 1>> {
+        Ok(-vals)
+    }
+    let init: SMatrix<f64, 1, 15> = [1.0; 15].into();
+    let mut meta = ();
+    let step = p.step(&func, t0, t1, init, &mut meta).unwrap();
+    step.y.iter().cloned().collect()
 }

@@ -48,8 +48,8 @@ pub enum Error {
     /// Input or variable exceeded expected or allowed bounds.
     ValueError(String),
 
-    /// Querying an SPK file failed due to it missing the requisite data.
-    DAFLimits(String),
+    /// Attempting to query outside of data limits.
+    ExceedsLimits(String),
 
     /// Attempting to load or convert to/from an Frame of reference which is not known.
     UnknownFrame(i32),
@@ -66,7 +66,10 @@ impl error::Error for Error {}
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Convergence(s) | Self::ValueError(s) | Self::DAFLimits(s) | Self::IOError(s) => {
+            Self::Convergence(s)
+            | Self::ValueError(s)
+            | Self::ExceedsLimits(s)
+            | Self::IOError(s) => {
                 write!(f, "{s}")
             }
             Self::UnknownFrame(_) => {
@@ -87,7 +90,7 @@ impl From<Error> for PyErr {
     fn from(err: Error) -> Self {
         match err {
             Error::IOError(s)
-            | Error::DAFLimits(s)
+            | Error::ExceedsLimits(s)
             | Error::ValueError(s)
             | Error::Convergence(s) => Self::new::<exceptions::PyValueError, _>(s),
 

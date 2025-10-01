@@ -100,7 +100,7 @@ impl CkCollection {
             }
         }
 
-        Err(Error::DAFLimits(format!(
+        Err(Error::ExceedsLimits(format!(
             "Instrument ({instrument_id}) does not have an CK record for the target JD."
         )))?
     }

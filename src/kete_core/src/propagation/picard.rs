@@ -101,8 +101,51 @@ impl<'a, const N: usize, const NM1: usize> PicardCoefficients<N, NM1> {
         times
     }
 
+    /// Integrate from the start point to the end.
+    pub fn integrate<const DIM: usize, MType>(
+        &self,
+        func: PicardFunc<'a, MType, DIM>,
+        t0: f64,
+        t1: f64,
+        mut initial_pos: SMatrix<f64, DIM, N>,
+        metadata: &mut MType,
+    ) -> KeteResult<SVector<f64, DIM>> {
+        let mut cur_t0 = t0;
+        let mut cur_t1 = t1;
+        let mut cur_stepsize = t1 - t0;
+        loop {
+            let step = self.step(func, cur_t0, cur_t1, initial_pos, metadata);
+            match step {
+                Ok(res) => {
+                    if cur_t1 == t1 {
+                        return Ok(res.y.column(N - 1).into());
+                    }
+                    cur_t0 = cur_t1;
+                    cur_t1 += cur_stepsize;
+                    cur_stepsize *= 1.3;
+                    if (cur_stepsize.is_sign_negative() && cur_t1 > t1)
+                        || (cur_stepsize.is_sign_negative() && cur_t1 < t1)
+                    {
+                        cur_t1 = t1;
+                    }
+                }
+                Err(_) => {
+                    cur_stepsize *= 0.75;
+                    cur_t1 = cur_t0 + cur_stepsize;
+                }
+            }
+            if cur_stepsize.abs() < 1e-5 {
+                return Err(crate::errors::Error::Convergence(
+                    "Failed to converge, step sizes became too small.".into(),
+                ));
+            }
+        }
+        Err(crate::errors::Error::Convergence(
+            "Failed to converge.".into(),
+        ))
+    }
+
     /// Single fallible step of the integrator
-    /// `initial_pos` will be mutated in place, except for the zero index value.
     pub fn step<const DIM: usize, MType>(
         &self,
         func: PicardFunc<'a, MType, DIM>,
@@ -116,6 +159,7 @@ impl<'a, const N: usize, const NM1: usize> PicardCoefficients<N, NM1> {
         let mut f: SMatrix<f64, DIM, N> = SMatrix::zeros();
         let times = self.sample_points(t0, t1);
         let w2 = (t1 + t0) / 2.0;
+        let mut error = 100.0;
         for _ in 0..100 {
             for ((&time, y), mut f_row) in times
                 .iter()
@@ -134,17 +178,21 @@ impl<'a, const N: usize, const NM1: usize> PicardCoefficients<N, NM1> {
 
             last_pos = initial_pos;
             initial_pos = b * self.c;
+            error = (last_pos - initial_pos).abs().max();
+            if error < 10.0 * f64::EPSILON {
+                return Ok(PicardStep {
+                    b,
+                    y: initial_pos,
+                    prev_y: last_pos,
+                    t0,
+                    t1,
+                    error,
+                });
+            }
         }
-        let result = PicardStep {
-            b,
-            y: initial_pos,
-            prev_y: last_pos,
-            t0,
-            t1,
-            error: 0.0,
-        };
-
-        Ok(result)
+        Err(crate::errors::Error::Convergence(
+            "Failed to converge.".into(),
+        ))
     }
 }
 
@@ -243,6 +291,20 @@ pub struct PicardStep<const N: usize, const DIM: usize> {
 
     error: f64,
 }
+
+// impl<const N: usize, const DIM: usize> PicardStep<N, DIM> {
+//     pub fn sample(&self, t: f64) -> KeteResult<[f64; DIM]> {
+//         let w1 = (self.t0 + self.t1) * 0.5;
+//         let w2 = (self.t1 - self.t0) * 0.5;
+//         let tau_time = ((t - w1) * w2).acos();
+//         if tau_time.is_nan() {
+//             return Err(Error::OutsideLimits(
+//                 "Queried time it outside of the fitted time span".into(),
+//             ));
+//         }
+
+//     }
+// }
 
 // def exponential_decay(y, t):
 //     return -y

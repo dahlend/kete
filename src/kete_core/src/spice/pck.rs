@@ -82,7 +82,7 @@ impl PckCollection {
             }
         }
 
-        Err(Error::DAFLimits(format!(
+        Err(Error::ExceedsLimits(format!(
             "Object ({id}) does not have an PCK record for the target JD."
         )))?
     }

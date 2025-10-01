@@ -95,7 +95,7 @@ impl PckSegment {
         let arr_ref: &PckArray = self.into();
 
         if center_id != arr_ref.frame_id {
-            Err(Error::DAFLimits(
+            Err(Error::ExceedsLimits(
                 "Center ID is not present in this record.".into(),
             ))?;
         }
@@ -103,7 +103,9 @@ impl PckSegment {
         let jds = jd_to_spice_jd(jd);
 
         if jds < arr_ref.jds_start || jds > arr_ref.jds_end {
-            Err(Error::DAFLimits("JD is not present in this record.".into()))?;
+            Err(Error::ExceedsLimits(
+                "JD is not present in this record.".into(),
+            ))?;
         }
         if arr_ref.reference_frame_id != 17 {
             Err(Error::ValueError(format!(

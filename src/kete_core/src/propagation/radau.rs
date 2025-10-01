@@ -226,7 +226,7 @@ where
                 }
                 Err(error) => match error {
                     Error::Impact(_, _) => Err(error)?,
-                    Error::DAFLimits(_) => Err(error)?,
+                    Error::ExceedsLimits(_) => Err(error)?,
                     _ => {
                         step_failures += 1;
                         next_step_size *= 0.7;
