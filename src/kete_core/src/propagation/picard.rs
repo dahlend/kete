@@ -397,14 +397,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn basic_two_body() {
+    fn exponential_decay_test() {
         fn func(
             _: f64,
             vals: &SVector<f64, 3>,
             _: &mut (),
             _: bool,
         ) -> KeteResult<SVector<f64, 3>> {
-            let v: SVector<f64, 3> = [1.0, 1., 1.0].into();
+            let v: SVector<f64, 3> = [1.0, 0.5, 0.1].into();
             Ok(-vals.component_mul(&v))
         }
         let p = &PC15;
@@ -422,7 +422,7 @@ mod tests {
             .unwrap();
 
         assert!((res[0] - (1.0 * (-t1).exp())).abs() < 1e-15);
-        assert!((res[1] - (2.0 * (-t1).exp())).abs() < 1e-15);
-        assert!((res[2] - (5.0 * (-t1).exp())).abs() < 1e-15);
+        assert!((res[1] - (2.0 * (-0.5 * t1).exp())).abs() < 1e-15);
+        assert!((res[2] - (5.0 * (-0.1 * t1).exp())).abs() < 1e-15);
     }
 }
