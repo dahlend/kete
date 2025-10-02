@@ -1,4 +1,5 @@
 /// # Picard-Chebyshev Numerical Integrator
+///
 /// First Order ODE Integrator.
 ///
 /// This is based on a whole slew of papers, though this implementation leans heavily
@@ -17,6 +18,12 @@
 /// the mathematics. This implementation is designed to reduce the total number of
 /// SPICE kernel calls to a minimum, as it was found that the Radau integration time
 /// was dominated by these queries.
+///
+/// Since this integrator fits Chebyshev polynomials at the same time that it performs
+/// the integration, the integrator is designed to record the polynomial coefficients.
+/// These are stored in the [`PicardStep`], which exposes a function allowing the
+/// user to query the state of the system at any point between the start of the
+/// integration and the end.
 ///
 // BSD 3-Clause License
 //
@@ -87,9 +94,26 @@ pub fn dumb_picard_init<const DIM: usize, const N: usize>(
     init
 }
 
-/// Container for the pre-computed matrices used by the picard-chebyschev integrator.
+/// Picard-Chebyshev integrator for solving first order ODEs.
+///
+/// This integrator fits Chebyshev polynomials to the provided first order ODEs.
+/// These polynomials can be retrieved and queried at any point between the start and
+/// end point of the integration. This is designed so that an object may have its orbit
+/// integrated any length of time, and there is a very fast lookup for the object's
+/// state at any point along the integration.
+///
+/// This integrator has a set of matrices which are pre-computed and stored.
+/// It is recommended to use one of the pre-build integrators [`PC15`] or [`PC25`] to
+/// avoid having to reconstruct these matrices every time the integrator is used.
+///
+/// The mathematics for this integrator can be found in a number of papers, but
+/// `<https://doi.org/10.2514/6.2022-1275>` is a good place to start.
+///
+/// The primary entry-point for the integrator is the [`PicardIntegrator::integrate`]
+/// function. See that function for more direct details on its use.
+///
 #[derive(Debug, Clone)]
-pub struct PicardCoefficients<const N: usize, const NM1: usize> {
+pub struct PicardIntegrator<const N: usize, const NM1: usize> {
     c: SMatrix<f64, N, N>,
 
     a: SMatrix<f64, N, NM1>,
@@ -99,47 +123,34 @@ pub struct PicardCoefficients<const N: usize, const NM1: usize> {
     tau: [f64; N],
 }
 
-/// Evaluate chebyshev polynomials of the first type.
-#[inline(always)]
-pub(crate) fn chebyshev_eval<const R: usize, const C: usize>(
-    x: f64,
-    coef: &[[f64; R]; C],
-) -> [f64; C] {
-    const { assert!(R > 2, "Dimension R must be greater than 2.") };
-    const { assert!(C > 0, "Dimension C must be greater than 0.") };
+/// Preconstructed [`PicardIntegrator`] for a 14th order polynomial
+pub static PC15: std::sync::LazyLock<PicardIntegrator<15, 14>> =
+    std::sync::LazyLock::new(PicardIntegrator::default);
 
-    let mut val = [0.0; C];
+/// Preconstructed [`PicardIntegrator`] for a 24th order polynomial
+pub static PC25: std::sync::LazyLock<PicardIntegrator<25, 24>> =
+    std::sync::LazyLock::new(PicardIntegrator::default);
 
-    for idx in 0..C {
-        val[idx] = coef[idx][0] + coef[idx][1] * x;
-    }
+/// A single stop of the Picard Integrator
+#[derive(Debug, Clone)]
+pub struct PicardStep<const N: usize, const DIM: usize> {
+    /// Chebyshev polynomial coefficients of the first type
+    b: SMatrix<f64, DIM, N>,
 
-    let mut second_t = 1.0;
-    let mut last_t = x;
-    let mut next_t;
+    /// Final result
+    pub y: SMatrix<f64, DIM, N>,
 
-    let x2: f64 = 2.0 * x;
-    for idy in 2..R {
-        next_t = x2 * last_t - second_t;
-        for idx in 0..C {
-            val[idx] += coef[idx][idy] * next_t;
-        }
-        second_t = last_t;
-        last_t = next_t;
-    }
+    /// Start time
+    pub t0: f64,
 
-    val
+    /// End time
+    pub t1: f64,
 }
 
-impl<'a, const N: usize, const NM1: usize> PicardCoefficients<N, NM1> {
-    /// foo
-    pub fn test(&self) -> [f64; N] {
-        self.sa.into()
-    }
-
+impl<'a, const N: usize, const NM1: usize> PicardIntegrator<N, NM1> {
     /// Given the start and stop times of a desired integration, return the actual
     /// times where the function will be evaluated starting at t0 and ending at t1.
-    pub fn sample_points(&self, t0: f64, t1: f64) -> [f64; N] {
+    pub fn evaluation_times(&self, t0: f64, t1: f64) -> [f64; N] {
         let w2 = (t1 - t0) / 2.0;
         let w1 = (t1 + t0) / 2.0;
         let mut times = self.tau;
@@ -151,16 +162,16 @@ impl<'a, const N: usize, const NM1: usize> PicardCoefficients<N, NM1> {
     pub fn integrate<const DIM: usize, MType>(
         &self,
         func: PicardFunc<'a, MType, DIM>,
+        init_func: PicardInitFunc<'a, DIM, N>,
+        initial_pos: SVector<f64, DIM>,
         t0: f64,
         t1: f64,
-        initial_pos: SVector<f64, DIM>,
-        init_func: PicardInitFunc<'a, DIM, N>,
         metadata: &mut MType,
     ) -> KeteResult<SVector<f64, DIM>> {
         let mut cur_t0 = t0;
         let mut cur_t1 = t1;
         let mut cur_stepsize = t1 - t0;
-        let mut times = self.sample_points(t0, t1);
+        let mut times = self.evaluation_times(t0, t1);
         let mut initial_pos = init_func(&times, &initial_pos);
         loop {
             let step = self.step(func, cur_t0, cur_t1, initial_pos, metadata);
@@ -169,7 +180,7 @@ impl<'a, const N: usize, const NM1: usize> PicardCoefficients<N, NM1> {
                     if cur_t1 == t1 {
                         return Ok(res.y.column(N - 1).into());
                     }
-                    times = self.sample_points(cur_t0, cur_t1);
+                    times = self.evaluation_times(cur_t0, cur_t1);
                     initial_pos = init_func(&times, &res.y.column(N - 1).into());
 
                     cur_t0 = cur_t1;
@@ -195,7 +206,7 @@ impl<'a, const N: usize, const NM1: usize> PicardCoefficients<N, NM1> {
     }
 
     /// Single fallible step of the integrator
-    pub fn step<const DIM: usize, MType>(
+    fn step<const DIM: usize, MType>(
         &self,
         func: PicardFunc<'a, MType, DIM>,
         t0: f64,
@@ -205,7 +216,7 @@ impl<'a, const N: usize, const NM1: usize> PicardCoefficients<N, NM1> {
     ) -> KeteResult<PicardStep<N, DIM>> {
         let mut b: SMatrix<f64, DIM, N> = SMatrix::zeros();
         let mut f: SMatrix<f64, DIM, N> = SMatrix::zeros();
-        let times = self.sample_points(t0, t1);
+        let times = self.evaluation_times(t0, t1);
         let w2 = (t1 - t0) / 2.0;
         let mut error = 100.0;
         let mut last_error = 50.0;
@@ -228,9 +239,11 @@ impl<'a, const N: usize, const NM1: usize> PicardCoefficients<N, NM1> {
             let last_pos = initial_pos;
             initial_pos = b * self.c;
 
+            // diverging, quit quickly
             if error > 1000.0 && last_error > error {
                 return Err(Error::Convergence("Failed to converge".into()));
             }
+
             if error < 10.0 * f64::EPSILON {
                 return Ok(PicardStep {
                     b,
@@ -248,7 +261,23 @@ impl<'a, const N: usize, const NM1: usize> PicardCoefficients<N, NM1> {
     }
 }
 
-impl<const N: usize, const NM1: usize> Default for PicardCoefficients<N, NM1> {
+impl<const N: usize, const DIM: usize> PicardStep<N, DIM> {
+    /// Evaluate the fitted integration solution at the specified time.
+    /// This will fail if the requested time is outside of the integration bounds.
+    pub fn evaluate(&self, t: f64) -> KeteResult<[f64; DIM]> {
+        let w1 = (self.t0 + self.t1) * 0.5;
+        let w2 = (self.t1 - self.t0) * 0.5;
+        let tau_time = ((t - w1) * w2).acos();
+        if tau_time.is_nan() {
+            return Err(Error::ExceedsLimits(
+                "Queried time it outside of the fitted time span".into(),
+            ));
+        }
+        Ok(chebyshev_eval(tau_time, &self.b.transpose().into()))
+    }
+}
+
+impl<const N: usize, const NM1: usize> Default for PicardIntegrator<N, NM1> {
     fn default() -> Self {
         // NM1 must be equal to N-1, I wish I could do this with const generics
         // but that would require switching to nightly rust and I wont do that.
@@ -318,42 +347,82 @@ impl<const N: usize, const NM1: usize> Default for PicardCoefficients<N, NM1> {
     }
 }
 
-/// `PicardCoefficients` for a 14th order fit
-pub static PC15: std::sync::LazyLock<PicardCoefficients<15, 14>> =
-    std::sync::LazyLock::new(PicardCoefficients::default);
+/// Evaluate chebyshev polynomials of the first type.
+#[inline(always)]
+fn chebyshev_eval<const R: usize, const C: usize>(x: f64, coef: &[[f64; R]; C]) -> [f64; C] {
+    const { assert!(R > 2, "Dimension R must be greater than 2.") };
+    const { assert!(C > 0, "Dimension C must be greater than 0.") };
 
-/// `PicardCoefficients` for a 24th order fit
-pub static PC25: std::sync::LazyLock<PicardCoefficients<25, 24>> =
-    std::sync::LazyLock::new(PicardCoefficients::default);
+    let mut val = [0.0; C];
 
-/// A single stop of the Picard Integrator
-#[derive(Debug, Clone)]
-pub struct PicardStep<const N: usize, const DIM: usize> {
-    /// Chebyshev polynomial coefficients of the first type
-    b: SMatrix<f64, DIM, N>,
+    for idx in 0..C {
+        val[idx] = coef[idx][0] + coef[idx][1] * x;
+    }
 
-    /// Final result
-    pub y: SMatrix<f64, DIM, N>,
+    let mut second_t = 1.0;
+    let mut last_t = x;
+    let mut next_t;
 
-    /// Start time
-    t0: f64,
+    let x2: f64 = 2.0 * x;
+    for idy in 2..R {
+        next_t = x2 * last_t - second_t;
+        for idx in 0..C {
+            val[idx] += coef[idx][idy] * next_t;
+        }
+        second_t = last_t;
+        last_t = next_t;
+    }
 
-    /// End time
-    t1: f64,
+    val
 }
 
-impl<const N: usize, const DIM: usize> PicardStep<N, DIM> {
-    /// Evaluate the fitted integration solution at the specified time.
-    /// This will fail if the requested time is outside of the integration bounds.
-    pub fn sample(&self, t: f64) -> KeteResult<[f64; DIM]> {
-        let w1 = (self.t0 + self.t1) * 0.5;
-        let w2 = (self.t1 - self.t0) * 0.5;
-        let tau_time = ((t - w1) * w2).acos();
-        if tau_time.is_nan() {
-            return Err(Error::ExceedsLimits(
-                "Queried time it outside of the fitted time span".into(),
-            ));
+// let p = &PC15;
+
+// fn func(_: f64, vals: &SVector<f64, 3>, _: &mut (), _: bool) -> KeteResult<SVector<f64, 3>> {
+//     let v: SVector<f64, 3> = [1.0, 1., 1.0].into();
+//     Ok(-vals.component_mul(&v))
+// }
+
+// let init: SVector<f64, 3> = [1.0, 2.0, 3.0].into();
+// let mut meta = ();
+// let step = p
+//     .integrate(&func, &dumb_picard_init, init, t0, t1, &mut meta)
+//     .unwrap();
+
+#[cfg(test)]
+mod tests {
+
+    use nalgebra::Vector3;
+
+    use super::*;
+
+    #[test]
+    fn basic_two_body() {
+        fn func(
+            _: f64,
+            vals: &SVector<f64, 3>,
+            _: &mut (),
+            _: bool,
+        ) -> KeteResult<SVector<f64, 3>> {
+            let v: SVector<f64, 3> = [1.0, 1., 1.0].into();
+            Ok(-vals.component_mul(&v))
         }
-        Ok(chebyshev_eval(tau_time, &self.b.transpose().into()))
+        let p = &PC15;
+
+        let t1 = 10.0;
+        let res = p
+            .integrate(
+                &func,
+                &dumb_picard_init,
+                Vector3::new(1.0, 2.0, 5.0),
+                0.0,
+                t1,
+                &mut (),
+            )
+            .unwrap();
+
+        assert!((res[0] - (1.0 * (-t1).exp())).abs() < 1e-15);
+        assert!((res[1] - (2.0 * (-t1).exp())).abs() < 1e-15);
+        assert!((res[2] - (5.0 * (-t1).exp())).abs() < 1e-15);
     }
 }
