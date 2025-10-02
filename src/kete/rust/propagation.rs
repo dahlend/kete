@@ -296,6 +296,6 @@ pub fn picard(t0: f64, t1: f64) -> Vec<f64> {
     }
     let init: SMatrix<f64, 1, 15> = [1.0; 15].into();
     let mut meta = ();
-    let step = p.step(&func, t0, t1, init, &mut meta).unwrap();
-    step.y.iter().cloned().collect()
+    let step = p.integrate(&func, t0, t1, init, &mut meta).unwrap();
+    step.iter().cloned().collect()
 }

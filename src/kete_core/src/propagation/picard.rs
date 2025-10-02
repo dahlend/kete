@@ -64,7 +64,7 @@ use std::f64::consts::PI;
 use itertools::Itertools;
 use nalgebra::{SMatrix, SVector};
 
-use crate::errors::KeteResult;
+use crate::errors::{Error, KeteResult};
 
 /// Function will be of the form y' = F(t, y, metadata)
 /// This is the first-order general solver.
@@ -82,6 +82,38 @@ pub struct PicardCoefficients<const N: usize, const NM1: usize> {
     sa: SVector<f64, N>,
 
     tau: [f64; N],
+}
+
+/// Evaluate chebyshev polynomials of the first type.
+#[inline(always)]
+pub(crate) fn chebyshev_eval<const R: usize, const C: usize>(
+    x: f64,
+    coef: &[[f64; R]; C],
+) -> [f64; C] {
+    const { assert!(R > 2, "Dimension R must be greater than 2.") };
+    const { assert!(C > 0, "Dimension C must be greater than 0.") };
+
+    let mut val = [0.0; C];
+
+    for idx in 0..C {
+        val[idx] = coef[idx][0] + coef[idx][1] * x;
+    }
+
+    let mut second_t = 1.0;
+    let mut last_t = x;
+    let mut next_t;
+
+    let x2: f64 = 2.0 * x;
+    for idy in 2..R {
+        next_t = x2 * last_t - second_t;
+        for idx in 0..C {
+            val[idx] += coef[idx][idy] * next_t;
+        }
+        second_t = last_t;
+        last_t = next_t;
+    }
+
+    val
 }
 
 #[allow(unused, reason = "debugging")]
@@ -113,36 +145,43 @@ impl<'a, const N: usize, const NM1: usize> PicardCoefficients<N, NM1> {
         let mut cur_t0 = t0;
         let mut cur_t1 = t1;
         let mut cur_stepsize = t1 - t0;
+        let mut n_steps = 0;
         loop {
             let step = self.step(func, cur_t0, cur_t1, initial_pos, metadata);
             match step {
                 Ok(res) => {
+                    initial_pos = res.y;
+                    for d in 0..DIM {
+                        for elem in 0..N {
+                            initial_pos[(d, elem)] *=
+                                initial_pos[(d, NM1)] / initial_pos[(0, elem)];
+                        }
+                    }
                     if cur_t1 == t1 {
-                        return Ok(res.y.column(N - 1).into());
+                        return Ok(initial_pos.column(N - 1).into());
                     }
                     cur_t0 = cur_t1;
                     cur_t1 += cur_stepsize;
-                    cur_stepsize *= 1.3;
-                    if (cur_stepsize.is_sign_negative() && cur_t1 > t1)
+                    if (cur_stepsize.is_sign_positive() && cur_t1 > t1)
                         || (cur_stepsize.is_sign_negative() && cur_t1 < t1)
                     {
                         cur_t1 = t1;
                     }
+                    cur_stepsize *= 1.3;
+                    n_steps += 1;
                 }
-                Err(_) => {
+                Err(m) => {
                     cur_stepsize *= 0.75;
                     cur_t1 = cur_t0 + cur_stepsize;
                 }
             }
             if cur_stepsize.abs() < 1e-5 {
-                return Err(crate::errors::Error::Convergence(
+                return Err(Error::Convergence(
                     "Failed to converge, step sizes became too small.".into(),
                 ));
             }
         }
-        Err(crate::errors::Error::Convergence(
-            "Failed to converge.".into(),
-        ))
+        Err(Error::Convergence("Failed to converge.".into()))
     }
 
     /// Single fallible step of the integrator
@@ -158,9 +197,10 @@ impl<'a, const N: usize, const NM1: usize> PicardCoefficients<N, NM1> {
         let mut last_pos: SMatrix<f64, DIM, N> = SMatrix::zeros();
         let mut f: SMatrix<f64, DIM, N> = SMatrix::zeros();
         let times = self.sample_points(t0, t1);
-        let w2 = (t1 + t0) / 2.0;
+        let w2 = (t1 - t0) / 2.0;
         let mut error = 100.0;
-        for _ in 0..100 {
+        let mut last_error = 50.0;
+        for idx in 0..30 {
             for ((&time, y), mut f_row) in times
                 .iter()
                 .zip(initial_pos.column_iter())
@@ -178,7 +218,13 @@ impl<'a, const N: usize, const NM1: usize> PicardCoefficients<N, NM1> {
 
             last_pos = initial_pos;
             initial_pos = b * self.c;
+            last_error = error;
             error = (last_pos - initial_pos).abs().max();
+            if error > 1000.0 && last_error > error {
+                return Err(Error::Convergence(format!(
+                    "Error diverging. error = {error}"
+                )));
+            }
             if error < 10.0 * f64::EPSILON {
                 return Ok(PicardStep {
                     b,
@@ -190,9 +236,9 @@ impl<'a, const N: usize, const NM1: usize> PicardCoefficients<N, NM1> {
                 });
             }
         }
-        Err(crate::errors::Error::Convergence(
-            "Failed to converge.".into(),
-        ))
+        Err(Error::Convergence(format!(
+            "Failed to converge. error = {error}"
+        )))
     }
 }
 
@@ -292,30 +338,18 @@ pub struct PicardStep<const N: usize, const DIM: usize> {
     error: f64,
 }
 
-// impl<const N: usize, const DIM: usize> PicardStep<N, DIM> {
-//     pub fn sample(&self, t: f64) -> KeteResult<[f64; DIM]> {
-//         let w1 = (self.t0 + self.t1) * 0.5;
-//         let w2 = (self.t1 - self.t0) * 0.5;
-//         let tau_time = ((t - w1) * w2).acos();
-//         if tau_time.is_nan() {
-//             return Err(Error::OutsideLimits(
-//                 "Queried time it outside of the fitted time span".into(),
-//             ));
-//         }
-
-//     }
-// }
-
-// def exponential_decay(y, t):
-//     return -y
-// y = np.array([[1], [2], [10]] * np.exp(-0*np.array(ts)))
-// SA = S@A
-// B = np.zeros([N, 3])
-// last = None
-// for _ in range(50):
-//     F = w2 * np.array([exponential_decay(y, t0) for y, t0 in zip(y, ts)])
-
-//     B[0] = ((SA @ F.T) + 2*y[:, 0])
-//     B[1:] = A @ F.T
-//     last = y
-//     y = (C @ B).T
+impl<const N: usize, const DIM: usize> PicardStep<N, DIM> {
+    /// Evaluate the fitted integration solution at the specified time.
+    /// This will fail if the requested time is outside of the integration bounds.
+    pub fn sample(&self, t: f64) -> KeteResult<[f64; DIM]> {
+        let w1 = (self.t0 + self.t1) * 0.5;
+        let w2 = (self.t1 - self.t0) * 0.5;
+        let tau_time = ((t - w1) * w2).acos();
+        if tau_time.is_nan() {
+            return Err(Error::ExceedsLimits(
+                "Queried time it outside of the fitted time span".into(),
+            ));
+        }
+        Ok(chebyshev_eval(tau_time, &self.b.transpose().into()))
+    }
+}
