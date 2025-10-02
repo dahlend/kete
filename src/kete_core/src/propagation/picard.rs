@@ -71,9 +71,24 @@ use crate::errors::{Error, KeteResult};
 type PicardFunc<'a, MType, const DIM: usize> =
     &'a dyn Fn(f64, &SVector<f64, DIM>, &mut MType, bool) -> KeteResult<SVector<f64, DIM>>;
 
+/// Initialization function which fills the integrators initial guess.
+type PicardInitFunc<'a, const DIM: usize, const N: usize> =
+    &'a dyn Fn(&[f64; N], &SVector<f64, DIM>) -> SMatrix<f64, DIM, N>;
+
+/// Initialization function for the picard integrator where the first value is repeated
+pub fn dumb_picard_init<const DIM: usize, const N: usize>(
+    _times: &[f64; N],
+    initial_pos: &SVector<f64, DIM>,
+) -> SMatrix<f64, DIM, N> {
+    let mut init: SMatrix<f64, DIM, N> = SMatrix::zeros();
+    for idx in 0..N {
+        init.set_column(idx, initial_pos);
+    }
+    init
+}
+
 /// Container for the pre-computed matrices used by the picard-chebyschev integrator.
 #[derive(Debug, Clone)]
-#[allow(unused, reason = "debugging")]
 pub struct PicardCoefficients<const N: usize, const NM1: usize> {
     c: SMatrix<f64, N, N>,
 
@@ -116,7 +131,6 @@ pub(crate) fn chebyshev_eval<const R: usize, const C: usize>(
     val
 }
 
-#[allow(unused, reason = "debugging")]
 impl<'a, const N: usize, const NM1: usize> PicardCoefficients<N, NM1> {
     /// foo
     pub fn test(&self) -> [f64; N] {
@@ -129,7 +143,7 @@ impl<'a, const N: usize, const NM1: usize> PicardCoefficients<N, NM1> {
         let w2 = (t1 - t0) / 2.0;
         let w1 = (t1 + t0) / 2.0;
         let mut times = self.tau;
-        times.iter_mut().for_each(|mut x| *x = w2 * (*x) + w1);
+        times.iter_mut().for_each(|x| *x = w2 * (*x) + w1);
         times
     }
 
@@ -139,27 +153,25 @@ impl<'a, const N: usize, const NM1: usize> PicardCoefficients<N, NM1> {
         func: PicardFunc<'a, MType, DIM>,
         t0: f64,
         t1: f64,
-        mut initial_pos: SMatrix<f64, DIM, N>,
+        initial_pos: SVector<f64, DIM>,
+        init_func: PicardInitFunc<'a, DIM, N>,
         metadata: &mut MType,
     ) -> KeteResult<SVector<f64, DIM>> {
         let mut cur_t0 = t0;
         let mut cur_t1 = t1;
         let mut cur_stepsize = t1 - t0;
-        let mut n_steps = 0;
+        let mut times = self.sample_points(t0, t1);
+        let mut initial_pos = init_func(&times, &initial_pos);
         loop {
             let step = self.step(func, cur_t0, cur_t1, initial_pos, metadata);
             match step {
                 Ok(res) => {
-                    initial_pos = res.y;
-                    for d in 0..DIM {
-                        for elem in 0..N {
-                            initial_pos[(d, elem)] *=
-                                initial_pos[(d, NM1)] / initial_pos[(0, elem)];
-                        }
-                    }
                     if cur_t1 == t1 {
-                        return Ok(initial_pos.column(N - 1).into());
+                        return Ok(res.y.column(N - 1).into());
                     }
+                    times = self.sample_points(cur_t0, cur_t1);
+                    initial_pos = init_func(&times, &res.y.column(N - 1).into());
+
                     cur_t0 = cur_t1;
                     cur_t1 += cur_stepsize;
                     if (cur_stepsize.is_sign_positive() && cur_t1 > t1)
@@ -167,10 +179,9 @@ impl<'a, const N: usize, const NM1: usize> PicardCoefficients<N, NM1> {
                     {
                         cur_t1 = t1;
                     }
-                    cur_stepsize *= 1.3;
-                    n_steps += 1;
+                    cur_stepsize *= 1.2;
                 }
-                Err(m) => {
+                Err(_) => {
                     cur_stepsize *= 0.75;
                     cur_t1 = cur_t0 + cur_stepsize;
                 }
@@ -181,7 +192,6 @@ impl<'a, const N: usize, const NM1: usize> PicardCoefficients<N, NM1> {
                 ));
             }
         }
-        Err(Error::Convergence("Failed to converge.".into()))
     }
 
     /// Single fallible step of the integrator
@@ -194,13 +204,12 @@ impl<'a, const N: usize, const NM1: usize> PicardCoefficients<N, NM1> {
         metadata: &mut MType,
     ) -> KeteResult<PicardStep<N, DIM>> {
         let mut b: SMatrix<f64, DIM, N> = SMatrix::zeros();
-        let mut last_pos: SMatrix<f64, DIM, N> = SMatrix::zeros();
         let mut f: SMatrix<f64, DIM, N> = SMatrix::zeros();
         let times = self.sample_points(t0, t1);
         let w2 = (t1 - t0) / 2.0;
         let mut error = 100.0;
         let mut last_error = 50.0;
-        for idx in 0..30 {
+        for _ in 0..30 {
             for ((&time, y), mut f_row) in times
                 .iter()
                 .zip(initial_pos.column_iter())
@@ -216,29 +225,26 @@ impl<'a, const N: usize, const NM1: usize> PicardCoefficients<N, NM1> {
                 .zip((f * self.a).into_iter())
                 .for_each(|(x, &n)| *x = n);
 
-            last_pos = initial_pos;
+            let last_pos = initial_pos;
             initial_pos = b * self.c;
-            last_error = error;
-            error = (last_pos - initial_pos).abs().max();
+
             if error > 1000.0 && last_error > error {
-                return Err(Error::Convergence(format!(
-                    "Error diverging. error = {error}"
-                )));
+                return Err(Error::Convergence("Failed to converge".into()));
             }
             if error < 10.0 * f64::EPSILON {
                 return Ok(PicardStep {
                     b,
                     y: initial_pos,
-                    prev_y: last_pos,
                     t0,
                     t1,
-                    error,
                 });
             }
+
+            last_error = error;
+            error = (last_pos - initial_pos).abs().max();
         }
-        Err(Error::Convergence(format!(
-            "Failed to converge. error = {error}"
-        )))
+
+        Err(Error::Convergence("Failed to converge".into()))
     }
 }
 
@@ -322,20 +328,18 @@ pub static PC25: std::sync::LazyLock<PicardCoefficients<25, 24>> =
 
 /// A single stop of the Picard Integrator
 #[derive(Debug, Clone)]
-#[allow(unused, reason = "debugging")]
 pub struct PicardStep<const N: usize, const DIM: usize> {
+    /// Chebyshev polynomial coefficients of the first type
     b: SMatrix<f64, DIM, N>,
 
     /// Final result
     pub y: SMatrix<f64, DIM, N>,
 
-    prev_y: SMatrix<f64, DIM, N>,
-
+    /// Start time
     t0: f64,
 
+    /// End time
     t1: f64,
-
-    error: f64,
 }
 
 impl<const N: usize, const DIM: usize> PicardStep<N, DIM> {

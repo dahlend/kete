@@ -3,12 +3,12 @@ use itertools::Itertools;
 use kete_core::{
     errors::{Error, KeteResult},
     frames::Ecliptic,
-    propagation::{self, NonGravModel, PC15, moid},
+    propagation::{self, NonGravModel, PC15, dumb_picard_init, moid},
     spice::{self, LOADED_SPK},
     state::State,
     time::{TDB, Time},
 };
-use nalgebra::{SMatrix, SVector};
+use nalgebra::SVector;
 use pyo3::{PyObject, PyResult, Python, pyfunction};
 use rayon::prelude::*;
 
@@ -291,11 +291,15 @@ pub fn propagation_n_body_py(
 pub fn picard(t0: f64, t1: f64) -> Vec<f64> {
     let p = &PC15;
 
-    fn func(_: f64, vals: &SVector<f64, 1>, _: &mut (), _: bool) -> KeteResult<SVector<f64, 1>> {
-        Ok(-vals)
+    fn func(_: f64, vals: &SVector<f64, 3>, _: &mut (), _: bool) -> KeteResult<SVector<f64, 3>> {
+        let v: SVector<f64, 3> = [1.0, 1., 1.0].into();
+        Ok(-vals.component_mul(&v))
     }
-    let init: SMatrix<f64, 1, 15> = [1.0; 15].into();
+
+    let init: SVector<f64, 3> = [1.0, 2.0, 3.0].into();
     let mut meta = ();
-    let step = p.integrate(&func, t0, t1, init, &mut meta).unwrap();
+    let step = p
+        .integrate(&func, t0, t1, init, &dumb_picard_init, &mut meta)
+        .unwrap();
     step.iter().cloned().collect()
 }
