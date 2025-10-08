@@ -82,7 +82,7 @@ impl PckCollection {
             }
         }
 
-        Err(Error::DAFLimits(format!(
+        Err(Error::ExceedsLimits(format!(
             "Object ({id}) does not have an PCK record for the target JD."
         )))?
     }
@@ -124,10 +124,10 @@ impl PckCollection {
             let path = entry.path();
             if path.is_file() {
                 let filename = path.to_str().unwrap();
-                if filename.to_lowercase().ends_with(".bpc") {
-                    if let Err(err) = self.load_file(filename) {
-                        eprintln!("Failed to load PCK file {filename}: {err}");
-                    }
+                if filename.to_lowercase().ends_with(".bpc")
+                    && let Err(err) = self.load_file(filename)
+                {
+                    eprintln!("Failed to load PCK file {filename}: {err}");
                 }
             }
         });

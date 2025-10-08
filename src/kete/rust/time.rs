@@ -128,10 +128,10 @@ impl PyTime {
         // attempt to make life easier for the user by checking if they are missing
         // the timezone information. If they are, append it and return. Otherwise
         // let the conversion fail as it normally would.
-        if !s.contains('+') {
-            if let Ok(t) = Time::<UTC>::from_iso(&(s.to_owned() + "+00:00")) {
-                return Ok(PyTime(t.tdb()));
-            }
+        if !s.contains('+')
+            && let Ok(t) = Time::<UTC>::from_iso(&(s.to_owned() + "+00:00"))
+        {
+            return Ok(PyTime(t.tdb()));
         }
         Ok(PyTime(Time::<UTC>::from_iso(s)?.tdb()))
     }

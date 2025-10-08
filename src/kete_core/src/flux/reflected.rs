@@ -277,12 +277,12 @@ impl HGParams {
         if let Some(albedo) = vis_albedo {
             // h is defined and albedo is defined, meaning diameter may be calculated.
             let expected_diam = c_hg / albedo.sqrt() * (10_f64).powf(-0.2 * h_mag);
-            if let Some(diam) = diam {
-                if (expected_diam - diam).abs() > 1e-8 {
-                    Err(Error::ValueError(format!(
-                        "Provided diameter doesn't match with computed diameter. {expected_diam} != {diam}"
-                    )))?;
-                }
+            if let Some(diam) = diam
+                && (expected_diam - diam).abs() > 1e-8
+            {
+                Err(Error::ValueError(format!(
+                    "Provided diameter doesn't match with computed diameter. {expected_diam} != {diam}"
+                )))?;
             }
             return Ok((h_mag, Some(albedo), Some(expected_diam), c_hg));
         }

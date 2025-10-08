@@ -226,13 +226,13 @@ impl NonInertialFrame {
                     ));
                 }
             }
-            Err(Error::DAFLimits(format!(
+            Err(Error::ExceedsLimits(format!(
                 "Reference frame ID {} not found in CK data.",
                 self.reference_frame_id
             )))
         } else {
             // Unsupported frame
-            Err(Error::DAFLimits(format!(
+            Err(Error::ExceedsLimits(format!(
                 "Reference frame ID {} is not supported.",
                 self.reference_frame_id
             )))

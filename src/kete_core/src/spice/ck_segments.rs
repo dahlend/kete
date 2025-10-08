@@ -49,7 +49,7 @@ impl CkSegment {
     ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
         let arr_ref: &CkArray = self.into();
         if arr_ref.instrument_id != instrument_id {
-            return Err(Error::DAFLimits(format!(
+            return Err(Error::ExceedsLimits(format!(
                 "Instrument ID is not present in this record. {}",
                 arr_ref.instrument_id
             )));
@@ -138,7 +138,7 @@ impl CkSegmentType2 {
     ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
         let sclk = LOADED_SCLK
             .try_read()
-            .map_err(|_| Error::DAFLimits("Failed to read SCLK data.".into()))?;
+            .map_err(|_| Error::ExceedsLimits("Failed to read SCLK data.".into()))?;
         let tick = sclk.try_time_to_tick(self.array.naif_id, time)?;
 
         // get the time of the last record and its index
@@ -165,7 +165,7 @@ impl CkSegmentType2 {
         let dt = tick - record_time;
 
         if dt < 0.0 {
-            return Err(Error::DAFLimits(format!(
+            return Err(Error::ExceedsLimits(format!(
                 "Requested time {record_idx} is before the start of the segment."
             )));
         }
@@ -204,13 +204,13 @@ impl TryFrom<CkArray> for CkSegmentType2 {
         dir_size = n_records / 100;
 
         if array_len != (n_records * 10 + dir_size) {
-            return Err(Error::DAFLimits(
+            return Err(Error::ExceedsLimits(
                 "CK File is not formatted correctly, directory size of segments appear incorrect."
                     .into(),
             ));
         }
         if n_records == 0 {
-            return Err(Error::DAFLimits(
+            return Err(Error::ExceedsLimits(
                 "CK File does not contain any records.".into(),
             ));
         }
@@ -348,7 +348,7 @@ impl CkSegmentType3 {
     ) -> KeteResult<(Time<TDB>, UnitQuaternion<f64>, Option<[f64; 3]>)> {
         let sclk = LOADED_SCLK
             .try_read()
-            .map_err(|_| Error::DAFLimits("Failed to read SCLK data.".into()))?;
+            .map_err(|_| Error::ExceedsLimits("Failed to read SCLK data.".into()))?;
         let tick = sclk.try_time_to_tick(self.array.naif_id, time)?;
 
         // If there is only one record, return it immediately.
@@ -427,12 +427,12 @@ impl TryFrom<CkArray> for CkSegmentType3 {
         let n_intervals = array.daf[array.daf.len() - 2] as usize;
 
         if n_records == 0 {
-            return Err(Error::DAFLimits(
+            return Err(Error::ExceedsLimits(
                 "CK File does not contain any records.".into(),
             ));
         }
         if n_intervals == 0 {
-            return Err(Error::DAFLimits(
+            return Err(Error::ExceedsLimits(
                 "CK File does not contain any intervals of records.".into(),
             ));
         }
@@ -455,7 +455,7 @@ impl TryFrom<CkArray> for CkSegmentType3 {
         expected_size += time_dir_size + interval_dir_size;
 
         if expected_size != array.daf.len() {
-            return Err(Error::DAFLimits(
+            return Err(Error::ExceedsLimits(
                 "CK File not formatted correctly. Number of records found in file don't match expected."
                     .into(),
             ));

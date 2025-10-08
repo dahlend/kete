@@ -107,7 +107,7 @@ impl SpkCollection {
                 }
             }
         }
-        Err(Error::DAFLimits(format!(
+        Err(Error::ExceedsLimits(format!(
             "Object ({id}) does not have an SPK record for the target JD."
         )))
     }
@@ -269,7 +269,7 @@ impl SpkCollection {
         if let Some((v, _)) = result {
             Ok(v.iter().skip(1).map(|x| x.1).collect())
         } else {
-            Err(Error::DAFLimits(format!(
+            Err(Error::ExceedsLimits(format!(
                 "SPK files are missing information to be able to map from obj {start} to obj {goal}"
             )))
         }
@@ -396,10 +396,10 @@ impl SpkCollection {
             let path = entry.path();
             if path.is_file() {
                 let filename = path.to_str().unwrap();
-                if filename.to_lowercase().ends_with(".bsp") {
-                    if let Err(err) = self.load_file(filename) {
-                        eprintln!("Failed to load SPK file {filename}: {err}");
-                    }
+                if filename.to_lowercase().ends_with(".bsp")
+                    && let Err(err) = self.load_file(filename)
+                {
+                    eprintln!("Failed to load SPK file {filename}: {err}");
                 }
             }
         });

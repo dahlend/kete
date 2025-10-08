@@ -117,7 +117,7 @@ impl SpkSegment {
 
         // this is faster than calling contains, probably because the || instead of &&
         if jds < arr_ref.jds_start || jds > arr_ref.jds_end {
-            return Err(Error::DAFLimits(
+            return Err(Error::ExceedsLimits(
                 "JD is not present in this record.".to_string(),
             ));
         }

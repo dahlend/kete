@@ -53,7 +53,7 @@ use crate::prelude::KeteResult;
 use crate::spice::LOADED_SPK;
 use crate::{constants, errors::Error, propagation::nongrav::NonGravModel};
 use nalgebra::allocator::Allocator;
-use nalgebra::{DefaultAllocator, Dim, Matrix3, OVector, U1, U2, Vector3};
+use nalgebra::{DefaultAllocator, Dim, Matrix3, OVector, SVector, U1, U2, Vector3};
 use std::ops::AddAssign;
 
 /// Metadata object used by the [`central_accel`] function below.
@@ -158,12 +158,11 @@ pub fn spk_accel(
 ) -> KeteResult<Vector3<f64>> {
     let mut accel = Vector3::<f64>::zeros();
 
-    if exact_eval {
-        if let Some(close_approach) = meta.close_approach.as_mut() {
-            if close_approach.2 == 0.0 {
-                *close_approach = (-1, 1000000.0, 0.0);
-            }
-        }
+    if exact_eval
+        && let Some(close_approach) = meta.close_approach.as_mut()
+        && close_approach.2 == 0.0
+    {
+        *close_approach = (-1, 1000000.0, 0.0);
     }
 
     let spk = &LOADED_SPK.try_read().unwrap();
@@ -177,10 +176,10 @@ pub fn spk_accel(
 
         if exact_eval {
             let r = rel_pos.norm();
-            if let Some(close_approach) = meta.close_approach.as_mut() {
-                if close_approach.2 >= r {
-                    *close_approach = (id, r, time);
-                }
+            if let Some(close_approach) = meta.close_approach.as_mut()
+                && close_approach.2 >= r
+            {
+                *close_approach = (id, r, time);
             }
 
             if r as f32 <= radius {
@@ -190,13 +189,33 @@ pub fn spk_accel(
         grav_params.add_acceleration(&mut accel, &rel_pos, &rel_vel);
 
         // If the center is the sun, add non-gravitational forces
-        if grav_params.naif_id == 10 {
-            if let Some(non_grav) = &meta.non_grav_model {
-                non_grav.add_acceleration(&mut accel, &rel_pos, &rel_vel);
-            }
+        if grav_params.naif_id == 10
+            && let Some(non_grav) = &meta.non_grav_model
+        {
+            non_grav.add_acceleration(&mut accel, &rel_pos, &rel_vel);
         }
     }
     Ok(accel)
+}
+
+/// Convert the second order ODE acceleration function into a first order.
+/// This allows the second order ODE to be used with the picard integrator.
+///
+/// The `state_vec` is made up of concatenated position and velocity vectors.
+/// Otherwise this is just a thin wrapper over the [`spk_accel`] function.
+pub fn spk_accel_first_order(
+    time: f64,
+    state_vec: &SVector<f64, 6>,
+    meta: &mut AccelSPKMeta<'_>,
+    exact_eval: bool,
+) -> KeteResult<SVector<f64, 6>> {
+    let pos: Vector3<f64> = state_vec.fixed_rows::<3>(0).into();
+    let vel: Vector3<f64> = state_vec.fixed_rows::<3>(3).into();
+    let accel = spk_accel(time, &pos, &vel, meta, exact_eval)?;
+    let mut res = SVector::<f64, 6>::zeros();
+    res.fixed_rows_mut::<3>(0).set_column(0, &vel);
+    res.fixed_rows_mut::<3>(3).set_column(0, &accel);
+    Ok(res)
 }
 
 /// Metadata for the [`vec_accel`] function defined below.
@@ -269,11 +288,12 @@ where
             grav_params.add_acceleration(&mut accel_working, &rel_pos, &rel_vel);
 
             // If the center is the sun, add non-gravitational forces
-            if (grav_params.naif_id == 10) & (idx > n_massive) {
-                if let Some(non_grav) = &meta.non_gravs[idx - n_massive] {
-                    non_grav.add_acceleration(&mut accel_working, &rel_pos, &rel_vel);
-                }
+            if (grav_params.naif_id == 10) & (idx > n_massive)
+                && let Some(non_grav) = &meta.non_gravs[idx - n_massive]
+            {
+                non_grav.add_acceleration(&mut accel_working, &rel_pos, &rel_vel);
             }
+
             accel.fixed_rows_mut::<3>(idx * 3).add_assign(accel_working);
         }
     }
@@ -296,7 +316,7 @@ pub fn central_accel_grad(
 
 /// Calculate the Jacobian for the [`central_accel`] function.
 ///
-/// This enables the computation of the STM.
+/// This enables the computation of the two body STM.
 pub fn accel_grad(
     obj_pos: &Vector3<f64>,
     _obj_vel: &Vector3<f64>,

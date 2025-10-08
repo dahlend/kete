@@ -38,25 +38,28 @@ use crate::frames::Equatorial;
 use crate::prelude::{Desig, KeteResult};
 use crate::spice::LOADED_SPK;
 use crate::state::State;
-use nalgebra::{DVector, Vector3};
+use nalgebra::{DVector, SMatrix, SVector, Vector3};
 
 mod acceleration;
 mod kepler;
 mod nongrav;
+mod picard;
 mod radau;
 mod runge_kutta;
 mod state_transition;
+mod util;
 
 // expose the public methods in spk to the outside world.
 pub use acceleration::{
     AccelSPKMeta, AccelVecMeta, CentralAccelMeta, accel_grad, central_accel, central_accel_grad,
-    spk_accel, vec_accel,
+    spk_accel, spk_accel_first_order, vec_accel,
 };
 pub use kepler::{
     PARABOLIC_ECC_LIMIT, analytic_2_body, compute_eccentric_anomaly, compute_true_anomaly,
     eccentric_anomaly_from_true, moid, propagate_two_body,
 };
 pub use nongrav::NonGravModel;
+pub use picard::{PC15, PC25, PicardIntegrator, PicardStep, dumb_picard_init};
 pub use radau::RadauIntegrator;
 pub use runge_kutta::RK45Integrator;
 pub use state_transition::compute_state_transition;
@@ -135,6 +138,85 @@ pub fn propagate_n_body_spk(
             metadata,
         )?
     };
+
+    let mut new_state = State::new(state.desig.to_owned(), jd_final, pos.into(), vel.into(), 0);
+    spk.try_change_center(&mut new_state, center)?;
+    Ok(new_state)
+}
+
+/// Initialization function for the picard integrator which initializes the state
+/// using two body mechanics.
+fn picard_two_body_init<const N: usize>(
+    times: &[f64; N],
+    init_pos: &SVector<f64, 6>,
+) -> SMatrix<f64, 6, N> {
+    let pos: Vector3<f64> = init_pos.fixed_rows::<3>(0).into();
+    let vel: Vector3<f64> = init_pos.fixed_rows::<3>(3).into();
+    let t0 = times[0];
+
+    let mut res: SMatrix<f64, 6, N> = SMatrix::zeros();
+    res.fixed_rows_mut::<3>(0).set_column(0, &pos);
+    res.fixed_rows_mut::<3>(3).set_column(0, &vel);
+
+    for (idx, t) in times.iter().enumerate().skip(1) {
+        let dt = t - t0;
+        let (p, v) = analytic_2_body(dt, &pos, &vel, None).unwrap();
+
+        res.fixed_rows_mut::<3>(0).set_column(idx, &p);
+        res.fixed_rows_mut::<3>(3).set_column(idx, &v);
+    }
+    res
+}
+
+/// Propagate an object using full N-Body physics with the Radau 15th order integrator.
+pub fn propagate_picard_n_body_spk(
+    mut state: State<Equatorial>,
+    jd_final: f64,
+    include_extended: bool,
+    non_grav_model: Option<NonGravModel>,
+) -> KeteResult<State<Equatorial>> {
+    let center = state.center_id;
+    let spk = &LOADED_SPK.try_read().unwrap();
+    spk.try_change_center(&mut state, 0)?;
+
+    let mass_list = {
+        if include_extended {
+            &GravParams::selected_masses()
+        } else {
+            &GravParams::planets()
+        }
+    };
+
+    let mut metadata = AccelSPKMeta {
+        close_approach: None,
+        non_grav_model,
+        massive_obj: mass_list,
+    };
+
+    let integrator = &PC15;
+
+    let mut state_vec = SVector::<f64, 6>::zeros();
+    state_vec
+        .fixed_rows_mut::<3>(0)
+        .set_column(0, &state.pos.into());
+    state_vec
+        .fixed_rows_mut::<3>(3)
+        .set_column(0, &state.vel.into());
+
+    let final_state_vec = {
+        integrator.integrate(
+            &spk_accel_first_order,
+            &picard_two_body_init,
+            state_vec,
+            state.jd,
+            jd_final,
+            1.0,
+            &mut metadata,
+        )?
+    };
+
+    let pos: Vector3<f64> = final_state_vec.fixed_rows::<3>(0).into();
+    let vel: Vector3<f64> = final_state_vec.fixed_rows::<3>(3).into();
 
     let mut new_state = State::new(state.desig.to_owned(), jd_final, pos.into(), vel.into(), 0);
     spk.try_change_center(&mut new_state, center)?;

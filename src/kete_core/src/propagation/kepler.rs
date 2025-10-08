@@ -82,7 +82,7 @@ pub fn compute_eccentric_anomaly(ecc: f64, mean_anom: f64, peri_dist: f64) -> Ke
         }
         ecc => {
             // Hyperbolic
-            let f = |ecc_anom: f64| (ecc * ecc_anom.sinh() - ecc_anom - mean_anom);
+            let f = |ecc_anom: f64| ecc * ecc_anom.sinh() - ecc_anom - mean_anom;
             let d = |ecc_anom: f64| -1.0 + ecc * ecc_anom.cosh();
             let guess = (mean_anom / ecc).asinh();
             Ok(newton_raphson(f, d, guess, 1e-11)?)

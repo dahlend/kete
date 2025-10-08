@@ -194,10 +194,10 @@ impl SclkCollection {
             let path = entry.path();
             if path.is_file() {
                 let filename = path.to_str().unwrap();
-                if filename.to_lowercase().ends_with(".tsc") {
-                    if let Err(err) = self.load_file(filename) {
-                        eprintln!("Failed to load SCLK file {filename}: {err}");
-                    }
+                if filename.to_lowercase().ends_with(".tsc")
+                    && let Err(err) = self.load_file(filename)
+                {
+                    eprintln!("Failed to load SCLK file {filename}: {err}");
                 }
             }
         });
