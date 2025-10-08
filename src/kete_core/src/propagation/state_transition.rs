@@ -30,7 +30,9 @@
 use crate::constants::GMS_SQRT;
 use crate::frames::Equatorial;
 use crate::prelude::{KeteResult, State};
-use crate::propagation::{CentralAccelMeta, RK45Integrator, central_accel, central_accel_grad};
+use crate::propagation::{
+    CentralAccelMeta, PC15, central_accel, central_accel_grad, dumb_picard_init,
+};
 use nalgebra::{Const, Matrix6, SVector, U1, U6, Vector3};
 
 fn stm_ivp_eqn(
@@ -78,13 +80,13 @@ fn stm_ivp_eqn(
 
 /// Compute a state transition matrix assuming only 2-body mechanics.
 ///
-/// This uses a Runge-Kutta 4/5 algorithm.
+/// This uses the Picard-Chebyshev integrator [`PC15`].
 pub fn compute_state_transition(
     state: &mut State<Equatorial>,
     jd: f64,
     central_mass: f64,
 ) -> ([[f64; 3]; 2], Matrix6<f64>) {
-    let meta = CentralAccelMeta {
+    let mut meta = CentralAccelMeta {
         mass_scaling: central_mass,
         ..Default::default()
     };
@@ -102,18 +104,21 @@ pub fn compute_state_transition(
     initial_state
         .fixed_rows_mut::<3>(3)
         .set_column(0, &(Vector3::from(state.vel) / GMS_SQRT));
-    let rad = RK45Integrator::integrate(
-        &stm_ivp_eqn,
-        initial_state,
-        state.jd * GMS_SQRT,
-        jd * GMS_SQRT,
-        meta,
-        1e-12,
-    )
-    .unwrap();
+
+    let integrator = &PC15;
+    let rad = integrator
+        .integrate(
+            &stm_ivp_eqn,
+            &dumb_picard_init,
+            initial_state,
+            state.jd * GMS_SQRT,
+            jd * GMS_SQRT,
+            1.0,
+            &mut meta,
+        )
+        .unwrap();
 
     let vec_reshape = rad
-        .0
         .fixed_rows::<36>(6)
         .into_owned()
         .reshape_generic(U6, U6)
@@ -134,8 +139,8 @@ pub fn compute_state_transition(
         Matrix6::<f64>::from_diagonal(&[1.0, 1.0, 1.0, GMS_SQRT, GMS_SQRT, GMS_SQRT].into());
     (
         [
-            rad.0.fixed_rows::<3>(0).into(),
-            (rad.0.fixed_rows::<3>(3) * GMS_SQRT).into(),
+            rad.fixed_rows::<3>(0).into(),
+            (rad.fixed_rows::<3>(3) * GMS_SQRT).into(),
         ],
         scaling_a * vec_reshape * scaling_b,
     )

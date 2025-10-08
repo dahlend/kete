@@ -54,29 +54,13 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //
-//                                                   ______
-//                                      ___.--------'------`---------.____
-//                                _.---'----------------------------------`---.__
-//                              .'___=]===========================================
-// ,-----------------------..__/.'         >--.______        _______.---'
-// ]====================<==||(__)        .'          `------'
-// `-----------------------`' ----.___--/
-//      /       /---'                 `/
-//     /_______(______________________/      Boldly going where many numerical
-//     `-------------.--------------.'       integrators have gone before.
-//                    \________|_.-'
-//
 use std::f64::consts::PI;
 
 use itertools::Itertools;
 use nalgebra::{SMatrix, SVector};
 
 use crate::errors::{Error, KeteResult};
-
-/// Function will be of the form y' = F(t, y, metadata)
-/// This is the first-order general solver.
-type PicardFunc<'a, MType, const DIM: usize> =
-    &'a dyn Fn(f64, &SVector<f64, DIM>, &mut MType, bool) -> KeteResult<SVector<f64, DIM>>;
+use crate::propagation::util::FirstOrderODE;
 
 /// Initialization function which fills the integrators initial guess.
 type PicardInitFunc<'a, const DIM: usize, const N: usize> =
@@ -94,6 +78,18 @@ pub fn dumb_picard_init<const DIM: usize, const N: usize>(
     init
 }
 
+//                                                   ______
+//                                      ___.--------'------`---------.____
+//                                _.---'----------------------------------`---.__
+//                              .'___=]===========================================
+// ,-----------------------..__/.'         >--.______        _______.---'
+// ]====================<==||(__)        .'          `------'
+// `-----------------------`' ----.___--/
+//      /       /---'                 `/
+//     /_______(______________________/      Boldly going where many numerical
+//     `-------------.--------------.'       integrators have gone before.
+//                    \________|_.-'
+//
 /// Picard-Chebyshev integrator for solving first order ODEs.
 ///
 /// This integrator fits Chebyshev polynomials to the provided first order ODEs.
@@ -110,10 +106,12 @@ pub fn dumb_picard_init<const DIM: usize, const N: usize>(
 /// `<https://doi.org/10.2514/6.2022-1275>` is a good place to start.
 ///
 /// The primary entry-point for the integrator is the [`PicardIntegrator::integrate`]
-/// function. See that function for more direct details on its use.
+/// function. See that function for more details on its use.
 ///
 #[derive(Debug, Clone)]
 pub struct PicardIntegrator<const N: usize, const NM1: usize> {
+    // These parameters names are taken directly from the paper cited above.
+    // SA represents the matrix product of S and A.
     c: SMatrix<f64, N, N>,
 
     a: SMatrix<f64, N, NM1>,
@@ -148,31 +146,53 @@ pub struct PicardStep<const N: usize, const DIM: usize> {
 }
 
 impl<'a, const N: usize, const NM1: usize> PicardIntegrator<N, NM1> {
-    /// Given the start and stop times of a desired integration, return the actual
-    /// times where the function will be evaluated starting at t0 and ending at t1.
-    pub fn evaluation_times(&self, t0: f64, t1: f64) -> [f64; N] {
-        let w2 = (t1 - t0) / 2.0;
-        let w1 = (t1 + t0) / 2.0;
-        let mut times = self.tau;
-        times.iter_mut().for_each(|x| *x = w2 * (*x) + w1);
-        times
-    }
-
     /// Integrate from the start point to the end.
+    ///
+    /// # Arguments
+    ///
+    /// * `func` - First order ODE function which accepts time, state of the system, a
+    ///   metadata class, and a bool value to indicate if the provided state is
+    ///   believed to be an exact evaluated position.
+    /// * `init_func` - A function which can initialize the starting guess for the
+    ///   integrator. If this is unavailable, then [`dumb_picard_init`] can be used as
+    ///   a basic initializer.
+    /// * `t0` - Start time of the integration.
+    /// * `t1` - End time of the integration.
+    /// * `step_size` - Initial step size of the integration, a rough guess is all that
+    ///   is required, as the integrator will find its own valid step size. This speeds
+    ///   up the initial search for the valid step size.
+    /// * `metadata` - An initial packet of metadata which will be passed through to
+    ///   the `func` during evaluation, this may include information such as masses,
+    ///   non-gravitational forces, record keeping of close encounters, etc. This
+    ///   metadata is mutated in place during integration.
+    ///
+    /// # Returns
+    ///  
+    ///   Returns the expected state of the system at the final time step `t1`.
+    ///
     pub fn integrate<const DIM: usize, MType>(
         &self,
-        func: PicardFunc<'a, MType, DIM>,
+        func: FirstOrderODE<'a, MType, DIM>,
         init_func: PicardInitFunc<'a, DIM, N>,
         initial_pos: SVector<f64, DIM>,
         t0: f64,
         t1: f64,
+        step_size: f64,
         metadata: &mut MType,
     ) -> KeteResult<SVector<f64, DIM>> {
         let mut cur_t0 = t0;
-        let mut cur_t1 = t1;
-        let mut cur_stepsize = t1 - t0;
-        let mut times = self.evaluation_times(t0, t1);
+
+        let mut cur_stepsize = step_size;
+        let mut cur_t1 = t0 + cur_stepsize;
+        if (t0 - t1).abs() < step_size.abs() {
+            cur_stepsize = t1 - t0;
+            cur_t1 = t1;
+        }
+
+        let mut times = self.evaluation_times(cur_t0, cur_t1);
         let mut initial_pos = init_func(&times, &initial_pos);
+
+        let mut has_failed = false;
         loop {
             let step = self.step(func, cur_t0, cur_t1, initial_pos, metadata);
             match step {
@@ -190,74 +210,111 @@ impl<'a, const N: usize, const NM1: usize> PicardIntegrator<N, NM1> {
                     {
                         cur_t1 = t1;
                     }
-                    cur_stepsize *= 1.2;
+                    if !has_failed {
+                        cur_stepsize *= 1.5;
+                    }
+                }
+                Err(Error::Impact(idx, jd)) => {
+                    return Err(Error::Impact(idx, jd));
                 }
                 Err(_) => {
-                    cur_stepsize *= 0.75;
+                    has_failed = true;
+                    cur_stepsize *= 0.7;
                     cur_t1 = cur_t0 + cur_stepsize;
                 }
             }
-            if cur_stepsize.abs() < 1e-5 {
-                return Err(Error::Convergence(
-                    "Failed to converge, step sizes became too small.".into(),
-                ));
+            if cur_stepsize.abs() < 1e-10 {
+                return Err(Error::Convergence(format!(
+                    "Failed to converge, step sizes became too small. {}",
+                    cur_stepsize.abs()
+                )));
             }
         }
     }
 
     /// Single fallible step of the integrator
+    ///
+    /// This returns a single [`PicardStep`] which may be used to evaluate the state
+    /// of the system at any point between the start time `t0` and end `t1`.
+    ///
     fn step<const DIM: usize, MType>(
         &self,
-        func: PicardFunc<'a, MType, DIM>,
+        func: FirstOrderODE<'a, MType, DIM>,
         t0: f64,
         t1: f64,
-        mut initial_pos: SMatrix<f64, DIM, N>,
+        mut cur_pos: SMatrix<f64, DIM, N>,
         metadata: &mut MType,
     ) -> KeteResult<PicardStep<N, DIM>> {
         let mut b: SMatrix<f64, DIM, N> = SMatrix::zeros();
         let mut f: SMatrix<f64, DIM, N> = SMatrix::zeros();
         let times = self.evaluation_times(t0, t1);
         let w2 = (t1 - t0) / 2.0;
-        let mut error = 100.0;
+        let mut error: f64 = 100.0;
         let mut last_error = 50.0;
-        for _ in 0..30 {
+
+        // when the answer converges to within tolerance, do one last evaluation and
+        // trigger the metadata exact evaluation, allowing the `func` to update the
+        // metadata with exact values.
+        let mut final_iteration = false;
+
+        for _ in 0..150 {
             for ((&time, y), mut f_row) in times
                 .iter()
-                .zip(initial_pos.column_iter())
+                .zip(cur_pos.column_iter())
                 .zip(f.column_iter_mut())
             {
-                f_row.set_column(0, &(w2 * func(time, &y.into(), metadata, false)?));
+                // during the final iteration, let `func` know that we should update
+                // the metadata
+                f_row.set_column(0, &(w2 * func(time, &y.into(), metadata, final_iteration)?));
             }
 
-            b.set_column(0, &(f * self.sa + 2.0 * initial_pos.column(0)));
+            b.set_column(0, &(f * self.sa + 2.0 * cur_pos.column(0)));
 
             b.fixed_view_mut::<DIM, NM1>(0, 1)
                 .iter_mut()
                 .zip((f * self.a).into_iter())
                 .for_each(|(x, &n)| *x = n);
 
-            let last_pos = initial_pos;
-            initial_pos = b * self.c;
+            let last_pos = cur_pos;
+            cur_pos = b * self.c;
 
             // diverging, quit quickly
             if error > 1000.0 && last_error > error {
-                return Err(Error::Convergence("Failed to converge".into()));
+                return Err(Error::Convergence(
+                    "Integrator solution is diverging.".into(),
+                ));
             }
 
-            if error < 10.0 * f64::EPSILON {
+            // if we are on the final evaluation, return the answer.
+            if final_iteration {
                 return Ok(PicardStep {
                     b,
-                    y: initial_pos,
+                    y: cur_pos,
                     t0,
                     t1,
                 });
             }
 
+            // if we have converged, then trigger the final iteration
+            if error < 2.0 * f64::EPSILON {
+                final_iteration = true;
+            }
+
             last_error = error;
-            error = (last_pos - initial_pos).abs().max();
+            error = (last_pos - cur_pos).abs().max();
         }
 
-        Err(Error::Convergence("Failed to converge".into()))
+        Err(Error::Convergence("Integrator failed to converge.".into()))
+    }
+
+    /// Given the start and stop times of a desired integration, return the actual
+    /// times where the function will be evaluated starting at t0 and ending at t1.
+    fn evaluation_times(&self, t0: f64, t1: f64) -> [f64; N] {
+        let w2 = (t1 - t0) / 2.0;
+        let w1 = (t1 + t0) / 2.0;
+        let mut times = self.tau;
+        times.iter_mut().for_each(|x| *x = w2 * (*x) + w1);
+        times
     }
 }
 
@@ -324,9 +381,9 @@ impl<const N: usize, const NM1: usize> Default for PicardIntegrator<N, NM1> {
         a[(N - 2, 0)] /= 2.0;
         a[(N - 2, N - 1)] /= 2.0;
 
-        // Now we construct the SA Vector, in the original paper they keep S as a separate
-        // vector and multiply it against A over and over, whereas we are just doing it once
-        // and saving it.
+        // Now we construct the SA Vector, in the original paper they keep S as a
+        // separate vector and multiply it against A over and over, whereas we are just
+        // doing it once and saving it.
         let s: SVector<f64, NM1> =
             SVector::from_iterator((0..N).map(|idx| 2.0 * (-1_f64).powi(idx as i32)));
 
@@ -376,28 +433,17 @@ fn chebyshev_eval<const R: usize, const C: usize>(x: f64, coef: &[[f64; R]; C]) 
     val
 }
 
-// let p = &PC15;
-
-// fn func(_: f64, vals: &SVector<f64, 3>, _: &mut (), _: bool) -> KeteResult<SVector<f64, 3>> {
-//     let v: SVector<f64, 3> = [1.0, 1., 1.0].into();
-//     Ok(-vals.component_mul(&v))
-// }
-
-// let init: SVector<f64, 3> = [1.0, 2.0, 3.0].into();
-// let mut meta = ();
-// let step = p
-//     .integrate(&func, &dumb_picard_init, init, t0, t1, &mut meta)
-//     .unwrap();
-
 #[cfg(test)]
 mod tests {
-
-    use nalgebra::Vector3;
-
     use super::*;
 
     #[test]
     fn exponential_decay_test() {
+        // integrate a first order ode of the form f' = -c  f'(0) = k
+        // where c = [1, 0.5, 0.1] and k = [1, 2, 5]
+        // This has the analytic solution of f=k * exp(-c*t)
+
+        // define the f' function
         fn func(
             _: f64,
             vals: &SVector<f64, 3>,
@@ -407,22 +453,29 @@ mod tests {
             let v: SVector<f64, 3> = [1.0, 0.5, 0.1].into();
             Ok(-vals.component_mul(&v))
         }
-        let p = &PC15;
 
-        let t1 = 10.0;
+        // integrate with the initial conditions
+        let p = &PC15;
+        let t1 = 5.0;
         let res = p
             .integrate(
                 &func,
                 &dumb_picard_init,
-                Vector3::new(1.0, 2.0, 5.0),
+                [1.0, 2.0, 5.0].into(),
                 0.0,
                 t1,
+                0.1,
                 &mut (),
             )
             .unwrap();
 
+        // test against the analytic solution
         assert!((res[0] - (1.0 * (-t1).exp())).abs() < 1e-15);
         assert!((res[1] - (2.0 * (-0.5 * t1).exp())).abs() < 1e-15);
-        assert!((res[2] - (5.0 * (-0.1 * t1).exp())).abs() < 1e-15);
+        assert!(
+            (res[2] - (5.0 * (-0.1 * t1).exp())).abs() < 1e-14,
+            "{}",
+            (res[2] - (5.0 * (-0.1 * t1).exp())).abs()
+        );
     }
 }

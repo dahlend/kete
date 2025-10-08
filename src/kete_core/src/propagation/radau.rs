@@ -31,20 +31,11 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 use crate::errors::Error;
 use crate::prelude::KeteResult;
+use crate::propagation::util::SecondOrderODE;
 use itertools::izip;
 use nalgebra::allocator::Allocator;
 use nalgebra::*;
 use nalgebra::{DefaultAllocator, Dim, OMatrix, OVector, RowSVector, SMatrix, SVector, U1, U7};
-
-/// Function will be of the form y'' = F(t, y, y', metadata)
-/// This is the second-order general solver (class II in the Everhart paper).
-type RadauFunc<'a, MType, D> = &'a dyn Fn(
-    f64,
-    &OVector<f64, D>,
-    &OVector<f64, D>,
-    &mut MType,
-    bool,
-) -> KeteResult<OVector<f64, D>>;
 
 /// Integrator will return a result of this type.
 type RadauResult<MType, D> = KeteResult<(OVector<f64, D>, OVector<f64, D>, MType)>;
@@ -118,7 +109,7 @@ pub struct RadauIntegrator<'a, MType, D: Dim>
 where
     DefaultAllocator: Allocator<D, U1> + Allocator<D, U7>,
 {
-    func: RadauFunc<'a, MType, D>,
+    func: SecondOrderODE<'a, MType, D>,
     metadata: MType,
 
     final_time: f64,
@@ -142,7 +133,7 @@ where
     DefaultAllocator: Allocator<D, U1> + Allocator<D, U7>,
 {
     fn new(
-        func: RadauFunc<'a, MType, D>,
+        func: SecondOrderODE<'a, MType, D>,
         state_init: OVector<f64, D>,
         state_der_init: OVector<f64, D>,
         time_init: f64,
@@ -183,7 +174,7 @@ where
 
     /// Integrate the functions from the initial time to the final time.
     pub fn integrate(
-        func: RadauFunc<'a, MType, D>,
+        func: SecondOrderODE<'a, MType, D>,
         state_init: OVector<f64, D>,
         state_der_init: OVector<f64, D>,
         time_init: f64,
