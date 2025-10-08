@@ -81,7 +81,8 @@ impl CkCollection {
     /// Get the closest record to the given JD for the specified instrument ID.
     ///
     /// # Errors
-    /// [`Error::DAFLimits`] if the instrument ID does not have a record for the target JD.
+    /// [`Error::ExceedsLimits`] if the instrument ID does not have a record for the
+    ///   target JD.
     ///
     pub fn try_get_frame(
         &self,
