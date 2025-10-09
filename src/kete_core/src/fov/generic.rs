@@ -255,23 +255,23 @@ mod tests {
     fn test_check_rectangle_visible() {
         let circular = State::new(
             Desig::Empty,
-            2451545.0,
+            2451545.0.into(),
             [0.0, 1., 0.0].into(),
             [-GMS_SQRT, 0.0, 0.0].into(),
             0,
         );
         let circular_back = State::new(
             Desig::Empty,
-            2451545.0,
+            2451545.0.into(),
             [1.0, 0.0, 0.0].into(),
             [0.0, GMS_SQRT, 0.0].into(),
             0,
         );
 
-        for offset in [-10.0, -5.0, 0.0, 5.0, 10.0] {
+        for offset in [-10.0_f64, -5.0, 0.0, 5.0, 10.0] {
             let off_state = propagate_n_body_spk(
                 circular_back.clone(),
-                circular_back.jd - offset,
+                circular_back.epoch - offset,
                 false,
                 None,
             )
@@ -300,7 +300,7 @@ mod tests {
         let spk = &LOADED_SPK.read().unwrap();
         let observer = State::new(
             Desig::Empty,
-            2451545.0,
+            2451545.0.into(),
             [0.0, 1., 0.0].into(),
             [-GMS_SQRT, 0.0, 0.0].into(),
             10,
@@ -308,7 +308,7 @@ mod tests {
 
         for offset in [-10.0, -5.0, 0.0, 5.0, 10.0] {
             let ceres = spk
-                .try_get_state_with_center(20000001, observer.jd + offset, 10)
+                .try_get_state_with_center(20000001, observer.epoch + offset, 10)
                 .unwrap();
 
             let fov = OmniDirectional::new(observer.clone());
@@ -318,9 +318,12 @@ mod tests {
             assert!(two_body.is_ok());
             let (_, _, two_body) = two_body.unwrap();
             let dist = (two_body.pos - observer.pos).norm();
-            assert!((observer.jd - two_body.jd - dist * constants::C_AU_PER_DAY_INV).abs() < 1e-6);
+            assert!(
+                (observer.epoch.jd - two_body.epoch.jd - dist * constants::C_AU_PER_DAY_INV).abs()
+                    < 1e-6
+            );
             let ceres_exact = spk
-                .try_get_state_with_center(20000001, two_body.jd, 10)
+                .try_get_state_with_center(20000001, two_body.epoch, 10)
                 .unwrap();
             // check that we are within about 150km - not bad for 2 body
             assert!((two_body.pos - ceres_exact.pos).norm() < 1e-6);
@@ -329,9 +332,12 @@ mod tests {
             let n_body = fov.check_n_body(&ceres, false);
             assert!(n_body.is_ok());
             let (_, _, n_body) = n_body.unwrap();
-            assert!((observer.jd - n_body.jd - dist * constants::C_AU_PER_DAY_INV).abs() < 1e-6);
+            assert!(
+                (observer.epoch.jd - n_body.epoch.jd - dist * constants::C_AU_PER_DAY_INV).abs()
+                    < 1e-6
+            );
             let ceres_exact = spk
-                .try_get_state_with_center(20000001, n_body.jd, 10)
+                .try_get_state_with_center(20000001, n_body.epoch, 10)
                 .unwrap();
             // check that we are within about 150m
             assert!((n_body.pos - ceres_exact.pos).norm() < 1e-9);
@@ -340,9 +346,12 @@ mod tests {
             let spk_check = &fov.check_spks(&[20000001])[0];
             assert!(spk_check.is_some());
             let spk_check = &spk_check.as_ref().unwrap().states[0];
-            assert!((observer.jd - spk_check.jd - dist * constants::C_AU_PER_DAY_INV).abs() < 1e-6);
+            assert!(
+                (observer.epoch.jd - spk_check.epoch.jd - dist * constants::C_AU_PER_DAY_INV).abs()
+                    < 1e-6
+            );
             let ceres_exact = spk
-                .try_get_state_with_center(20000001, spk_check.jd, 10)
+                .try_get_state_with_center(20000001, spk_check.epoch, 10)
                 .unwrap();
             // check that we are within about 150 micron
             assert!((spk_check.pos - ceres_exact.pos).norm() < 1e-12);

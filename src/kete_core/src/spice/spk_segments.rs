@@ -109,7 +109,7 @@ impl SpkSegment {
     #[inline(always)]
     pub(in crate::spice) fn try_get_state<T: InertialFrame>(
         &self,
-        jd: f64,
+        jd: Time<TDB>,
     ) -> KeteResult<State<T>> {
         let arr_ref: &SpkArray = self.into();
 
@@ -640,7 +640,7 @@ impl SpkSegmentType10 {
         ] = *rec;
 
         let epoch = julian_years_since_j2000(
-            &Time::<TDB>::new(spice_jd_to_jd(epoch))
+            &spice_jd_to_jd(epoch)
                 .utc()
                 .to_datetime()
                 .unwrap()

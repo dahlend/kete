@@ -58,7 +58,7 @@ pub enum Error {
     IOError(String),
 
     /// Propagator detected an impact.
-    Impact(i32, f64),
+    Impact(i32, Time<TDB>),
 }
 
 impl error::Error for Error {}
@@ -76,6 +76,7 @@ impl fmt::Display for Error {
                 write!(f, "This reference frame is not supported.")
             }
             Self::Impact(s, t) => {
+                let t = t.jd;
                 write!(f, "Propagation detected an impact with {s} at time {t}")
             }
         }
@@ -84,6 +85,8 @@ impl fmt::Display for Error {
 
 #[cfg(feature = "pyo3")]
 use pyo3::{PyErr, exceptions};
+
+use crate::time::{TDB, Time};
 
 #[cfg(feature = "pyo3")]
 impl From<Error> for PyErr {
@@ -98,9 +101,10 @@ impl From<Error> for PyErr {
                 Self::new::<exceptions::PyValueError, _>("This reference frame is not supported.")
             }
 
-            Error::Impact(s, t) => Self::new::<exceptions::PyValueError, _>(format!(
-                "Propagation detected an impact with {s} at time {t}"
-            )),
+            Error::Impact(s, t) => Self::new::<exceptions::PyValueError, _>({
+                let t = t.jd;
+                format!("Propagation detected an impact with {s} at time {t}")
+            }),
         }
     }
 }

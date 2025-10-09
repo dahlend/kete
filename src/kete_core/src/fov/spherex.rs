@@ -139,7 +139,7 @@ impl SpherexField {
         let observer = first.observer().clone();
 
         for ccd in cmos_frames.iter() {
-            if ccd.observer().jd != observer.jd {
+            if ccd.observer().epoch != observer.epoch {
                 Err(Error::ValueError(
                     "All SpherexCMOS must have matching values times".into(),
                 ))?;

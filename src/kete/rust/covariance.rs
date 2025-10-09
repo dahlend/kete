@@ -3,6 +3,7 @@
 use std::{collections::HashMap, fmt::Debug};
 
 use crate::state::PyState;
+use crate::time::PyTime;
 use crate::{elements::PyCometElements, vector::VectorLike};
 use kete_core::{errors::Error, io::FileIO};
 use pyo3::prelude::*;
@@ -34,13 +35,13 @@ impl Covariance {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         desig: String,
-        epoch: f64,
+        epoch: PyTime,
         params: Vec<(String, f64)>,
         cov_matrix: Vec<Vec<f64>>,
     ) -> Self {
         Self {
             desig,
-            epoch,
+            epoch: epoch.jd(),
             params,
             cov_matrix,
         }
@@ -98,12 +99,12 @@ impl Covariance {
                 .ok_or(Error::ValueError("Covariance missing 'inclination'".into()))?;
             let elem = PyCometElements::new(
                 desig,
-                epoch,
+                epoch.into(),
                 eccentricity,
                 inclination,
                 peri_dist,
                 peri_arg,
-                peri_time,
+                peri_time.into(),
                 lon_of_ascending,
             );
             elem.state()

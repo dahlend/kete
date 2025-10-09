@@ -47,6 +47,7 @@ use super::{PckArray, interpolation::*};
 use crate::errors::Error;
 use crate::frames::NonInertialFrame;
 use crate::prelude::KeteResult;
+use crate::spice::spice_jd_to_jd;
 use crate::time::{TDB, Time};
 use std::fmt::Debug;
 
@@ -90,7 +91,7 @@ impl PckSegment {
     pub(in crate::spice) fn try_get_orientation(
         &self,
         center_id: i32,
-        jd: f64,
+        epoch: Time<TDB>,
     ) -> KeteResult<NonInertialFrame> {
         let arr_ref: &PckArray = self.into();
 
@@ -100,7 +101,7 @@ impl PckSegment {
             ))?;
         }
 
-        let jds = jd_to_spice_jd(jd);
+        let jds = jd_to_spice_jd(epoch);
 
         if jds < arr_ref.jds_start || jds > arr_ref.jds_end {
             Err(Error::ExceedsLimits(
@@ -174,7 +175,7 @@ impl PckSegmentType2 {
         // rem_euclid is equivalent to the modulo operator, so this maps w to [0, 2pi]
         let w = w.rem_euclid(std::f64::consts::TAU);
 
-        let time = Time::<TDB>::new(jd_to_spice_jd(jds));
+        let time = spice_jd_to_jd(jds);
         let frame = NonInertialFrame::from_euler::<'Z', 'X', 'Z'>(
             time,
             [ra, dec, w],

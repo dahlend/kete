@@ -41,6 +41,7 @@ mod leap_second;
 mod scales;
 
 use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc};
+use serde::{Deserialize, Serialize};
 
 use crate::prelude::{Error, KeteResult};
 
@@ -67,7 +68,7 @@ pub use self::scales::{JD_TO_MJD, TAI, TDB, TimeScale, UTC};
 /// Any conversions to a single float will by necessity result in some small accuracy
 /// loss due to the nature of the representation of numbers on computers.
 ///
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 
 pub struct Time<T: TimeScale> {
     /// Julian Date
@@ -75,6 +76,41 @@ pub struct Time<T: TimeScale> {
 
     /// [`PhantomData`] is used here as the scale is only a record keeping convenience.
     scale_type: PhantomData<T>,
+}
+
+/// Duration of time.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Duration<T: TimeScale> {
+    /// Elapsed time in days.
+    pub elapsed: f64,
+
+    /// [`PhantomData`] is used here as the scale is only a record keeping convenience.
+    scale_type: PhantomData<T>,
+}
+
+impl<T: TimeScale> Duration<T> {
+    /// Construct a new [`Duration`] object.
+    pub fn new(elapsed: f64) -> Self {
+        Self {
+            elapsed,
+            scale_type: PhantomData,
+        }
+    }
+
+    /// Cast to UTC scaled time.
+    pub fn utc(&self) -> Duration<UTC> {
+        Duration::<UTC>::new(UTC::from_tdb(T::to_tdb(self.elapsed)))
+    }
+
+    /// Cast to TAI scaled time.
+    pub fn tai(&self) -> Duration<TAI> {
+        Duration::<TAI>::new(TAI::from_tdb(T::to_tdb(self.elapsed)))
+    }
+
+    /// Cast to TDB scaled time.
+    pub fn tdb(&self) -> Duration<TDB> {
+        Duration::<TDB>::new(T::to_tdb(self.elapsed))
+    }
 }
 
 /// Convert Hours/Minutes/Seconds/millisecond to fraction of a day
@@ -302,21 +338,54 @@ impl<T: TimeScale> From<f64> for Time<T> {
     }
 }
 
-impl<A: TimeScale, B: TimeScale> Sub<Time<B>> for Time<A> {
-    type Output = f64;
-
-    /// Subtract two times, returning the difference in days.
-    fn sub(self, other: Time<B>) -> Self::Output {
-        self.tdb().jd - other.tdb().jd
+impl<T: TimeScale> From<f64> for Duration<T> {
+    fn from(value: f64) -> Self {
+        Self::new(value)
     }
 }
 
-impl<A: TimeScale, B: TimeScale> Add<Time<B>> for Time<A> {
+impl<A: TimeScale, B: TimeScale> Sub<Time<B>> for Time<A> {
+    type Output = Duration<TDB>;
+
+    /// Subtract two times, returning the difference in days of TDB.
+    fn sub(self, other: Time<B>) -> Self::Output {
+        (self.tdb().jd - other.tdb().jd).into()
+    }
+}
+
+impl<A: TimeScale, B: TimeScale> Add<Duration<B>> for Time<A> {
     type Output = Self;
 
-    /// Add two times together, returning a new time in the same scale as `A`.
-    fn add(self, other: Time<B>) -> Self {
-        Self::new(A::from_tdb(self.tdb().jd + other.tdb().jd))
+    /// Add a time and duration together
+    fn add(self, other: Duration<B>) -> Self::Output {
+        A::from_tdb(self.tdb().jd + other.tdb().elapsed).into()
+    }
+}
+
+impl<A: TimeScale> Add<f64> for Time<A> {
+    type Output = Self;
+
+    /// Add a time and duration together
+    fn add(self, other: f64) -> Self::Output {
+        A::from_tdb(self.tdb().jd + other).into()
+    }
+}
+
+impl<A: TimeScale, B: TimeScale> Sub<Duration<B>> for Time<A> {
+    type Output = Self;
+
+    /// Subtract two times, returning the difference in days.
+    fn sub(self, other: Duration<B>) -> Self::Output {
+        A::from_tdb(self.tdb().jd - other.tdb().elapsed).into()
+    }
+}
+
+impl<A: TimeScale> Sub<f64> for Time<A> {
+    type Output = Self;
+
+    /// Add a time and duration together
+    fn sub(self, other: f64) -> Self::Output {
+        A::from_tdb(self.tdb().jd - other).into()
     }
 }
 

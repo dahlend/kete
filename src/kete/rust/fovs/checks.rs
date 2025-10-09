@@ -42,10 +42,10 @@ pub fn fov_checks_py(
             chunk.push(fov);
             continue;
         };
-        let jd_start = chunk.first().unwrap().observer().jd;
+        let jd_start = chunk.first().unwrap().observer().epoch;
 
         // chunk is complete
-        if (fov.observer().jd - jd_start).abs() >= 2.0 * dt_limit {
+        if (fov.observer().epoch - jd_start).elapsed.abs() >= 2.0 * dt_limit {
             fov_chunks.push(chunk);
             chunk = vec![fov];
         } else {
@@ -55,21 +55,24 @@ pub fn fov_checks_py(
     if !chunk.is_empty() {
         fov_chunks.push(chunk);
     }
-    let mut jd = pop.jd;
+    let mut jd = pop.epoch.jd;
     let mut big_jd = jd;
     let mut states = pop.states;
     let mut big_step_states = states.clone();
     let mut visible = Vec::new();
     for fovs in fov_chunks.into_iter() {
-        let jd_mean =
-            (fovs.last().unwrap().observer().jd + fovs.first().unwrap().observer().jd) / 2.0;
+        let jd_mean = (fovs.last().unwrap().observer().epoch.jd
+            + fovs.first().unwrap().observer().epoch.jd)
+            / 2.0;
 
         // Take large steps which are 10x the smaller steps, this helps long term numerical stability
         if (jd_mean - big_jd).abs() >= dt_limit * 50.0 {
             big_jd = jd_mean;
             big_step_states = big_step_states
                 .into_par_iter()
-                .filter_map(|state| propagate_n_body_spk(state, jd, include_asteroids, None).ok())
+                .filter_map(|state| {
+                    propagate_n_body_spk(state, jd.into(), include_asteroids, None).ok()
+                })
                 .collect();
         };
         // Take small steps based off of the large steps.
@@ -80,7 +83,9 @@ pub fn fov_checks_py(
             jd = jd_mean;
             states = states
                 .into_par_iter()
-                .filter_map(|state| propagate_n_body_spk(state, jd, include_asteroids, None).ok())
+                .filter_map(|state| {
+                    propagate_n_body_spk(state, jd.into(), include_asteroids, None).ok()
+                })
                 .collect();
         };
 

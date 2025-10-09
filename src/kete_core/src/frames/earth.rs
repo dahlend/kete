@@ -125,7 +125,7 @@ pub fn geodetic_lat_lon_to_ecef(geodetic_lat: f64, geodetic_lon: f64, h: f64) ->
 ///
 pub fn earth_obliquity(jd: Time<TDB>) -> f64 {
     // centuries from j2000
-    let c = (jd - Time::j2000()) / 365.25 / 100.0;
+    let c = (jd - Time::j2000()).elapsed / 365.25 / 100.0;
     (23.439279444444444
         + c * (-0.013010213611111
             + c * (-5.08611111111111e-08
@@ -175,12 +175,12 @@ pub fn earth_rotation_angle(time: Time<UTC>) -> f64 {
 ///
 /// # Arguments
 ///
-/// * `tdb_time` - Time in TDB scaled Julian Days.
+/// * `time` - Time in TDB scaled Julian Days.
 ///
 #[inline(always)]
 pub fn earth_precession_rotation(time: Time<TDB>) -> NonInertialFrame {
     // centuries since 2000
-    let t = (time - Time::j2000()) / 36525.0;
+    let t = (time - Time::j2000()).elapsed / 36525.0;
 
     // angles as defined in the cited paper, equations (21)
     // Note that equation 45 is an even more developed model, which takes into
@@ -232,7 +232,7 @@ pub fn approx_earth_pos_to_ecliptic(
 
     let (pos, vel) = rotation.to_equatorial(pos, [0.0; 3].into())?;
 
-    Ok(State::<Equatorial>::new(desig, time.tdb().jd, pos.into(), vel.into(), 399).into_frame())
+    Ok(State::<Equatorial>::new(desig, time.tdb(), pos.into(), vel.into(), 399).into_frame())
 }
 
 /// Compute the next sunset and sunrise times for a given location.
@@ -280,7 +280,7 @@ pub fn next_sunset_sunrise(
 pub fn approx_sun_dec(time: Time<UTC>) -> f64 {
     let obliquity = earth_obliquity(time.tdb());
 
-    let time_since_j2000 = time - Time::j2000();
+    let time_since_j2000 = (time - Time::j2000()).elapsed;
     let mean_lon_of_sun = (280.459 + 0.98564736 * time_since_j2000).rem_euclid(360.0);
     let mean_anom = (357.529 + 0.98560028 * time_since_j2000)
         .rem_euclid(360.0)
@@ -304,7 +304,7 @@ pub fn approx_sun_dec(time: Time<UTC>) -> f64 {
 ///     <https://aa.usno.navy.mil/faq/sun_approx>
 ///
 pub fn equation_of_time(time: Time<UTC>) -> f64 {
-    let time_since_j2000 = time - Time::j2000();
+    let time_since_j2000 = (time - Time::j2000()).elapsed;
     let mean_lon_of_sun = (280.459 + 0.98564736 * time_since_j2000).rem_euclid(360.0);
     let mean_anom = (357.529 + 0.98560028 * time_since_j2000)
         .rem_euclid(360.0)

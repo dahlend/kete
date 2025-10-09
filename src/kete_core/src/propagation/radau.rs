@@ -32,6 +32,7 @@
 use crate::errors::Error;
 use crate::prelude::KeteResult;
 use crate::propagation::util::SecondOrderODE;
+use crate::time::{TDB, Time};
 use itertools::izip;
 use nalgebra::allocator::Allocator;
 use nalgebra::*;
@@ -112,9 +113,9 @@ where
     func: SecondOrderODE<'a, MType, D>,
     metadata: MType,
 
-    final_time: f64,
+    final_time: Time<TDB>,
 
-    cur_time: f64,
+    cur_time: Time<TDB>,
     cur_state: OVector<f64, D>,
     cur_state_der: OVector<f64, D>,
     cur_state_der_der: OVector<f64, D>,
@@ -136,8 +137,8 @@ where
         func: SecondOrderODE<'a, MType, D>,
         state_init: OVector<f64, D>,
         state_der_init: OVector<f64, D>,
-        time_init: f64,
-        final_time: f64,
+        time_init: Time<TDB>,
+        final_time: Time<TDB>,
         metadata: MType,
     ) -> KeteResult<Self> {
         let (dim, _) = state_init.shape_generic();
@@ -177,8 +178,8 @@ where
         func: SecondOrderODE<'a, MType, D>,
         state_init: OVector<f64, D>,
         state_der_init: OVector<f64, D>,
-        time_init: f64,
-        final_time: f64,
+        time_init: Time<TDB>,
+        final_time: Time<TDB>,
         metadata: MType,
     ) -> RadauResult<MType, D> {
         let mut integrator = Self::new(
@@ -189,24 +190,25 @@ where
             final_time,
             metadata,
         )?;
-        if (final_time - time_init).abs() < 1e-10 {
+        if (final_time - time_init).elapsed.abs() < 1e-10 {
             return Ok((
                 integrator.cur_state,
                 integrator.cur_state_der,
                 integrator.metadata,
             ));
         }
-        let mut next_step_size: f64 = 0.1_f64.copysign(integrator.final_time - integrator.cur_time);
+        let mut next_step_size: f64 =
+            0.1_f64.copysign((integrator.final_time - integrator.cur_time).elapsed);
 
         let mut step_failures = 0;
         loop {
-            if (integrator.cur_time - integrator.final_time).abs() <= next_step_size.abs() {
-                next_step_size = integrator.final_time - integrator.cur_time;
+            if (integrator.cur_time - integrator.final_time).elapsed.abs() <= next_step_size.abs() {
+                next_step_size = (integrator.final_time - integrator.cur_time).elapsed;
             }
             match integrator.step(next_step_size) {
                 Ok(s) => {
                     next_step_size = s;
-                    if (integrator.cur_time - integrator.final_time).abs() < 1e-12 {
+                    if (integrator.cur_time - integrator.final_time).elapsed.abs() < 1e-12 {
                         return Ok((
                             integrator.cur_state,
                             integrator.cur_state_der,
@@ -297,7 +299,7 @@ where
                 self.eval_scratch.set_column(
                     0,
                     &(self.func)(
-                        self.cur_time + gauss_radau_frac * step_size,
+                        (self.cur_time.jd + gauss_radau_frac * step_size).into(),
                         &self.state_scratch,
                         &self.state_der_scratch,
                         &mut self.metadata,
@@ -344,7 +346,7 @@ where
                                 + self.cur_b.row(idx).dot(&U_VEC));
                     }
                 }
-                self.cur_time += step_size;
+                self.cur_time.jd += step_size;
                 self.cur_state_der_der = (self.func)(
                     self.cur_time,
                     &self.cur_state,
@@ -375,8 +377,8 @@ mod tests {
             &central_accel,
             Vector3::new(0.46937657, -0.8829981, 0.),
             Vector3::new(0.01518942, 0.00807426, 0.),
-            0.0,
-            1000.,
+            0.0.into(),
+            1000.0.into(),
             CentralAccelMeta::default(),
         )
         .unwrap();

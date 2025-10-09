@@ -27,14 +27,13 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use crate::{errors::Error, prelude::KeteResult};
+use crate::{
+    errors::Error,
+    prelude::KeteResult,
+    propagation::util::FirstOrderODE,
+    time::{TDB, Time},
+};
 use nalgebra::SVector;
-
-/// Function will be of the form `y' = F(t, y, metadata, exact_eval)`.
-/// Metadata is passed for every evaluation. The `exact_eval` bool indicates to the
-/// function that the input parameters are known to be solutions for the IVP.
-type FirstOrderFunc<'a, MType, const D: usize> =
-    &'a dyn Fn(f64, &SVector<f64, D>, &mut MType, bool) -> KeteResult<SVector<f64, D>>;
 
 /// Integrator will return a result of this type.
 type FirstOrderResult<MType, const D: usize> = KeteResult<(SVector<f64, D>, MType)>;
@@ -43,12 +42,12 @@ type FirstOrderResult<MType, const D: usize> = KeteResult<(SVector<f64, D>, MTyp
 /// <https://en.wikipedia.org/wiki/Runge%E2%80%93Kutta%E2%80%93Fehlberg_method>
 #[allow(missing_debug_implementations, reason = "Not practical to avoid this")]
 pub struct RK45Integrator<'a, MType, const D: usize> {
-    func: FirstOrderFunc<'a, MType, D>,
+    func: FirstOrderODE<'a, MType, D>,
     metadata: MType,
 
-    final_time: f64,
+    final_time: Time<TDB>,
 
-    cur_time: f64,
+    cur_time: Time<TDB>,
     cur_state: SVector<f64, D>,
     cur_der: SVector<f64, D>,
 
@@ -132,7 +131,7 @@ impl<'a, MType, const D: usize> RK45Integrator<'a, MType, D> {
             + k4 * (28561.0 / 56430.0)
             - k5 * (9.0 / 50.0)
             + k6 * (2.0 / 55.0);
-        self.cur_time += step_size;
+        self.cur_time.jd += step_size;
         self.cur_der = (self.func)(self.cur_time, &self.cur_state, &mut self.metadata, true)?;
 
         Ok(new_step)
@@ -143,14 +142,14 @@ impl<'a, MType, const D: usize> RK45Integrator<'a, MType, D> {
     ///
     /// This is a relatively fast, but not very precise numerical integration method.
     pub fn integrate(
-        func: FirstOrderFunc<'a, MType, D>,
+        func: FirstOrderODE<'a, MType, D>,
         state_init: SVector<f64, D>,
-        time_init: f64,
-        final_time: f64,
+        time_init: Time<TDB>,
+        final_time: Time<TDB>,
         mut metadata: MType,
         tol: f64,
     ) -> FirstOrderResult<MType, D> {
-        if (time_init - final_time).abs() < 1e-30 {
+        if (time_init - final_time).elapsed.abs() < 1e-30 {
             return Ok((state_init, metadata));
         }
         let cur_der = func(time_init, &state_init, &mut metadata, true)?;
@@ -163,11 +162,11 @@ impl<'a, MType, const D: usize> RK45Integrator<'a, MType, D> {
             cur_der,
             tol,
         };
-        let mut next_step = final_time - integrator.cur_time;
+        let mut next_step = (final_time - integrator.cur_time).elapsed;
         next_step = integrator.step(next_step)?;
-        while (integrator.cur_time - integrator.final_time).abs() > tol {
-            if (integrator.cur_time - integrator.final_time).abs() < next_step.abs() {
-                next_step = integrator.final_time - integrator.cur_time;
+        while (integrator.cur_time - integrator.final_time).elapsed.abs() > tol {
+            if (integrator.cur_time - integrator.final_time).elapsed.abs() < next_step.abs() {
+                next_step = (integrator.final_time - integrator.cur_time).elapsed;
             }
             next_step = integrator.step(next_step)?;
         }
@@ -182,11 +181,12 @@ mod tests {
 
     use crate::prelude::KeteResult;
     use crate::propagation::RK45Integrator;
+    use crate::time::{TDB, Time};
 
     #[test]
     fn basic_exp() {
         fn f(
-            _t: f64,
+            _t: Time<TDB>,
             state: &Vector1<f64>,
             _meta: &mut (),
             _eval: bool,
@@ -198,8 +198,8 @@ mod tests {
             let res = RK45Integrator::integrate(
                 &f,
                 Vector1::<f64>::repeat(1_f64),
-                0.0,
-                step as f64 * 10.0,
+                0.0.into(),
+                (step as f64 * 10.0).into(),
                 (),
                 1e-14,
             );
@@ -211,7 +211,7 @@ mod tests {
     #[test]
     fn basic_line() {
         fn f(
-            _t: f64,
+            _t: Time<TDB>,
             _state: &Vector1<f64>,
             _meta: &mut (),
             _eval: bool,
@@ -219,8 +219,14 @@ mod tests {
             Ok(Vector1::<f64>::repeat(2.0))
         }
 
-        let res =
-            RK45Integrator::integrate(&f, Vector1::<f64>::repeat(1_f64), 0.0, 10.0, (), 0.001);
+        let res = RK45Integrator::integrate(
+            &f,
+            Vector1::<f64>::repeat(1_f64),
+            0.0.into(),
+            10.0.into(),
+            (),
+            0.001,
+        );
 
         assert!(res.is_ok());
         assert!((res.unwrap().0[0] - 21.0).abs() < 1e-12);

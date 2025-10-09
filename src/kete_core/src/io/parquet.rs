@@ -50,7 +50,7 @@ pub fn write_states_parquet(states: &[State<Equatorial>], filename: &str) -> Ket
     );
     let jd = Column::new(
         "jd".into(),
-        states.iter().map(|state| state.jd).collect_vec(),
+        states.iter().map(|state| state.epoch.jd).collect_vec(),
     );
     let x = Column::new(
         "x".into(),
@@ -145,7 +145,7 @@ pub fn read_states_parquet(filename: &str) -> KeteResult<Vec<State<Equatorial>>>
 
             State::new(
                 crate::desigs::Desig::Name(desig.to_string()),
-                jd,
+                jd.into(),
                 [x, y, z].into(),
                 [vx, vy, vz].into(),
                 center_id,

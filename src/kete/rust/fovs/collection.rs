@@ -25,7 +25,7 @@ impl FOVListLike {
             FOVListLike::Vec(v) => v,
             FOVListLike::FOVList(list) => list.0,
         };
-        fovs.sort_by(|a, b| a.jd().total_cmp(&b.jd()));
+        fovs.sort_by(|a, b| a.jd().jd.total_cmp(&b.jd().jd));
         fovs.into_iter().map(|fov| fov.unwrap()).collect()
     }
 }
@@ -45,7 +45,7 @@ impl FOVList {
 
     /// Sort the list of FOVs by their JD.
     pub fn sort(&mut self) {
-        self.0.sort_by(|a, b| a.jd().total_cmp(&b.jd()))
+        self.0.sort_by(|a, b| a.jd().jd.total_cmp(&b.jd().jd))
     }
 
     fn __len__(&self) -> usize {

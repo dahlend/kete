@@ -52,6 +52,8 @@ pub use pck::{LOADED_PCK, PckCollection};
 pub use sclk::{LOADED_SCLK, SclkCollection};
 pub use spk::{LOADED_SPK, SpkCollection};
 
+use crate::time::{TDB, Time};
+
 /// Convert seconds from J2000 into JD.
 ///
 /// # Arguments
@@ -60,16 +62,16 @@ pub use spk::{LOADED_SPK, SpkCollection};
 /// # Returns
 /// The Julian Date (TDB).
 #[inline(always)]
-fn spice_jd_to_jd(jds_sec: f64) -> f64 {
+fn spice_jd_to_jd(jds_sec: f64) -> Time<TDB> {
     // 86400.0 = 60 * 60 * 24
-    jds_sec / 86400.0 + 2451545.0
+    (jds_sec / 86400.0 + 2451545.0).into()
 }
 
 /// Convert TDB JD to seconds from J2000.
 #[inline(always)]
-fn jd_to_spice_jd(jd: f64) -> f64 {
+fn jd_to_spice_jd(epoch: Time<TDB>) -> f64 {
     // 86400.0 = 60 * 60 * 24
-    (jd - 2451545.0) * 86400.0
+    (epoch.jd - 2451545.0) * 86400.0
 }
 
 #[cfg(test)]
@@ -81,24 +83,24 @@ mod tests {
         {
             let jd_sec = 0.0;
             let jd = spice_jd_to_jd(jd_sec);
-            assert_eq!(jd, 2451545.0);
+            assert_eq!(jd, 2451545.0.into());
         }
         {
             let jd_sec = 86400.0; // 1 day in seconds
             let jd = spice_jd_to_jd(jd_sec);
-            assert_eq!(jd, 2451546.0);
+            assert_eq!(jd, 2451546.0.into());
         }
     }
 
     #[test]
     fn test_jd_to_spice_jd() {
         {
-            let jd = 2451545.0;
+            let jd = 2451545.0.into();
             let jd_sec = jd_to_spice_jd(jd);
             assert_eq!(jd_sec, 0.0);
         }
         {
-            let jd = 2451546.0; // 1 day after J2000
+            let jd = 2451546.0.into(); // 1 day after J2000
             let jd_sec = jd_to_spice_jd(jd);
             assert_eq!(jd_sec, 86400.0);
         }

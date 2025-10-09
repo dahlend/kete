@@ -152,7 +152,7 @@ pub fn calc_obliquity_py(time: f64) -> f64 {
 ///     Time in TDB scaled Julian Days.
 #[pyfunction]
 #[pyo3(name = "earth_precession_rotation")]
-pub fn calc_earth_precession(time: f64) -> Vec<Vec<f64>> {
+pub fn calc_earth_precession(time: PyTime) -> Vec<Vec<f64>> {
     earth_precession_rotation(time.into())
         .rotations_to_equatorial()
         .unwrap()

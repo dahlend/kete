@@ -52,6 +52,7 @@ use std::fmt::Debug;
 use crate::desigs::Desig;
 use crate::errors::{Error, KeteResult};
 use crate::frames::{InertialFrame, Vector};
+use crate::time::{TDB, Time};
 
 /// Exact State of an object.
 ///
@@ -67,8 +68,8 @@ where
     /// Designation number which corresponds to the object.
     pub desig: Desig,
 
-    /// JD of the object's state in TDB scaled time.
-    pub jd: f64,
+    /// Epoch of the object's state in TDB scaled time.
+    pub epoch: Time<TDB>,
 
     /// Position of the object with respect to the `center_id` object, units of AU.
     pub pos: Vector<T>,
@@ -84,10 +85,16 @@ where
 impl<T: InertialFrame> State<T> {
     /// Construct a new State object.
     #[inline(always)]
-    pub fn new(desig: Desig, jd: f64, pos: Vector<T>, vel: Vector<T>, center_id: i32) -> Self {
+    pub fn new(
+        desig: Desig,
+        epoch: Time<TDB>,
+        pos: Vector<T>,
+        vel: Vector<T>,
+        center_id: i32,
+    ) -> Self {
         Self {
             desig,
-            jd,
+            epoch,
             pos,
             vel,
             center_id,
@@ -98,13 +105,19 @@ impl<T: InertialFrame> State<T> {
     /// remaining data. This is primarily useful as a place holder when propagation
     /// has failed and the object needs to be recorded still.
     #[inline(always)]
-    pub fn new_nan(desig: Desig, jd: f64, center_id: i32) -> Self {
-        Self::new(desig, jd, Vector::new_nan(), Vector::new_nan(), center_id)
+    pub fn new_nan(desig: Desig, epoch: Time<TDB>, center_id: i32) -> Self {
+        Self::new(
+            desig,
+            epoch,
+            Vector::new_nan(),
+            Vector::new_nan(),
+            center_id,
+        )
     }
 
     /// Are all values finite.
     pub fn is_finite(&self) -> bool {
-        self.pos.is_finite() & self.vel.is_finite() & self.jd.is_finite()
+        self.pos.is_finite() & self.vel.is_finite() & self.epoch.jd.is_finite()
     }
 
     /// Trade the center ID and ID values, and flip the direction of the position and
@@ -136,8 +149,10 @@ impl<T: InertialFrame> State<T> {
     /// * `state` - [`State`] object which defines the new center point.
     #[inline(always)]
     pub fn try_change_center(&mut self, mut state: Self) -> KeteResult<()> {
-        if self.jd != state.jd {
-            return Err(Error::ValueError("States don't have matching jds.".into()));
+        if self.epoch != state.epoch {
+            return Err(Error::ValueError(
+                "States don't have matching epochs.".into(),
+            ));
         }
 
         let Desig::Naif(state_id) = state.desig else {
@@ -178,7 +193,7 @@ impl<T: InertialFrame> State<T> {
 
         State {
             desig: self.desig,
-            jd: self.jd,
+            epoch: self.epoch,
             pos,
             vel,
             center_id: self.center_id,
@@ -197,7 +212,7 @@ mod tests {
     fn flip_center() {
         let mut a = State::<Equatorial>::new(
             Desig::Naif(1),
-            0.0,
+            0.0.into(),
             [1.0, 0.0, 0.0].into(),
             [0.0, 1.0, 0.0].into(),
             0,
@@ -215,14 +230,14 @@ mod tests {
     fn nan_finite() {
         let a = State::<Equatorial>::new(
             Desig::Naif(1),
-            0.0,
+            0.0.into(),
             [1.0, 0.0, 0.0].into(),
             [0.0, 1.0, 0.0].into(),
             0,
         );
         assert!(a.is_finite());
 
-        let b = State::<Equatorial>::new_nan(Desig::Empty, 0.0, 1000);
+        let b = State::<Equatorial>::new_nan(Desig::Empty, 0.0.into(), 1000);
         assert!(!b.is_finite());
     }
 
@@ -230,7 +245,7 @@ mod tests {
     fn naif_name_resolution() {
         let mut a = State::<Ecliptic>::new(
             Desig::Naif(1),
-            0.0,
+            0.0.into(),
             [1.0, 0.0, 0.0].into(),
             [0.0, 1.0, 0.0].into(),
             0,
@@ -245,14 +260,14 @@ mod tests {
     fn change_center() {
         let mut a = State::<Ecliptic>::new(
             Desig::Naif(1),
-            0.0,
+            0.0.into(),
             [1.0, 0.0, 0.0].into(),
             [1.0, 0.0, 0.0].into(),
             0,
         );
         let b = State::<Equatorial>::new(
             Desig::Naif(3),
-            0.0,
+            0.0.into(),
             [0.0, 1.0, 0.0].into(),
             [0.0, 1.0, 0.0].into(),
             0,
@@ -268,7 +283,7 @@ mod tests {
         // try cases which cause errors
         let diff_jd = State::<Equatorial>::new(
             Desig::Naif(3),
-            1.0,
+            1.0.into(),
             [0.0, 1.0, 0.0].into(),
             [0.0, 1.0, 0.0].into(),
             0,
@@ -277,7 +292,7 @@ mod tests {
 
         let not_naif_id = State::<Equatorial>::new(
             Desig::Empty,
-            0.0,
+            0.0.into(),
             [0.0, 1.0, 0.0].into(),
             [0.0, 1.0, 0.0].into(),
             0,
@@ -286,7 +301,7 @@ mod tests {
 
         let no_matching_id = State::<Equatorial>::new(
             Desig::Naif(2),
-            0.0,
+            0.0.into(),
             [0.0, 1.0, 0.0].into(),
             [0.0, 1.0, 0.0].into(),
             1000000000,

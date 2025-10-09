@@ -51,6 +51,7 @@
 use crate::frames::Equatorial;
 use crate::prelude::KeteResult;
 use crate::spice::LOADED_SPK;
+use crate::time::{TDB, Time};
 use crate::{constants, errors::Error, propagation::nongrav::NonGravModel};
 use nalgebra::allocator::Allocator;
 use nalgebra::{DefaultAllocator, Dim, Matrix3, OVector, SVector, U1, U2, Vector3};
@@ -60,7 +61,7 @@ use std::ops::AddAssign;
 #[derive(Debug)]
 pub struct CentralAccelMeta {
     /// A vector of times where the central accel function was evaluated at.
-    pub times: Vec<f64>,
+    pub times: Vec<Time<TDB>>,
 
     /// The position where the central accel function was evaluated.
     pub pos: Vec<Vector3<f64>>,
@@ -95,7 +96,7 @@ impl Default for CentralAccelMeta {
 /// * `vel` - A vector which defines the velocity with respect to the Sun in AU/Day.
 /// * `meta` - Metadata object which records values at integration steps.
 pub fn central_accel(
-    time: f64,
+    time: Time<TDB>,
     pos: &Vector3<f64>,
     vel: &Vector3<f64>,
     meta: &mut CentralAccelMeta,
@@ -115,7 +116,7 @@ pub fn central_accel(
 pub struct AccelSPKMeta<'a> {
     /// Closest approach to a massive object.
     /// This records the ID of the object, time, and distance in AU.
-    pub close_approach: Option<(i32, f64, f64)>,
+    pub close_approach: Option<(i32, Time<TDB>, f64)>,
 
     /// The non-gravitational forces.
     /// If this is not provided, only standard gravitational model is applied.
@@ -150,20 +151,13 @@ pub struct AccelSPKMeta<'a> {
 /// * `vel` - A vector which defines the velocity with respect to the Sun in AU/Day multiplied by `SUN_GMS_SQRT`.
 /// * `meta` - Metadata object [`AccelSPKMeta`] which records values at each integration step.
 pub fn spk_accel(
-    time: f64,
+    time: Time<TDB>,
     pos: &Vector3<f64>,
     vel: &Vector3<f64>,
     meta: &mut AccelSPKMeta<'_>,
     exact_eval: bool,
 ) -> KeteResult<Vector3<f64>> {
     let mut accel = Vector3::<f64>::zeros();
-
-    if exact_eval
-        && let Some(close_approach) = meta.close_approach.as_mut()
-        && close_approach.2 == 0.0
-    {
-        *close_approach = (-1, 1000000.0, 0.0);
-    }
 
     let spk = &LOADED_SPK.try_read().unwrap();
 
@@ -177,9 +171,9 @@ pub fn spk_accel(
         if exact_eval {
             let r = rel_pos.norm();
             if let Some(close_approach) = meta.close_approach.as_mut()
-                && close_approach.2 >= r
+                && r <= close_approach.2
             {
-                *close_approach = (id, r, time);
+                *close_approach = (id, time, r);
             }
 
             if r as f32 <= radius {
@@ -204,7 +198,7 @@ pub fn spk_accel(
 /// The `state_vec` is made up of concatenated position and velocity vectors.
 /// Otherwise this is just a thin wrapper over the [`spk_accel`] function.
 pub fn spk_accel_first_order(
-    time: f64,
+    time: Time<TDB>,
     state_vec: &SVector<f64, 6>,
     meta: &mut AccelSPKMeta<'_>,
     exact_eval: bool,
@@ -246,7 +240,7 @@ pub struct AccelVecMeta<'a> {
 /// * `vel` - A vector which defines the velocity with respect to the Sun in AU/Day.
 /// * `meta` - Metadata.
 pub fn vec_accel<D: Dim>(
-    time: f64,
+    time: Time<TDB>,
     pos: &OVector<f64, D>,
     vel: &OVector<f64, D>,
     meta: &mut AccelVecMeta<'_>,
@@ -351,7 +345,7 @@ mod tests {
     #[test]
     fn check_accelerations_equal() {
         let spk = &LOADED_SPK.try_read().unwrap();
-        let jd = 2451545.0;
+        let jd = 2451545.0.into();
         let mut pos: Vec<f64> = Vec::new();
         let mut vel: Vec<f64> = Vec::new();
 

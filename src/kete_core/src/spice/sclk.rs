@@ -256,13 +256,12 @@ impl Sclk {
             * (clock_rate[2] / (*self.tick_rates.first().unwrap() as f64))
             + clock_rate[1];
 
-        Ok(Time::<TDB>::new(spice_jd_to_jd(par_time)))
+        Ok(spice_jd_to_jd(par_time))
     }
 
     /// Convert time in TDB to a spacecraft clock tick count.
     fn time_to_tick(&self, time: Time<TDB>) -> KeteResult<f64> {
-        let jd = time.jd;
-        let par_time = jd_to_spice_jd(jd);
+        let par_time = jd_to_spice_jd(time);
         let clock_rate = self.find_parallel_time_rate(par_time)?;
 
         let tick = (par_time - clock_rate[1])
