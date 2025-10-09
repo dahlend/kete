@@ -347,7 +347,7 @@ impl<T: TimeScale> From<f64> for Duration<T> {
 impl<A: TimeScale, B: TimeScale> Sub<Time<B>> for Time<A> {
     type Output = Duration<TDB>;
 
-    /// Subtract two times, returning the difference in days of TDB.
+    /// Subtract two times, returning the duration in days of TDB.
     fn sub(self, other: Time<B>) -> Self::Output {
         (self.tdb().jd - other.tdb().jd).into()
     }
@@ -365,7 +365,7 @@ impl<A: TimeScale, B: TimeScale> Add<Duration<B>> for Time<A> {
 impl<A: TimeScale> Add<f64> for Time<A> {
     type Output = Self;
 
-    /// Add a time and duration together
+    /// Add a time and duration together, assuming the duration is the same scaling
     fn add(self, other: f64) -> Self::Output {
         A::from_tdb(self.tdb().jd + other).into()
     }
@@ -374,7 +374,7 @@ impl<A: TimeScale> Add<f64> for Time<A> {
 impl<A: TimeScale, B: TimeScale> Sub<Duration<B>> for Time<A> {
     type Output = Self;
 
-    /// Subtract two times, returning the difference in days.
+    /// Subtract a duration from a time
     fn sub(self, other: Duration<B>) -> Self::Output {
         A::from_tdb(self.tdb().jd - other.tdb().elapsed).into()
     }
@@ -383,7 +383,7 @@ impl<A: TimeScale, B: TimeScale> Sub<Duration<B>> for Time<A> {
 impl<A: TimeScale> Sub<f64> for Time<A> {
     type Output = Self;
 
-    /// Add a time and duration together
+    /// Subtract a duration from a time, assuming the duration is the same scaling
     fn sub(self, other: f64) -> Self::Output {
         A::from_tdb(self.tdb().jd - other).into()
     }
