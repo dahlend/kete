@@ -33,7 +33,7 @@ pub fn spk_load_py(py: Python<'_>, filenames: Vec<String>) -> PyResult<()> {
 /// (name, JD_start, JD_end, Center Naif ID, Frame ID, SPK Segment type ID)
 #[pyfunction]
 #[pyo3(name = "_loaded_object_info")]
-pub fn spk_available_info_py(naif_id: NaifIDLike) -> Vec<(String, f64, f64, i32, i32, i32)> {
+pub fn spk_available_info_py(naif_id: NaifIDLike) -> Vec<(String, PyTime, PyTime, i32, i32, i32)> {
     let (name, naif_id) = naif_id.try_into().unwrap();
     let singleton = &LOADED_SPK.try_read().unwrap();
     singleton
@@ -42,8 +42,8 @@ pub fn spk_available_info_py(naif_id: NaifIDLike) -> Vec<(String, f64, f64, i32,
         .map(|(jd_start, jd_end, center_id, frame_id, segment_id)| {
             (
                 name.clone(),
-                jd_start,
-                jd_end,
+                jd_start.into(),
+                jd_end.into(),
                 center_id,
                 frame_id,
                 segment_id,
@@ -130,7 +130,7 @@ pub fn spk_state_py(
     center: NaifIDLike,
     frame: PyFrames,
 ) -> PyResult<PyState> {
-    let jd = jd.jd();
+    let jd = jd.into();
     let (_, center) = center.try_into()?;
     match id.clone().try_into() {
         Ok((_, id)) => {
@@ -171,7 +171,7 @@ pub fn spk_state_py(
 #[pyo3(name = "spk_raw_state")]
 pub fn spk_raw_state_py(id: NaifIDLike, jd: PyTime) -> PyResult<PyState> {
     let (_, id) = id.try_into()?;
-    let jd = jd.jd();
+    let jd = jd.into();
     let spk = &LOADED_SPK.try_read().unwrap();
     Ok(PyState {
         raw: spk.try_get_state(id, jd)?,

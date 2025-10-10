@@ -82,13 +82,13 @@ pub trait FovLike: Sync + Sized {
         let rel_pos = pos - obs_pos;
 
         // This also accounts for first order light delay.
-        let dt = obs.jd - state.jd - rel_pos.norm() * C_AU_PER_DAY_INV;
+        let dt = obs.epoch.jd - state.epoch.jd - rel_pos.norm() * C_AU_PER_DAY_INV;
         let new_pos = pos + vel * dt;
         let new_rel_pos = new_pos - obs_pos;
         let (idx, contains) = self.contains(&new_rel_pos);
         let new_state = State::new(
             state.desig.clone(),
-            obs.jd + dt,
+            obs.epoch + dt,
             new_pos,
             vel,
             obs.center_id,
@@ -107,11 +107,11 @@ pub trait FovLike: Sync + Sized {
         let obs_pos = obs.pos;
 
         // bring state up to observer time.
-        let final_state = propagate_two_body(state, obs.jd)?;
+        let final_state = propagate_two_body(state, obs.epoch)?;
 
         // correct for light delay
         let dt = -(final_state.pos - obs_pos).norm() * C_AU_PER_DAY_INV;
-        let final_state = propagate_two_body(&final_state, obs.jd + dt)?;
+        let final_state = propagate_two_body(&final_state, obs.epoch + dt)?;
         let rel_pos = final_state.pos - obs_pos;
 
         let (idx, contains) = self.contains(&rel_pos);
@@ -129,11 +129,11 @@ pub trait FovLike: Sync + Sized {
         let obs = self.observer();
         let obs_pos = obs.pos;
 
-        let exact_state = propagate_n_body_spk(state.clone(), obs.jd, include_asteroids, None)?;
+        let exact_state = propagate_n_body_spk(state.clone(), obs.epoch, include_asteroids, None)?;
 
         // correct for light delay
         let dt = -(exact_state.pos - obs_pos).norm() * C_AU_PER_DAY_INV;
-        let final_state = propagate_two_body(&exact_state, obs.jd + dt)?;
+        let final_state = propagate_two_body(&exact_state, obs.epoch + dt)?;
         let rel_pos = final_state.pos - obs_pos;
 
         let (idx, contains) = self.contains(&rel_pos);
@@ -180,7 +180,7 @@ pub trait FovLike: Sync + Sized {
                 // to the observer? Then add a factor of 2 for safety
                 let max_dist = (state.vel - obs_state.vel).norm() * dt_limit * 2.0;
 
-                if (state.jd - obs_state.jd).abs() < dt_limit {
+                if (state.epoch - obs_state.epoch).elapsed.abs() < dt_limit {
                     let (_, contains, _) = self.check_linear(state);
                     if let Contains::Outside(dist) = contains
                         && dist > max_dist
@@ -234,7 +234,7 @@ pub trait FovLike: Sync + Sized {
         let states: Vec<_> = obj_ids
             .into_par_iter()
             .filter_map(|&obj_id| {
-                match spk.try_get_state_with_center(obj_id, obs.jd, obs.center_id) {
+                match spk.try_get_state_with_center(obj_id, obs.epoch, obs.center_id) {
                     Ok(state) => match self.check_two_body(&state) {
                         Ok((idx, Contains::Inside, state)) => Some((idx, state)),
                         _ => None,

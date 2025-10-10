@@ -38,6 +38,7 @@ use crate::frames::Equatorial;
 use crate::prelude::{Desig, KeteResult};
 use crate::spice::LOADED_SPK;
 use crate::state::State;
+use crate::time::{TDB, Time};
 use nalgebra::{DVector, SMatrix, SVector, Vector3};
 
 mod acceleration;
@@ -75,8 +76,8 @@ pub fn propagate_two_body_radau(dt: f64, pos: &[f64; 3], vel: &[f64; 3]) -> ([f6
         &central_accel,
         Vector3::from(*pos),
         Vector3::from(*vel),
-        0.0,
-        dt,
+        0.0.into(),
+        dt.into(),
         CentralAccelMeta::default(),
     )
     .unwrap();
@@ -87,8 +88,11 @@ pub fn propagate_two_body_radau(dt: f64, pos: &[f64; 3], vel: &[f64; 3]) -> ([f6
 ///
 /// This is a very poor approximation over more than a few minutes/hours, however it
 /// is very fast.
-pub fn propagate_linear(state: &State<Equatorial>, jd_final: f64) -> KeteResult<State<Equatorial>> {
-    let dt = jd_final - state.jd;
+pub fn propagate_linear(
+    state: &State<Equatorial>,
+    jd_final: Time<TDB>,
+) -> KeteResult<State<Equatorial>> {
+    let dt = (jd_final - state.epoch).elapsed;
     let mut pos: Vector3<f64> = state.pos.into();
     pos.iter_mut()
         .zip(state.vel)
@@ -106,7 +110,7 @@ pub fn propagate_linear(state: &State<Equatorial>, jd_final: f64) -> KeteResult<
 /// Propagate an object using full N-Body physics with the Radau 15th order integrator.
 pub fn propagate_n_body_spk(
     mut state: State<Equatorial>,
-    jd_final: f64,
+    jd_final: Time<TDB>,
     include_extended: bool,
     non_grav_model: Option<NonGravModel>,
 ) -> KeteResult<State<Equatorial>> {
@@ -133,7 +137,7 @@ pub fn propagate_n_body_spk(
             &spk_accel,
             state.pos.into(),
             state.vel.into(),
-            state.jd,
+            state.epoch,
             jd_final,
             metadata,
         )?
@@ -147,7 +151,7 @@ pub fn propagate_n_body_spk(
 /// Initialization function for the picard integrator which initializes the state
 /// using two body mechanics.
 fn picard_two_body_init<const N: usize>(
-    times: &[f64; N],
+    times: &[Time<TDB>; N],
     init_pos: &SVector<f64, 6>,
 ) -> SMatrix<f64, 6, N> {
     let pos: Vector3<f64> = init_pos.fixed_rows::<3>(0).into();
@@ -159,7 +163,7 @@ fn picard_two_body_init<const N: usize>(
     res.fixed_rows_mut::<3>(3).set_column(0, &vel);
 
     for (idx, t) in times.iter().enumerate().skip(1) {
-        let dt = t - t0;
+        let dt = *t - t0;
         let (p, v) = analytic_2_body(dt, &pos, &vel, None).unwrap();
 
         res.fixed_rows_mut::<3>(0).set_column(idx, &p);
@@ -171,7 +175,7 @@ fn picard_two_body_init<const N: usize>(
 /// Propagate an object using full N-Body physics with the Radau 15th order integrator.
 pub fn propagate_picard_n_body_spk(
     mut state: State<Equatorial>,
-    jd_final: f64,
+    jd_final: Time<TDB>,
     include_extended: bool,
     non_grav_model: Option<NonGravModel>,
 ) -> KeteResult<State<Equatorial>> {
@@ -208,7 +212,7 @@ pub fn propagate_picard_n_body_spk(
             &spk_accel_first_order,
             &picard_two_body_init,
             state_vec,
-            state.jd,
+            state.epoch,
             jd_final,
             1.0,
             &mut metadata,
@@ -229,14 +233,17 @@ pub fn propagate_picard_n_body_spk(
 ///
 /// It is *strongly recommended* to use the `kepler.rs` code for this, as
 /// it will be much more computationally efficient.
-pub fn propagation_central(state: &State<Equatorial>, jd_final: f64) -> KeteResult<[[f64; 3]; 2]> {
+pub fn propagation_central(
+    state: &State<Equatorial>,
+    jd_final: Time<TDB>,
+) -> KeteResult<[[f64; 3]; 2]> {
     let pos: Vector3<f64> = state.pos.into();
     let vel: Vector3<f64> = state.vel.into();
     let (pos, vel, _meta) = RadauIntegrator::integrate(
         &central_accel,
         pos,
         vel,
-        state.jd,
+        state.epoch,
         jd_final,
         CentralAccelMeta::default(),
     )?;
@@ -248,7 +255,7 @@ pub fn propagation_central(state: &State<Equatorial>, jd_final: f64) -> KeteResu
 #[allow(clippy::type_complexity, reason = "Not practical to avoid this")]
 pub fn propagate_n_body_vec(
     states: Vec<State<Equatorial>>,
-    jd_final: f64,
+    jd_final: Time<TDB>,
     planet_states: Option<Vec<State<Equatorial>>>,
     non_gravs: Vec<Option<NonGravModel>>,
 ) -> KeteResult<(Vec<State<Equatorial>>, Vec<State<Equatorial>>)> {
@@ -264,7 +271,7 @@ pub fn propagate_n_body_vec(
         ))?;
     }
 
-    let jd_init = states.first().unwrap().jd;
+    let jd_init = states.first().unwrap().epoch;
 
     let mut pos: Vec<f64> = Vec::new();
     let mut vel: Vec<f64> = Vec::new();
@@ -287,7 +294,7 @@ pub fn propagate_n_body_vec(
             "Input planet states must contain the correct number of states.".into(),
         ))?;
     }
-    if planet_states.first().unwrap().jd != jd_init {
+    if planet_states.first().unwrap().epoch != jd_init {
         Err(Error::ValueError(
             "Planet states JD must match JD of input state.".into(),
         ))?;
@@ -299,7 +306,7 @@ pub fn propagate_n_body_vec(
     }
 
     for state in states {
-        if jd_init != state.jd {
+        if jd_init != state.epoch {
             Err(Error::ValueError(
                 "All input states must have the same JD".into(),
             ))?;

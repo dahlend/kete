@@ -175,7 +175,7 @@ impl NonGravModel {
                 let n_vec = t_vec.cross(&pos_norm).normalize();
 
                 if !dt.is_zero() {
-                    (pos, _) = analytic_2_body(-dt, &pos, vel, None).unwrap();
+                    (pos, _) = analytic_2_body((-dt).into(), &pos, vel, None).unwrap();
                 };
                 let rr0 = pos.norm() / r_0;
                 let scale = alpha * rr0.powf(-m) * (1.0 + rr0.powf(*n)).powf(-k);

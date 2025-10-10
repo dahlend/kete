@@ -46,7 +46,7 @@ pub fn pck_earth_frame_py(
     new_center: i32,
     name: Option<String>,
 ) -> PyResult<PyState> {
-    let jd = jd.jd();
+    let jd = jd.into();
     let desig = {
         match name {
             Some(d) => Desig::Name(d),
@@ -89,7 +89,7 @@ pub fn pck_state_to_earth(state: PyState) -> PyResult<(f64, f64, f64)> {
     let state = state
         .change_center(crate::desigs::NaifIDLike::Int(399))?
         .raw;
-    let frame = pcks.try_get_orientation(3000, state.jd)?;
+    let frame = pcks.try_get_orientation(3000, state.epoch)?;
 
     let (pos, _) = frame.from_equatorial(state.pos.into(), state.vel.into())?;
     let [x, y, z] = pos.into();

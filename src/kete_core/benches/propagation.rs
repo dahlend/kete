@@ -14,7 +14,7 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 static CIRCULAR: std::sync::LazyLock<State<Ecliptic>> = std::sync::LazyLock::new(|| {
     State::new(
         Desig::Name("Circular".into()),
-        2451545.0,
+        2451545.0.into(),
         [0.0, 1., 0.0].into(),
         [-constants::GMS_SQRT, 0.0, 0.0].into(),
         0,
@@ -23,7 +23,7 @@ static CIRCULAR: std::sync::LazyLock<State<Ecliptic>> = std::sync::LazyLock::new
 static ELLIPTICAL: std::sync::LazyLock<State<Ecliptic>> = std::sync::LazyLock::new(|| {
     State::new(
         Desig::Name("Elliptical".into()),
-        2451545.0,
+        2451545.0.into(),
         [0.0, 1.5, 0.0].into(),
         [-constants::GMS_SQRT, 0.0, 0.0].into(),
         0,
@@ -32,7 +32,7 @@ static ELLIPTICAL: std::sync::LazyLock<State<Ecliptic>> = std::sync::LazyLock::n
 static PARABOLIC: std::sync::LazyLock<State<Ecliptic>> = std::sync::LazyLock::new(|| {
     State::new(
         Desig::Name("Parabolic".into()),
-        2451545.0,
+        2451545.0.into(),
         [0.0, 2., 0.0].into(),
         [-constants::GMS_SQRT, 0.0, 0.0].into(),
         0,
@@ -42,7 +42,7 @@ static PARABOLIC: std::sync::LazyLock<State<Ecliptic>> = std::sync::LazyLock::ne
 static HYPERBOLIC: std::sync::LazyLock<State<Ecliptic>> = std::sync::LazyLock::new(|| {
     State::new(
         Desig::Name("Hyperbolic".into()),
-        2451545.0,
+        2451545.0.into(),
         [0.0, 3., 0.0].into(),
         [-constants::GMS_SQRT, 0.0, 0.0].into(),
         0,
@@ -50,14 +50,14 @@ static HYPERBOLIC: std::sync::LazyLock<State<Ecliptic>> = std::sync::LazyLock::n
 });
 
 fn prop_n_body_radau(state: State<Ecliptic>, dt: f64) {
-    let jd = state.jd + dt;
+    let jd = state.epoch + dt;
     let _ = propagate_n_body_spk(state.into_frame(), jd, false, None).unwrap();
 }
 
 fn prop_n_body_vec_radau(mut state: State<Ecliptic>, dt: f64) {
     let spk = &LOADED_SPK.read().unwrap();
     spk.try_change_center(&mut state, 10).unwrap();
-    let jd = state.jd + dt;
+    let jd = state.epoch + dt;
     let states = vec![state.into_frame().clone(); 100];
     let non_gravs = vec![None; 100];
     let _ = propagation::propagate_n_body_vec(states, jd, None, non_gravs).unwrap();
@@ -68,19 +68,19 @@ fn prop_n_body_radau_par(state: State<Ecliptic>, dt: f64) {
     let _tmp: Vec<State<_>> = states
         .into_par_iter()
         .map(|s| {
-            let jd = s.jd + dt;
+            let jd = s.epoch + dt;
             propagate_n_body_spk(s.into_frame(), jd, false, None).unwrap()
         })
         .collect();
 }
 
 fn prop_2_body_radau(state: State<Ecliptic>, dt: f64) {
-    let jd = state.jd + dt;
+    let jd = state.epoch + dt;
     let _ = propagation::propagation_central(&state.into_frame(), jd).unwrap();
 }
 
 fn prop_2_body_kepler(state: State<Ecliptic>, dt: f64) {
-    let _ = propagate_two_body(&state, state.jd + dt).unwrap();
+    let _ = propagate_two_body(&state, state.epoch + dt).unwrap();
 }
 
 /// Benchmark functions for the propagation algorithms

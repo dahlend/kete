@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+
+## [Unreleased]
+
+### Added
+
+- Added a new numerical integrator based on Picard-Chebyshev integration. This
+  integrator has only been added to the rust backend at this point, until more
+  testing can be done and it be made available on the frontend.
+
+### Changed
+
+- Throughout the rust code, `Time` is being enforced as inputs for functions instead
+  of accepting `f64` in a large number of places.
+
+### Fixed
+
+- Fixed epoch times in PCK Type 2 frames that were not being converted correctly.
+
+
 ## [v2.1.5]
 
 ### Added

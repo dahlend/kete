@@ -7,6 +7,7 @@ use pyo3::exceptions;
 use pyo3::prelude::*;
 use pyo3::{PyResult, pyclass, pymethods};
 
+use crate::time::PyTime;
 use crate::vector::PyVector;
 use crate::{fovs::AllowedFOV, state::PyState};
 
@@ -90,8 +91,8 @@ impl PySimultaneousStates {
 
     /// The time of the simultaneous states.
     #[getter]
-    pub fn jd(&self) -> f64 {
-        self.0.jd
+    pub fn jd(&self) -> PyTime {
+        self.0.epoch.into()
     }
 
     /// The reference center NAIF ID for this state.

@@ -68,7 +68,8 @@ impl PyTime {
     /// Construct a new time object, TDB default.
     #[new]
     #[pyo3(signature = (jd, scaling="tdb"))]
-    pub fn new(jd: f64, scaling: &str) -> PyResult<Self> {
+    pub fn new(jd: PyTime, scaling: &str) -> PyResult<Self> {
+        let jd = jd.jd();
         Ok(match scaling.to_ascii_lowercase().as_str() {
             "tt" => PyTime(Time::<TDB>::new(jd)),
             "tdb" => PyTime(Time::<TDB>::new(jd)),
@@ -235,15 +236,23 @@ impl PyTime {
         (self.0.jd + other.0.jd).into()
     }
 
-    fn __sub__(&self, other: PyTime) -> Self {
-        (self.0.jd - other.0.jd).into()
+    fn __sub__(&self, other: PyTime) -> f64 {
+        self.0.jd - other.0.jd
     }
 
-    fn __rsub__(&self, other: PyTime) -> Self {
-        (other.0.jd - self.0.jd).into()
+    fn __rsub__(&self, other: PyTime) -> f64 {
+        other.0.jd - self.0.jd
     }
 
     fn __repr__(&self) -> String {
         format!("Time({})", self.0.jd)
+    }
+
+    fn __eq__(&self, other: PyTime) -> bool {
+        self.0 == other.0
+    }
+
+    fn __lt__(&self, other: PyTime) -> bool {
+        self.0.jd < other.0.jd
     }
 }

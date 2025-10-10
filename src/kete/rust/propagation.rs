@@ -6,7 +6,6 @@ use kete_core::{
     propagation::{self, NonGravModel, moid},
     spice::{self, LOADED_SPK},
     state::State,
-    time::{TDB, Time},
 };
 use pyo3::{PyObject, PyResult, Python, pyfunction};
 use rayon::prelude::*;
@@ -48,7 +47,7 @@ pub fn moid_py(
             .map(|x| x.raw)
             .unwrap_or(LOADED_SPK.read().unwrap().try_get_state_with_center(
                 399,
-                states[0].raw.jd,
+                states[0].raw.epoch,
                 10,
             )?);
 
@@ -116,7 +115,7 @@ pub fn propagation_n_body_spk_py(
     }
 
     let mut res: Vec<PyState> = Vec::new();
-    let jd = jd.jd();
+    let jd = jd.into();
 
     // propagation is broken into chunks, every time a chunk is completed
     // python is checked for signals. This allows keyboard interrupts to be caught
@@ -164,8 +163,8 @@ pub fn propagation_n_body_spk_py(
                                         "Impact detected between ({}) <-> {} at time {} ({})",
                                         desig,
                                         spice::try_name_from_id(id).unwrap_or(id.to_string()),
-                                        time,
-                                        Time::<TDB>::new(time).utc().to_iso().unwrap()
+                                        time.jd,
+                                        time.utc().to_iso().unwrap()
                                     );
                                 }
                                 // if we get an impact, we return a state with NaNs
@@ -256,7 +255,7 @@ pub fn propagation_n_body_py(
     let non_gravs: Vec<Option<NonGravModel>> =
         non_gravs.into_iter().map(|y| y.map(|z| z.0)).collect();
 
-    let jd = jd_final.jd();
+    let jd = jd_final.into();
     let res = states
         .into_iter()
         .zip(non_gravs.into_iter())
@@ -309,7 +308,7 @@ pub fn picard(
     }
 
     let mut res: Vec<PyState> = Vec::new();
-    let jd = jd.jd();
+    let jd = jd.into();
 
     // propagation is broken into chunks, every time a chunk is completed
     // python is checked for signals. This allows keyboard interrupts to be caught
@@ -357,8 +356,8 @@ pub fn picard(
                                     "Impact detected between ({}) <-> {} at time {} ({})",
                                     desig,
                                     spice::try_name_from_id(id).unwrap_or(id.to_string()),
-                                    time,
-                                    Time::<TDB>::new(time).utc().to_iso().unwrap()
+                                    time.jd,
+                                    time.utc().to_iso().unwrap()
                                 );
                             }
                             // if we get an impact, we return a state with NaNs

@@ -35,6 +35,7 @@ use crate::fov::FOV;
 use crate::frames::{Equatorial, Vector};
 use crate::io::FileIO;
 use crate::prelude::{Error, KeteResult, State};
+use crate::time::{TDB, Time};
 use nalgebra::Vector3;
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
@@ -46,7 +47,7 @@ pub struct SimultaneousStates {
     pub states: Vec<State<Equatorial>>,
 
     /// Common JD time of all states
-    pub jd: f64,
+    pub epoch: Time<TDB>,
 
     /// Center ID of all states.
     pub center_id: i32,
@@ -69,18 +70,18 @@ impl SimultaneousStates {
         }
         let (mut jd, center_id) = {
             let first = states.first().unwrap();
-            (first.jd, first.center_id)
+            (first.epoch, first.center_id)
         };
 
         if let Some(f) = &fov {
-            jd = f.observer().jd;
+            jd = f.observer().epoch;
         }
 
         if states.iter().any(|state| state.center_id != center_id) {
             return Err(Error::ValueError("Center IDs do not match expected".into()));
         };
 
-        if fov.is_none() && states.iter().any(|state| state.jd != jd) {
+        if fov.is_none() && states.iter().any(|state| state.epoch != jd) {
             return Err(Error::ValueError(
                 "Epoch JDs do not match expected, this is only allowed if there is an associated FOV."
                     .into(),
@@ -89,7 +90,7 @@ impl SimultaneousStates {
 
         Ok(Self {
             states,
-            jd,
+            epoch: jd,
             center_id,
             fov,
         })

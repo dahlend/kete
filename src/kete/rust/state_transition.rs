@@ -16,13 +16,13 @@ pub fn compute_stm_py(
 ) -> ([[f64; 3]; 2], [[f64; 6]; 6]) {
     let mut state = State::new(
         Desig::Empty,
-        jd_start.jd(),
+        jd_start.into(),
         [state[0], state[1], state[2]].into(),
         [state[3], state[4], state[5]].into(),
         10,
     );
 
-    let (final_state, stm) = compute_state_transition(&mut state, jd_end.jd(), central_mass);
+    let (final_state, stm) = compute_state_transition(&mut state, jd_end.into(), central_mass);
 
     (final_state, stm.into())
 }

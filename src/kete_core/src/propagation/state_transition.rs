@@ -33,10 +33,11 @@ use crate::prelude::{KeteResult, State};
 use crate::propagation::{
     CentralAccelMeta, PC15, central_accel, central_accel_grad, dumb_picard_init,
 };
+use crate::time::{TDB, Time};
 use nalgebra::{Const, Matrix6, SVector, U1, U6, Vector3};
 
 fn stm_ivp_eqn(
-    jd: f64,
+    jd: Time<TDB>,
     state: &SVector<f64, 42>,
     meta: &mut CentralAccelMeta,
     exact_eval: bool,
@@ -83,7 +84,7 @@ fn stm_ivp_eqn(
 /// This uses the Picard-Chebyshev integrator [`PC15`].
 pub fn compute_state_transition(
     state: &mut State<Equatorial>,
-    jd: f64,
+    jd: Time<TDB>,
     central_mass: f64,
 ) -> ([[f64; 3]; 2], Matrix6<f64>) {
     let mut meta = CentralAccelMeta {
@@ -111,8 +112,8 @@ pub fn compute_state_transition(
             &stm_ivp_eqn,
             &dumb_picard_init,
             initial_state,
-            state.jd * GMS_SQRT,
-            jd * GMS_SQRT,
+            (state.epoch.jd * GMS_SQRT).into(),
+            (jd.jd * GMS_SQRT).into(),
             1.0,
             &mut meta,
         )

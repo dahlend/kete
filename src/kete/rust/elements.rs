@@ -4,7 +4,7 @@ use kete_core::frames::Ecliptic;
 use kete_core::prelude;
 use pyo3::{PyResult, pyclass, pymethods};
 
-use crate::state::PyState;
+use crate::{state::PyState, time::PyTime};
 
 /// Cometary Elements class made accessible to python.
 ///
@@ -60,21 +60,21 @@ impl PyCometElements {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         desig: String,
-        epoch: f64,
+        epoch: PyTime,
         eccentricity: f64,
         inclination: f64,
         peri_dist: f64,
         peri_arg: f64,
-        peri_time: f64,
+        peri_time: PyTime,
         lon_of_ascending: f64,
     ) -> Self {
         Self(elements::CometElements {
             desig: prelude::Desig::Name(desig),
-            epoch,
+            epoch: epoch.into(),
             eccentricity,
             inclination: inclination.to_radians(),
             lon_of_ascending: lon_of_ascending.to_radians(),
-            peri_time,
+            peri_time: peri_time.into(),
             peri_arg: peri_arg.to_radians(),
             peri_dist,
         })
@@ -93,8 +93,8 @@ impl PyCometElements {
 
     /// Epoch of the elements in JD.
     #[getter]
-    pub fn epoch(&self) -> f64 {
-        self.0.epoch
+    pub fn epoch(&self) -> PyTime {
+        self.0.epoch.into()
     }
 
     /// Designation of the object.
@@ -128,8 +128,8 @@ impl PyCometElements {
 
     /// Perihelion time of the orbit in JD.
     #[getter]
-    pub fn peri_time(&self) -> f64 {
-        self.0.peri_time
+    pub fn peri_time(&self) -> PyTime {
+        self.0.peri_time.into()
     }
 
     /// Argument of Perihelion of the orbit in degrees.
@@ -196,11 +196,11 @@ impl PyCometElements {
         format!(
             "CometElements(desig={:?}, epoch={}, eccentricity={}, inclination={}, lon_of_ascending={}, peri_time={}, peri_arg={}, peri_dist={})",
             self.desig(),
-            self.epoch(),
+            self.epoch().jd(),
             self.eccentricity(),
             self.inclination(),
             self.lon_of_ascending(),
-            self.peri_time(),
+            self.peri_time().jd(),
             self.peri_arg(),
             self.peri_dist()
         )

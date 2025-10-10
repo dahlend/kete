@@ -61,14 +61,15 @@ use nalgebra::{SMatrix, SVector};
 
 use crate::errors::{Error, KeteResult};
 use crate::propagation::util::FirstOrderODE;
+use crate::time::{TDB, Time};
 
 /// Initialization function which fills the integrators initial guess.
 type PicardInitFunc<'a, const DIM: usize, const N: usize> =
-    &'a dyn Fn(&[f64; N], &SVector<f64, DIM>) -> SMatrix<f64, DIM, N>;
+    &'a dyn Fn(&[Time<TDB>; N], &SVector<f64, DIM>) -> SMatrix<f64, DIM, N>;
 
 /// Initialization function for the picard integrator where the first value is repeated
 pub fn dumb_picard_init<const DIM: usize, const N: usize>(
-    _times: &[f64; N],
+    _times: &[Time<TDB>; N],
     initial_pos: &SVector<f64, DIM>,
 ) -> SMatrix<f64, DIM, N> {
     let mut init: SMatrix<f64, DIM, N> = SMatrix::zeros();
@@ -139,10 +140,10 @@ pub struct PicardStep<const N: usize, const DIM: usize> {
     pub y: SMatrix<f64, DIM, N>,
 
     /// Start time
-    pub t0: f64,
+    pub t0: Time<TDB>,
 
     /// End time
-    pub t1: f64,
+    pub t1: Time<TDB>,
 }
 
 impl<'a, const N: usize, const NM1: usize> PicardIntegrator<N, NM1> {
@@ -175,11 +176,13 @@ impl<'a, const N: usize, const NM1: usize> PicardIntegrator<N, NM1> {
         func: FirstOrderODE<'a, MType, DIM>,
         init_func: PicardInitFunc<'a, DIM, N>,
         initial_pos: SVector<f64, DIM>,
-        t0: f64,
-        t1: f64,
+        t0: Time<TDB>,
+        t1: Time<TDB>,
         step_size: f64,
         metadata: &mut MType,
     ) -> KeteResult<SVector<f64, DIM>> {
+        let t0 = t0.jd;
+        let t1 = t1.jd;
         let mut cur_t0 = t0;
 
         let mut cur_stepsize = step_size;
@@ -189,18 +192,18 @@ impl<'a, const N: usize, const NM1: usize> PicardIntegrator<N, NM1> {
             cur_t1 = t1;
         }
 
-        let mut times = self.evaluation_times(cur_t0, cur_t1);
+        let mut times = self.evaluation_times(cur_t0.into(), cur_t1.into());
         let mut initial_pos = init_func(&times, &initial_pos);
 
         let mut has_failed = false;
         loop {
-            let step = self.step(func, cur_t0, cur_t1, initial_pos, metadata);
+            let step = self.step(func, cur_t0.into(), cur_t1.into(), initial_pos, metadata);
             match step {
                 Ok(res) => {
                     if cur_t1 == t1 {
                         return Ok(res.y.column(N - 1).into());
                     }
-                    times = self.evaluation_times(cur_t0, cur_t1);
+                    times = self.evaluation_times(cur_t0.into(), cur_t1.into());
                     initial_pos = init_func(&times, &res.y.column(N - 1).into());
 
                     cur_t0 = cur_t1;
@@ -240,15 +243,15 @@ impl<'a, const N: usize, const NM1: usize> PicardIntegrator<N, NM1> {
     fn step<const DIM: usize, MType>(
         &self,
         func: FirstOrderODE<'a, MType, DIM>,
-        t0: f64,
-        t1: f64,
+        t0: Time<TDB>,
+        t1: Time<TDB>,
         mut cur_pos: SMatrix<f64, DIM, N>,
         metadata: &mut MType,
     ) -> KeteResult<PicardStep<N, DIM>> {
         let mut b: SMatrix<f64, DIM, N> = SMatrix::zeros();
         let mut f: SMatrix<f64, DIM, N> = SMatrix::zeros();
         let times = self.evaluation_times(t0, t1);
-        let w2 = (t1 - t0) / 2.0;
+        let w2 = (t1 - t0).elapsed / 2.0;
         let mut error: f64 = 100.0;
         let mut last_error = 50.0;
 
@@ -309,11 +312,14 @@ impl<'a, const N: usize, const NM1: usize> PicardIntegrator<N, NM1> {
 
     /// Given the start and stop times of a desired integration, return the actual
     /// times where the function will be evaluated starting at t0 and ending at t1.
-    fn evaluation_times(&self, t0: f64, t1: f64) -> [f64; N] {
-        let w2 = (t1 - t0) / 2.0;
-        let w1 = (t1 + t0) / 2.0;
-        let mut times = self.tau;
-        times.iter_mut().for_each(|x| *x = w2 * (*x) + w1);
+    fn evaluation_times(&self, t0: Time<TDB>, t1: Time<TDB>) -> [Time<TDB>; N] {
+        let w2 = (t1 - t0).elapsed / 2.0;
+        let w1 = (t1.jd + t0.jd) / 2.0;
+        let mut times: [Time<TDB>; N] = [0.0.into(); N];
+        times
+            .iter_mut()
+            .zip(self.tau)
+            .for_each(|(x, tau_v)| x.jd = w2 * tau_v + w1);
         times
     }
 }
@@ -322,8 +328,8 @@ impl<const N: usize, const DIM: usize> PicardStep<N, DIM> {
     /// Evaluate the fitted integration solution at the specified time.
     /// This will fail if the requested time is outside of the integration bounds.
     pub fn evaluate(&self, t: f64) -> KeteResult<[f64; DIM]> {
-        let w1 = (self.t0 + self.t1) * 0.5;
-        let w2 = (self.t1 - self.t0) * 0.5;
+        let w1 = (self.t0.jd + self.t1.jd) * 0.5;
+        let w2 = (self.t1 - self.t0).elapsed * 0.5;
         let tau_time = ((t - w1) * w2).acos();
         if tau_time.is_nan() {
             return Err(Error::ExceedsLimits(
@@ -445,7 +451,7 @@ mod tests {
 
         // define the f' function
         fn func(
-            _: f64,
+            _: Time<TDB>,
             vals: &SVector<f64, 3>,
             _: &mut (),
             _: bool,
@@ -456,13 +462,13 @@ mod tests {
 
         // integrate with the initial conditions
         let p = &PC15;
-        let t1 = 5.0;
+        let t1 = 5.0.into();
         let res = p
             .integrate(
                 &func,
                 &dumb_picard_init,
                 [1.0, 2.0, 5.0].into(),
-                0.0,
+                0.0.into(),
                 t1,
                 0.1,
                 &mut (),
@@ -470,12 +476,12 @@ mod tests {
             .unwrap();
 
         // test against the analytic solution
-        assert!((res[0] - (1.0 * (-t1).exp())).abs() < 1e-15);
-        assert!((res[1] - (2.0 * (-0.5 * t1).exp())).abs() < 1e-15);
+        assert!((res[0] - (1.0 * (-t1.jd).exp())).abs() < 1e-15);
+        assert!((res[1] - (2.0 * (-0.5 * t1.jd).exp())).abs() < 1e-15);
         assert!(
-            (res[2] - (5.0 * (-0.1 * t1).exp())).abs() < 1e-14,
+            (res[2] - (5.0 * (-0.1 * t1.jd).exp())).abs() < 1e-14,
             "{}",
-            (res[2] - (5.0 * (-0.1 * t1).exp())).abs()
+            (res[2] - (5.0 * (-0.1 * t1.jd).exp())).abs()
         );
     }
 }

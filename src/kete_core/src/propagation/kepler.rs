@@ -38,6 +38,7 @@ use crate::fitting::newton_raphson;
 use crate::frames::InertialFrame;
 use crate::prelude::{CometElements, KeteResult};
 use crate::state::State;
+use crate::time::{Duration, TDB, Time};
 use argmin::core::{CostFunction, Error as ArgminErr, Executor};
 use argmin::solver::neldermead::NelderMead;
 use core::f64;
@@ -283,11 +284,12 @@ fn solve_kepler_universal(mut dt: f64, r0: f64, v0: f64, rv0: f64) -> KeteResult
 /// * `vel` - Starting velocity, in AU/Day.
 /// * `depth` - Current Recursion depth, this should be called with `None` initially.
 pub fn analytic_2_body(
-    time: f64,
+    time: Duration<TDB>,
     pos: &Vector3<f64>,
     vel: &Vector3<f64>,
     depth: Option<usize>,
 ) -> KeteResult<(Vector3<f64>, Vector3<f64>)> {
+    let time = time.elapsed;
     let mut depth = depth.unwrap_or(0);
     if depth >= 10 {
         Err(Error::Convergence(
@@ -321,8 +323,9 @@ pub fn analytic_2_body(
             Ok((new_pos, new_vel))
         }
         Err(_) => {
-            let (inter_pos, inter_vel) = analytic_2_body(0.5 * time, pos, vel, Some(depth))?;
-            analytic_2_body(time * 0.5, &inter_pos, &inter_vel, Some(depth))
+            let (inter_pos, inter_vel) =
+                analytic_2_body((0.5 * time).into(), pos, vel, Some(depth))?;
+            analytic_2_body((time * 0.5).into(), &inter_pos, &inter_vel, Some(depth))
         }
     }
 }
@@ -336,10 +339,10 @@ pub fn analytic_2_body(
 /// This is the fastest method for getting a relatively good estimate of the orbits.
 pub fn propagate_two_body<T: InertialFrame>(
     state: &State<T>,
-    jd_final: f64,
+    time_final: Time<TDB>,
 ) -> KeteResult<State<T>> {
     let (pos, vel) = analytic_2_body(
-        jd_final - state.jd,
+        time_final - state.epoch,
         &state.pos.into(),
         &state.vel.into(),
         None,
@@ -347,7 +350,7 @@ pub fn propagate_two_body<T: InertialFrame>(
 
     Ok(State::new(
         state.desig.clone(),
-        jd_final,
+        time_final,
         pos.into(),
         vel.into(),
         state.center_id,
@@ -368,8 +371,8 @@ impl<T: InertialFrame> CostFunction for MoidCost<T> {
         let dt_a = param.first().unwrap();
         let dt_b = param.last().unwrap();
 
-        let s0 = propagate_two_body(&self.state_a, self.state_a.jd + dt_a)?;
-        let s1 = propagate_two_body(&self.state_b, self.state_b.jd + dt_b)?;
+        let s0 = propagate_two_body(&self.state_a, (self.state_a.epoch.jd + dt_a).into())?;
+        let s1 = propagate_two_body(&self.state_b, (self.state_b.epoch.jd + dt_b).into())?;
 
         Ok((Vector3::from(s0.pos) - Vector3::from(s1.pos)).norm())
     }
@@ -400,11 +403,11 @@ pub fn moid<T: InertialFrame>(mut state_a: State<T>, mut state_b: State<T>) -> K
     for idx in (-N_STEPS)..N_STEPS {
         states_a.push(propagate_two_body(
             &state_a,
-            state_a.jd + idx as f64 * state_a_step_size,
+            (state_a.epoch.jd + idx as f64 * state_a_step_size).into(),
         )?);
         states_b.push(propagate_two_body(
             &state_b,
-            state_b.jd + idx as f64 * state_b_step_size,
+            (state_b.epoch.jd + idx as f64 * state_b_step_size).into(),
         )?);
     }
     let mut best = (f64::INFINITY, state_a.clone(), state_b.clone());
@@ -447,12 +450,12 @@ mod tests {
             let pos = Vector3::new(0.0, r, 0.0);
             let vel = Vector3::new(-GMS_SQRT / r.sqrt(), 0.0, 0.0);
             let year = TAU / GMS_SQRT * r.powf(3.0 / 2.0);
-            let res = analytic_2_body(year, &pos, &vel, None).unwrap();
+            let res = analytic_2_body(year.into(), &pos, &vel, None).unwrap();
             assert!((res.0 - pos).norm() < 1e-8);
             assert!((res.1 - vel).norm() < 1e-8);
 
             // go backwards
-            let res = analytic_2_body(-year, &pos, &vel, None).unwrap();
+            let res = analytic_2_body((-year).into(), &pos, &vel, None).unwrap();
             assert!((res.0 - pos).norm() < 1e-8);
             assert!((res.1 - vel).norm() < 1e-8);
         }
@@ -474,14 +477,14 @@ mod tests {
         let pos = Vector3::new(0.0, 2.0, 0.0);
         let vel = Vector3::new(GMS_SQRT, 0.0, 0.0);
         let year = -TAU / GMS_SQRT;
-        let res = analytic_2_body(year, &pos, &vel, None).unwrap();
+        let res = analytic_2_body(year.into(), &pos, &vel, None).unwrap();
         let pos_exp = Vector3::new(-4.448805955479905, -0.4739843046525608, 0.0);
         let vel_exp = -Vector3::new(-0.00768983428326951, -0.008552645144187791, 0.0);
         assert!((res.0 - pos_exp).norm() < 1e-8);
         assert!((res.1 - vel_exp).norm() < 1e-8);
 
         // go backwards
-        let res = analytic_2_body(-year, &pos_exp, &vel_exp, None).unwrap();
+        let res = analytic_2_body((-year).into(), &pos_exp, &vel_exp, None).unwrap();
         assert!((res.0 - pos).norm() < 1e-8);
         assert!((res.1 - vel).norm() < 1e-8);
     }
@@ -491,14 +494,14 @@ mod tests {
         let pos = Vector3::new(0.0, 3.0, 0.0);
         let vel = Vector3::new(-GMS_SQRT, 0.0, 0.0);
         let year = TAU / GMS_SQRT;
-        let res = analytic_2_body(year, &pos, &vel, None).unwrap();
+        let res = analytic_2_body(year.into(), &pos, &vel, None).unwrap();
         let pos_exp = Vector3::new(-5.556785268950049, 1.6076633958058089, 0.0);
         let vel_exp = Vector3::new(-0.013061655543084886, -0.005508140023183166, 0.0);
         assert!((res.0 - pos_exp).norm() < 1e-8);
         assert!((res.1 - vel_exp).norm() < 1e-8);
 
         // go backwards
-        let res = analytic_2_body(-year, &pos_exp, &vel_exp, None).unwrap();
+        let res = analytic_2_body((-year).into(), &pos_exp, &vel_exp, None).unwrap();
         assert!((res.0 - pos).norm() < 1e-8);
         assert!((res.1 - vel).norm() < 1e-8);
     }

@@ -44,6 +44,7 @@ use super::pck_segments::PckSegment;
 use crate::cache::cache_path;
 use crate::errors::{Error, KeteResult};
 use crate::frames::NonInertialFrame;
+use crate::time::{TDB, Time};
 use crossbeam::sync::ShardedLock;
 
 /// A collection of segments.
@@ -74,7 +75,7 @@ impl PckCollection {
 
     /// Get the raw orientation from the loaded PCK files.
     /// This orientation will have the frame of what was originally present in the file.
-    pub fn try_get_orientation(&self, id: i32, jd: f64) -> KeteResult<NonInertialFrame> {
+    pub fn try_get_orientation(&self, id: i32, jd: Time<TDB>) -> KeteResult<NonInertialFrame> {
         for segment in self.segments.iter() {
             let array: &PckArray = segment.into();
             if (array.frame_id == id) & array.contains(jd) {

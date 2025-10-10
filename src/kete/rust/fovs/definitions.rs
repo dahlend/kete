@@ -1,8 +1,10 @@
 use kete_core::fov::{self};
 use kete_core::fov::{FovLike, SkyPatch};
 use kete_core::frames::Vector;
+use kete_core::time::{TDB, Time};
 use pyo3::{exceptions, prelude::*};
 
+use crate::time::PyTime;
 use crate::vector::VectorLike;
 use crate::{state::PyState, vector::PyVector};
 
@@ -256,20 +258,20 @@ pub enum AllowedFOV {
 
 impl AllowedFOV {
     #[allow(missing_docs)]
-    pub fn jd(&self) -> f64 {
+    pub fn jd(&self) -> Time<TDB> {
         match self {
-            AllowedFOV::NEOS(fov) => fov.0.observer().jd,
-            AllowedFOV::WISE(fov) => fov.0.observer().jd,
-            AllowedFOV::Rectangle(fov) => fov.0.observer().jd,
-            AllowedFOV::ZTF(fov) => fov.0.observer().jd,
-            AllowedFOV::ZTFField(fov) => fov.0.observer().jd,
-            AllowedFOV::NEOSVisit(fov) => fov.0.observer().jd,
-            AllowedFOV::Cone(fov) => fov.0.observer().jd,
-            AllowedFOV::OmniDirectional(fov) => fov.0.observer().jd,
-            AllowedFOV::PTF(fov) => fov.0.observer().jd,
-            AllowedFOV::PTFField(fov) => fov.0.observer().jd,
-            AllowedFOV::SPHEREx(fov) => fov.0.observer().jd,
-            AllowedFOV::SPHERExField(fov) => fov.0.observer().jd,
+            AllowedFOV::NEOS(fov) => fov.0.observer().epoch,
+            AllowedFOV::WISE(fov) => fov.0.observer().epoch,
+            AllowedFOV::Rectangle(fov) => fov.0.observer().epoch,
+            AllowedFOV::ZTF(fov) => fov.0.observer().epoch,
+            AllowedFOV::ZTFField(fov) => fov.0.observer().epoch,
+            AllowedFOV::NEOSVisit(fov) => fov.0.observer().epoch,
+            AllowedFOV::Cone(fov) => fov.0.observer().epoch,
+            AllowedFOV::OmniDirectional(fov) => fov.0.observer().epoch,
+            AllowedFOV::PTF(fov) => fov.0.observer().epoch,
+            AllowedFOV::PTFField(fov) => fov.0.observer().epoch,
+            AllowedFOV::SPHEREx(fov) => fov.0.observer().epoch,
+            AllowedFOV::SPHERExField(fov) => fov.0.observer().epoch,
         }
     }
 
@@ -396,8 +398,8 @@ impl PyWiseCmos {
 
     /// JD of the observer location.
     #[getter]
-    pub fn jd(&self) -> f64 {
-        self.0.observer().jd
+    pub fn jd(&self) -> PyTime {
+        self.0.observer().epoch.into()
     }
 
     /// Direction that the observer is looking.
@@ -494,8 +496,8 @@ impl PyGenericRectangle {
 
     /// JD of the observer location.
     #[getter]
-    pub fn jd(&self) -> f64 {
-        self.0.observer().jd
+    pub fn jd(&self) -> PyTime {
+        self.0.observer().epoch.into()
     }
 
     /// Direction that the observer is looking.
@@ -560,8 +562,8 @@ impl PyGenericCone {
 
     /// JD of the observer location.
     #[getter]
-    pub fn jd(&self) -> f64 {
-        self.0.observer().jd
+    pub fn jd(&self) -> PyTime {
+        self.0.observer().epoch.into()
     }
 
     /// Direction that the observer is looking.
@@ -602,8 +604,8 @@ impl PyOmniDirectional {
 
     /// JD of the observer location.
     #[getter]
-    pub fn jd(&self) -> f64 {
-        self.0.observer().jd
+    pub fn jd(&self) -> PyTime {
+        self.0.observer().epoch.into()
     }
 
     fn __repr__(&self) -> String {
@@ -653,8 +655,8 @@ impl PyNeosCmos {
 
     /// JD of the observer location.
     #[getter]
-    pub fn jd(&self) -> f64 {
-        self.0.observer().jd
+    pub fn jd(&self) -> PyTime {
+        self.0.observer().epoch.into()
     }
 
     /// Direction that the observer is looking.
@@ -798,8 +800,8 @@ impl PyNeosVisit {
 
     /// JD of the observer location.
     #[getter]
-    pub fn jd(&self) -> f64 {
-        self.0.observer().jd
+    pub fn jd(&self) -> PyTime {
+        self.0.observer().epoch.into()
     }
 
     /// Metadata about where this FOV is in the Survey.
@@ -946,8 +948,8 @@ impl PyZtfCcdQuad {
 
     /// JD of the observer location.
     #[getter]
-    pub fn jd(&self) -> f64 {
-        self.0.observer().jd
+    pub fn jd(&self) -> PyTime {
+        self.0.observer().epoch.into()
     }
 
     /// Metadata about where this FOV is in the Survey.
@@ -1053,8 +1055,8 @@ impl PyZtfField {
 
     /// JD of the observer location.
     #[getter]
-    pub fn jd(&self) -> f64 {
-        self.0.observer().jd
+    pub fn jd(&self) -> PyTime {
+        self.0.observer().epoch.into()
     }
 
     /// Metadata about where this FOV is in the Survey.
@@ -1184,8 +1186,8 @@ impl PyPtfCcd {
 
     /// JD of the observer location.
     #[getter]
-    pub fn jd(&self) -> f64 {
-        self.0.observer().jd
+    pub fn jd(&self) -> PyTime {
+        self.0.observer().epoch.into()
     }
 
     /// Metadata about where this FOV is in the Survey.
@@ -1279,8 +1281,8 @@ impl PyPtfField {
 
     /// JD of the observer location.
     #[getter]
-    pub fn jd(&self) -> f64 {
-        self.0.observer().jd
+    pub fn jd(&self) -> PyTime {
+        self.0.observer().epoch.into()
     }
 
     /// Metadata about where this FOV is in the Survey.
@@ -1376,8 +1378,8 @@ impl PySpherexCmos {
 
     /// JD of the observer location.
     #[getter]
-    pub fn jd(&self) -> f64 {
-        self.0.observer().jd
+    pub fn jd(&self) -> PyTime {
+        self.0.observer().epoch.into()
     }
 
     /// Metadata about where this FOV is in the Survey.
@@ -1454,8 +1456,8 @@ impl PySpherexField {
 
     /// JD of the observer location.
     #[getter]
-    pub fn jd(&self) -> f64 {
-        self.0.observer().jd
+    pub fn jd(&self) -> PyTime {
+        self.0.observer().epoch.into()
     }
 
     /// Metadata about where this FOV is in the Survey.

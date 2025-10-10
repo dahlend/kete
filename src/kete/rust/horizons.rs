@@ -118,7 +118,8 @@ impl HorizonsProperties {
             desig: prelude::Desig::Name(self.desig.clone()),
             epoch: self
                 .epoch
-                .ok_or(prelude::Error::ValueError("No Epoch defined".into()))?,
+                .ok_or(prelude::Error::ValueError("No Epoch defined".into()))?
+                .into(),
             eccentricity: self
                 .eccentricity
                 .ok_or(prelude::Error::ValueError("No Eccentricity defined".into()))?,
@@ -135,7 +136,8 @@ impl HorizonsProperties {
                 .ok_or(prelude::Error::ValueError("No peri_dist defined".into()))?,
             peri_time: self
                 .peri_time
-                .ok_or(prelude::Error::ValueError("No peri_time defined".into()))?,
+                .ok_or(prelude::Error::ValueError("No peri_time defined".into()))?
+                .into(),
             lon_of_ascending: self
                 .lon_of_ascending
                 .ok_or(prelude::Error::ValueError(

@@ -85,7 +85,7 @@ impl PyState {
         let vel = vel.into_vector(frame);
 
         let center_id = center_id.unwrap_or(10);
-        let state = State::new(desig, jd.jd(), pos, vel, center_id);
+        let state = State::new(desig, jd.into(), pos, vel, center_id);
         Self {
             raw: state,
             frame,
@@ -144,8 +144,8 @@ impl PyState {
 
     /// JD of the object's state in TDB scaled time.
     #[getter]
-    pub fn jd(&self) -> f64 {
-        self.raw.jd
+    pub fn jd(&self) -> PyTime {
+        self.raw.epoch.into()
     }
 
     /// Position of the object in AU with respect to the central object.
@@ -171,7 +171,7 @@ impl PyState {
     pub fn is_finite(&self) -> bool {
         self.raw.pos.norm().is_finite()
             && self.raw.vel.norm().is_finite()
-            && self.raw.jd.is_finite()
+            && self.raw.epoch.jd.is_finite()
     }
 
     /// Central ID of the object used as reference for the coordinate frame.
@@ -209,7 +209,7 @@ impl PyState {
 
     /// Perihelion time of the orbit in JD.
     #[getter]
-    pub fn peri_time(&mut self) -> f64 {
+    pub fn peri_time(&mut self) -> PyTime {
         self.elements().peri_time()
     }
 

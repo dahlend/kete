@@ -35,6 +35,7 @@ use crate::constants::GMS_SQRT;
 use crate::frames::Ecliptic;
 use crate::prelude::{Desig, KeteResult, State};
 use crate::propagation::{PARABOLIC_ECC_LIMIT, compute_eccentric_anomaly, compute_true_anomaly};
+use crate::time::{TDB, Time};
 
 use nalgebra::Vector3;
 use std::f64::consts::TAU;
@@ -53,7 +54,7 @@ pub struct CometElements {
     pub desig: Desig,
 
     /// Epoch of fit
-    pub epoch: f64,
+    pub epoch: Time<TDB>,
 
     /// Eccentricity
     pub eccentricity: f64,
@@ -65,7 +66,7 @@ pub struct CometElements {
     pub lon_of_ascending: f64,
 
     /// Time of perihelion passage in JD TDB scaled time
-    pub peri_time: f64,
+    pub peri_time: Time<TDB>,
 
     /// Argument of perihelion in radians
     pub peri_arg: f64,
@@ -79,7 +80,7 @@ impl CometElements {
     pub fn from_state(state: &State<Ecliptic>) -> Self {
         Self::from_pos_vel(
             state.desig.clone(),
-            state.jd,
+            state.epoch,
             &state.pos.into(),
             &state.vel.into(),
         )
@@ -90,7 +91,13 @@ impl CometElements {
     /// The units of the vectors are AU and AU/Day, with the central mass assumed
     /// to be the Sun.
     ///
-    fn from_pos_vel(desig: Desig, epoch: f64, pos: &Vector3<f64>, vel: &Vector3<f64>) -> Self {
+    fn from_pos_vel(
+        desig: Desig,
+        epoch: Time<TDB>,
+        pos: &Vector3<f64>,
+        vel: &Vector3<f64>,
+    ) -> Self {
+        let epoch = epoch.jd;
         let vel_scaled = vel / GMS_SQRT;
         let v_mag2 = vel_scaled.norm_squared();
         let p_mag = pos.norm();
@@ -181,11 +188,11 @@ impl CometElements {
 
         Self {
             desig,
-            epoch,
+            epoch: epoch.into(),
             eccentricity: ecc,
             inclination: incl,
             lon_of_ascending: lon_of_asc,
-            peri_time,
+            peri_time: peri_time.into(),
             peri_arg,
             peri_dist,
         }
@@ -226,7 +233,7 @@ impl CometElements {
             semi_major.abs().powf(-1.5) * GMS_SQRT
         };
 
-        let mean_anom = mean_motion * (self.epoch - self.peri_time);
+        let mean_anom = mean_motion * (self.epoch - self.peri_time).elapsed;
         let ecc_anom = compute_eccentric_anomaly(self.eccentricity, mean_anom, self.peri_dist)?;
 
         let x: f64;
@@ -335,7 +342,7 @@ impl CometElements {
     /// Compute the mean anomaly in radians.
     pub fn mean_anomaly(&self) -> f64 {
         let mm = self.mean_motion();
-        let mean_anomaly = (self.epoch - self.peri_time) * mm;
+        let mean_anomaly = (self.epoch - self.peri_time).elapsed * mm;
         match self.eccentricity {
             ecc if ecc < 1.0 - PARABOLIC_ECC_LIMIT => mean_anomaly.rem_euclid(TAU),
             _ => mean_anomaly,
@@ -360,11 +367,11 @@ mod tests {
             // This was previously a failed instance.
             let elem = CometElements {
                 desig: Desig::Empty,
-                epoch: 2461722.5,
+                epoch: 2461722.5.into(),
                 eccentricity: 0.7495474422690582,
                 inclination: 0.1582845445910239,
                 lon_of_ascending: 1.247985615390004,
-                peri_time: 2459273.227910867,
+                peri_time: 2459273.227910867.into(),
                 peri_arg: 4.229481513899533,
                 peri_dist: 0.5613867506855604,
             };
@@ -374,11 +381,11 @@ mod tests {
             // This was previously a failed instance.
             let elem = CometElements {
                 desig: Desig::Empty,
-                epoch: 2455341.243793971,
+                epoch: 2455341.243793971.into(),
                 eccentricity: 1.001148327267,
                 inclination: 2.433767,
                 lon_of_ascending: -1.24321,
-                peri_time: 2454482.5825015577,
+                peri_time: 2454482.5825015577.into(),
                 peri_arg: 0.823935226897,
                 peri_dist: 5.594792535298549,
             };
@@ -388,11 +395,11 @@ mod tests {
         {
             let elem = CometElements {
                 desig: Desig::Empty,
-                epoch: 2455562.5,
+                epoch: 2455562.5.into(),
                 eccentricity: 0.99999,
                 inclination: 2.792526803,
                 lon_of_ascending: 0.349065850,
-                peri_time: 2455369.7,
+                peri_time: 2455369.7.into(),
                 peri_arg: -0.8726646259,
                 peri_dist: 0.5,
             };
@@ -409,11 +416,11 @@ mod tests {
                         for peri_dist in [0.1, 0.5, 10.0] {
                             let elem = CometElements {
                                 desig: Desig::Empty,
-                                epoch: 10.0,
+                                epoch: 10.0.into(),
                                 eccentricity: ecc,
                                 inclination: incl,
                                 lon_of_ascending: lon_of_asc,
-                                peri_time: 10.0,
+                                peri_time: 10.0.into(),
                                 peri_arg,
                                 peri_dist,
                             };
@@ -424,7 +431,7 @@ mod tests {
                             );
                             let new_elem = CometElements::from_pos_vel(
                                 Desig::Empty,
-                                10.0,
+                                10.0.into(),
                                 &pos.into(),
                                 &vel.into(),
                             );
@@ -448,11 +455,11 @@ mod tests {
                                 for peri_dist in [0.3, 0.5] {
                                     let elem = CometElements {
                                         desig: Desig::Empty,
-                                        epoch,
+                                        epoch: epoch.into(),
                                         eccentricity: ecc,
                                         inclination: incl,
                                         lon_of_ascending: lon_of_asc,
-                                        peri_time,
+                                        peri_time: peri_time.into(),
                                         peri_arg,
                                         peri_dist,
                                     };
@@ -460,7 +467,7 @@ mod tests {
                                         elem.to_pos_vel().expect("Failed to convert to state.");
                                     let new_elem = CometElements::from_pos_vel(
                                         Desig::Empty,
-                                        epoch,
+                                        epoch.into(),
                                         &pos.into(),
                                         &vel.into(),
                                     );
@@ -509,18 +516,18 @@ mod tests {
                             for peri_dist in [0.3, 0.5] {
                                 let elem = CometElements {
                                     desig: Desig::Empty,
-                                    epoch,
+                                    epoch: epoch.into(),
                                     eccentricity: ecc,
                                     inclination: incl,
                                     lon_of_ascending: lon_of_asc,
-                                    peri_time,
+                                    peri_time: peri_time.into(),
                                     peri_arg,
                                     peri_dist,
                                 };
                                 let [pos, vel] = elem.to_pos_vel().unwrap();
                                 let new_elem = CometElements::from_pos_vel(
                                     Desig::Empty,
-                                    epoch,
+                                    epoch.into(),
                                     &pos.into(),
                                     &vel.into(),
                                 );

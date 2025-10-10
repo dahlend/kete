@@ -14,7 +14,7 @@
 //!     let singleton = LOADED_SPK.try_read().unwrap();
 //!
 //!     // get the state of 399 (Earth)
-//!     let state = singleton.try_get_state::<Ecliptic>(399, 2451545.0);
+//!     let state = singleton.try_get_state::<Ecliptic>(399, 2451545.0.into());
 //! ```
 //!
 //!
@@ -56,6 +56,7 @@ use crate::errors::Error;
 use crate::frames::InertialFrame;
 use crate::prelude::KeteResult;
 use crate::state::State;
+use crate::time::{TDB, Time};
 use pathfinding::prelude::dijkstra;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -92,7 +93,7 @@ impl SpkCollection {
     /// This state will have the center and frame of whatever was originally loaded
     /// into the file.
     #[inline(always)]
-    pub fn try_get_state<T: InertialFrame>(&self, id: i32, jd: f64) -> KeteResult<State<T>> {
+    pub fn try_get_state<T: InertialFrame>(&self, id: i32, jd: Time<TDB>) -> KeteResult<State<T>> {
         for segment in &self.planet_segments {
             let arr_ref: &SpkArray = segment.into();
             if arr_ref.object_id == id && arr_ref.contains(jd) {
@@ -118,7 +119,7 @@ impl SpkCollection {
     pub fn try_get_state_with_center<T: InertialFrame>(
         &self,
         id: i32,
-        jd: f64,
+        jd: Time<TDB>,
         center: i32,
     ) -> KeteResult<State<T>> {
         let mut state = self.try_get_state(id, jd)?;
@@ -137,24 +138,24 @@ impl SpkCollection {
         match (state.center_id, new_center) {
             (a, b) if a == b => (),
             (i, 0) if i <= 10 => {
-                state.try_change_center(self.try_get_state(i, state.jd)?)?;
+                state.try_change_center(self.try_get_state(i, state.epoch)?)?;
             }
             (0, 10) => {
-                let next = self.try_get_state(10, state.jd)?;
+                let next = self.try_get_state(10, state.epoch)?;
                 state.try_change_center(next)?;
             }
             (i, 10) if i < 10 => {
-                state.try_change_center(self.try_get_state(i, state.jd)?)?;
-                state.try_change_center(self.try_get_state(10, state.jd)?)?;
+                state.try_change_center(self.try_get_state(i, state.epoch)?)?;
+                state.try_change_center(self.try_get_state(10, state.epoch)?)?;
             }
             (10, i) if (i > 1) & (i < 10) => {
-                state.try_change_center(self.try_get_state(10, state.jd)?)?;
-                state.try_change_center(self.try_get_state(i, state.jd)?)?;
+                state.try_change_center(self.try_get_state(10, state.epoch)?)?;
+                state.try_change_center(self.try_get_state(i, state.epoch)?)?;
             }
             _ => {
                 let path = self.find_path(state.center_id, new_center)?;
                 for intermediate in path {
-                    let next = self.try_get_state(intermediate, state.jd)?;
+                    let next = self.try_get_state(intermediate, state.epoch)?;
                     state.try_change_center(next)?;
                 }
             }
@@ -163,8 +164,8 @@ impl SpkCollection {
     }
 
     /// For a given NAIF ID, return all increments of time which are currently loaded.
-    pub fn available_info(&self, id: i32) -> Vec<(f64, f64, i32, i32, i32)> {
-        let mut segment_info = Vec::<(f64, f64, i32, i32, i32)>::new();
+    pub fn available_info(&self, id: i32) -> Vec<(Time<TDB>, Time<TDB>, i32, i32, i32)> {
+        let mut segment_info = Vec::<(Time<TDB>, Time<TDB>, i32, i32, i32)>::new();
         if let Some(segments) = self.segments.get(&id) {
             for segment in segments {
                 let spk_array_ref: &SpkArray = segment.into();
@@ -198,19 +199,19 @@ impl SpkCollection {
             return segment_info;
         }
 
-        segment_info.sort_by(|a, b| (a.0).total_cmp(&b.0));
+        segment_info.sort_by(|a, b| (a.0.jd).total_cmp(&b.0.jd));
 
-        let mut avail_times = Vec::<(f64, f64, i32, i32, i32)>::new();
+        let mut avail_times = Vec::<(Time<TDB>, Time<TDB>, i32, i32, i32)>::new();
 
         let mut cur_segment = segment_info[0];
         for segment in segment_info.iter().skip(1) {
             // if the segments are overlapped or nearly overlapped, join them together
             // 1e-8 is approximately a millisecond
-            if cur_segment.1 <= (segment.0 - 1e-8) {
+            if cur_segment.1.jd <= (segment.0.jd - 1e-8) {
                 avail_times.push(cur_segment);
                 cur_segment = *segment;
             } else {
-                cur_segment.1 = segment.1.max(cur_segment.1);
+                cur_segment.1.jd = segment.1.jd.max(cur_segment.1.jd);
             }
         }
         avail_times.push(cur_segment);

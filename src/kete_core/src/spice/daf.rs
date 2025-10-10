@@ -45,6 +45,7 @@ use crate::io::bytes::{
 };
 
 use crate::errors::{Error, KeteResult};
+use crate::time::{TDB, Time};
 use std::fmt::Debug;
 use std::io::{Cursor, Read, Seek};
 use std::ops::Index;
@@ -359,7 +360,7 @@ pub struct SpkArray {
 
 impl SpkArray {
     /// Is the specified JD within the range of this array.
-    pub fn contains(&self, jd: f64) -> bool {
+    pub fn contains(&self, jd: Time<TDB>) -> bool {
         let jds = jd_to_spice_jd(jd);
         (jds >= self.jds_start) && (jds <= self.jds_end)
     }
@@ -430,7 +431,7 @@ pub struct PckArray {
 
 impl PckArray {
     /// Is the specified JD within the range of this array.
-    pub fn contains(&self, jd: f64) -> bool {
+    pub fn contains(&self, jd: Time<TDB>) -> bool {
         let jds = jd_to_spice_jd(jd);
         (jds >= self.jds_start) && (jds <= self.jds_end)
     }
