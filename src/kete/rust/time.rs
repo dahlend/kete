@@ -251,4 +251,8 @@ impl PyTime {
     fn __eq__(&self, other: PyTime) -> bool {
         self.0 == other.0
     }
+
+    fn __lt__(&self, other: PyTime) -> bool {
+        self.0.jd < other.0.jd
+    }
 }
