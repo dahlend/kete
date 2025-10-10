@@ -14,7 +14,7 @@
 //!     let singleton = LOADED_SPK.try_read().unwrap();
 //!
 //!     // get the state of 399 (Earth)
-//!     let state = singleton.try_get_state::<Ecliptic>(399, 2451545.0);
+//!     let state = singleton.try_get_state::<Ecliptic>(399, 2451545.0.into());
 //! ```
 //!
 //!
