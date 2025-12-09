@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Rewrite of NEATM and FRM internal models, remove support for saving files related
+  to thermal and optical models.
 - Throughout the rust code, `Time` is being enforced as inputs for functions instead
   of accepting `f64` in a large number of places.
 

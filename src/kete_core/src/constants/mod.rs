@@ -37,8 +37,8 @@ mod universal;
 mod wise;
 
 pub use gravity::{
-    EARTH_J2, EARTH_J3, EARTH_J4, GMS, GMS_SQRT, GravParams, JUPITER_J2, SUN_J2, known_masses,
-    register_custom_mass, register_mass, registered_masses,
+    EARTH_J2, EARTH_J3, EARTH_J4, GMS, GMS_SQRT, GravParams, JUPITER_J2, MASSES_KNOWN,
+    MASSES_SELECTED, SUN_J2, known_masses, register_custom_mass, register_mass, registered_masses,
 };
 pub use neos::{NEOS_BANDS, NEOS_HEIGHT, NEOS_SUN_CORRECTION, NEOS_WIDTH, NEOS_ZERO_MAG};
 pub use universal::{

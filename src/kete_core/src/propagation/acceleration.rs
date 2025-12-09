@@ -95,6 +95,9 @@ impl Default for CentralAccelMeta {
 /// * `pos` - A vector which defines the position with respect to the Sun in AU.
 /// * `vel` - A vector which defines the velocity with respect to the Sun in AU/Day.
 /// * `meta` - Metadata object which records values at integration steps.
+///
+/// # Errors
+/// This is actually infallible, but must have this signature for the integrator.
 pub fn central_accel(
     time: Time<TDB>,
     pos: &Vector3<f64>,
@@ -150,6 +153,9 @@ pub struct AccelSPKMeta<'a> {
 /// * `pos` - A vector which defines the position with respect to the Sun in AU.
 /// * `vel` - A vector which defines the velocity with respect to the Sun in AU/Day multiplied by `SUN_GMS_SQRT`.
 /// * `meta` - Metadata object [`AccelSPKMeta`] which records values at each integration step.
+///
+/// # Errors
+/// This is actually infallible, but must have this signature for the integrator.
 pub fn spk_accel(
     time: Time<TDB>,
     pos: &Vector3<f64>,
@@ -159,7 +165,7 @@ pub fn spk_accel(
 ) -> KeteResult<Vector3<f64>> {
     let mut accel = Vector3::<f64>::zeros();
 
-    let spk = &LOADED_SPK.try_read().unwrap();
+    let spk = &LOADED_SPK.try_read()?;
 
     for grav_params in meta.massive_obj {
         let id = grav_params.naif_id;
@@ -197,6 +203,9 @@ pub fn spk_accel(
 ///
 /// The `state_vec` is made up of concatenated position and velocity vectors.
 /// Otherwise this is just a thin wrapper over the [`spk_accel`] function.
+///
+/// # Errors
+/// Fails when SPK queries fail.
 pub fn spk_accel_first_order(
     time: Time<TDB>,
     state_vec: &SVector<f64, 6>,
@@ -239,6 +248,9 @@ pub struct AccelVecMeta<'a> {
 /// * `pos` - A vector which defines the position with respect to the Sun in AU.
 /// * `vel` - A vector which defines the velocity with respect to the Sun in AU/Day.
 /// * `meta` - Metadata.
+///
+/// # Errors
+/// Fails during an impact.
 pub fn vec_accel<D: Dim>(
     time: Time<TDB>,
     pos: &OVector<f64, D>,
@@ -311,6 +323,7 @@ pub fn central_accel_grad(
 /// Calculate the Jacobian for the [`central_accel`] function.
 ///
 /// This enables the computation of the two body STM.
+#[must_use]
 pub fn accel_grad(
     obj_pos: &Vector3<f64>,
     _obj_vel: &Vector3<f64>,

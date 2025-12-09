@@ -55,6 +55,7 @@ pub struct GenericRectangle {
 
 impl GenericRectangle {
     /// Create a new Generic Rectangular FOV
+    #[must_use]
     pub fn new(
         pointing: Vector<Equatorial>,
         rotation: f64,
@@ -71,6 +72,7 @@ impl GenericRectangle {
     }
 
     /// Create a Field of view from a collection of corners.
+    #[must_use]
     pub fn from_corners(
         corners: [Vector<Equatorial>; 4],
         observer: State<Equatorial>,
@@ -86,12 +88,14 @@ impl GenericRectangle {
 
     /// Latitudinal width of the FOV.
     #[inline]
+    #[must_use]
     pub fn lat_width(&self) -> f64 {
         self.patch.lat_width()
     }
 
     /// Longitudinal width of the FOV.
     #[inline]
+    #[must_use]
     pub fn lon_width(&self) -> f64 {
         self.patch.lon_width()
     }
@@ -100,9 +104,7 @@ impl GenericRectangle {
 impl FovLike for GenericRectangle {
     #[inline]
     fn get_fov(&self, index: usize) -> FOV {
-        if index != 0 {
-            panic!("FOV only has a single patch")
-        }
+        assert!(index == 0, "FOV only has a single patch");
         FOV::GenericRectangle(self.clone())
     }
 
@@ -140,6 +142,7 @@ pub struct OmniDirectional {
 
 impl OmniDirectional {
     /// Create a new Omni-Directional FOV
+    #[must_use]
     pub fn new(observer: State<Equatorial>) -> Self {
         Self { observer }
     }
@@ -148,9 +151,7 @@ impl OmniDirectional {
 impl FovLike for OmniDirectional {
     #[inline]
     fn get_fov(&self, index: usize) -> FOV {
-        if index != 0 {
-            panic!("FOV only has a single patch")
-        }
+        assert!(index == 0, "FOV only has a single patch");
         FOV::OmniDirectional(self.clone())
     }
 
@@ -195,6 +196,7 @@ pub struct GenericCone {
 
 impl GenericCone {
     /// Create a new Generic Conic FOV
+    #[must_use]
     pub fn new(pointing: Vector<Equatorial>, angle: f64, observer: State<Equatorial>) -> Self {
         let patch = SphericalCone::new(&pointing, angle);
         Self { observer, patch }
@@ -202,6 +204,7 @@ impl GenericCone {
 
     /// Angle of the cone from the central pointing vector.
     #[inline]
+    #[must_use]
     pub fn angle(&self) -> &f64 {
         &self.patch.angle
     }
@@ -210,9 +213,7 @@ impl GenericCone {
 impl FovLike for GenericCone {
     #[inline]
     fn get_fov(&self, index: usize) -> FOV {
-        if index != 0 {
-            panic!("FOV only has a single patch")
-        }
+        assert!(index == 0, "FOV only has a single patch");
         FOV::GenericCone(self.clone())
     }
 

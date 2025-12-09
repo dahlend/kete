@@ -66,18 +66,19 @@ impl ConvexShape {
     ///
     ///
     /// Total surface area is set to 1.
-    pub fn new_fibonacci_lattice(n_facets: usize) -> Self {
-        let mut facets: Vec<Facet> = Vec::with_capacity(n_facets);
-
+    #[must_use]
+    pub fn new_fibonacci_lattice(n_facets: u32) -> Self {
         const EPSILON: f64 = 0.36;
 
-        let n_normals = n_facets as f64;
+        let mut facets: Vec<Facet> = Vec::with_capacity(n_facets as usize);
+
+        let n_normals = f64::from(n_facets);
         let area = n_normals.recip();
 
         for idx in 0..n_facets {
-            let theta: f64 = TAU * (idx as f64) / GOLDEN_RATIO;
+            let theta: f64 = TAU * f64::from(idx) / GOLDEN_RATIO;
             let phi: f64 =
-                (1.0 - 2.0 * ((idx as f64) + EPSILON) / (n_normals - 1.0 + 2.0 * EPSILON)).acos();
+                (1.0 - 2.0 * (f64::from(idx) + EPSILON) / (n_normals - 1.0 + 2.0 * EPSILON)).acos();
             let normal = Unit::new_unchecked(Vector3::new(
                 theta.cos() * phi.sin(),
                 theta.sin() * phi.sin(),

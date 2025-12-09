@@ -62,16 +62,20 @@ impl SimultaneousStates {
     /// Create a new Exact `SimultaneousStates`
     /// Simultaneous States occur at the same JD, which is defined by either the time
     /// in the optional fov, or the time of the first state.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::ValueError`] possible for multiple reasons:
+    /// - Input vector must contain at least one state.
+    /// - Center ids of all states must match.
+    /// - Epoch times must match unless an FOV is provided.
     pub fn new_exact(states: Vec<State<Equatorial>>, fov: Option<FOV>) -> KeteResult<Self> {
-        if states.is_empty() {
+        let Some(state) = states.first() else {
             return Err(Error::ValueError(
                 "SimultaneousStates must contain at least one state.".into(),
             ));
-        }
-        let (mut jd, center_id) = {
-            let first = states.first().unwrap();
-            (first.epoch, first.center_id)
         };
+        let (mut jd, center_id) = (state.epoch, state.center_id);
 
         if let Some(f) = &fov {
             jd = f.observer().epoch;
@@ -79,14 +83,14 @@ impl SimultaneousStates {
 
         if states.iter().any(|state| state.center_id != center_id) {
             return Err(Error::ValueError("Center IDs do not match expected".into()));
-        };
+        }
 
         if fov.is_none() && states.iter().any(|state| state.epoch != jd) {
             return Err(Error::ValueError(
                 "Epoch JDs do not match expected, this is only allowed if there is an associated FOV."
                     .into(),
             ));
-        };
+        }
 
         Ok(Self {
             states,
@@ -102,13 +106,18 @@ impl SimultaneousStates {
     /// are automatically cast into the equatorial frame.
     /// The returned RA rate is scaled by cos(dec) so that it is equivalent to a
     /// linear projection onto the observing plane.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::ValueError`] possible for multiple reasons:
+    /// - FOV is not specified.
+    /// - Center id of the FOV state does not match the center ID of the states.
     pub fn ra_dec_with_rates(&self) -> KeteResult<Vec<[f64; 4]>> {
-        if self.fov.is_none() {
+        let Some(fov) = &self.fov else {
             return Err(Error::ValueError(
                 "Field of view must be specified for the ra/dec to be computed.".into(),
             ));
-        }
-        let fov = self.fov.as_ref().unwrap();
+        };
 
         let obs = fov.observer();
 

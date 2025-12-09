@@ -76,12 +76,22 @@ rust.trivial_casts = "deny"
 rust.elided_lifetimes_in_paths = "deny"
 rust.unexpected_cfgs = "deny"
 
-clippy.too_many_arguments = "allow"
-clippy.type_complexity = "allow"
 
 clippy.perf = { level = "deny", priority = 1 }
-# clippy.pedantic = { level = "warn", priority = 1 }
+clippy.pedantic = { level = "deny", priority = 1 }
 
+# Pedantic overrides
+clippy.float_cmp = {level = "allow", priority = 2 }
+clippy.inline_always = {level = "allow", priority = 2 }
+clippy.unreadable-literal = {level = "allow", priority = 2}
+clippy.similar_names = {level = "allow", priority = 2}
+clippy.too_many_lines = {level = "allow", priority = 2}
+clippy.cast_precision_loss = {level = "allow", priority = 2}
+clippy.cast_possible_truncation = {level = "allow", priority = 2}
+
+# General list
+clippy.too_many_arguments = "allow"
+clippy.type_complexity = "allow"
 clippy.allow_attributes_without_reason = "warn"
 clippy.collection_is_never_read = "warn"
 clippy.dbg_macro = "warn"
@@ -102,4 +112,10 @@ clippy.use_self = "warn"
 clippy.cargo_common_metadata = "warn"
 clippy.negative_feature_names = "warn"
 clippy.redundant_feature_names = "warn"
+clippy.wildcard_enum_match_arm = "warn"
 clippy.wildcard_dependencies = "warn"
+clippy.fallible_impl_from = "warn"
+clippy.unneeded_field_pattern = "warn"
+clippy.fn_params_excessive_bools = "warn"
+
+clippy.must_use_candidate = "deny"

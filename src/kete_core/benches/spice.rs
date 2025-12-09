@@ -33,6 +33,7 @@ fn spice_get_state(jd: f64) {
     }
 }
 
+#[allow(clippy::missing_panics_doc, reason = "Benchmarking only")]
 pub fn spice_benchmark(c: &mut Criterion) {
     let spice = &LOADED_SPK.try_read().unwrap();
     let state = spice

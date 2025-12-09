@@ -87,10 +87,8 @@ pub fn try_name_from_id(id: i32) -> Option<String> {
 ///
 /// This does a partial string match, case insensitive.
 pub fn naif_ids_from_name(name: &str) -> Vec<NaifId> {
-    // this should be re-written to be simpler
-    let desigs: Vec<String> = NAIF_IDS.iter().map(|n| n.name.to_lowercase()).collect();
-    let desigs: Vec<&str> = desigs.iter().map(String::as_str).collect();
-    partial_str_match(&name.to_lowercase(), &desigs)
+    let desigs: Vec<&str> = NAIF_IDS.iter().map(|n| n.name.as_str()).collect();
+    partial_str_match(name, &desigs)
         .into_iter()
         .map(|(i, _)| NAIF_IDS[i].clone())
         .collect()

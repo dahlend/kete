@@ -34,13 +34,14 @@
 /// Define all errors which may be raise by this crate, as well as optionally provide
 /// conversion to pyo3 error types which allow for the errors to be raised in Python.
 use chrono::ParseError;
-use std::{error, fmt, io};
+use std::{error, fmt, io, sync::TryLockError};
 
 /// kete specific result.
 pub type KeteResult<T> = Result<T, Error>;
 
 /// Possible Errors which may be raised by this crate.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Error {
     /// Numerical method did not converge within the algorithms limits.
     Convergence(String),
@@ -49,7 +50,7 @@ pub enum Error {
     ValueError(String),
 
     /// Attempting to query outside of data limits.
-    ExceedsLimits(String),
+    Bounds(String),
 
     /// Attempting to load or convert to/from an Frame of reference which is not known.
     UnknownFrame(i32),
@@ -59,6 +60,9 @@ pub enum Error {
 
     /// Propagator detected an impact.
     Impact(i32, Time<TDB>),
+
+    /// Failed to acquire lock on memory.
+    LockFailed,
 }
 
 impl error::Error for Error {}
@@ -66,10 +70,7 @@ impl error::Error for Error {}
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Convergence(s)
-            | Self::ValueError(s)
-            | Self::ExceedsLimits(s)
-            | Self::IOError(s) => {
+            Self::Convergence(s) | Self::ValueError(s) | Self::Bounds(s) | Self::IOError(s) => {
                 write!(f, "{s}")
             }
             Self::UnknownFrame(_) => {
@@ -78,6 +79,9 @@ impl fmt::Display for Error {
             Self::Impact(s, t) => {
                 let t = t.jd;
                 write!(f, "Propagation detected an impact with {s} at time {t}")
+            }
+            Self::LockFailed => {
+                write!(f, "Failed to acquire lock on memory.")
             }
         }
     }
@@ -92,13 +96,16 @@ use crate::time::{TDB, Time};
 impl From<Error> for PyErr {
     fn from(err: Error) -> Self {
         match err {
-            Error::IOError(s)
-            | Error::ExceedsLimits(s)
-            | Error::ValueError(s)
-            | Error::Convergence(s) => Self::new::<exceptions::PyValueError, _>(s),
+            Error::IOError(s) | Error::Bounds(s) | Error::ValueError(s) | Error::Convergence(s) => {
+                Self::new::<exceptions::PyValueError, _>(s)
+            }
 
             Error::UnknownFrame(_) => {
                 Self::new::<exceptions::PyValueError, _>("This reference frame is not supported.")
+            }
+
+            Error::LockFailed => {
+                Self::new::<exceptions::PyValueError, _>("Failed to acquire lock on memory.")
             }
 
             Error::Impact(s, t) => Self::new::<exceptions::PyValueError, _>({
@@ -129,5 +136,17 @@ impl From<std::num::ParseFloatError> for Error {
 impl From<ParseError> for Error {
     fn from(value: ParseError) -> Self {
         Self::IOError(value.to_string())
+    }
+}
+
+impl<T> From<TryLockError<T>> for Error {
+    fn from(_: TryLockError<T>) -> Self {
+        Self::LockFailed
+    }
+}
+
+impl From<argmin::core::Error> for Error {
+    fn from(_: argmin::core::Error) -> Self {
+        Self::Convergence("Convergence failed".into())
     }
 }

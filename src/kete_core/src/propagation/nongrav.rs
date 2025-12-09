@@ -94,6 +94,7 @@ impl NonGravModel {
     /// Construct a new non-grav model, manually specifying all parameters.
     /// Consider using the other constructors if this is a simple object.
     #[allow(clippy::too_many_arguments, reason = "Not practical to avoid this")]
+    #[must_use]
     pub fn new_jpl(
         a1: f64,
         a2: f64,
@@ -119,11 +120,13 @@ impl NonGravModel {
     }
 
     /// Construct a new non-grav dust model.
+    #[must_use]
     pub fn new_dust(beta: f64) -> Self {
         Self::Dust { beta }
     }
 
     /// Construct a new non-grav model which follows the default comet drop-off.
+    #[must_use]
     pub fn new_jpl_comet_default(a1: f64, a2: f64, a3: f64) -> Self {
         Self::JplComet {
             a1,
@@ -140,6 +143,9 @@ impl NonGravModel {
 
     /// Compute the non-gravitational acceleration vector when provided the position
     /// and velocity vector with respect to the sun.
+    ///
+    /// # Panics
+    /// Panics when two body propagation fails.
     #[inline(always)]
     pub fn add_acceleration(
         &self,
@@ -176,7 +182,7 @@ impl NonGravModel {
 
                 if !dt.is_zero() {
                     (pos, _) = analytic_2_body((-dt).into(), &pos, vel, None).unwrap();
-                };
+                }
                 let rr0 = pos.norm() / r_0;
                 let scale = alpha * rr0.powf(-m) * (1.0 + rr0.powf(*n)).powf(-k);
                 *accel += pos_norm * (scale * a1);

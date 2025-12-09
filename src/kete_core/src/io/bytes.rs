@@ -37,7 +37,7 @@ pub(crate) fn read_bytes_exact<T: Read>(buffer: T, n_bytes: usize) -> KeteResult
     let n_read = buffer.take(n_bytes as u64).read_to_end(&mut bytes)?;
     if n_read != n_bytes {
         Err(Error::IOError("Unexpected end of file.".into()))?;
-    };
+    }
 
     Ok(bytes.into())
 }
@@ -93,11 +93,11 @@ pub(crate) fn bytes_to_i32(bytes: &[u8], little_endian: bool) -> KeteResult<i32>
 /// Change a collection of bytes into a String.
 pub(crate) fn bytes_to_string(bytes: &[u8]) -> String {
     let mut bytes = bytes.to_vec();
-    bytes.iter_mut().for_each(|x| {
+    for x in &mut bytes {
         if x == &0x00 {
             *x = 0x0a;
         }
-    });
+    }
     String::from_utf8_lossy(&bytes).to_string()
 }
 

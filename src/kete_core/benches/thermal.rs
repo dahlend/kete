@@ -3,7 +3,7 @@
 #![allow(clippy::missing_assert_message, reason = "Unnecessary for benchmarks")]
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use kete_core::flux::{FrmParams, HGParams, NeatmParams};
+use kete_core::flux::{BandInfo, FrmParams, HGParams, NeatmParams};
 use pprof::criterion::{Output, PProfProfiler};
 use std::hint::black_box;
 
@@ -23,6 +23,7 @@ fn frm_bench(params: &FrmParams) {
     );
 }
 
+#[allow(clippy::missing_panics_doc, reason = "Benchmarking only")]
 pub fn neatm_benchmark(c: &mut Criterion) {
     let mut neatm_group = c.benchmark_group("NEATM");
 
@@ -36,18 +37,21 @@ pub fn neatm_benchmark(c: &mut Criterion) {
     )
     .unwrap();
     let wise_params = NeatmParams {
-        obs_bands: kete_core::flux::ObserverBands::Wise,
+        obs_bands: BandInfo::new_wise().to_vec(),
         band_albedos: vec![0.2; 4],
         beaming: 1.0,
         hg_params: hg_params.clone(),
         emissivity: 0.9,
     };
+
+    let obs_bands = [1000.0; 4]
+        .iter()
+        .zip([f64::NAN; 4])
+        .map(|(wavelength, z_mag)| BandInfo::new(*wavelength, 1.0, z_mag, None))
+        .collect();
+
     let generic_params = NeatmParams {
-        obs_bands: kete_core::flux::ObserverBands::Generic {
-            bands: vec![1000.0; 4],
-            zero_mags: None,
-            solar_correction: vec![1.0; 4],
-        },
+        obs_bands,
         band_albedos: vec![0.2; 4],
         beaming: 1.0,
         hg_params,
@@ -62,6 +66,7 @@ pub fn neatm_benchmark(c: &mut Criterion) {
     });
 }
 
+#[allow(clippy::missing_panics_doc, reason = "Benchmarking only")]
 pub fn frm_benchmark(c: &mut Criterion) {
     let mut frm_group = c.benchmark_group("FRM");
 
@@ -75,17 +80,20 @@ pub fn frm_benchmark(c: &mut Criterion) {
     )
     .unwrap();
     let wise_params = FrmParams {
-        obs_bands: kete_core::flux::ObserverBands::Wise,
+        obs_bands: BandInfo::new_wise().to_vec(),
         band_albedos: vec![0.2; 4],
         hg_params: hg_params.clone(),
         emissivity: 0.9,
     };
+
+    let obs_bands = [1000.0; 4]
+        .iter()
+        .zip([f64::NAN; 4])
+        .map(|(wavelength, z_mag)| BandInfo::new(*wavelength, 1.0, z_mag, None))
+        .collect();
+
     let generic_params = FrmParams {
-        obs_bands: kete_core::flux::ObserverBands::Generic {
-            bands: vec![1000.0; 4],
-            zero_mags: None,
-            solar_correction: vec![1.0; 4],
-        },
+        obs_bands,
         band_albedos: vec![0.2; 4],
         hg_params,
         emissivity: 0.9,

@@ -30,11 +30,11 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use super::*;
+use super::{Contains, FOV};
 use rayon::prelude::*;
 
 use crate::constants::C_AU_PER_DAY_INV;
-use crate::frames::Vector;
+use crate::frames::{Equatorial, Vector};
 use crate::prelude::*;
 
 /// Field of View like objects.
@@ -57,9 +57,15 @@ pub trait FovLike: Sync + Sized {
     fn n_patches(&self) -> usize;
 
     /// Get the pointing vector of the FOV.
+    ///
+    /// # Errors
+    /// Some ``FoVs`` may not have a well formed pointing vector.
     fn pointing(&self) -> KeteResult<Vector<Equatorial>>;
 
     /// Get the corners of the FOV.
+    ///
+    /// # Errors
+    /// Not all ``FoVs`` contain corners, such as a Cone.
     fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>>;
 
     /// Check if a static source is visible. This assumes the vector passed in is at an
@@ -98,6 +104,9 @@ pub trait FovLike: Sync + Sized {
 
     /// Assuming the object undergoes two-body motion, check to see if it is within the
     /// field of view.
+    ///
+    /// # Errors
+    /// Errors can occur when numerical integration fails, such as if the object hits the sun.
     #[inline]
     fn check_two_body(
         &self,
@@ -120,6 +129,9 @@ pub trait FovLike: Sync + Sized {
 
     /// Assuming the object undergoes n-body motion, check to see if it is within the
     /// field of view.
+    ///
+    /// # Errors
+    /// Errors can occur for numerous reasons, typically from numerical integration failing.
     #[inline]
     fn check_n_body(
         &self,
@@ -190,7 +202,7 @@ pub trait FovLike: Sync + Sized {
                     let (idx, contains, state) = self.check_two_body(state).ok()?;
                     match contains {
                         Contains::Inside => Some((idx, state)),
-                        _ => None,
+                        Contains::Outside(_) => None,
                     }
                 } else {
                     let (_, contains, _) = self.check_two_body(state).ok()?;
@@ -203,14 +215,14 @@ pub trait FovLike: Sync + Sized {
                         self.check_n_body(state, include_asteroids).ok()?;
                     match contains {
                         Contains::Inside => Some((idx, state)),
-                        _ => None,
+                        Contains::Outside(_) => None,
                     }
                 }
             })
             .collect();
 
         let mut detector_states = vec![Vec::<State<_>>::new(); self.n_patches()];
-        for (idx, state) in final_states.into_iter() {
+        for (idx, state) in final_states {
             detector_states[idx].push(state);
         }
 
@@ -244,9 +256,9 @@ pub trait FovLike: Sync + Sized {
             })
             .collect();
 
-        states
-            .into_iter()
-            .for_each(|(patch_idx, state)| visible[patch_idx].push(state));
+        for (patch_idx, state) in states {
+            visible[patch_idx].push(state);
+        }
 
         visible
             .into_iter()

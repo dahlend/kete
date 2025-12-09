@@ -70,13 +70,19 @@ pub enum DAFType {
     Ck,
 }
 
-impl From<&str> for DAFType {
-    fn from(magic: &str) -> Self {
-        match &magic.to_uppercase()[4..7] {
-            "SPK" => Self::Spk,
-            "PCK" => Self::Pck,
-            "CK " => Self::Ck,
-            other => Self::Unrecognized(other.as_bytes().try_into().unwrap()),
+impl TryFrom<&str> for DAFType {
+    type Error = Error;
+
+    fn try_from(magic: &str) -> KeteResult<Self> {
+        match magic
+            .to_uppercase()
+            .get(4..7)
+            .ok_or(Error::IOError("DAF Magic number not long enough".into()))?
+        {
+            "SPK" => Ok(Self::Spk),
+            "PCK" => Ok(Self::Pck),
+            "CK " => Ok(Self::Ck),
+            other => Ok(Self::Unrecognized(other.as_bytes().try_into().unwrap())),
         }
     }
 }
@@ -131,15 +137,21 @@ pub struct DafFile {
 
 impl DafFile {
     /// Try to load a single record from the DAF.
+    ///
+    /// # Errors
+    /// [`Error::IOError`] if a seek fails in the file.
     pub fn try_load_record<T: Read + Seek>(file: &mut T, idx: u64) -> KeteResult<Box<[u8]>> {
         let _ = file.seek(std::io::SeekFrom::Start(1024 * (idx - 1)))?;
         read_bytes_exact(file, 1024)
     }
 
     /// Load the contents of a DAF file.
+    ///
+    /// # Errors
+    /// Fails if there are read errors, or the file is incorrect in some way.
     pub fn from_buffer<T: Read + Seek>(mut buffer: T) -> KeteResult<Self> {
         let bytes = Self::try_load_record(&mut buffer, 1)?;
-        let daf_type: DAFType = bytes_to_string(&bytes[0..8]).as_str().into();
+        let daf_type: DAFType = bytes_to_string(&bytes[0..8]).as_str().try_into()?;
 
         let little_endian = match bytes_to_string(&bytes[88..96]).to_lowercase().as_str() {
             "ltl-ieee" => true,
@@ -155,7 +167,7 @@ impl DafFile {
 
         // record index of the first summary record in the file
         // records are 1024 long, and 1 indexed because fortran.
-        let init_summary_record_index = bytes_to_i32(&bytes[76..80], little_endian)?;
+        let init_summary_record_index = bytes_to_i32(&bytes[76..80], little_endian)?.abs();
 
         // the following values are not used, so are not stored.
         let internal_desc = bytes_to_string(&bytes[16..76]);
@@ -168,6 +180,7 @@ impl DafFile {
         // so read the next (init_summary_record_index-2) records:
         // -1 for fortran indexing
         // -1 for having already read a single record
+        #[allow(clippy::cast_sign_loss, reason = "known to be positive")]
         let mut comments: Vec<String> = Vec::with_capacity(init_summary_record_index as usize - 2);
         for _ in 0..(init_summary_record_index - 2) {
             // TODO: Check if the 1000 character limit is what other formats use.
@@ -195,6 +208,9 @@ impl DafFile {
     }
 
     /// Load DAF file from the specified filename.
+    ///
+    /// # Errors
+    /// Fails if there is a read error or parsing error.
     pub fn from_file(filename: &str) -> KeteResult<Self> {
         let mut file = std::fs::File::open(filename)?;
         let mut buffer = Vec::new();
@@ -204,9 +220,19 @@ impl DafFile {
     }
 
     /// Load all [`DafArray`] segments from the DAF file.
-    /// These are tuples containing a series of f64s and i32s along with arrays of data.
-    /// The meaning of these values depends on the particular implementation of the DAF.
+    /// These are tuples containing a series of f64s and i32s along with arrays of
+    /// data.
+    /// The meaning of these values depends on the particular implementation of the
+    /// DAF.
     ///
+    /// # Errors
+    /// Can fail if file fails to read or byte conversion fails (file incorrectly
+    /// formatted).
+    ///
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "cast should work except when file is incorrectly formatted"
+    )]
     pub fn try_load_arrays<T: Read + Seek>(&mut self, file: &mut T) -> KeteResult<()> {
         let summary_size = self.n_doubles + (self.n_ints + 1) / 2;
 
@@ -272,7 +298,14 @@ impl Debug for DafArray {
 }
 
 impl DafArray {
-    /// Try to load an DAF array from summary data
+    /// Try to load an DAF array from summary data.
+    ///
+    /// # Errors
+    /// Fails when a file is either incorrectly formatted, or a read error occurs.
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "cast should work except when file is incorrectly formatted"
+    )]
     pub fn try_load_array<T: Read + Seek>(
         buffer: &mut T,
         summary_floats: Box<[f64]>,
@@ -310,11 +343,13 @@ impl DafArray {
     }
 
     /// Total length of the array.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.data.len()
     }
 
     /// Test if array is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
@@ -360,6 +395,7 @@ pub struct SpkArray {
 
 impl SpkArray {
     /// Is the specified JD within the range of this array.
+    #[must_use]
     pub fn contains(&self, jd: Time<TDB>) -> bool {
         let jds = jd_to_spice_jd(jd);
         (jds >= self.jds_start) && (jds <= self.jds_end)
@@ -431,6 +467,7 @@ pub struct PckArray {
 
 impl PckArray {
     /// Is the specified JD within the range of this array.
+    #[must_use]
     pub fn contains(&self, jd: Time<TDB>) -> bool {
         let jds = jd_to_spice_jd(jd);
         (jds >= self.jds_start) && (jds <= self.jds_end)
@@ -507,6 +544,7 @@ pub struct CkArray {
 
 impl CkArray {
     /// Is the specified SCLK tick within the range of this array.
+    #[must_use]
     pub fn contains(&self, tick: f64) -> bool {
         (tick >= self.tick_start) && (tick <= self.tick_end)
     }

@@ -106,6 +106,7 @@ pub struct PtfCcd {
 
 impl PtfCcd {
     /// Create a Ptf field of view
+    #[must_use]
     pub fn new(
         corners: [Vector<Equatorial>; 4],
         observer: State<Equatorial>,
@@ -118,23 +119,21 @@ impl PtfCcd {
     ) -> Self {
         let patch = OnSkyRectangle::from_corners(corners, 0.0);
         Self {
-            patch,
             observer,
+            patch,
             field,
             ccdid,
             filter,
             filename,
-            seeing,
             info_bits,
+            seeing,
         }
     }
 }
 
 impl FovLike for PtfCcd {
     fn get_fov(&self, index: usize) -> FOV {
-        if index != 0 {
-            panic!("FOV only has a single patch")
-        }
+        assert!(index == 0, "FOV only has a single patch");
         FOV::PtfCcd(self.clone())
     }
 
@@ -184,19 +183,24 @@ impl PtfField {
     /// Construct a new [`PtfField`] from a list of ccds.
     /// These ccds must be from the same field and having matching value as
     /// appropriate.
+    ///
+    /// # Errors
+    /// Construction will fail if no ccds are provided or if they are inconsistent.
     pub fn new(ccds: Vec<PtfCcd>) -> KeteResult<Self> {
         if ccds.is_empty() {
             Err(Error::ValueError("Ptf Field must contains PtfCcd".into()))?;
         }
 
+        #[allow(clippy::missing_panics_doc, reason = "ccds is not empty")]
         let first = ccds.first().unwrap();
 
         let observer = first.observer().clone();
         let field = first.field;
         let filter = first.filter;
 
-        for ccd in ccds.iter() {
-            if ccd.field != field || ccd.filter != filter || ccd.observer().epoch != observer.epoch {
+        for ccd in &ccds {
+            if ccd.field != field || ccd.filter != filter || ccd.observer().epoch != observer.epoch
+            {
                 Err(Error::ValueError(
                     "All PtfCcds must have matching values except CCD ID etc.".into(),
                 ))?;

@@ -95,6 +95,7 @@ pub enum FOV {
 
 impl FOV {
     /// Check if a collection of states are visible to this FOV using orbital propagation
+    #[must_use]
     pub fn check_visible(
         self,
         states: &[State<Equatorial>],
@@ -136,6 +137,7 @@ impl FOV {
     }
 
     /// Check if any loaded SPK objects are visible to this FOV
+    #[must_use]
     pub fn check_spks(&self, obj_ids: &[i32]) -> Vec<Option<SimultaneousStates>> {
         match self {
             Self::Wise(fov) => fov.check_spks(obj_ids),
@@ -154,6 +156,7 @@ impl FOV {
     }
 
     /// Check if static sources are visible in this FOV.
+    #[must_use]
     pub fn check_statics(&self, pos: &[Vector<Equatorial>]) -> Vec<Option<(Vec<usize>, Self)>> {
         match self {
             Self::Wise(fov) => fov.check_statics(pos),

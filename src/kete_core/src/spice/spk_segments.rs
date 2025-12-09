@@ -117,7 +117,7 @@ impl SpkSegment {
 
         // this is faster than calling contains, probably because the || instead of &&
         if jds < arr_ref.jds_start || jds > arr_ref.jds_end {
-            return Err(Error::ExceedsLimits(
+            return Err(Error::Bounds(
                 "JD is not present in this record.".to_string(),
             ));
         }
@@ -188,6 +188,10 @@ pub(in crate::spice) struct SpkSegmentType1 {
     n_records: usize,
 }
 
+#[allow(
+    clippy::cast_sign_loss,
+    reason = "This is correct as long as the file is correct."
+)]
 impl SpkSegmentType1 {
     #[inline(always)]
     fn get_record(&self, idx: usize) -> &[f64] {
@@ -275,7 +279,7 @@ impl SpkSegmentType1 {
 
         // position interpolation
         let pos = std::array::from_fn(|idx| {
-            let sum: f64 = (1..(kq[idx] as usize + 1))
+            let sum: f64 = (1..=(kq[idx] as usize))
                 .rev()
                 .map(|j| divided_diff_array[15 * idx + j - 1] * w[j + ks - 1])
                 .sum();
@@ -302,6 +306,10 @@ impl SpkSegmentType1 {
 
 impl From<SpkArray> for SpkSegmentType1 {
     fn from(array: SpkArray) -> Self {
+        #[allow(
+            clippy::cast_sign_loss,
+            reason = "This is correct as long as the file is correct."
+        )]
         let n_records = array.daf[array.daf.len() - 1] as usize;
 
         Self { array, n_records }
@@ -355,6 +363,11 @@ impl SpkSegmentType2 {
     #[inline(always)]
     fn try_get_pos_vel(&self, jds: f64) -> KeteResult<([f64; 3], [f64; 3])> {
         let jds_start = self.array.jds_start;
+
+        #[allow(
+            clippy::cast_sign_loss,
+            reason = "This is correct as long as the file is correct."
+        )]
         let record_index = ((jds - jds_start) / self.jds_step).floor() as usize;
         let record = self.get_record(record_index);
 
@@ -380,6 +393,10 @@ impl TryFrom<SpkArray> for SpkSegmentType2 {
     type Error = Error;
 
     fn try_from(array: SpkArray) -> Result<Self, Self::Error> {
+        #[allow(
+            clippy::cast_sign_loss,
+            reason = "This is correct as long as the file is correct."
+        )]
         let record_len = array.daf[array.daf.len() - 2] as usize;
         let jds_step = array.daf[array.daf.len() - 3];
 
@@ -452,6 +469,11 @@ impl SpkSegmentType3 {
     #[inline(always)]
     fn try_get_pos_vel(&self, jds: f64) -> KeteResult<([f64; 3], [f64; 3])> {
         let jds_start = self.array.jds_start;
+
+        #[allow(
+            clippy::cast_sign_loss,
+            reason = "This is correct as long as the file is correct."
+        )]
         let record_index = ((jds - jds_start) / self.jds_step).floor() as usize;
         let record = self.get_record(record_index);
 
@@ -473,6 +495,10 @@ impl SpkSegmentType3 {
 impl TryFrom<SpkArray> for SpkSegmentType3 {
     type Error = Error;
     fn try_from(array: SpkArray) -> KeteResult<Self> {
+        #[allow(
+            clippy::cast_sign_loss,
+            reason = "This is correct as long as the file is correct."
+        )]
         let record_len = array.daf[array.daf.len() - 2] as usize;
         let jds_step = array.daf[array.daf.len() - 3];
 
@@ -507,6 +533,10 @@ pub(in crate::spice) struct SpkSegmentType9 {
 }
 
 impl From<SpkArray> for SpkSegmentType9 {
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "This is correct as long as the file is correct."
+    )]
     fn from(array: SpkArray) -> Self {
         let n_records = array.daf[array.daf.len() - 1] as usize;
         let mut poly_degree = array.daf[array.daf.len() - 2] as usize;
@@ -557,6 +587,10 @@ impl SpkSegmentType9 {
     }
 
     #[inline(always)]
+    #[allow(
+        clippy::cast_possible_wrap,
+        reason = "This is correct as long as the file is correct."
+    )]
     fn try_get_pos_vel(&self, jds: f64) -> ([f64; 3], [f64; 3]) {
         let times = self.get_times();
         let window_size = self.poly_degree + 1;
@@ -570,6 +604,11 @@ impl SpkSegmentType9 {
                 }
             }
         };
+
+        #[allow(
+            clippy::cast_sign_loss,
+            reason = "This is correct as long as the file is correct."
+        )]
         let start_idx = start_idx.clamp(0, (self.n_records - window_size) as isize) as usize;
 
         let mut pos = [0.0; 3];
@@ -745,6 +784,10 @@ pub(in crate::spice) struct SpkSegmentType13 {
 }
 
 impl From<SpkArray> for SpkSegmentType13 {
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "This is correct as long as the file is correct."
+    )]
     fn from(array: SpkArray) -> Self {
         let n_records = array.daf[array.daf.len() - 1] as usize;
         let mut window_size = array.daf[array.daf.len() - 2] as usize;
@@ -795,6 +838,10 @@ impl SpkSegmentType13 {
     }
 
     #[inline(always)]
+    #[allow(
+        clippy::cast_possible_wrap,
+        reason = "This is correct as long as the file is correct."
+    )]
     fn try_get_pos_vel(&self, jds: f64) -> ([f64; 3], [f64; 3]) {
         let times = self.get_times();
         let start_idx: isize = match times.binary_search_by(|probe| probe.total_cmp(&jds)) {
@@ -807,6 +854,11 @@ impl SpkSegmentType13 {
                 }
             }
         };
+
+        #[allow(
+            clippy::cast_sign_loss,
+            reason = "This is correct as long as the file is correct."
+        )]
         let start_idx =
             start_idx.clamp(0, self.n_records as isize - self.window_size as isize) as usize;
 
@@ -857,6 +909,11 @@ pub(in crate::spice) struct SpkSegmentType18 {
 
 impl TryFrom<SpkArray> for SpkSegmentType18 {
     type Error = Error;
+
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "This is correct as long as the file is correct."
+    )]
     fn try_from(array: SpkArray) -> KeteResult<Self> {
         let n_records = array.daf[array.daf.len() - 1] as usize;
         let mut window_size = array.daf[array.daf.len() - 2] as usize;
@@ -923,6 +980,10 @@ impl SpkSegmentType18 {
     }
 
     #[inline(always)]
+    #[allow(
+        clippy::cast_possible_wrap,
+        reason = "This is correct as long as the file is correct."
+    )]
     fn try_get_pos_vel(&self, jds: f64) -> ([f64; 3], [f64; 3]) {
         let times = self.get_times();
         let start_idx: isize = match times.binary_search_by(|probe| probe.total_cmp(&jds)) {
@@ -935,6 +996,11 @@ impl SpkSegmentType18 {
                 }
             }
         };
+
+        #[allow(
+            clippy::cast_sign_loss,
+            reason = "This is correct as long as the file is correct."
+        )]
         let start_idx =
             start_idx.clamp(0, self.n_records as isize - self.window_size as isize) as usize;
 
@@ -1018,6 +1084,10 @@ pub(in crate::spice) struct SpkSegmentType21 {
 }
 
 impl From<SpkArray> for SpkSegmentType21 {
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "This is correct as long as the file is correct."
+    )]
     fn from(array: SpkArray) -> Self {
         let n_records = array.daf[array.daf.len() - 1] as usize;
         let n_coef = array.daf[array.daf.len() - 2] as usize;
@@ -1054,6 +1124,10 @@ impl SpkSegmentType21 {
     }
 
     #[inline(always)]
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "This is correct as long as the file is correct."
+    )]
     fn try_get_pos_vel(&self, jds: f64) -> KeteResult<([f64; 3], [f64; 3])> {
         // Records are laid out as so:
         //
@@ -1079,7 +1153,7 @@ impl SpkSegmentType21 {
 
         let ref_time = record[0];
 
-        let func_vec = &record[1..self.n_coef + 1];
+        let func_vec = &record[1..=self.n_coef];
         let ref_state = &record[self.n_coef + 1..self.n_coef + 7];
 
         let divided_diff_array = &record[self.n_coef + 7..4 * self.n_coef + 7];
@@ -1124,7 +1198,7 @@ impl SpkSegmentType21 {
 
         // position interpolation
         let pos = std::array::from_fn(|idx| {
-            let sum: f64 = (1..(kq[idx] as usize + 1))
+            let sum: f64 = (1..=(kq[idx] as usize))
                 .rev()
                 .map(|j| divided_diff_array[idx * self.n_coef + j - 1] * w[j + ks - 1])
                 .sum();
@@ -1139,7 +1213,7 @@ impl SpkSegmentType21 {
 
         // velocity interpolation
         let vel = std::array::from_fn(|idx| {
-            let sum: f64 = (1..(kq[idx] as usize + 1))
+            let sum: f64 = (1..=(kq[idx] as usize))
                 .rev()
                 .map(|j| divided_diff_array[idx * self.n_coef + j - 1] * w[j + ks - 1])
                 .sum();
@@ -1241,6 +1315,10 @@ impl GenericSegment {
 impl TryFrom<SpkArray> for GenericSegment {
     type Error = Error;
 
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "This is correct as long as the file is correct."
+    )]
     fn try_from(array: SpkArray) -> KeteResult<Self> {
         // The very last value of this array is an int (cast to f64) which indicates the number
         // of meta-data values.

@@ -49,7 +49,7 @@ impl CkSegment {
     ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
         let arr_ref: &CkArray = self.into();
         if arr_ref.instrument_id != instrument_id {
-            return Err(Error::ExceedsLimits(format!(
+            return Err(Error::Bounds(format!(
                 "Instrument ID is not present in this record. {}",
                 arr_ref.instrument_id
             )));
@@ -138,7 +138,7 @@ impl CkSegmentType2 {
     ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
         let sclk = LOADED_SCLK
             .try_read()
-            .map_err(|_| Error::ExceedsLimits("Failed to read SCLK data.".into()))?;
+            .map_err(|_| Error::Bounds("Failed to read SCLK data.".into()))?;
         let tick = sclk.try_time_to_tick(self.array.naif_id, time)?;
 
         // get the time of the last record and its index
@@ -165,13 +165,15 @@ impl CkSegmentType2 {
         let dt = tick - record_time;
 
         if dt < 0.0 {
-            return Err(Error::ExceedsLimits(format!(
+            return Err(Error::Bounds(format!(
                 "Requested time {record_idx} is before the start of the segment."
             )));
         }
         let mut rotation = Unit::from_quaternion(quaternion).to_rotation_matrix();
 
-        accel_vec.iter_mut().for_each(|x| *x *= 86400.0 * dt * rate);
+        for x in &mut accel_vec {
+            *x *= 86400.0 * dt * rate;
+        }
         let rates = Rotation3::from_scaled_axis(accel_vec.into());
         rotation *= rates;
 
@@ -204,13 +206,13 @@ impl TryFrom<CkArray> for CkSegmentType2 {
         dir_size = n_records / 100;
 
         if array_len != (n_records * 10 + dir_size) {
-            return Err(Error::ExceedsLimits(
+            return Err(Error::Bounds(
                 "CK File is not formatted correctly, directory size of segments appear incorrect."
                     .into(),
             ));
         }
         if n_records == 0 {
-            return Err(Error::ExceedsLimits(
+            return Err(Error::Bounds(
                 "CK File does not contain any records.".into(),
             ));
         }
@@ -261,7 +263,7 @@ impl CkSegmentType3 {
                 .data
                 .get_unchecked(idx * self.rec_size..(idx + 1) * self.rec_size);
             Type3RecordView {
-                quaternion: &rec[..4],
+                quaternion: rec[..4].try_into().unwrap_unchecked(),
                 accel: &rec[4..],
             }
         }
@@ -323,7 +325,9 @@ impl CkSegmentType3 {
         let (time, quaternion, accel) = self.get_quaternion_at_time(time)?;
 
         let mut rates: [f64; 3] = accel.unwrap_or_default();
-        rates.iter_mut().for_each(|x| *x *= 86400.0);
+        for x in &mut rates {
+            *x *= 86400.0;
+        }
         let rotation_rate = Rotation3::from_scaled_axis(rates.into());
 
         let frame = NonInertialFrame::from_rotations(
@@ -348,7 +352,7 @@ impl CkSegmentType3 {
     ) -> KeteResult<(Time<TDB>, UnitQuaternion<f64>, Option<[f64; 3]>)> {
         let sclk = LOADED_SCLK
             .try_read()
-            .map_err(|_| Error::ExceedsLimits("Failed to read SCLK data.".into()))?;
+            .map_err(|_| Error::Bounds("Failed to read SCLK data.".into()))?;
         let tick = sclk.try_time_to_tick(self.array.naif_id, time)?;
 
         // If there is only one record, return it immediately.
@@ -401,19 +405,19 @@ impl CkSegmentType3 {
 }
 
 struct Type3RecordView<'a> {
-    quaternion: &'a [f64],
+    quaternion: &'a [f64; 4],
     accel: &'a [f64],
 }
 
 impl From<Type3RecordView<'_>> for (Quaternion<f64>, Option<[f64; 3]>) {
     fn from(record: Type3RecordView<'_>) -> Self {
-        let quaternion: [f64; 4] = record.quaternion.try_into().unwrap();
-        let quaternion =
-            Quaternion::new(quaternion[0], quaternion[1], quaternion[2], quaternion[3]);
-        let accel = if record.accel.is_empty() {
-            None
-        } else {
-            Some(record.accel.try_into().unwrap())
+        let quaternion = match record.quaternion {
+            &[a, b, c, d] => Quaternion::new(a, b, c, d),
+        };
+
+        let accel = match record.accel {
+            &[a, b, c] => Some([a, b, c]),
+            _ => None,
         };
         (quaternion, accel)
     }
@@ -422,17 +426,21 @@ impl From<Type3RecordView<'_>> for (Quaternion<f64>, Option<[f64; 3]>) {
 impl TryFrom<CkArray> for CkSegmentType3 {
     type Error = Error;
 
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "cast should work except when file is incorrectly formatted"
+    )]
     fn try_from(array: CkArray) -> Result<Self, Self::Error> {
         let n_records = array.daf[array.daf.len() - 1] as usize;
         let n_intervals = array.daf[array.daf.len() - 2] as usize;
 
         if n_records == 0 {
-            return Err(Error::ExceedsLimits(
+            return Err(Error::Bounds(
                 "CK File does not contain any records.".into(),
             ));
         }
         if n_intervals == 0 {
-            return Err(Error::ExceedsLimits(
+            return Err(Error::Bounds(
                 "CK File does not contain any intervals of records.".into(),
             ));
         }
@@ -455,7 +463,7 @@ impl TryFrom<CkArray> for CkSegmentType3 {
         expected_size += time_dir_size + interval_dir_size;
 
         if expected_size != array.daf.len() {
-            return Err(Error::ExceedsLimits(
+            return Err(Error::Bounds(
                 "CK File not formatted correctly. Number of records found in file don't match expected."
                     .into(),
             ));

@@ -82,11 +82,14 @@ fn stm_ivp_eqn(
 /// Compute a state transition matrix assuming only 2-body mechanics.
 ///
 /// This uses the Picard-Chebyshev integrator [`PC15`].
+///
+/// # Errors
+/// Error is returned if convergence fails.
 pub fn compute_state_transition(
     state: &mut State<Equatorial>,
     jd: Time<TDB>,
     central_mass: f64,
-) -> ([[f64; 3]; 2], Matrix6<f64>) {
+) -> KeteResult<([[f64; 3]; 2], Matrix6<f64>)> {
     let mut meta = CentralAccelMeta {
         mass_scaling: central_mass,
         ..Default::default()
@@ -107,17 +110,15 @@ pub fn compute_state_transition(
         .set_column(0, &(Vector3::from(state.vel) / GMS_SQRT));
 
     let integrator = &PC15;
-    let rad = integrator
-        .integrate(
-            &stm_ivp_eqn,
-            &dumb_picard_init,
-            initial_state,
-            (state.epoch.jd * GMS_SQRT).into(),
-            (jd.jd * GMS_SQRT).into(),
-            1.0,
-            &mut meta,
-        )
-        .unwrap();
+    let rad = integrator.integrate(
+        &stm_ivp_eqn,
+        &dumb_picard_init,
+        initial_state,
+        (state.epoch.jd * GMS_SQRT).into(),
+        (jd.jd * GMS_SQRT).into(),
+        1.0,
+        &mut meta,
+    )?;
 
     let vec_reshape = rad
         .fixed_rows::<36>(6)
@@ -138,11 +139,11 @@ pub fn compute_state_transition(
     );
     let scaling_b =
         Matrix6::<f64>::from_diagonal(&[1.0, 1.0, 1.0, GMS_SQRT, GMS_SQRT, GMS_SQRT].into());
-    (
+    Ok((
         [
             rad.fixed_rows::<3>(0).into(),
             (rad.fixed_rows::<3>(3) * GMS_SQRT).into(),
         ],
         scaling_a * vec_reshape * scaling_b,
-    )
+    ))
 }

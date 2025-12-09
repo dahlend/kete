@@ -57,6 +57,9 @@ pub struct PckCollection {
 impl PckCollection {
     /// Given an PCK filename, load all the segments present inside of it.
     /// These segments are added to the PCK singleton in memory.
+    ///
+    /// # Errors
+    /// May fail if there are IO or Parsing errors.
     pub fn load_file(&mut self, filename: &str) -> KeteResult<()> {
         let file = DafFile::from_file(filename)?;
         if !matches!(file.daf_type, DAFType::Pck) {
@@ -75,15 +78,18 @@ impl PckCollection {
 
     /// Get the raw orientation from the loaded PCK files.
     /// This orientation will have the frame of what was originally present in the file.
+    ///
+    /// # Errors
+    /// Fails when the specified ID is not found in known segments.
     pub fn try_get_orientation(&self, id: i32, jd: Time<TDB>) -> KeteResult<NonInertialFrame> {
-        for segment in self.segments.iter() {
+        for segment in &self.segments {
             let array: &PckArray = segment.into();
             if (array.frame_id == id) & array.contains(jd) {
                 return segment.try_get_orientation(id, jd);
             }
         }
 
-        Err(Error::ExceedsLimits(format!(
+        Err(Error::Bounds(format!(
             "Object ({id}) does not have an PCK record for the target JD."
         )))?
     }
@@ -95,6 +101,7 @@ impl PckCollection {
 
     /// Return a list of all loaded segments in the PCK singleton.
     /// This is a list of the center NAIF IDs of the segments.
+    #[must_use]
     pub fn loaded_objects(&self) -> Vec<i32> {
         let loaded: HashSet<i32> = self
             .segments
@@ -105,31 +112,40 @@ impl PckCollection {
     }
 
     /// Load the core files.
+    ///
+    /// # Errors
+    /// May fail if there are IO or Parsing errors.
     pub fn load_core(&mut self) -> KeteResult<()> {
         let cache = cache_path("kernels/core")?;
-        self.load_directory(cache)?;
+        self.load_directory(&cache)?;
         Ok(())
     }
 
     /// Load files in the cache directory.
+    ///
+    /// # Errors
+    /// May fail if there are IO or Parsing errors.
     pub fn load_cache(&mut self) -> KeteResult<()> {
         let cache = cache_path("kernels")?;
-        self.load_directory(cache)?;
+        self.load_directory(&cache)?;
         Ok(())
     }
 
     /// Load all PCK files from a directory.
-    pub fn load_directory(&mut self, directory: String) -> KeteResult<()> {
-        fs::read_dir(&directory)?.for_each(|entry| {
-            let entry = entry.unwrap();
-            let path = entry.path();
-            if path.is_file() {
-                let filename = path.to_str().unwrap();
-                if filename.to_lowercase().ends_with(".bpc")
-                    && let Err(err) = self.load_file(filename)
-                {
-                    eprintln!("Failed to load PCK file {filename}: {err}");
-                }
+    ///
+    /// # Errors
+    /// This only fails when there is a file IO error. When individual files fail to load,
+    /// ``eprintln`` is used, but loading will continue.
+    pub fn load_directory(&mut self, directory: &str) -> KeteResult<()> {
+        fs::read_dir(directory)?.for_each(|entry| {
+            // rust is crazy sometimes
+            if let Ok(entry) = entry
+                && entry.path().is_file()
+                && let Some(filename) = entry.path().to_str()
+                && filename.to_lowercase().ends_with(".bpc")
+                && let Err(err) = self.load_file(filename)
+            {
+                eprintln!("Failed to load PCK file {filename}: {err}");
             }
         });
         Ok(())

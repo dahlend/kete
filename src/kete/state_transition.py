@@ -33,7 +33,9 @@ def compute_stm(state: State, jd_end: float) -> NDArray:
     np.ndarray
         Returns the 6x6 state transition matrix.
     """
-    return np.array(_core.compute_stm(np.array(state).ravel(), state.jd, jd_end)[1])
+    s = list(state.pos)
+    s = s + list(state.vel)
+    return np.array(_core.compute_stm(s, state.jd, jd_end, 1.0)[1])
 
 
 def propagate_covariance(state: State, covariance: NDArray, jd_end: float) -> NDArray:

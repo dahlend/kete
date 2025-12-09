@@ -43,7 +43,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use super::jd_to_spice_jd;
-use super::{PckArray, interpolation::*};
+use super::{PckArray, interpolation::chebyshev_evaluate_both};
 use crate::errors::Error;
 use crate::frames::NonInertialFrame;
 use crate::prelude::KeteResult;
@@ -96,7 +96,7 @@ impl PckSegment {
         let arr_ref: &PckArray = self.into();
 
         if center_id != arr_ref.frame_id {
-            Err(Error::ExceedsLimits(
+            Err(Error::Bounds(
                 "Center ID is not present in this record.".into(),
             ))?;
         }
@@ -104,9 +104,7 @@ impl PckSegment {
         let jds = jd_to_spice_jd(epoch);
 
         if jds < arr_ref.jds_start || jds > arr_ref.jds_end {
-            Err(Error::ExceedsLimits(
-                "JD is not present in this record.".into(),
-            ))?;
+            Err(Error::Bounds("JD is not present in this record.".into()))?;
         }
         if arr_ref.reference_frame_id != 17 {
             Err(Error::ValueError(format!(
@@ -159,6 +157,10 @@ impl PckSegmentType2 {
         // Rate of change for each of these values can be calculated by using the
         // derivative of chebyshev of the first kind, which is done below.
         let jds_start = self.array.jds_start;
+        #[allow(
+            clippy::cast_sign_loss,
+            reason = "safe as long as file is correctly formatted."
+        )]
         let record_index = ((jds - jds_start) / self.jd_step).floor() as usize;
         let record = self.get_record(record_index);
         let t_mid = record[0];
@@ -195,6 +197,10 @@ impl PckSegmentType2 {
 impl TryFrom<PckArray> for PckSegmentType2 {
     type Error = Error;
 
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "cast should work except when file is incorrectly formatted"
+    )]
     fn try_from(array: PckArray) -> Result<Self, Self::Error> {
         let n_records = array.daf[array.daf.len() - 1] as usize;
         let record_len = array.daf[array.daf.len() - 2] as usize;
@@ -204,7 +210,7 @@ impl TryFrom<PckArray> for PckSegmentType2 {
 
         if n_records * record_len + 4 != array.daf.len() {
             return Err(Error::IOError(
-                "PCK File not formatted correctly. Number records found in file dont match expected number."
+                "PCK File not formatted correctly. Number records found in file do not match expected number."
                     .into(),
             ));
         }

@@ -22,7 +22,8 @@ pub fn compute_stm_py(
         10,
     );
 
-    let (final_state, stm) = compute_state_transition(&mut state, jd_end.into(), central_mass);
+    let (final_state, stm) =
+        compute_state_transition(&mut state, jd_end.into(), central_mass).unwrap();
 
     (final_state, stm.into())
 }

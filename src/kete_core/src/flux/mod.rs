@@ -47,7 +47,7 @@ mod sun;
 
 pub use self::comets::CometMKParams;
 pub use self::common::{
-    ColorCorrFn, ModelResults, ObserverBands, black_body_flux, flux_to_mag, lambertian_flux,
+    BandInfo, ColorCorrFn, ModelResults, black_body_flux, flux_to_mag, lambertian_flux,
     lambertian_vis_scale_factor, mag_to_flux, sub_solar_temperature,
 };
 pub use self::frm::{FrmParams, frm_facet_temperature};

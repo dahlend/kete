@@ -92,6 +92,9 @@ impl SpkCollection {
     /// Get the raw state from the loaded SPK files.
     /// This state will have the center and frame of whatever was originally loaded
     /// into the file.
+    ///
+    /// # Errors
+    /// Fails when the id or jd is not found in the [`SpkCollection`].
     #[inline(always)]
     pub fn try_get_state<T: InertialFrame>(&self, id: i32, jd: Time<TDB>) -> KeteResult<State<T>> {
         for segment in &self.planet_segments {
@@ -108,13 +111,16 @@ impl SpkCollection {
                 }
             }
         }
-        Err(Error::ExceedsLimits(format!(
+        Err(Error::Bounds(format!(
             "Object ({id}) does not have an SPK record for the target JD."
         )))
     }
 
     /// Load a state from the file, then attempt to change the center to the center id
     /// specified.
+    ///
+    /// # Errors
+    /// Fails when the id or jd is not found in the [`SpkCollection`].
     #[inline(always)]
     pub fn try_get_state_with_center<T: InertialFrame>(
         &self,
@@ -130,6 +136,9 @@ impl SpkCollection {
     }
 
     /// Use the data loaded in the SPKs to change the center ID of the provided state.
+    ///
+    /// # Errors
+    /// Fails when the id or jd is not found in the [`SpkCollection`].
     pub fn try_change_center<T: InertialFrame>(
         &self,
         state: &mut State<T>,
@@ -164,6 +173,7 @@ impl SpkCollection {
     }
 
     /// For a given NAIF ID, return all increments of time which are currently loaded.
+    #[must_use]
     pub fn available_info(&self, id: i32) -> Vec<(Time<TDB>, Time<TDB>, i32, i32, i32)> {
         let mut segment_info = Vec::<(Time<TDB>, Time<TDB>, i32, i32, i32)>::new();
         if let Some(segments) = self.segments.get(&id) {
@@ -225,6 +235,7 @@ impl SpkCollection {
     /// be included in the loaded objects set, as 0 is a privileged position at the
     /// barycenter of the solar system. It is not typically defined in relation to
     /// anything else.
+    #[must_use]
     pub fn loaded_objects(&self, include_centers: bool) -> HashSet<i32> {
         let mut found = HashSet::new();
 
@@ -270,7 +281,7 @@ impl SpkCollection {
         if let Some((v, _)) = result {
             Ok(v.iter().skip(1).map(|x| x.1).collect())
         } else {
-            Err(Error::ExceedsLimits(format!(
+            Err(Error::Bounds(format!(
                 "SPK files are missing information to be able to map from obj {start} to obj {goal}"
             )))
         }
@@ -282,8 +293,6 @@ impl SpkCollection {
     /// the spks to any possible combination.
     fn build_mapping(&mut self) {
         static PRECACHE: &[i32] = &[0, 10, 399];
-
-        let mut nodes: HashMap<i32, HashSet<(i32, i32)>> = HashMap::new();
 
         fn update_nodes(segment: &SpkSegment, nodes: &mut HashMap<i32, HashSet<(i32, i32)>>) {
             let array_ref: &SpkArray = segment.into();
@@ -309,12 +318,16 @@ impl SpkCollection {
             }
         }
 
+        let mut nodes: HashMap<i32, HashSet<(i32, i32)>> = HashMap::new();
+
         self.planet_segments
             .iter()
             .for_each(|x| update_nodes(x, &mut nodes));
 
         for segs in self.segments.values() {
-            segs.iter().for_each(|x| update_nodes(x, &mut nodes));
+            for x in segs {
+                update_nodes(x, &mut nodes);
+            }
         }
 
         let loaded = self.loaded_objects(true);
@@ -348,6 +361,10 @@ impl SpkCollection {
 
     /// Given an SPK filename, load all the segments present inside of it.
     /// These segments are added to the SPK singleton in memory.
+    ///
+    /// # Errors
+    /// Loading files may fail for a number of reasons, including incorrect formatted
+    /// files or IO errors.
     pub fn load_file(&mut self, filename: &str) -> KeteResult<()> {
         let file = DafFile::from_file(filename)?;
 
@@ -377,31 +394,38 @@ impl SpkCollection {
     }
 
     /// Load the core files.
+    ///
+    /// # Errors
+    /// May fail if there are IO or Parsing errors.
     pub fn load_core(&mut self) -> KeteResult<()> {
         let cache = cache_path("kernels/core")?;
-        self.load_directory(cache)?;
+        self.load_directory(&cache)?;
         Ok(())
     }
 
     /// Load files in the cache directory.
+    ///
+    /// # Errors
+    /// May fail if there are IO or Parsing errors.
     pub fn load_cache(&mut self) -> KeteResult<()> {
         let cache = cache_path("kernels")?;
-        self.load_directory(cache)?;
+        self.load_directory(&cache)?;
         Ok(())
     }
 
     /// Load all SPK files from a directory.
-    pub fn load_directory(&mut self, directory: String) -> KeteResult<()> {
-        fs::read_dir(&directory)?.for_each(|entry| {
-            let entry = entry.unwrap();
-            let path = entry.path();
-            if path.is_file() {
-                let filename = path.to_str().unwrap();
-                if filename.to_lowercase().ends_with(".bsp")
-                    && let Err(err) = self.load_file(filename)
-                {
-                    eprintln!("Failed to load SPK file {filename}: {err}");
-                }
+    ///
+    /// # Errors
+    /// May fail if there are IO or Parsing errors.
+    pub fn load_directory(&mut self, directory: &str) -> KeteResult<()> {
+        fs::read_dir(directory)?.for_each(|entry| {
+            if let Ok(entry) = entry
+                && entry.path().is_file()
+                && let Some(filename) = entry.path().to_str()
+                && filename.to_lowercase().ends_with(".bsp")
+                && let Err(err) = self.load_file(filename)
+            {
+                eprintln!("Failed to load SPK file {filename}: {err}");
             }
         });
         Ok(())
@@ -409,11 +433,12 @@ impl SpkCollection {
 
     /// Try to get the unique loaded NAIF ID for the given name.
     ///
-    /// If no ID is found, an error is returned.
-    /// If multiple IDs are found, an error is returned.
-    ///
     /// If there are multiple ids which match, but one of them is an exact match,
     /// that one is returned.
+    ///
+    /// # Errors
+    /// If no ID is found, an error is returned.
+    /// If multiple IDs are found, an error is returned.
     pub fn try_id_from_name(&mut self, name: &str) -> KeteResult<NaifId> {
         // check first for cache hit with a read only lock
 
@@ -440,7 +465,11 @@ impl SpkCollection {
                 "No NAIF ID found for name: {name}"
             )));
         } else if ids.len() == 1 {
-            let id = ids[0].clone();
+            #[allow(
+                clippy::missing_panics_doc,
+                reason = "Length is 1, unwrap always possible."
+            )]
+            let id = ids.first().unwrap().clone();
             let _ = self.naif_ids.insert(name.to_lowercase(), id.clone());
             return Ok(id);
         }

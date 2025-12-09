@@ -81,7 +81,7 @@ impl CkCollection {
     /// Get the closest record to the given JD for the specified instrument ID.
     ///
     /// # Errors
-    /// [`Error::ExceedsLimits`] if the instrument ID does not have a record for the
+    /// [`crate::prelude::Error::Bounds`] if the instrument ID does not have a record for the
     ///   target JD.
     ///
     pub fn try_get_frame(
@@ -90,7 +90,7 @@ impl CkCollection {
         instrument_id: i32,
     ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
         let time = Time::<TDB>::new(jd);
-        let sclk = LOADED_SCLK.try_read().unwrap();
+        let sclk = LOADED_SCLK.try_read()?;
         let spice_id = instrument_id / 1000;
         let tick = sclk.try_time_to_tick(spice_id, time)?;
 
@@ -101,12 +101,13 @@ impl CkCollection {
             }
         }
 
-        Err(Error::ExceedsLimits(format!(
+        Err(Error::Bounds(format!(
             "Instrument ({instrument_id}) does not have an CK record for the target JD."
         )))?
     }
 
     /// Return a list of all loaded instrument ids.
+    #[must_use]
     pub fn loaded_instruments(&self) -> Vec<i32> {
         self.segments
             .iter()
@@ -122,6 +123,7 @@ impl CkCollection {
     }
 
     /// For a given NAIF ID, return all increments of time which are currently loaded.
+    #[must_use]
     pub fn available_info(&self, instrument_id: i32) -> Vec<(i32, i32, i32, f64, f64)> {
         self.segments
             .iter()

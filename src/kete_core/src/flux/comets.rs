@@ -68,6 +68,7 @@ pub struct CometMKParams {
 
 impl CometMKParams {
     /// Create a new [`CometMKParams`] object.
+    #[must_use]
     pub fn new(
         desig: String,
         mk_1: Option<[f64; 2]>,
@@ -84,6 +85,7 @@ impl CometMKParams {
 
     /// Compute the apparent total flux including both coma and nucleus of the comet.
     /// This includes an additional 0.035 Mag/Deg phase correction.
+    #[must_use]
     pub fn apparent_total_mag(
         &self,
         sun2obs: &Vector3<f64>,
@@ -99,6 +101,7 @@ impl CometMKParams {
 
     /// Compute the apparent nuclear flux of the comet, not including the coma.
     /// This includes an additional 0.035 Mag/Deg phase correction.
+    #[must_use]
     pub fn apparent_nuclear_mag(
         &self,
         sun2obs: &Vector3<f64>,

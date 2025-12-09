@@ -129,7 +129,7 @@ impl SclkCollection {
     /// [`Error::ValueError`] if the SCLK clock for the given ID is not found.
     pub fn try_tick_to_time(&self, id: i32, clock_tick: f64) -> KeteResult<Time<TDB>> {
         if let Some(sclk) = self.clocks.get(&id) {
-            sclk.tick_to_time(clock_tick)
+            Ok(sclk.tick_to_time(clock_tick))
         } else {
             Err(Error::ValueError(format!(
                 "SCLK clock for spacecraft ID {id} not found."
@@ -149,7 +149,7 @@ impl SclkCollection {
     /// [`Error::ValueError`] if the SCLK clock for the given ID is not found.
     pub fn try_time_to_tick(&self, id: i32, time: Time<TDB>) -> KeteResult<f64> {
         if let Some(sclk) = self.clocks.get(&id) {
-            sclk.time_to_tick(time)
+            Ok(sclk.time_to_tick(time))
         } else {
             Err(Error::ValueError(format!(
                 "SCLK clock for spacecraft ID {id} not found."
@@ -164,6 +164,7 @@ impl SclkCollection {
 
     /// Return a list of all loaded segments in the SCLK singleton.
     /// This is a list of the center NAIF IDs of the segments.
+    #[must_use]
     pub fn loaded_objects(&self) -> Vec<i32> {
         self.clocks.keys().copied().collect()
     }
@@ -245,29 +246,27 @@ impl Sclk {
     /// Given an SCLK clock string, parse it into a `Time<TDB>`.
     fn string_to_time(&self, time_str: &str) -> KeteResult<Time<TDB>> {
         let (_, tick) = self.string_to_tick(time_str)?;
-        self.tick_to_time(tick)
+        Ok(self.tick_to_time(tick))
     }
 
     /// Convert a spacecraft clock tick (SCLK time) into a [`Time<TDB>`].
-    fn tick_to_time(&self, tick: f64) -> KeteResult<Time<TDB>> {
-        let clock_rate = self.find_tick_rate(tick)?;
+    fn tick_to_time(&self, tick: f64) -> Time<TDB> {
+        let clock_rate = self.find_tick_rate(tick);
 
         let par_time = (tick - clock_rate[0])
             * (clock_rate[2] / (*self.tick_rates.first().unwrap() as f64))
             + clock_rate[1];
 
-        Ok(spice_jd_to_jd(par_time))
+        spice_jd_to_jd(par_time)
     }
 
     /// Convert time in TDB to a spacecraft clock tick count.
-    fn time_to_tick(&self, time: Time<TDB>) -> KeteResult<f64> {
+    fn time_to_tick(&self, time: Time<TDB>) -> f64 {
         let par_time = jd_to_spice_jd(time);
-        let clock_rate = self.find_parallel_time_rate(par_time)?;
+        let clock_rate = self.find_parallel_time_rate(par_time);
 
-        let tick = (par_time - clock_rate[1])
-            * ((*self.tick_rates.first().unwrap() as f64) / clock_rate[2])
-            + clock_rate[0];
-        Ok(tick)
+        (par_time - clock_rate[1]) * ((*self.tick_rates.first().unwrap() as f64) / clock_rate[2])
+            + clock_rate[0]
     }
 
     /// Convert a spacecraft clock string into the partition and tick count.
@@ -330,19 +329,19 @@ impl Sclk {
     }
 
     /// Go through the coefficients and find the clock rate for a given spacecraft clock.
-    fn find_tick_rate(&self, tick: f64) -> KeteResult<[f64; 3]> {
+    fn find_tick_rate(&self, tick: f64) -> [f64; 3] {
         let mut idx = self.coefficients.partition_point(|probe| probe[0] <= tick);
         idx = idx.saturating_sub(1);
-        Ok(self.coefficients[idx])
+        self.coefficients[idx]
     }
 
     /// Go through the coefficients and find the clock rate for a given spacecraft clock.
-    fn find_parallel_time_rate(&self, par_time: f64) -> KeteResult<[f64; 3]> {
+    fn find_parallel_time_rate(&self, par_time: f64) -> [f64; 3] {
         let mut idx = self
             .coefficients
             .partition_point(|probe| probe[1] <= par_time);
         idx = idx.saturating_sub(1);
-        Ok(self.coefficients[idx])
+        self.coefficients[idx]
     }
 
     /// Given a tick count, find the partition and the number of ticks from the
@@ -403,10 +402,13 @@ impl TryFrom<Vec<SclkToken>> for Sclk {
         let mut coefficients: Option<Vec<[f64; 3]>> = None;
         let mut tdb: Option<bool> = None;
 
+        #[allow(
+            clippy::cast_possible_wrap,
+            reason = "i32 casts are valid as long as file is correctly formatted"
+        )]
         for token in value {
             match token {
-                SclkToken::MagicNumber => (),
-                SclkToken::Comments(_) => (),
+                SclkToken::MagicNumber | SclkToken::Comments(_) => (),
                 SclkToken::KernelID(id) => {
                     if kernel_id.is_some() {
                         return Err(Error::ValueError("Multiple SCLK_KERNEL_ID found.".into()));
@@ -598,10 +600,10 @@ impl TryFrom<Vec<SclkToken>> for Sclk {
             n_fields,
             moduli,
             offsets,
-            tick_rates,
             partition_start,
             partition_end,
             coefficients,
+            tick_rates,
         })
     }
 }
@@ -645,7 +647,7 @@ fn parse_key_suffix(input: &str) -> IResult<&str, (&str, Option<u32>)> {
     let (_, num) = opt(parse_num::<u32>).parse(&word[last_underscore + 1..])?;
 
     if num.is_some() {
-        Ok((rem, (&word[..last_underscore + 1], num)))
+        Ok((rem, (&word[..=last_underscore], num)))
     } else {
         Ok((rem, (word, None)))
     }
@@ -990,8 +992,8 @@ mod tests {
 
         let t = clock.string_to_time("1/1000:00:00").unwrap();
 
-        let ticks = clock.time_to_tick(t).unwrap();
-        let t2 = clock.tick_to_time(ticks).unwrap();
+        let ticks = clock.time_to_tick(t);
+        let t2 = clock.tick_to_time(ticks);
         assert_eq!(t, t2);
 
         let (part, count) = clock.partition_tick_count(0.0).unwrap();

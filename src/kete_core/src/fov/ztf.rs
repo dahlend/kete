@@ -71,6 +71,7 @@ pub struct ZtfCcdQuad {
 
 impl ZtfCcdQuad {
     /// Create a ZTF field of view
+    #[must_use]
     pub fn new(
         corners: [Vector<Equatorial>; 4],
         observer: State<Equatorial>,
@@ -85,25 +86,23 @@ impl ZtfCcdQuad {
     ) -> Self {
         let patch = OnSkyRectangle::from_corners(corners, 0.0);
         Self {
-            patch,
             observer,
+            patch,
             field,
             filefracday,
-            ccdid,
-            filtercode,
-            imgtypecode,
-            qid,
             maglimit,
             fid,
+            filtercode,
+            imgtypecode,
+            ccdid,
+            qid,
         }
     }
 }
 
 impl FovLike for ZtfCcdQuad {
     fn get_fov(&self, index: usize) -> FOV {
-        if index != 0 {
-            panic!("FOV only has a single patch")
-        }
+        assert!(index == 0, "FOV only has a single patch");
         FOV::ZtfCcdQuad(self.clone())
     }
 
@@ -159,6 +158,9 @@ impl ZtfField {
     /// Construct a new [`ZtfField`] from a list of ccd quads.
     /// These ccd quads must be from the same field and having matching value as
     /// appropriate.
+    ///
+    /// # Errors
+    /// Construction will fail if no ccds are provided or if they are inconsistent.
     pub fn new(ccd_quads: Vec<ZtfCcdQuad>) -> KeteResult<Self> {
         if ccd_quads.is_empty() {
             Err(Error::ValueError(
@@ -166,6 +168,7 @@ impl ZtfField {
             ))?;
         }
 
+        #[allow(clippy::missing_panics_doc, reason = "ccds is not empty")]
         let first = ccd_quads.first().unwrap();
 
         let observer = first.observer().clone();
@@ -174,7 +177,7 @@ impl ZtfField {
         let filtercode = first.filtercode.clone();
         let imgtypecode = first.imgtypecode.clone();
 
-        for ccd in ccd_quads.iter() {
+        for ccd in &ccd_quads {
             if ccd.field != field
                 || ccd.fid != fid
                 || ccd.filtercode != filtercode

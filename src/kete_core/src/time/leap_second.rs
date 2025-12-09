@@ -103,12 +103,12 @@ mod tests {
     #[test]
     fn test_leap_second() {
         {
-            let t = &LEAP_SECONDS[0];
+            let t = &LEAP_SECONDS.first().unwrap();
             assert!(t.tai_m_utc == 10.0 / 86400.0);
             assert!(t.mjd == 41317.0);
         }
         {
-            let t = &LEAP_SECONDS[27];
+            let t = &LEAP_SECONDS.last().unwrap();
             assert!(t.tai_m_utc == 37.0 / 86400.0);
             assert!(t.mjd == 57754.0);
         }

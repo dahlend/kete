@@ -34,8 +34,8 @@ use crate::prelude::KeteResult;
 use crate::propagation::util::SecondOrderODE;
 use crate::time::{TDB, Time};
 use itertools::izip;
+use nalgebra::Matrix;
 use nalgebra::allocator::Allocator;
-use nalgebra::*;
 use nalgebra::{DefaultAllocator, Dim, OMatrix, OVector, RowSVector, SMatrix, SVector, U1, U7};
 
 /// Integrator will return a result of this type.
@@ -174,6 +174,10 @@ where
     }
 
     /// Integrate the functions from the initial time to the final time.
+    ///
+    /// # Errors
+    /// Integration may fail for a number of reasons, either the function fails, or
+    /// convergence of the integrator fails.
     pub fn integrate(
         func: SecondOrderODE<'a, MType, D>,
         state_init: OVector<f64, D>,
@@ -218,9 +222,12 @@ where
                     step_failures = 0;
                 }
                 Err(error) => match error {
-                    Error::Impact(_, _) => Err(error)?,
-                    Error::ExceedsLimits(_) => Err(error)?,
-                    _ => {
+                    Error::Bounds(_) | Error::Impact(_, _) => Err(error)?,
+                    Error::Convergence(_)
+                    | Error::ValueError(_)
+                    | Error::UnknownFrame(_)
+                    | Error::IOError(_)
+                    | Error::LockFailed => {
                         step_failures += 1;
                         next_step_size *= 0.7;
                         if step_failures > 10 {
@@ -249,6 +256,7 @@ where
         for _ in 0..10 {
             self.b_scratch.set_column(0, &self.cur_b.column(6));
             // Calculate b and g
+            #[allow(clippy::cast_possible_wrap, reason = "idx does not exceed 8")]
             for (idj, gauss_radau_frac) in GAUSS_RADAU_SPACINGS.iter().enumerate().skip(1) {
                 // the sample point at the Guass-Radau spacings.
                 // Update each parameter using the current B as a guess to estimate the

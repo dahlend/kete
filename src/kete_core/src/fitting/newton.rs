@@ -43,6 +43,12 @@ use crate::{errors::Error, prelude::KeteResult};
 ///     assert!((root - 1.0).abs() < 1e-12);
 /// ```
 ///
+/// # Errors
+///
+/// [`Error::Convergence`] may be returned in the following cases:
+///     - Any function evaluation return a non-finite value.
+///     - Derivative is zero but not converged.
+///     - Failed to converge within 100 iterations.
 #[inline(always)]
 pub fn newton_raphson<Func, Der>(func: Func, der: Der, start: f64, atol: f64) -> KeteResult<f64>
 where

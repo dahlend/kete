@@ -69,7 +69,7 @@ pub use self::scales::{JD_TO_MJD, TAI, TDB, TimeScale, UTC};
 /// loss due to the nature of the representation of numbers on computers.
 ///
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-
+#[must_use]
 pub struct Time<T: TimeScale> {
     /// Julian Date
     pub jd: f64,
@@ -80,6 +80,7 @@ pub struct Time<T: TimeScale> {
 
 /// Duration of time.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[must_use]
 pub struct Duration<T: TimeScale> {
     /// Elapsed time in days.
     pub elapsed: f64,
@@ -114,30 +115,38 @@ impl<T: TimeScale> Duration<T> {
 }
 
 /// Convert Hours/Minutes/Seconds/millisecond to fraction of a day
+#[must_use]
 pub fn hour_min_sec_to_day(h: u32, m: u32, s: u32, ms: u32) -> f64 {
-    h as f64 / 24.0
-        + m as f64 / 60. / 24.
-        + s as f64 / 60. / 60. / 24.
-        + ms as f64 / 1000. / 60. / 60. / 24.
+    f64::from(h) / 24.0
+        + f64::from(m) / 60. / 24.
+        + f64::from(s) / 60. / 60. / 24.
+        + f64::from(ms) / 1000. / 60. / 60. / 24.
 }
 
 /// Convert fraction of a day to hours/minutes/seconds/microseconds
-pub fn frac_day_to_hmsms(mut frac: f64) -> Option<(u32, u32, u32, u32)> {
-    if frac.is_sign_negative() || frac.abs() >= 1.0 {
-        return None;
+///
+/// # Errors
+/// Fails if frac is non-finite, and if frac is not between 0 and 1.
+#[allow(clippy::cast_possible_truncation, reason = "Truncation is intentional")]
+#[allow(clippy::cast_sign_loss, reason = "Sign is manually validated")]
+pub fn frac_day_to_hmsms(mut frac: f64) -> KeteResult<(u32, u32, u32, u32)> {
+    if !frac.is_finite() || frac.is_sign_negative() || frac.abs() >= 1.0 {
+        return Err(Error::ValueError(
+            "Day frac must be between 0.0 and 1.".into(),
+        ));
     }
     frac *= 24.0;
     let hour = frac as u32;
-    frac -= hour as f64;
+    frac -= f64::from(hour);
     frac *= 60.0;
     let minute = frac as u32;
-    frac -= minute as f64;
+    frac -= f64::from(minute);
     frac *= 60.0;
     let second = frac as u32;
-    frac -= second as f64;
+    frac -= f64::from(second);
     frac *= 1000.0;
 
-    Some((hour, minute, second, frac as u32))
+    Ok((hour, minute, second, frac as u32))
 }
 
 /// Days in the provided year.
@@ -147,37 +156,35 @@ pub fn frac_day_to_hmsms(mut frac: f64) -> Option<(u32, u32, u32, u32)> {
 /// This is a proleptic implementation, meaning it does not take into account
 /// the Gregorian calendar reform, which is correct for most applications.
 ///
-fn days_in_year(year: i64) -> u64 {
+fn days_in_year(year: i64) -> u32 {
     let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
     if is_leap { 366 } else { 365 }
 }
 
 impl Time<UTC> {
     /// Read time from the standard ISO format for time.
+    ///
+    /// # Errors
+    /// An error is returned if ISO string parsing fails.
     pub fn from_iso(s: &str) -> KeteResult<Self> {
         let time = DateTime::parse_from_rfc3339(s)?.to_utc();
-        Self::from_datetime(&time)
+        Ok(Self::from_datetime(&time))
     }
 
     /// Construct time from the current time.
-    pub fn now() -> KeteResult<Self> {
+    pub fn now() -> Self {
         Self::from_datetime(&Utc::now())
     }
 
     /// Construct a Time object from a UTC [`DateTime`].
-    pub fn from_datetime(time: &DateTime<Utc>) -> KeteResult<Self> {
+    pub fn from_datetime(time: &DateTime<Utc>) -> Self {
         let frac_day = hour_min_sec_to_day(
             time.hour(),
             time.minute(),
             time.second(),
             time.timestamp_subsec_millis(),
         );
-        Ok(Self::from_year_month_day(
-            time.year() as i64,
-            time.month(),
-            time.day(),
-            frac_day,
-        ))
+        Self::from_year_month_day(i64::from(time.year()), time.month(), time.day(), frac_day)
     }
 
     /// Return the Gregorian year, month, day, and fraction of a day.
@@ -186,7 +193,10 @@ impl Time<UTC> {
     /// "A Machine Algorithm for Processing Calendar Dates"
     /// <https://doi.org/10.1145/364096.364097>
     ///
-    pub fn year_month_day(&self) -> (i64, u32, u32, f64) {
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation, reason = "Truncation is intentional")]
+    #[allow(clippy::cast_sign_loss, reason = "Sign is manually validated")]
+    pub fn year_month_day(&self) -> (i32, u32, u32, f64) {
         let offset = self.jd + 0.5;
         let frac_day = offset.rem_euclid(1.0);
 
@@ -202,7 +212,7 @@ impl Time<UTC> {
 
         let month = k + 2 - 12 * l;
         let year = 100 * (n - 49) + i + l;
-        (year, month as u32, day as u32, frac_day)
+        (year as i32, month as u32, day as u32, frac_day)
     }
 
     /// Return the current time as a fraction of the year.
@@ -211,39 +221,41 @@ impl Time<UTC> {
     ///    use kete_core::time::{Time, UTC};
     ///
     ///    let time = Time::from_year_month_day(2010, 1, 1, 0.0);
-    ///    assert_eq!(time.year_as_float(), 2010.0);
+    ///    assert_eq!(time.year_as_float(), Ok(2010.0));
     ///
     ///    let time = Time::<UTC>::new(2457754.5);
-    ///    assert_eq!(time.year_as_float(), 2017.0);
+    ///    assert_eq!(time.year_as_float(), Ok(2017.0));
     ///
     ///    let time = Time::<UTC>::new(2457754.5 + 364.9999);
-    ///    assert_eq!(time.year_as_float(), 2017.999999726028);
+    ///    assert_eq!(time.year_as_float(), Ok(2017.999999726028));
     ///
     ///    let time = Time::<UTC>::new(2457754.5 + 365.0 / 2.0);
-    ///    assert_eq!(time.year_as_float(), 2017.5);
+    ///    assert_eq!(time.year_as_float(), Ok(2017.5));
     ///
     ///    // 2016 was a leap year, so 366 days instead of 365.
     ///    let time = Time::<UTC>::new(2457754.5 - 366.0);
-    ///    assert_eq!(time.year_as_float(), 2016.0);
+    ///    assert_eq!(time.year_as_float(), Ok(2016.0));
     ///
     ///    let time = Time::<UTC>::new(2457754.5 - 366.0 / 2.0);
-    ///    assert_eq!(time.year_as_float(), 2016.5);
+    ///    assert_eq!(time.year_as_float(), Ok(2016.5));
     ///
     /// ```
     ///
-    pub fn year_as_float(&self) -> f64 {
-        let datetime = self.to_datetime().unwrap();
+    /// # Errors
+    /// Failure may occur if the [`NaiveDate::from_ymd_opt`] conversion fails.
+    pub fn year_as_float(&self) -> KeteResult<f64> {
+        let datetime = self.to_datetime()?;
 
         // ordinal is the integer day of the year, starting at 0.
-        let mut ordinal = datetime.ordinal0() as f64;
+        let mut ordinal = f64::from(datetime.ordinal0());
 
         // we need to add the fractional day to the ordinal.
         let (_, _, _, frac_day) = self.year_month_day();
         ordinal += frac_day;
 
-        let year = datetime.year() as f64;
-        let days_in_year = days_in_year(datetime.year() as i64) as f64;
-        year + ordinal / days_in_year
+        let year = f64::from(datetime.year());
+        let days_in_year = f64::from(days_in_year(i64::from(datetime.year())));
+        Ok(year + ordinal / days_in_year)
     }
 
     /// Create Time from the date in the Gregorian calendar.
@@ -252,11 +264,12 @@ impl Time<UTC> {
     /// "A Machine Algorithm for Processing Calendar Dates"
     /// <https://doi.org/10.1145/364096.364097>
     ///
+    #[allow(clippy::cast_possible_truncation, reason = "Truncation is expected")]
     pub fn from_year_month_day(year: i64, month: u32, day: u32, frac_day: f64) -> Self {
         let frac_day = frac_day - 0.5;
-        let day = day as i64 + frac_day.div_euclid(1.0) as i64;
+        let day = i64::from(day) + frac_day.div_euclid(1.0) as i64;
         let frac_day = frac_day.rem_euclid(1.0);
-        let month = month as i64;
+        let month = i64::from(month);
 
         let tmp = (month - 14) / 12;
         let days = day - 32075 + 1461 * (year + 4800 + tmp) / 4 + 367 * (month - 2 - tmp * 12) / 12
@@ -265,11 +278,15 @@ impl Time<UTC> {
         Self::new(days as f64 + frac_day)
     }
 
-    /// Create a [`DateTime`] object
+    /// Create a [`DateTime`] object.
+    ///
+    /// # Errors
+    /// Conversion to datetime object may fail for various reasons, such as the JD is
+    /// too large or too small.
     pub fn to_datetime(&self) -> KeteResult<DateTime<Utc>> {
-        let (y, month, d, f) = self.year_month_day();
-        let (h, m, s, ms) = frac_day_to_hmsms(f).unwrap();
-        Ok(NaiveDate::from_ymd_opt(y as i32, month, d)
+        let (year, month, day, f) = self.year_month_day();
+        let (h, m, s, ms) = frac_day_to_hmsms(f)?;
+        Ok(NaiveDate::from_ymd_opt(year, month, day)
             .ok_or(Error::ValueError("Failed to convert ymd".into()))?
             .and_hms_milli_opt(h, m, s, ms)
             .ok_or(Error::ValueError("Failed to convert hms".into()))?
@@ -277,6 +294,10 @@ impl Time<UTC> {
     }
 
     /// Construct a ISO compliant UTC string.
+    ///
+    /// # Errors
+    /// Conversion to datetime object may fail for various reasons, such as the JD is
+    /// too large or too small.
     pub fn to_iso(&self) -> KeteResult<String> {
         let datetime = self.to_datetime()?;
         Ok(datetime.to_rfc3339())
@@ -322,6 +343,7 @@ impl<T: TimeScale> Time<T> {
     }
 
     /// Convert to an MJD float.
+    #[must_use]
     pub fn mjd(&self) -> f64 {
         self.jd + JD_TO_MJD
     }
@@ -422,7 +444,7 @@ mod tests {
     #[test]
     fn test_time_near_leap_second() {
         for offset in -1000..1000 {
-            let offset = offset as f64 / 10.0;
+            let offset = f64::from(offset) / 10.0;
             let mjd = 41683.0 + offset / 86400.0; // TIME IN TAI
             let t = Time::<TAI>::from_mjd(mjd);
             let t = t.tdb();
@@ -434,7 +456,7 @@ mod tests {
 
         // Perform round trip conversions in the seconds around a leap second.
         for offset in -1000..1000 {
-            let offset = offset as f64 / 10.0;
+            let offset = f64::from(offset) / 10.0;
             let mjd = 41683.0 + offset / 86400.0; // TIME IN TAI
             let t = Time::<UTC>::from_mjd(mjd);
             let t = t.tai();
@@ -451,7 +473,7 @@ mod tests {
         }
 
         for offset in -1000..1000 {
-            let offset = offset as f64 / 10.0;
+            let offset = f64::from(offset) / 10.0;
 
             let mjd = 41683.0 + offset / 86400.0 + TT_TO_TAI;
             let t = Time::<UTC>::from_mjd(mjd);

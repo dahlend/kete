@@ -65,49 +65,11 @@ pub use radau::RadauIntegrator;
 pub use runge_kutta::RK45Integrator;
 pub use state_transition::compute_state_transition;
 
-/// Using the Radau 15th order integrator, integrate the position and velocity of an
-/// object assuming two body mechanics with a central object located at 0, 0 with the
-/// mass of the sun.
-///
-/// This is primarily intended for testing the numerical integrator, it is strongly
-/// recommended to use the Kepler analytic equation to do actual two body calculations.
-pub fn propagate_two_body_radau(dt: f64, pos: &[f64; 3], vel: &[f64; 3]) -> ([f64; 3], [f64; 3]) {
-    let res = RadauIntegrator::integrate(
-        &central_accel,
-        Vector3::from(*pos),
-        Vector3::from(*vel),
-        0.0.into(),
-        dt.into(),
-        CentralAccelMeta::default(),
-    )
-    .unwrap();
-    (res.0.into(), res.1.into())
-}
-
-/// Propagate the state of an object, only considering linear motion.
-///
-/// This is a very poor approximation over more than a few minutes/hours, however it
-/// is very fast.
-pub fn propagate_linear(
-    state: &State<Equatorial>,
-    jd_final: Time<TDB>,
-) -> KeteResult<State<Equatorial>> {
-    let dt = (jd_final - state.epoch).elapsed;
-    let mut pos: Vector3<f64> = state.pos.into();
-    pos.iter_mut()
-        .zip(state.vel)
-        .for_each(|(p, v)| *p += v * dt);
-
-    Ok(State::new(
-        state.desig.clone(),
-        jd_final,
-        pos.into(),
-        state.vel,
-        state.center_id,
-    ))
-}
-
 /// Propagate an object using full N-Body physics with the Radau 15th order integrator.
+///
+/// # Errors
+/// Propagation may fail for a number of reasons, including missing SPK data,
+/// integration near singularities, or impacts.
 pub fn propagate_n_body_spk(
     mut state: State<Equatorial>,
     jd_final: Time<TDB>,
@@ -115,7 +77,7 @@ pub fn propagate_n_body_spk(
     non_grav_model: Option<NonGravModel>,
 ) -> KeteResult<State<Equatorial>> {
     let center = state.center_id;
-    let spk = &LOADED_SPK.try_read().unwrap();
+    let spk = &LOADED_SPK.try_read()?;
     spk.try_change_center(&mut state, 0)?;
 
     let mass_list = {
@@ -143,7 +105,7 @@ pub fn propagate_n_body_spk(
         )?
     };
 
-    let mut new_state = State::new(state.desig.to_owned(), jd_final, pos.into(), vel.into(), 0);
+    let mut new_state = State::new(state.desig.clone(), jd_final, pos.into(), vel.into(), 0);
     spk.try_change_center(&mut new_state, center)?;
     Ok(new_state)
 }
@@ -173,6 +135,10 @@ fn picard_two_body_init<const N: usize>(
 }
 
 /// Propagate an object using full N-Body physics with the Radau 15th order integrator.
+///
+/// # Errors
+/// Propagation may fail for a number of reasons, including missing SPK data,
+/// integration near singularities, or impacts.
 pub fn propagate_picard_n_body_spk(
     mut state: State<Equatorial>,
     jd_final: Time<TDB>,
@@ -180,7 +146,7 @@ pub fn propagate_picard_n_body_spk(
     non_grav_model: Option<NonGravModel>,
 ) -> KeteResult<State<Equatorial>> {
     let center = state.center_id;
-    let spk = &LOADED_SPK.try_read().unwrap();
+    let spk = &LOADED_SPK.try_read()?;
     spk.try_change_center(&mut state, 0)?;
 
     let mass_list = {
@@ -222,37 +188,20 @@ pub fn propagate_picard_n_body_spk(
     let pos: Vector3<f64> = final_state_vec.fixed_rows::<3>(0).into();
     let vel: Vector3<f64> = final_state_vec.fixed_rows::<3>(3).into();
 
-    let mut new_state = State::new(state.desig.to_owned(), jd_final, pos.into(), vel.into(), 0);
+    let mut new_state = State::new(state.desig.clone(), jd_final, pos.into(), vel.into(), 0);
     spk.try_change_center(&mut new_state, center)?;
     Ok(new_state)
 }
 
-/// Propagate an object using two body mechanics.
-/// This is a brute force way to solve the kepler equations of motion as it uses Radau
-/// as an integrator.
-///
-/// It is *strongly recommended* to use the `kepler.rs` code for this, as
-/// it will be much more computationally efficient.
-pub fn propagation_central(
-    state: &State<Equatorial>,
-    jd_final: Time<TDB>,
-) -> KeteResult<[[f64; 3]; 2]> {
-    let pos: Vector3<f64> = state.pos.into();
-    let vel: Vector3<f64> = state.vel.into();
-    let (pos, vel, _meta) = RadauIntegrator::integrate(
-        &central_accel,
-        pos,
-        vel,
-        state.epoch,
-        jd_final,
-        CentralAccelMeta::default(),
-    )?;
-    Ok([pos.into(), vel.into()])
-}
-
 /// Propagate using n-body mechanics but skipping SPK queries.
 /// This will propagate all planets and the Moon, so it may vary from SPK states slightly.
-#[allow(clippy::type_complexity, reason = "Not practical to avoid this")]
+///
+/// # Errors
+/// Propagation may fail for a number of reasons, including lacking SPK information,
+/// numerical singularities, or slow convergence of the integrator.
+///
+/// # Panics
+/// Panics if planet states not provided, and cannot find the state in loaded SPKs.
 pub fn propagate_n_body_vec(
     states: Vec<State<Equatorial>>,
     jd_final: Time<TDB>,
@@ -271,14 +220,15 @@ pub fn propagate_n_body_vec(
         ))?;
     }
 
+    #[allow(clippy::missing_panics_doc, reason = "not possible by construction.")]
     let jd_init = states.first().unwrap().epoch;
 
     let mut pos: Vec<f64> = Vec::new();
     let mut vel: Vec<f64> = Vec::new();
     let mut desigs: Vec<Desig> = Vec::new();
+    let spk = &LOADED_SPK.try_read()?;
 
     let planet_states = planet_states.unwrap_or_else(|| {
-        let spk = &LOADED_SPK.try_read().unwrap();
         let mut planet_states = Vec::new();
         for obj in GravParams::simplified_planets() {
             let planet = spk
