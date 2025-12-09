@@ -49,6 +49,12 @@ use crate::{errors::Error, prelude::KeteResult};
 ///     assert!((root - 1.0).abs() < 1e-12);
 /// ```
 ///
+/// # Errors
+///
+/// [`Error::Convergence`] may be returned in the following cases:
+///     - Any function evaluation return a non-finite value.
+///     - Derivative is zero but not converged.
+///     - Failed to converge within 100 iterations.
 #[inline(always)]
 pub fn halley<Func, Der, SecDer>(
     func: Func,
@@ -71,7 +77,7 @@ where
 
     let mut f_eval: f64;
     let mut d_eval: f64;
-    let mut dd_eval: f64;
+    let mut d_d_eval: f64;
     let mut step: f64;
     for _ in 0..100 {
         f_eval = func(x);
@@ -87,15 +93,15 @@ where
             ))?;
         }
 
-        dd_eval = sec_der(x);
+        d_d_eval = sec_der(x);
 
-        if !dd_eval.is_finite() || !d_eval.is_finite() || !f_eval.is_finite() {
+        if !d_d_eval.is_finite() || !d_eval.is_finite() || !f_eval.is_finite() {
             Err(Error::Convergence(
                 "Halley root finding failed to converge due to non-finite evaluations".into(),
             ))?;
         }
         step = f_eval / d_eval;
-        step = step / (1.0 - step * dd_eval / (2.0 * d_eval));
+        step = step / (1.0 - step * d_d_eval / (2.0 * d_eval));
 
         x -= step;
     }

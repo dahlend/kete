@@ -38,8 +38,12 @@ use crate::{errors::Error, prelude::KeteResult};
 /// Quantiles are linearly interpolated between the two closest ranked values.
 ///
 /// If only one valid data point is provided, all quantiles evaluate to that value.
+///
+/// # Errors
+/// Fails when quant is not between 0 and 1, or if the data does not have any finite
+/// values.
 pub fn quantile(data: &[f64], quant: f64) -> KeteResult<f64> {
-    if quant <= 0.0 || quant >= 1.0 {
+    if !quant.is_finite() || quant <= 0.0 || quant >= 1.0 {
         Err(Error::ValueError(
             "Quantile must be between 0.0 and 1.0".into(),
         ))?;
@@ -62,6 +66,10 @@ pub fn quantile(data: &[f64], quant: f64) -> KeteResult<f64> {
     }
 
     let frac_idx = quant * (n_data - 1) as f64;
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "By construction this is always positive."
+    )]
     let idx = frac_idx.floor() as usize;
 
     if idx as f64 == frac_idx {
@@ -75,6 +83,9 @@ pub fn quantile(data: &[f64], quant: f64) -> KeteResult<f64> {
 /// Compute the median value of the data.
 ///
 /// This ignores non-finite values such as inf and nan.
+///
+/// # Errors
+/// Fails when data does not contain any finite values.
 pub fn median(data: &[f64]) -> KeteResult<f64> {
     quantile(data, 0.5)
 }
@@ -83,6 +94,8 @@ pub fn median(data: &[f64]) -> KeteResult<f64> {
 ///
 /// <https://en.wikipedia.org/wiki/Median_absolute_deviation>
 ///
+/// # Errors
+/// Fails when data does not contain any finite values.
 pub fn mad(data: &[f64]) -> KeteResult<f64> {
     let median = quantile(data, 0.5)?;
     let abs_deviation_from_med: Box<[f64]> = data.iter().map(|d| d - median).collect();

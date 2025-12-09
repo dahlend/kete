@@ -141,6 +141,10 @@ impl<'a, MType, const D: usize> RK45Integrator<'a, MType, D> {
     /// This performs integration on first order Initial Value Problems (IVP).
     ///
     /// This is a relatively fast, but not very precise numerical integration method.
+    ///
+    /// # Errors
+    /// Integration can fail for a number of reasons, including convergence failing or
+    /// function evals failing.
     pub fn integrate(
         func: FirstOrderODE<'a, MType, D>,
         state_init: SVector<f64, D>,
@@ -185,6 +189,8 @@ mod tests {
 
     #[test]
     fn basic_exp() {
+        #[allow(clippy::unnecessary_wraps, reason = "doesnt matter")]
+        #[allow(clippy::trivially_copy_pass_by_ref, reason = "doesnt matter")]
         fn f(
             _t: Time<TDB>,
             state: &Vector1<f64>,
@@ -199,17 +205,19 @@ mod tests {
                 &f,
                 Vector1::<f64>::repeat(1_f64),
                 0.0.into(),
-                (step as f64 * 10.0).into(),
+                (f64::from(step) * 10.0).into(),
                 (),
                 1e-14,
             );
             assert!(res.is_ok());
-            assert!((res.unwrap().0[0] - (-step as f64 * 10.0).exp()).abs() < 1e-14);
+            assert!((res.unwrap().0[0] - (-f64::from(step) * 10.0).exp()).abs() < 1e-14);
         }
     }
 
     #[test]
     fn basic_line() {
+        #[allow(clippy::unnecessary_wraps, reason = "doesnt matter")]
+        #[allow(clippy::trivially_copy_pass_by_ref, reason = "doesnt matter")]
         fn f(
             _t: Time<TDB>,
             _state: &Vector1<f64>,

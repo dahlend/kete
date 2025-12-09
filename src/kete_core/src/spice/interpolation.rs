@@ -242,7 +242,7 @@ pub(crate) fn lagrange_interpolation(x: &[f64], y: &mut [f64], eval_time: f64) -
     }
     let deg = x.len() - 1;
     let mut val = y[deg];
-    for k in 1..deg + 1 {
+    for k in 1..=deg {
         val = y[deg - k] + (eval_time - x[deg - k]) * val;
     }
     val
@@ -258,7 +258,7 @@ mod tests {
         let y = times.clone();
 
         for v in 0..100 {
-            let eval_time = (v as f64) / 100. * 9.0;
+            let eval_time = f64::from(v) / 100. * 9.0;
             let interp = lagrange_interpolation(&times, &mut y.clone(), eval_time);
             assert!((interp - eval_time).abs() < 1e-12);
         }
@@ -269,7 +269,7 @@ mod tests {
             .collect();
 
         for v in 0..100 {
-            let x = (v as f64) / 100. * 9.0;
+            let x = f64::from(v) / 100. * 9.0;
             let expected = x + 1.75 * x.powi(2) - 3.0 * x.powi(3) - 11.0 * x.powi(4);
             let interp = lagrange_interpolation(&times, &mut y1.clone(), x);
             assert!(

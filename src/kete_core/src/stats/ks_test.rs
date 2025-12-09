@@ -37,6 +37,8 @@ use crate::errors::{Error, KeteResult};
 ///
 /// This ignores NAN or INF values in the samples.
 ///
+/// # Errors
+/// Fails when data does not contain any finite values.
 pub fn two_sample_ks_statistic(sample_a: &[f64], sample_b: &[f64]) -> KeteResult<f64> {
     // Sort the two inputs and drop nan/inf
     let mut sample_a = sample_a

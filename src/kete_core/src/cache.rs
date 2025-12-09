@@ -50,18 +50,13 @@ use crate::errors::{Error, KeteResult};
 ///
 /// If the ``KETE_CACHE_DIR`` environment variable is not set, it
 /// creates a directory in the home directory of the user.
+///
+/// # Errors
+/// Errors can occur if the home directory is not found or if the
+/// ``KETE_CACHE_DIR`` does not exist.
 pub fn cache_dir() -> KeteResult<PathBuf> {
-    env::var("KETE_CACHE_DIR")
-        .map(|env_path| {
-            let path = PathBuf::from(env_path);
-            if !path.exists() {
-                return Err(Error::IOError(format!(
-                    "KETE_CACHE_DIR does not exist: {path:?}"
-                )));
-            }
-            Ok(path)
-        })
-        .unwrap_or_else(|_| {
+    env::var("KETE_CACHE_DIR").map_or_else(
+        |_| {
             let user_dirs =
                 UserDirs::new().ok_or(Error::IOError("Failed to find home directory.".into()))?;
             let path = user_dirs.home_dir();
@@ -70,7 +65,18 @@ pub fn cache_dir() -> KeteResult<PathBuf> {
                 std::fs::create_dir_all(&path)?;
             }
             Ok(path)
-        })
+        },
+        |env_path| {
+            let path = PathBuf::from(env_path);
+            if !path.exists() {
+                return Err(Error::IOError(format!(
+                    "KETE_CACHE_DIR does not exist: {}",
+                    path.display()
+                )));
+            }
+            Ok(path)
+        },
+    )
 }
 
 #[cfg_attr(feature = "pyo3", pyo3::pyfunction(signature = (sub_path = "")))]
@@ -80,6 +86,9 @@ pub fn cache_dir() -> KeteResult<PathBuf> {
 /// are not required for basic function.
 ///
 /// This will create the folder if it does not exist.
+///
+/// # Errors
+/// Fails if cache directory cannot be found or created.
 pub fn cache_path(sub_path: &str) -> KeteResult<String> {
     let mut path = cache_dir()?;
     path.push(sub_path);

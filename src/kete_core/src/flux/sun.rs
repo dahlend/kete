@@ -53,6 +53,7 @@ use crate::{
 ///
 /// * `dist` - Distance from the Sun in au.
 /// * `wavelength` - wavelength in nm.
+#[must_use]
 pub fn solar_flux(dist: f64, wavelength: f64) -> Option<f64> {
     let wavelength = wavelength / 1000.0;
     let start_idx = match E490_DATA.binary_search_by(|probe| probe[0].total_cmp(&wavelength)) {
@@ -60,13 +61,13 @@ pub fn solar_flux(dist: f64, wavelength: f64) -> Option<f64> {
         Err(c) => {
             if c >= E490_DATA.len() - 1 || c == 0 {
                 return None;
-            };
+            }
             c - 1
         }
     };
 
-    let low = E490_DATA[start_idx];
-    let high = E490_DATA[start_idx + 1];
+    let low = E490_DATA.get(start_idx)?;
+    let high = E490_DATA.get(start_idx + 1)?;
 
     let w_frac = (wavelength - low[0]) / (high[0] - low[0]);
     let val = w_frac * (high[1] - low[1]) + low[1];
@@ -89,6 +90,7 @@ pub fn solar_flux(dist: f64, wavelength: f64) -> Option<f64> {
 /// * `wavelength` - Central wavelength of light in nm.
 ///
 #[inline(always)]
+#[must_use]
 pub fn solar_flux_black_body(dist: f64, wavelength: f64) -> f64 {
     const SUN_R_AU: f64 = SUN_DIAMETER / AU_KM / 2.0;
 

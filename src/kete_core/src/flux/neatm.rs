@@ -28,14 +28,13 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use super::{
-    DEFAULT_SHAPE, HGParams, ObserverBands,
+    BandInfo, DEFAULT_SHAPE, HGParams,
     common::{ModelResults, black_body_flux, lambertian_vis_scale_factor, sub_solar_temperature},
     flux_to_mag,
 };
-use crate::{constants::V_MAG_ZERO, io::FileIO};
+use crate::constants::V_MAG_ZERO;
 
 use nalgebra::{UnitVector3, Vector3};
-use serde::{Deserialize, Serialize};
 
 /// Using the NEATM thermal model, calculate the temperature of each facet given the
 /// direction of the sun, the subsolar temperature and the facet normal vectors.
@@ -46,6 +45,7 @@ use serde::{Deserialize, Serialize};
 /// * `subsolar_temp` - The temperature at the sub-solar point in kelvin.
 /// * `obj2sun` - The vector from the object to the sun, unit length.
 #[inline(always)]
+#[must_use]
 pub fn neatm_facet_temperature(
     facet_normal: &UnitVector3<f64>,
     obj2sun: &UnitVector3<f64>,
@@ -59,10 +59,10 @@ pub fn neatm_facet_temperature(
 }
 
 /// NEATM input
-#[derive(Deserialize, Serialize, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct NeatmParams {
     /// Wavelength band information of the observer.
-    pub obs_bands: ObserverBands,
+    pub obs_bands: Vec<BandInfo>,
 
     /// Albedo of the object for each band.
     pub band_albedos: Vec<f64>,
@@ -77,26 +77,26 @@ pub struct NeatmParams {
     pub emissivity: f64,
 }
 
-impl FileIO for NeatmParams {}
-
 impl NeatmParams {
     /// Create new [`NeatmParams`] with WISE band and zero mags
+    #[must_use]
     pub fn new_wise(albedos: [f64; 4], beaming: f64, hg_params: HGParams, emissivity: f64) -> Self {
         Self {
-            obs_bands: ObserverBands::Wise,
+            obs_bands: BandInfo::new_wise().to_vec(),
             band_albedos: albedos.to_vec(),
-            beaming,
             hg_params,
             emissivity,
+            beaming,
         }
     }
 
     /// Create new [`NeatmParams`] with NEOS band and zero mags
+    #[must_use]
     pub fn new_neos(albedos: [f64; 2], beaming: f64, hg_params: HGParams, emissivity: f64) -> Self {
         Self {
-            obs_bands: ObserverBands::Neos,
-            band_albedos: albedos.to_vec(),
+            obs_bands: BandInfo::new_neos().to_vec(),
             beaming,
+            band_albedos: albedos.to_vec(),
             hg_params,
             emissivity,
         }
@@ -112,6 +112,7 @@ impl NeatmParams {
     ///   this is provided, the function must accept a list of temperatures in kelvin
     ///   and return a scaling factor for how much the flux gets scaled by for that
     ///   specified temp.
+    #[must_use]
     pub fn apparent_thermal_flux(
         &self,
         sun2obj: &Vector3<f64>,
@@ -122,8 +123,6 @@ impl NeatmParams {
         let obs2obj_r = obs2obj.norm();
         let geom = &DEFAULT_SHAPE;
         let hg_params = &self.hg_params;
-        let bands = self.obs_bands.band_wavelength();
-        let color_correction = self.obs_bands.color_correction();
 
         let diameter = hg_params.diam()?;
         let ss_temp = sub_solar_temperature(
@@ -134,12 +133,13 @@ impl NeatmParams {
             self.emissivity,
         );
 
+        let bands: Vec<_> = self.obs_bands.iter().map(|x| x.wavelength).collect();
+        let color_correction: Vec<_> = self.obs_bands.iter().map(|x| x.color_correction).collect();
         let obj2sun = UnitVector3::new_normalize(obj2sun);
         let obs2obj = UnitVector3::new_normalize(obs2obj);
 
-        let mut fluxes = vec![0.0; bands.len()];
-
-        for facet in geom.facets.iter() {
+        let mut fluxes = vec![0.0; self.obs_bands.len()];
+        for facet in &geom.facets {
             let temp = neatm_facet_temperature(&facet.normal, &obj2sun, &ss_temp);
             let obs_flux_scaling = lambertian_vis_scale_factor(
                 &facet.normal,
@@ -153,9 +153,9 @@ impl NeatmParams {
             }
             for (idx, (wavelength, flux)) in bands.iter().zip(&mut fluxes).enumerate() {
                 let mut facet_flux = black_body_flux(temp, *wavelength);
-                if let Some(funcs) = color_correction {
-                    facet_flux *= funcs[idx](temp);
-                };
+                if let Some(func) = color_correction[idx] {
+                    facet_flux *= func(temp);
+                }
                 facet_flux *= facet.area;
 
                 *flux += obs_flux_scaling * facet_flux;
@@ -170,47 +170,47 @@ impl NeatmParams {
     ///
     /// * `sun2obj` - Position of the object with respect to the Sun in AU.
     /// * `sun2obs` - Position of the Observer with respect to the Sun in AU.
+    #[must_use]
     pub fn apparent_total_flux(
         &self,
         sun2obj: &Vector3<f64>,
         sun2obs: &Vector3<f64>,
     ) -> Option<ModelResults> {
-        let bands = self.obs_bands.band_wavelength();
-        let mut fluxes = vec![0.0; bands.len()];
-        let mut hg_fluxes = vec![0.0; bands.len()];
-
         let thermal_fluxes = self.apparent_thermal_flux(sun2obj, sun2obs)?;
-        let sun_correction = self.obs_bands.solar_correction();
 
-        for (idx, (wavelength, sun_corr)) in bands.iter().zip(sun_correction).enumerate() {
-            let refl = self.hg_params.apparent_flux(
-                sun2obj,
-                sun2obs,
-                *wavelength,
-                self.band_albedos[idx],
-            )? * sun_corr;
-            hg_fluxes[idx] = refl;
-            fluxes[idx] = thermal_fluxes[idx] + refl;
+        let mut hg_fluxes = Vec::with_capacity(thermal_fluxes.len());
+        let mut fluxes = Vec::with_capacity(thermal_fluxes.len());
+        for ((band, t_flux), albedo) in self
+            .obs_bands
+            .iter()
+            .zip(&thermal_fluxes)
+            .zip(&self.band_albedos)
+        {
+            let refl = self
+                .hg_params
+                .apparent_flux(sun2obj, sun2obs, band.wavelength, *albedo)?
+                * band.solar_correction;
+            hg_fluxes.push(refl);
+            fluxes.push(*t_flux + refl);
         }
 
         let v_band_magnitude = self.hg_params.apparent_mag(sun2obj, sun2obs);
         let v_band_flux = flux_to_mag(v_band_magnitude, V_MAG_ZERO);
 
-        let magnitudes: Option<Vec<f64>> = self.obs_bands.zero_mags().map(|mags| {
-            fluxes
-                .iter()
-                .zip(mags)
-                .map(|(flux, z_mag)| flux_to_mag(*flux, *z_mag))
-                .collect::<Vec<f64>>()
-        });
+        let magnitudes: Vec<_> = self
+            .obs_bands
+            .iter()
+            .zip(&fluxes)
+            .map(|(band_info, flux)| flux_to_mag(*flux, band_info.zero_mag))
+            .collect();
 
         Some(ModelResults {
             fluxes,
-            hg_fluxes,
+            magnitudes,
             thermal_fluxes,
+            hg_fluxes,
             v_band_magnitude,
             v_band_flux,
-            magnitudes,
         })
     }
 }
@@ -275,8 +275,10 @@ mod tests {
             .iter()
             .map(|facet| neatm_facet_temperature(&facet.normal, &obj2sun, &1.0))
             .sum();
+
         let t1: f64 = t1 / fib_n2048.facets.len() as f64;
         let t2: f64 = t2 / fib_n1024.facets.len() as f64;
+
         assert!((t1 - t2).abs() < 1e-2);
     }
 }

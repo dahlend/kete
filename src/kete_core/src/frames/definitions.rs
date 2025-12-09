@@ -55,12 +55,14 @@ use super::euler_rotation;
 pub trait InertialFrame: Sized + Sync + Send + Clone + Copy + Debug + PartialEq {
     /// Convert a vector from input frame to equatorial frame.
     #[inline(always)]
+    #[must_use]
     fn to_equatorial(vec: Vector3<f64>) -> Vector3<f64> {
         Self::rotation_to_equatorial().transform_vector(&vec)
     }
 
     /// Convert a vector from the equatorial frame to this frame.
     #[inline(always)]
+    #[must_use]
     fn from_equatorial(vec: Vector3<f64>) -> Vector3<f64> {
         Self::rotation_to_equatorial().inverse_transform_vector(&vec)
     }
@@ -70,6 +72,7 @@ pub trait InertialFrame: Sized + Sync + Send + Clone + Copy + Debug + PartialEq 
 
     /// Convert between frames.
     #[inline(always)]
+    #[must_use]
     fn convert<Target: InertialFrame>(vec: Vector3<f64>) -> Vector3<f64> {
         Target::from_equatorial(Self::to_equatorial(vec))
     }
@@ -77,6 +80,7 @@ pub trait InertialFrame: Sized + Sync + Send + Clone + Copy + Debug + PartialEq 
 
 /// Equatorial frame.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[must_use]
 pub struct Equatorial {}
 
 impl InertialFrame for Equatorial {
@@ -135,6 +139,7 @@ impl InertialFrame for FK4 {
 
 /// General representation of a non-inertial frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[must_use]
 pub struct NonInertialFrame {
     /// Time of the frame in TDB.
     pub time: Time<TDB>,
@@ -189,6 +194,13 @@ impl NonInertialFrame {
     }
 
     /// Return the rotation matrix and rotation rate for this frame in the equatorial frame.
+    ///
+    /// # Errors
+    /// Fails when reference frame is not found or supported.
+    ///
+    /// # Panics
+    /// Panics can occur if a non-inertial reference frame is used but the lock on CK's
+    /// cannot be taken.
     pub fn rotations_to_equatorial(&self) -> KeteResult<(Rotation3<f64>, Matrix3<f64>)> {
         if self.reference_frame_id == 1 {
             // Equatorial frame
@@ -208,7 +220,7 @@ impl NonInertialFrame {
             let cks = LOADED_CK.read().unwrap();
 
             // find the segment in the ck data which matches the reference frame id, with its own reference frame id being either 1 or 17.
-            for segment in cks.segments.iter() {
+            for segment in &cks.segments {
                 let array: &CkArray = segment.into();
                 if array.instrument_id == self.reference_frame_id {
                     let frame = segment.try_get_orientation(self.reference_frame_id, self.time);
@@ -226,13 +238,13 @@ impl NonInertialFrame {
                     ));
                 }
             }
-            Err(Error::ExceedsLimits(format!(
+            Err(Error::Bounds(format!(
                 "Reference frame ID {} not found in CK data.",
                 self.reference_frame_id
             )))
         } else {
             // Unsupported frame
-            Err(Error::ExceedsLimits(format!(
+            Err(Error::Bounds(format!(
                 "Reference frame ID {} is not supported.",
                 self.reference_frame_id
             )))
@@ -240,6 +252,10 @@ impl NonInertialFrame {
     }
 
     /// Convert a vector from the equatorial frame to this frame.
+    ///
+    /// # Errors
+    /// May fail if coordinate frame conversion fails, should not be possible.
+    /// Please raise a github issue if this error occurs.
     #[allow(
         clippy::wrong_self_convention,
         reason = "Always need position and velocity together"
@@ -258,6 +274,10 @@ impl NonInertialFrame {
     }
 
     /// Convert a vector from input frame to equatorial frame.
+    ///
+    /// # Errors
+    /// May fail if coordinate frame conversion fails, should not be possible.
+    /// Please raise a github issue if this error occurs.
     pub fn to_equatorial(
         &self,
         pos: Vector3<f64>,
@@ -307,25 +327,25 @@ mod tests {
     fn test_ecliptic_rot_roundtrip() {
         let vec = Ecliptic::to_equatorial([1.0, 2.0, 3.0].into());
         let vec_return = Ecliptic::from_equatorial(vec);
-        assert!((1.0 - vec_return[0]).abs() <= 10.0 * f64::EPSILON);
-        assert!((2.0 - vec_return[1]).abs() <= 10.0 * f64::EPSILON);
-        assert!((3.0 - vec_return[2]).abs() <= 10.0 * f64::EPSILON);
+        assert!((1.0 - vec_return.x).abs() <= 10.0 * f64::EPSILON);
+        assert!((2.0 - vec_return.y).abs() <= 10.0 * f64::EPSILON);
+        assert!((3.0 - vec_return.z).abs() <= 10.0 * f64::EPSILON);
     }
     #[test]
     fn test_fk4_roundtrip() {
         let vec = FK4::to_equatorial([1.0, 2.0, 3.0].into());
         let vec_return = FK4::from_equatorial(vec);
-        assert!((1.0 - vec_return[0]).abs() <= 10.0 * f64::EPSILON);
-        assert!((2.0 - vec_return[1]).abs() <= 10.0 * f64::EPSILON);
-        assert!((3.0 - vec_return[2]).abs() <= 10.0 * f64::EPSILON);
+        assert!((1.0 - vec_return.x).abs() <= 10.0 * f64::EPSILON);
+        assert!((2.0 - vec_return.y).abs() <= 10.0 * f64::EPSILON);
+        assert!((3.0 - vec_return.z).abs() <= 10.0 * f64::EPSILON);
     }
     #[test]
     fn test_galactic_rot_roundtrip() {
         let vec = Galactic::to_equatorial([1.0, 2.0, 3.0].into());
         let vec_return = Galactic::from_equatorial(vec);
-        assert!((1.0 - vec_return[0]).abs() <= 10.0 * f64::EPSILON);
-        assert!((2.0 - vec_return[1]).abs() <= 10.0 * f64::EPSILON);
-        assert!((3.0 - vec_return[2]).abs() <= 10.0 * f64::EPSILON);
+        assert!((1.0 - vec_return.x).abs() <= 10.0 * f64::EPSILON);
+        assert!((2.0 - vec_return.y).abs() <= 10.0 * f64::EPSILON);
+        assert!((3.0 - vec_return.z).abs() <= 10.0 * f64::EPSILON);
     }
 
     #[test]
@@ -339,11 +359,11 @@ mod tests {
         let (r_pos, r_vel) = frame.to_equatorial(pos, vel).unwrap();
         let (pos_return, vel_return) = frame.from_equatorial(r_pos, r_vel).unwrap();
 
-        assert!((1.0 - pos_return[0]).abs() <= 10.0 * f64::EPSILON);
-        assert!((2.0 - pos_return[1]).abs() <= 10.0 * f64::EPSILON);
-        assert!((3.0 - pos_return[2]).abs() <= 10.0 * f64::EPSILON);
-        assert!((0.1 - vel_return[0]).abs() <= 10.0 * f64::EPSILON);
-        assert!((0.2 - vel_return[1]).abs() <= 10.0 * f64::EPSILON);
-        assert!((0.3 - vel_return[2]).abs() <= 10.0 * f64::EPSILON);
+        assert!((1.0 - pos_return.x).abs() <= 10.0 * f64::EPSILON);
+        assert!((2.0 - pos_return.y).abs() <= 10.0 * f64::EPSILON);
+        assert!((3.0 - pos_return.z).abs() <= 10.0 * f64::EPSILON);
+        assert!((0.1 - vel_return.x).abs() <= 10.0 * f64::EPSILON);
+        assert!((0.2 - vel_return.y).abs() <= 10.0 * f64::EPSILON);
+        assert!((0.3 - vel_return.z).abs() <= 10.0 * f64::EPSILON);
     }
 }

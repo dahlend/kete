@@ -54,26 +54,31 @@ pub struct Degrees {
 
 impl Degrees {
     /// Construct from radians.
+    #[must_use]
     pub fn from_radians(radians: f64) -> Self {
         Self::from_degrees(radians.to_degrees())
     }
 
     /// Converts to radians.
+    #[must_use]
     pub fn to_radians(&self) -> f64 {
         self.degrees.to_radians()
     }
 
     /// Construct from degrees.
+    #[must_use]
     pub fn from_degrees(degrees: f64) -> Self {
         Self { degrees }
     }
 
     /// Converts to degrees.
+    #[must_use]
     pub fn to_degrees(&self) -> f64 {
         self.degrees
     }
 
     /// Construct from hours.
+    #[must_use]
     pub fn from_hours(hours: f64) -> Self {
         Self {
             degrees: hours * 15.0,
@@ -81,12 +86,17 @@ impl Degrees {
     }
 
     /// Converts to Hours as a float.
+    #[must_use]
     pub fn to_hours(&self) -> f64 {
         self.degrees / 15.0
     }
 
     /// New Degrees from degrees and minutes.
     /// The degrees value can be negative, but the minutes must be non-negative.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::ValueError`] when the `minutes` parameter is negative.
     pub fn try_from_degrees_minutes(mut degrees: f64, minutes: f64) -> KeteResult<Self> {
         if minutes.is_sign_negative() {
             return Err(Error::ValueError(format!(
@@ -98,7 +108,11 @@ impl Degrees {
     }
 
     /// New Degrees from degrees and minutes.
-    /// The degrees value can be negative, but the minutes must be non-negative.
+    /// The degrees value may be negative, but the seconds must be non-negative.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::ValueError`] when the `minutes` parameter is negative.
     pub fn try_from_degrees_minutes_seconds(
         mut degrees: f64,
         minutes: u32,
@@ -109,12 +123,17 @@ impl Degrees {
                 "Seconds value must be non-negative: {seconds}"
             )));
         }
-        degrees += (minutes as f64).copysign(degrees) / 60.0;
+        degrees += f64::from(minutes).copysign(degrees) / 60.0;
         degrees += seconds.copysign(degrees) / 3600.0;
         Ok(Self { degrees })
     }
 
     /// Construct from hours, minutes, and seconds.
+    /// The degrees value may be negative, but the seconds must be non-negative.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::ValueError`] when the `seconds` parameter is negative.
     pub fn try_from_hours_minutes_seconds(
         hours: f64,
         minutes: u32,
@@ -125,7 +144,7 @@ impl Degrees {
                 "Seconds values must be non-negative: {seconds}"
             )));
         }
-        let minutes = (minutes as f64).copysign(hours);
+        let minutes = f64::from(minutes).copysign(hours);
         let seconds = seconds.copysign(hours);
         let seconds = hours * 3600.0 + minutes * 60.0 + seconds;
         Ok(Self {
@@ -134,6 +153,10 @@ impl Degrees {
     }
 
     /// Construct from hours and minutes.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::ValueError`] when the `minutes` parameter is negative.
     pub fn try_from_hours_minutes(hours: f64, minutes: f64) -> KeteResult<Self> {
         if minutes.is_sign_negative() {
             return Err(Error::ValueError(format!(
@@ -151,9 +174,10 @@ impl Degrees {
     ///
     /// This will be returned in the range [0, 24).
     ///
-    /// Parameters
-    /// ----------
+    /// # Parameters
+    ///
     /// tol: Tolerance for rounding seconds to zero.
+    #[must_use]
     pub fn to_hours_minutes_seconds(&self, tol: f64) -> (f64, u32, f64) {
         let deg = self.degrees.rem_euclid(360.0);
         let hours = deg / 15.0;
@@ -165,21 +189,25 @@ impl Degrees {
             s = 0.0;
             m += 1.0;
         }
-        if m.trunc() == 60.0 {
-            m = 0.0;
+        if m.trunc() >= 60.0 {
+            m -= 60.0;
             h += 1.0;
         }
-        if h == 24.0 {
-            h = 0.0;
+        if h >= 24.0 {
+            h -= 24.0;
         }
+
+        #[allow(clippy::cast_possible_truncation, reason = "truncation is intentional")]
+        #[allow(clippy::cast_sign_loss, reason = "value always positive.")]
         (h, m.trunc() as u32, s)
     }
 
     /// Converts to Degrees Minutes Seconds.
     ///
-    /// Parameters
-    /// ----------
+    /// # Parameters
+    ///
     /// tol: Tolerance for rounding seconds to zero.
+    #[must_use]
     pub fn to_degrees_minutes_seconds(&self, tol: f64) -> (f64, u32, f64) {
         let degrees = self.degrees.abs();
         let mut deg = degrees.trunc();
@@ -190,11 +218,14 @@ impl Degrees {
             s = 0.0;
             m += 1.0;
         }
-        if m.trunc() == 60.0 {
-            m = 0.0;
+        if m.trunc() >= 60.0 {
+            m -= 60.0;
             deg += 1.0;
         }
-        (deg.copysign(self.degrees), m as u32, s)
+
+        #[allow(clippy::cast_possible_truncation, reason = "truncation is intentional")]
+        #[allow(clippy::cast_sign_loss, reason = "value always positive.")]
+        (deg.copysign(self.degrees), m.trunc() as u32, s)
     }
 
     /// Construct from a string containing the hours minutes and seconds
@@ -206,6 +237,9 @@ impl Degrees {
     /// This is a generous implementation, it allows multiple separator
     /// characters such as spaces, commas, colons, and semicolons. It will
     /// also allow all numbers to be floating point or scientific notation.
+    ///
+    /// # Errors
+    /// [`Error`] possible when parsing fails.
     pub fn try_from_hms_str(text: &str) -> KeteResult<Self> {
         let (h, m, s) = parse_str_to_floats(text)?;
         let hours = h + m.copysign(h) / 60.0 + s.copysign(h) / 3600.0;
@@ -221,6 +255,9 @@ impl Degrees {
     /// This is a generous implementation, it allows multiple separator
     /// characters such as spaces, commas, colons, and semicolons. It will
     /// also allow all numbers to be floating point or scientific notation.
+    ///
+    /// # Errors
+    /// [`Error`] possible when parsing fails.
     pub fn try_from_dms_str(text: &str) -> KeteResult<Self> {
         let (h, m, s) = parse_str_to_floats(text)?;
         let degrees = h + m.copysign(h) / 60.0 + s.copysign(h) / 3600.0;
@@ -240,12 +277,14 @@ impl Degrees {
     }
 
     /// Convert to a string in the format "+ddd mm ss.ss".
+    #[must_use]
     pub fn to_dms_str(&self) -> String {
         let (d, m, s) = self.to_degrees_minutes_seconds(1e-4);
         format!("{d:+03} {m:02} {s:05.2}")
     }
 
     /// Convert to a string in the format "hh mm ss.sss".
+    #[must_use]
     pub fn to_hms_str(&self) -> String {
         let (h, m, s) = self.to_hours_minutes_seconds(1e-5);
         format!("{h:02} {m:02} {s:06.3}")
@@ -273,10 +312,10 @@ fn parse_str_to_floats(text: &str) -> KeteResult<(f64, f64, f64)> {
         )));
     }
 
-    let (h, m, s) = match hms.len() {
-        1 => (hms[0], 0.0, 0.0),
-        2 => (hms[0], hms[1], 0.0),
-        3 => (hms[0], hms[1], hms[2]),
+    let (h, m, s) = match *hms.as_slice() {
+        [x] => (x, 0.0, 0.0),
+        [x, y] => (x, y, 0.0),
+        [x, y, z] => (x, y, z),
         _ => {
             return Err(Error::ValueError(format!(
                 "String has too many numbers: {text}",
@@ -298,6 +337,7 @@ fn parse_str_to_floats(text: &str) -> KeteResult<(f64, f64, f64)> {
 /// Case insensitive search is performed.
 ///
 /// Return all possible matches along with their indices.
+#[must_use]
 pub fn partial_str_match<'a>(needle: &str, haystack: &'a [&'a str]) -> Vec<(usize, &'a str)> {
     let needle = needle.trim().to_lowercase();
     haystack
@@ -315,7 +355,7 @@ mod tests {
     #[test]
     fn test_hms_deg_roundtrip() {
         for deg in 0..36000 {
-            let deg = deg as f64 / 100.0;
+            let deg = f64::from(deg) / 100.0;
             let hms = Degrees::from_degrees(deg);
             let converted_deg = hms.to_degrees();
             assert!(
@@ -328,7 +368,7 @@ mod tests {
     #[test]
     fn test_dms_deg_roundtrip() {
         for deg in 0..36000 {
-            let deg = deg as f64 / 100.0;
+            let deg = f64::from(deg) / 100.0;
             let hms = Degrees::from_degrees(deg);
             let converted_deg = hms.to_degrees();
             assert!(
@@ -451,9 +491,10 @@ mod tests {
             for minute in 0..6 {
                 let minute = minute * 10;
                 for second in 0..60 {
-                    let second = second as f64 + 0.123;
-                    let hms = Degrees::try_from_hours_minutes_seconds(hour as f64, minute, second)
-                        .unwrap();
+                    let second = f64::from(second) + 0.123;
+                    let hms =
+                        Degrees::try_from_hours_minutes_seconds(f64::from(hour), minute, second)
+                            .unwrap();
                     let hms_str = format!("{hour:02} {minute:02} {second:06.3}");
                     assert!(
                         (hms.to_degrees()
@@ -473,10 +514,13 @@ mod tests {
             for minute in 0..6 {
                 let minute = minute * 10;
                 for second in 0..60 {
-                    let second = second as f64 + 0.123;
-                    let dms: Degrees =
-                        Degrees::try_from_degrees_minutes_seconds(degree as f64, minute, second)
-                            .unwrap();
+                    let second = f64::from(second) + 0.123;
+                    let dms: Degrees = Degrees::try_from_degrees_minutes_seconds(
+                        f64::from(degree),
+                        minute,
+                        second,
+                    )
+                    .unwrap();
                     let dms_str = format!("{degree:02} {minute:02} {second:06.3}");
                     assert!(
                         (dms.to_degrees()

@@ -51,6 +51,7 @@ pub enum Contains {
 
 impl Contains {
     /// Returns true if the vector is inside the area.
+    #[must_use]
     pub fn is_inside(&self) -> bool {
         matches!(self, Self::Inside)
     }
@@ -116,6 +117,7 @@ impl OnSkyRectangle {
     /// # Arguments
     ///
     /// * `edge_normals` - Normal vectors which define the boundary of a polygon.
+    #[must_use]
     pub fn from_normals(edge_normals: [Vector<Equatorial>; 4]) -> Self {
         // construct the 4 normal vectors
         Self { edge_normals }
@@ -134,6 +136,7 @@ impl OnSkyRectangle {
     ///   longitudinally in radians.
     /// * `lat_width` - If the rotation is 0, this defines the width of the rectangle
     ///   latitudinally in radians.
+    #[must_use]
     pub fn new(
         pointing: Vector<Equatorial>,
         rotation: f64,
@@ -183,11 +186,14 @@ impl OnSkyRectangle {
     /// * `expand_angle` - Expand the fov by the specified angle away from the center,
     ///   units of radians.
     ///
+    #[must_use]
     pub fn from_corners(corners: [Vector<Equatorial>; 4], expand_angle: f64) -> Self {
         // compute the pointing vector from the corners
         let pointing = {
             let mut point: Vector<Equatorial> = [0.0; 3].into();
-            corners.iter().for_each(|c| point += c);
+            for c in corners {
+                point += &c;
+            }
             point.normalize()
         };
 
@@ -201,12 +207,14 @@ impl OnSkyRectangle {
         // check the direction of the normals, if they are too far away from the
         // pointing vector, then we need to flip the signs.
         if n1.dot(&pointing).is_sign_negative() {
-            edge_normals.iter_mut().for_each(|x| *x = x.neg());
+            for x in &mut edge_normals {
+                *x = x.neg();
+            }
             edge_normals.reverse();
         }
 
         // move the normals away from the pointing vector by the specified angle.
-        for v in edge_normals.iter_mut() {
+        for v in &mut edge_normals {
             let rot_vec = v.cross(&pointing);
             *v = v.rotate_around(rot_vec, expand_angle);
         }
@@ -216,6 +224,7 @@ impl OnSkyRectangle {
 
     /// Return the 4 corners of the patch.
     pub fn corners(&self) -> [Vector<Equatorial>; 4] {
+        #[allow(clippy::missing_panics_doc, reason = "Cant fail by construction.")]
         (0..4)
             .map(|idx| {
                 let idy = (idx + 1) % 4;
@@ -229,12 +238,14 @@ impl OnSkyRectangle {
     }
 
     /// Latitudinal width of the patch, the assumes the patch is rectangular.
+    #[must_use]
     pub fn lat_width(&self) -> f64 {
         let pointing = self.pointing();
         2.0 * (FRAC_PI_2 - pointing.angle(&self.edge_normals[1]))
     }
 
     /// Longitudinal width of the patch, the assumes the patch is rectangular.
+    #[must_use]
     pub fn lon_width(&self) -> f64 {
         let pointing = self.pointing();
         2.0 * (FRAC_PI_2 - pointing.angle(&self.edge_normals[0]))
@@ -245,8 +256,8 @@ impl<const D: usize> SkyPatch for SphericalPolygon<D> {
     /// Is the vector inside of the polygon.
     fn contains(&self, obs_to_obj: &Vector<Equatorial>) -> Contains {
         let mut closest_edge = f64::NEG_INFINITY;
-        for normal in self.edge_normals.iter() {
-            let d = obs_to_obj.dot(normal);
+        for normal in self.edge_normals {
+            let d = obs_to_obj.dot(&normal);
             if d.is_nan() {
                 return Contains::Outside(d);
             }
@@ -296,6 +307,7 @@ pub struct SphericalCone {
 impl SphericalCone {
     /// Construct a new `SphericalCone` given the central vector and the angle of the
     /// cone.
+    #[must_use]
     pub fn new(pointing: &Vector<Equatorial>, angle: f64) -> Self {
         let pointing = pointing.normalize();
         Self { pointing, angle }

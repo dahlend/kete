@@ -43,8 +43,7 @@ def plot_fits_image(fit, percentiles=(0.1, 99.95), power_stretch=1.0, cmap="gray
         `ZScaleInterval`.
     power_stretch :
         The scaling of the intensity of the plot is a power law, this defines the power
-        of that power law. By default plots are sqrt scaled. If this is set to 1, then
-        this becomes a linear scaling.
+        of that power law. By default plots are linear scaled (`power_stretch=1.0`).
     cmap :
         Color map to use for the plot.
     """

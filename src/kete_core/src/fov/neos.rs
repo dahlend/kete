@@ -76,6 +76,7 @@ pub struct NeosCmos {
 
 impl NeosCmos {
     /// Create a NEOS FOV
+    #[must_use]
     pub fn new(
         pointing: Vector<Equatorial>,
         rotation: f64,
@@ -93,24 +94,22 @@ impl NeosCmos {
         Self {
             observer,
             patch,
+            rotation,
             side_id,
             stack_id,
             quad_id,
             loop_id,
             subloop_id,
             exposure_id,
-            cmos_id,
             band,
-            rotation,
+            cmos_id,
         }
     }
 }
 
 impl FovLike for NeosCmos {
     fn get_fov(&self, index: usize) -> FOV {
-        if index != 0 {
-            panic!("FOV only has a single patch")
-        }
+        assert!(index == 0, "FOV only has a single patch");
         FOV::NeosCmos(self.clone())
     }
 
@@ -177,14 +176,11 @@ pub struct NeosVisit {
 impl NeosVisit {
     /// Construct a new [`NeosVisit`] from a list of cmos fovs.
     /// These cmos fovs must be from the same metadata when appropriate.
-    pub fn new(chips: Vec<NeosCmos>) -> KeteResult<Self> {
-        if chips.len() != 4 {
-            Err(Error::ValueError(
-                "Visit must contains 4 NeosCmos fovs".into(),
-            ))?;
-        }
-        let chips: Box<[NeosCmos; 4]> = Box::new(chips.try_into().unwrap());
-
+    ///
+    /// # Errors
+    /// Errors will occur if input chips are inconsistent with one another.
+    pub fn new(chips: [NeosCmos; 4]) -> KeteResult<Self> {
+        #[allow(clippy::missing_panics_doc, reason = "infallible by construction")]
         let first = chips.first().unwrap();
 
         let observer = first.observer().clone();
@@ -197,7 +193,7 @@ impl NeosVisit {
         let rotation = first.rotation;
         let band = first.band;
 
-        for ccd in chips.iter() {
+        for ccd in &chips {
             if ccd.side_id != side_id
                 || ccd.stack_id != stack_id
                 || ccd.quad_id != quad_id
@@ -214,7 +210,7 @@ impl NeosVisit {
             }
         }
         Ok(Self {
-            chips,
+            chips: Box::new(chips),
             observer,
             rotation,
             side_id,
@@ -237,6 +233,7 @@ impl NeosVisit {
     /// |            <---- x ----->           |
     ///
     /// Pointing vector is in the middle of the 'a' in the central gap.
+    #[must_use]
     pub fn from_pointing(
         x_width: f64,
         y_width: f64,

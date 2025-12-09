@@ -53,14 +53,15 @@ pub fn pck_earth_frame_py(
             None => Desig::Empty,
         }
     };
-    let pcks = LOADED_PCK.try_read().unwrap();
+    let pcks = &LOADED_PCK.try_read().unwrap();
+    let spks = &LOADED_SPK.try_read().unwrap();
+
     let frame = pcks.try_get_orientation(3000, jd)?;
 
     let (pos, vel) = frame.to_equatorial(pos.into(), [0.0, 0.0, 0.0].into())?;
 
     let mut state: State<Equatorial> = State::new(desig, jd, pos.into(), vel.into(), 399);
 
-    let spks = &LOADED_SPK.try_read().unwrap();
     spks.try_change_center(&mut state, new_center)?;
 
     Ok(PyState {

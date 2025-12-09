@@ -14,5 +14,5 @@ pub fn ks_test_py(sample_a: Vec<f64>, sample_b: Vec<f64>) -> f64 {
 #[pyo3(name = "fit_chi2")]
 pub fn fit_chi2_py(data: Vec<f64>, sigmas: Vec<f64>) -> f64 {
     assert_eq!(data.len(), sigmas.len());
-    fitting::fit_reduced_chi2(&data, &sigmas)
+    fitting::fit_reduced_chi2(&data, &sigmas).unwrap()
 }

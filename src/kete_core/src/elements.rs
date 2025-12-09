@@ -77,6 +77,7 @@ pub struct CometElements {
 
 impl CometElements {
     /// Create cometary elements from a state.
+    #[must_use]
     pub fn from_state(state: &State<Ecliptic>) -> Self {
         Self::from_pos_vel(
             state.desig.clone(),
@@ -201,6 +202,10 @@ impl CometElements {
     /// Convert cometary elements to an [`State`] if possible.
     ///
     /// Center ID is set to 10.
+    ///
+    /// # Errors
+    /// Conversion can fail for numerous reasons, examples include non-finite values, or if
+    /// the eccentric anomaly computation fails.
     pub fn try_to_state(&self) -> KeteResult<State<Ecliptic>> {
         let [pos, vel] = self.to_pos_vel()?;
         Ok(State::new(
@@ -293,6 +298,9 @@ impl CometElements {
     }
 
     /// Compute the eccentric anomaly for the cometary elements.
+    ///
+    /// # Errors
+    /// May fail if extremum values are provided.
     pub fn eccentric_anomaly(&self) -> KeteResult<f64> {
         compute_eccentric_anomaly(self.eccentricity, self.mean_anomaly(), self.peri_dist).map(|x| {
             match self.eccentricity {
@@ -304,6 +312,7 @@ impl CometElements {
 
     /// Compute the semi major axis in AU.
     /// NAN is returned if the orbit is parabolic.
+    #[must_use]
     pub fn semi_major(&self) -> f64 {
         match self.eccentricity {
             ecc if ((ecc - 1.0).abs() <= PARABOLIC_ECC_LIMIT) => f64::NAN,
@@ -313,6 +322,7 @@ impl CometElements {
 
     /// Compute the orbital period in days.
     /// Infinity is returned if the orbit is parabolic or hyperbolic.
+    #[must_use]
     pub fn orbital_period(&self) -> f64 {
         let semi_major = self.semi_major();
         match semi_major {
@@ -322,6 +332,7 @@ impl CometElements {
     }
 
     /// Compute the Aphelion distance in AU.
+    #[must_use]
     pub fn aphelion(&self) -> f64 {
         match self.eccentricity {
             ecc if ((ecc - 1.0).abs() <= PARABOLIC_ECC_LIMIT) => f64::NAN,
@@ -330,6 +341,7 @@ impl CometElements {
     }
 
     /// Compute the mean motion in radians per day.
+    #[must_use]
     pub fn mean_motion(&self) -> f64 {
         match self.eccentricity {
             ecc if ((ecc - 1.0).abs() <= PARABOLIC_ECC_LIMIT) => {
@@ -340,6 +352,7 @@ impl CometElements {
     }
 
     /// Compute the mean anomaly in radians.
+    #[must_use]
     pub fn mean_anomaly(&self) -> f64 {
         let mm = self.mean_motion();
         let mean_anomaly = (self.epoch - self.peri_time).elapsed * mm;
@@ -352,6 +365,11 @@ impl CometElements {
     /// Compute the True Anomaly
     /// The angular distance between perihelion and the current position as seen
     /// from the origin.
+    ///
+    /// # Errors
+    ///
+    /// Fails for numerous reasons, including if negative eccentricity is provided or if it
+    /// is a non finite value.
     pub fn true_anomaly(&self) -> KeteResult<f64> {
         compute_true_anomaly(self.eccentricity, self.mean_anomaly(), self.peri_dist)
     }

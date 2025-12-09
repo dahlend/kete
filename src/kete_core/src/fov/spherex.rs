@@ -52,6 +52,7 @@ pub struct SpherexCmos {
 
 impl SpherexCmos {
     /// Create a Spherex fov from corners
+    #[must_use]
     pub fn new(
         corners: [Vector<Equatorial>; 4],
         observer: State<Equatorial>,
@@ -60,8 +61,8 @@ impl SpherexCmos {
     ) -> Self {
         let patch = OnSkyRectangle::from_corners(corners, 0.0);
         Self {
-            patch,
             observer,
+            patch,
             uri,
             plane_id,
         }
@@ -71,9 +72,7 @@ impl SpherexCmos {
 impl FovLike for SpherexCmos {
     #[inline]
     fn get_fov(&self, index: usize) -> FOV {
-        if index != 0 {
-            panic!("SPHEREx FOV only has a single patch")
-        }
+        assert!(index == 0, "SPHEREx FOV only has a single patch");
         FOV::SpherexCmos(self.clone())
     }
 
@@ -123,6 +122,10 @@ impl SpherexField {
     /// Construct a new [`SpherexField`] from a list of cmos frames.
     /// These cmos frames must be from the same field and having matching value as
     /// appropriate.
+    ///
+    /// # Errors
+    /// ``cmos_frames`` must not be empty, and all frames must be consistent with one
+    /// another.
     pub fn new(
         cmos_frames: Vec<SpherexCmos>,
         obsid: Box<str>,
@@ -134,11 +137,12 @@ impl SpherexField {
             ))?;
         }
 
+        #[allow(clippy::missing_panics_doc, reason = "frame is not empty")]
         let first = cmos_frames.first().unwrap();
 
         let observer = first.observer().clone();
 
-        for ccd in cmos_frames.iter() {
+        for ccd in &cmos_frames {
             if ccd.observer().epoch != observer.epoch {
                 Err(Error::ValueError(
                     "All SpherexCMOS must have matching values times".into(),

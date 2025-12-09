@@ -159,7 +159,7 @@ impl PyTime {
     /// Time in the current time.
     #[staticmethod]
     pub fn now() -> Self {
-        PyTime(Time::<UTC>::now().unwrap().tdb())
+        PyTime(Time::<UTC>::now().tdb())
     }
 
     /// Return (year, month, day), where day is a float.
@@ -167,7 +167,7 @@ impl PyTime {
     /// >>> kete.Time.from_ymd(2010, 1, 1).ymd
     /// (2010, 1, 1.0)
     #[getter]
-    pub fn ymd(&self) -> (i64, u32, f64) {
+    pub fn ymd(&self) -> (i32, u32, f64) {
         let (y, m, d, f) = self.0.utc().year_month_day();
         (y, m, d as f64 + f)
     }
@@ -228,8 +228,8 @@ impl PyTime {
     /// 2016.0
     ///
     #[getter]
-    pub fn year_float(&self) -> f64 {
-        self.0.utc().year_as_float()
+    pub fn year_float(&self) -> PyResult<f64> {
+        Ok(self.0.utc().year_as_float()?)
     }
 
     fn __add__(&self, other: PyTime) -> Self {

@@ -1,3 +1,5 @@
+use core::f64;
+
 use crate::{frame::PyFrames, vector::VectorLike};
 use itertools::Itertools;
 use kete_core::constants::{
@@ -232,7 +234,7 @@ pub fn neatm_thermal_py(
     diameter: f64,
     wavelength: f64,
     emissivity: f64,
-) -> f64 {
+) -> PyResult<f64> {
     let sun2obj = sun2obj.into_vector(PyFrames::Ecliptic).into();
     let sun2obs = sun2obs.into_vector(PyFrames::Ecliptic).into();
 
@@ -246,17 +248,13 @@ pub fn neatm_thermal_py(
     )
     .unwrap();
     let params = NeatmParams {
-        obs_bands: ObserverBands::Generic {
-            bands: vec![wavelength; 1],
-            zero_mags: None,
-            solar_correction: vec![1.0],
-        },
-        band_albedos: vec![0.0; 1],
+        obs_bands: vec![BandInfo::new(wavelength, 1.0, f64::NAN, None)],
+        band_albedos: vec![0.0],
         hg_params,
         emissivity,
         beaming,
     };
-    params.apparent_thermal_flux(&sun2obj, &sun2obs).unwrap()[0]
+    Ok(params.apparent_thermal_flux(&sun2obj, &sun2obs).unwrap()[0])
 }
 
 /// Calculate the flux from an object using the FRM thermal model in Jansky.
@@ -300,7 +298,7 @@ pub fn frm_thermal_py(
     diameter: f64,
     wavelength: f64,
     emissivity: f64,
-) -> f64 {
+) -> PyResult<f64> {
     let sun2obj = sun2obj.into_vector(PyFrames::Ecliptic).into();
     let sun2obs = sun2obs.into_vector(PyFrames::Ecliptic).into();
     let hg_params = HGParams::try_new(
@@ -310,20 +308,15 @@ pub fn frm_thermal_py(
         Some(C_V),
         Some(v_albedo),
         Some(diameter),
-    )
-    .unwrap();
+    )?;
 
     let params = FrmParams {
-        obs_bands: ObserverBands::Generic {
-            bands: vec![wavelength; 1],
-            zero_mags: None,
-            solar_correction: vec![1.0],
-        },
-        band_albedos: vec![0.0; 1],
+        obs_bands: vec![BandInfo::new(wavelength, 1.0, f64::NAN, None)],
+        band_albedos: vec![0.0],
         hg_params,
         emissivity,
     };
-    params.apparent_thermal_flux(&sun2obj, &sun2obs).unwrap()[0]
+    Ok(params.apparent_thermal_flux(&sun2obj, &sun2obs).unwrap()[0])
 }
 
 /// Given the M1/K1 and M2/K2 values, compute the apparent Comet visible magnitudes.
@@ -421,7 +414,7 @@ pub fn w4_color_correction_py(temp: f64) -> f64 {
 /// The normal vectors of the fib lattice
 #[pyfunction]
 #[pyo3(name = "fib_lattice_vecs")]
-pub fn fib_lattice_vecs_py(n_facets: usize) -> Vec<[f64; 3]> {
+pub fn fib_lattice_vecs_py(n_facets: u32) -> Vec<[f64; 3]> {
     let facets = ConvexShape::new_fibonacci_lattice(n_facets).facets;
     facets
         .iter()

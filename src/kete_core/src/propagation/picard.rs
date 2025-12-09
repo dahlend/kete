@@ -68,6 +68,7 @@ type PicardInitFunc<'a, const DIM: usize, const N: usize> =
     &'a dyn Fn(&[Time<TDB>; N], &SVector<f64, DIM>) -> SMatrix<f64, DIM, N>;
 
 /// Initialization function for the picard integrator where the first value is repeated
+#[must_use]
 pub fn dumb_picard_init<const DIM: usize, const N: usize>(
     _times: &[Time<TDB>; N],
     initial_pos: &SVector<f64, DIM>,
@@ -170,7 +171,10 @@ impl<'a, const N: usize, const NM1: usize> PicardIntegrator<N, NM1> {
     /// # Returns
     ///  
     ///   Returns the expected state of the system at the final time step `t1`.
-    ///
+    ///    
+    /// # Errors
+    /// Integration can fail for a number of reasons, including convergence failing or
+    /// function evals failing.
     pub fn integrate<const DIM: usize, MType>(
         &self,
         func: FirstOrderODE<'a, MType, DIM>,
@@ -184,6 +188,9 @@ impl<'a, const N: usize, const NM1: usize> PicardIntegrator<N, NM1> {
         let t0 = t0.jd;
         let t1 = t1.jd;
         let mut cur_t0 = t0;
+        if (t0 - t1).abs() < 10.0 * f64::EPSILON {
+            return Ok(initial_pos);
+        }
 
         let mut cur_stepsize = step_size;
         let mut cur_t1 = t0 + cur_stepsize;
@@ -314,7 +321,7 @@ impl<'a, const N: usize, const NM1: usize> PicardIntegrator<N, NM1> {
     /// times where the function will be evaluated starting at t0 and ending at t1.
     fn evaluation_times(&self, t0: Time<TDB>, t1: Time<TDB>) -> [Time<TDB>; N] {
         let w2 = (t1 - t0).elapsed / 2.0;
-        let w1 = (t1.jd + t0.jd) / 2.0;
+        let w1 = f64::midpoint(t1.jd, t0.jd);
         let mut times: [Time<TDB>; N] = [0.0.into(); N];
         times
             .iter_mut()
@@ -327,12 +334,15 @@ impl<'a, const N: usize, const NM1: usize> PicardIntegrator<N, NM1> {
 impl<const N: usize, const DIM: usize> PicardStep<N, DIM> {
     /// Evaluate the fitted integration solution at the specified time.
     /// This will fail if the requested time is outside of the integration bounds.
+    ///
+    /// # Errors
+    /// Evaluation may fail if ``t`` is outside of bounds.
     pub fn evaluate(&self, t: f64) -> KeteResult<[f64; DIM]> {
         let w1 = (self.t0.jd + self.t1.jd) * 0.5;
         let w2 = (self.t1 - self.t0).elapsed * 0.5;
         let tau_time = ((t - w1) * w2).acos();
         if tau_time.is_nan() {
-            return Err(Error::ExceedsLimits(
+            return Err(Error::Bounds(
                 "Queried time it outside of the fitted time span".into(),
             ));
         }
@@ -342,16 +352,16 @@ impl<const N: usize, const DIM: usize> PicardStep<N, DIM> {
 
 impl<const N: usize, const NM1: usize> Default for PicardIntegrator<N, NM1> {
     fn default() -> Self {
-        // NM1 must be equal to N-1, I wish I could do this with const generics
-        // but that would require switching to nightly rust and I wont do that.
-        // So this compile time check is done instead.
-        const { assert!(N - 1 == NM1, "NM1 must be 1 less than N.") };
-
         // Combining the cos(k*arccos(-cos(...))) simplifies to this equation
         // This is used throughout the integrator's construction
         fn cheb_t(k: f64, j: f64, n: f64) -> f64 {
             (k * (j + n - 1.0) * PI / (n - 1.0)).cos()
         }
+
+        // NM1 must be equal to N-1, I wish I could do this with const generics
+        // but that would require switching to nightly rust and I wont do that.
+        // So this compile time check is done instead.
+        const { assert!(N - 1 == NM1, "NM1 must be 1 less than N.") };
 
         let n = N as f64;
 
@@ -390,6 +400,7 @@ impl<const N: usize, const NM1: usize> Default for PicardIntegrator<N, NM1> {
         // Now we construct the SA Vector, in the original paper they keep S as a
         // separate vector and multiply it against A over and over, whereas we are just
         // doing it once and saving it.
+        #[allow(clippy::cast_possible_wrap, reason = "cast cant fail.")]
         let s: SVector<f64, NM1> =
             SVector::from_iterator((0..N).map(|idx| 2.0 * (-1_f64).powi(idx as i32)));
 
@@ -450,6 +461,7 @@ mod tests {
         // This has the analytic solution of f=k * exp(-c*t)
 
         // define the f' function
+        #[allow(clippy::unnecessary_wraps, reason = "Required for integrator")]
         fn func(
             _: Time<TDB>,
             vals: &SVector<f64, 3>,

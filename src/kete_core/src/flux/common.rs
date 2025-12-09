@@ -27,9 +27,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use crate::io::FileIO;
 use nalgebra::{UnitVector3, Vector3};
-use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 
 use crate::constants::{
@@ -40,82 +38,106 @@ use crate::constants::{
 /// A function which computes the color correction on a single facet for NEATM and FRM.
 /// These functions must accept a temperature in kelvin, and return a value (typically
 /// near 1.0), which scales the final flux seen by the observer for that facet.
-pub type ColorCorrFn = &'static (dyn Fn(f64) -> f64 + Sync);
+pub type ColorCorrFn = fn(f64) -> f64;
 
-/// Observer specific Flux properties.
-/// Such as band information, zero mags, and color corrections.
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub enum ObserverBands {
-    /// Wise specific observer properties
-    Wise,
-
-    /// NEOS specific observer properties
-    Neos,
-
-    /// Generic observer properties
-    /// This cannot store color correction functions.
-    Generic {
-        /// Effective central band wavelengths in nm
-        bands: Vec<f64>,
-
-        /// Zero magnitudes for the listed bands, optional.
-        zero_mags: Option<Vec<f64>>,
-
-        /// Flux correction for each of the bands for reflected light from the sun.
-        /// 1.0 means no change.
-        solar_correction: Vec<f64>,
-    },
-}
-
-impl ObserverBands {
+/// Generic band information
+#[derive(Debug, Clone)]
+pub struct BandInfo {
     /// Effective central band wavelengths in nm
-    pub fn band_wavelength(&self) -> &[f64] {
-        match self {
-            Self::Neos => &NEOS_BANDS,
-            Self::Wise => &WISE_BANDS_300K,
-            Self::Generic { bands, .. } => bands,
-        }
-    }
-
-    /// Zero magnitudes for the wavelength bands, optional.
-    pub fn zero_mags(&self) -> Option<&[f64]> {
-        match self {
-            Self::Neos => Some(&NEOS_ZERO_MAG),
-            Self::Wise => Some(&WISE_ZERO_MAG_300K),
-            Self::Generic { zero_mags, .. } => zero_mags.as_deref(),
-        }
-    }
+    pub wavelength: f64,
 
     /// Flux correction for each of the bands for reflected light from the sun.
-    pub fn solar_correction(&self) -> &[f64] {
-        match self {
-            Self::Neos => &NEOS_SUN_CORRECTION,
-            Self::Wise => &WISE_SUN_CORRECTION,
-            Self::Generic {
-                solar_correction, ..
-            } => solar_correction,
+    /// 1.0 means no change.
+    pub solar_correction: f64,
+
+    /// Zero magnitude for the band, optional.
+    pub zero_mag: f64,
+
+    /// Color correction functions
+    pub color_correction: Option<ColorCorrFn>,
+}
+
+impl BandInfo {
+    /// # Arguments
+    /// ``wavelength``: Effective central band wavelengths in nm
+    /// ``zero_mags``: Zero magnitudes for the listed bands, optional.
+    /// ``solar_correction``: Flux correction for each of the bands for reflected light
+    /// from the sun, 1.0 means no change.
+    #[must_use]
+    pub fn new(
+        wavelength: f64,
+        solar_correction: f64,
+        zero_mag: f64,
+        color_correction: Option<ColorCorrFn>,
+    ) -> Self {
+        Self {
+            wavelength,
+            solar_correction,
+            zero_mag,
+            color_correction,
         }
     }
 
-    /// Color correction for the thermal light for each band.
-    pub fn color_correction(&self) -> Option<&[ColorCorrFn]> {
-        match self {
-            Self::Neos => None,
-            Self::Wise => Some(&WISE_CC),
-            Self::Generic { .. } => None,
-        }
+    #[must_use]
+    /// New [`BandInfo`] containing NEOS band information.
+    pub fn new_neos() -> [Self; 2] {
+        [
+            Self::new(
+                NEOS_BANDS[0],
+                NEOS_SUN_CORRECTION[0],
+                NEOS_ZERO_MAG[0],
+                None,
+            ),
+            Self::new(
+                NEOS_BANDS[1],
+                NEOS_SUN_CORRECTION[1],
+                NEOS_ZERO_MAG[1],
+                None,
+            ),
+        ]
+    }
+
+    #[must_use]
+    /// New [`BandInfo`] containing WISE band information.
+    pub fn new_wise() -> [Self; 4] {
+        [
+            Self::new(
+                WISE_BANDS_300K[0],
+                WISE_SUN_CORRECTION[0],
+                WISE_ZERO_MAG_300K[0],
+                Some(WISE_CC[0]),
+            ),
+            Self::new(
+                WISE_BANDS_300K[1],
+                WISE_SUN_CORRECTION[1],
+                WISE_ZERO_MAG_300K[1],
+                Some(WISE_CC[1]),
+            ),
+            Self::new(
+                WISE_BANDS_300K[2],
+                WISE_SUN_CORRECTION[2],
+                WISE_ZERO_MAG_300K[2],
+                Some(WISE_CC[2]),
+            ),
+            Self::new(
+                WISE_BANDS_300K[3],
+                WISE_SUN_CORRECTION[3],
+                WISE_ZERO_MAG_300K[3],
+                Some(WISE_CC[3]),
+            ),
+        ]
     }
 }
 
 /// Output of a flux calculation.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct ModelResults {
     /// Total output fluxes in Jy, this is a sum of thermal and HG contributions.
     pub fluxes: Vec<f64>,
 
     /// The expected magnitude if zero magnitudes are available. These magnitudes are
     /// from the combined fluxes, not individual terms.
-    pub magnitudes: Option<Vec<f64>>,
+    pub magnitudes: Vec<f64>,
 
     /// Fluxes in Jy from black body emission.
     pub thermal_fluxes: Vec<f64>,
@@ -132,10 +154,9 @@ pub struct ModelResults {
     pub v_band_flux: f64,
 }
 
-impl FileIO for ModelResults {}
-
 impl ModelResults {
     /// Compute what fraction of the total flux is due to the HG reflection model.
+    #[must_use]
     pub fn reflected_fraction(&self) -> Vec<f64> {
         let mut frac = vec![0.0; self.fluxes.len()];
         frac.iter_mut()
@@ -165,6 +186,7 @@ impl ModelResults {
 /// # Returns
 /// * Flux in Jy / steradian.
 #[inline(always)]
+#[must_use]
 pub fn black_body_flux(temp: f64, wavelength: f64) -> f64 {
     if wavelength < 10.0 || temp < 30.0 {
         return 0.0;
@@ -197,6 +219,7 @@ pub fn black_body_flux(temp: f64, wavelength: f64) -> f64 {
 /// * `diameter` - Diameter of the object in km.
 /// * `emissivity` - The emissivity of surface of the object.
 #[inline(always)]
+#[must_use]
 pub fn lambertian_flux(
     facet_normal: &UnitVector3<f64>,
     obs2obj: &UnitVector3<f64>,
@@ -218,6 +241,7 @@ pub fn lambertian_flux(
 /// This allows this to be computed once per geometry, but then multiple wavelengths
 /// be multiplied against it. This resulted in a 50% speedup in FRM and NEATM overall.
 #[inline(always)]
+#[must_use]
 pub fn lambertian_vis_scale_factor(
     facet_normal: &UnitVector3<f64>,
     obs2obj: &UnitVector3<f64>,
@@ -246,6 +270,7 @@ pub fn lambertian_vis_scale_factor(
 /// * `beaming` - Beaming of the object, this is geometry dependent.
 /// * `emissivity` - The emissivity of the surface.
 #[inline(always)]
+#[must_use]
 pub fn sub_solar_temperature(
     obj2sun: &Vector3<f64>,
     geom_albedo: f64,
@@ -270,6 +295,7 @@ pub fn sub_solar_temperature(
 ///
 /// * `mag` - Magnitude.
 /// * `zero_mag_flux` - Flux in Jy at which the Magnitude is 0.
+#[must_use]
 pub fn mag_to_flux(mag: f64, mag_zero_flux: f64) -> f64 {
     10_f64.powf(mag / -2.5) * mag_zero_flux
 }
@@ -280,6 +306,7 @@ pub fn mag_to_flux(mag: f64, mag_zero_flux: f64) -> f64 {
 ///
 /// * `flux` - Flux in Jy.
 /// * `zero_mag_flux` - Flux in Jy at which the Magnitude is 0.
+#[must_use]
 pub fn flux_to_mag(flux: f64, mag_zero_flux: f64) -> f64 {
     -2.5 * (flux / mag_zero_flux).log10()
 }
@@ -327,10 +354,10 @@ mod tests {
         assert_eq!(temp, 0.0);
 
         for range in 1..10 {
-            let obj2sun = [range as f64, 0.0, 0.0].into();
+            let obj2sun = [f64::from(range), 0.0, 0.0].into();
             let mut temp = sub_solar_temperature(&obj2sun, 0.0, 0.0, 1.0, 1.0);
             temp = temp.powi(4);
-            let expected = SOLAR_FLUX / (range as f64).powi(2) / STEFAN_BOLTZMANN;
+            let expected = SOLAR_FLUX / f64::from(range).powi(2) / STEFAN_BOLTZMANN;
             assert!((temp - expected).abs() < 1e-5);
         }
     }

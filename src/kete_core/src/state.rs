@@ -1,4 +1,4 @@
-//! State vector representations.
+//! # State vector representations.
 //!
 //! Keeping track of the location and velocity of an object requires more information
 //! than just a position and velocity vector. Because there is no universal coordinate
@@ -61,6 +61,7 @@ use crate::time::{TDB, Time};
 ///
 /// This state object assumes no uncertainty in its values.
 #[derive(Debug, Serialize, Clone, Deserialize, PartialEq)]
+#[must_use]
 pub struct State<T>
 where
     T: InertialFrame,
@@ -116,6 +117,7 @@ impl<T: InertialFrame> State<T> {
     }
 
     /// Are all values finite.
+    #[must_use]
     pub fn is_finite(&self) -> bool {
         self.pos.is_finite() & self.vel.is_finite() & self.epoch.jd.is_finite()
     }
@@ -123,7 +125,7 @@ impl<T: InertialFrame> State<T> {
     /// Trade the center ID and ID values, and flip the direction of the position and
     /// velocity vectors.
     #[inline(always)]
-    pub fn try_flip_center_id(&mut self) -> KeteResult<()> {
+    pub(crate) fn try_flip_center_id(&mut self) -> KeteResult<()> {
         if let Desig::Naif(mut id) = self.desig {
             std::mem::swap(&mut id, &mut self.center_id);
             self.pos = -self.pos;
@@ -147,6 +149,14 @@ impl<T: InertialFrame> State<T> {
     /// # Arguments
     ///
     /// * `state` - [`State`] object which defines the new center point.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::ValueError`] possible for multiple reasons:
+    /// - Other state is not at the same instant in time (epoch).
+    /// - [`Desig`] is not a Naif ID.
+    /// - Center id of the state does not match the ID in the other state.
+    ///
     #[inline(always)]
     pub fn try_change_center(&mut self, mut state: Self) -> KeteResult<()> {
         if self.epoch != state.epoch {
@@ -304,7 +314,7 @@ mod tests {
             0.0.into(),
             [0.0, 1.0, 0.0].into(),
             [0.0, 1.0, 0.0].into(),
-            1000000000,
+            1_000_000_000,
         );
         assert!(a.try_change_center(no_matching_id.into_frame()).is_err());
     }

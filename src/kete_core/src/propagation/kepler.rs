@@ -56,6 +56,10 @@ pub const PARABOLIC_ECC_LIMIT: f64 = 1e-4;
 /// * `mean_anomaly` - Mean anomaly.
 /// * `peri_dist` - Perihelion Distance in AU, only used for parabolic orbits.
 ///
+/// # Errors
+///
+/// Fails for numerous reasons, including if negative eccentricity is provided or if it
+/// is a non finite value.
 pub fn compute_eccentric_anomaly(ecc: f64, mean_anom: f64, peri_dist: f64) -> KeteResult<f64> {
     match ecc {
         ecc if !ecc.is_finite() => Err(Error::ValueError(
@@ -99,6 +103,9 @@ pub fn compute_eccentric_anomaly(ecc: f64, mean_anom: f64, peri_dist: f64) -> Ke
 /// * `mean_anomaly` - Mean anomaly, between 0 and 2 pi.
 /// * `peri_dist` - Perihelion Distance in AU, only used for parabolic orbits.
 ///
+/// # Errors
+/// Fails when eccentricity is not between 0 and 1, or peri dist is negative, or mean
+/// anomaly is between 0 and 2 pi.
 pub fn compute_true_anomaly(ecc: f64, mean_anom: f64, peri_dist: f64) -> KeteResult<f64> {
     let ecc_anom = compute_eccentric_anomaly(ecc, mean_anom, peri_dist)?;
 
@@ -125,6 +132,9 @@ pub fn compute_true_anomaly(ecc: f64, mean_anom: f64, peri_dist: f64) -> KeteRes
 /// * `true_anomaly` - true anomaly, between 0 and 2 pi.
 /// * `peri_dist` - Perihelion Distance in AU, only used for parabolic orbits.
 ///
+/// # Errors
+/// Fails when eccentricity is not between 0 and 1, or peri dist is negative, or mean
+/// anomaly is between 0 and 2 pi.
 pub fn eccentric_anomaly_from_true(ecc: f64, true_anom: f64, peri_dist: f64) -> KeteResult<f64> {
     let ecc_anom = match ecc {
         ecc if !ecc.is_finite() => Err(Error::ValueError(
@@ -283,6 +293,11 @@ fn solve_kepler_universal(mut dt: f64, r0: f64, v0: f64, rv0: f64) -> KeteResult
 /// * `pos` - Starting position, from the center of the sun, in AU.
 /// * `vel` - Starting velocity, in AU/Day.
 /// * `depth` - Current Recursion depth, this should be called with `None` initially.
+///
+/// # Errors
+/// Fails for a number of reasons, including:
+/// - Input contains non-finite values
+/// - Hitting recurusion depth limits.
 pub fn analytic_2_body(
     time: Duration<TDB>,
     pos: &Vector3<f64>,
@@ -305,28 +320,23 @@ pub fn analytic_2_body(
     let v0 = vel.norm();
     let rv0 = pos.dot(vel);
 
-    if rv0.is_nan() || rv0.is_infinite() {
+    if !rv0.is_finite() {
         Err(Error::Convergence("Input included infinity or NAN.".into()))?;
     }
-
-    match solve_kepler_universal(time, r0, v0, rv0) {
-        Ok((universal_s, beta)) => {
-            let g1 = g_1(universal_s, beta);
-            let g2 = g_2(universal_s, beta);
-            let f = 1.0 - GMS / r0 * g2;
-            let g = r0 * g1 + rv0 * g2;
-            let new_pos = pos * f + vel * g;
-            let new_r0 = new_pos.norm();
-            let f_dot = -GMS / (new_r0 * r0) * g1;
-            let g_dot = 1.0 - (GMS / new_r0) * g2;
-            let new_vel = pos * f_dot + vel * g_dot;
-            Ok((new_pos, new_vel))
-        }
-        Err(_) => {
-            let (inter_pos, inter_vel) =
-                analytic_2_body((0.5 * time).into(), pos, vel, Some(depth))?;
-            analytic_2_body((time * 0.5).into(), &inter_pos, &inter_vel, Some(depth))
-        }
+    if let Ok((universal_s, beta)) = solve_kepler_universal(time, r0, v0, rv0) {
+        let g1 = g_1(universal_s, beta);
+        let g2 = g_2(universal_s, beta);
+        let f = 1.0 - GMS / r0 * g2;
+        let g = r0 * g1 + rv0 * g2;
+        let new_pos = pos * f + vel * g;
+        let new_r0 = new_pos.norm();
+        let f_dot = -GMS / (new_r0 * r0) * g1;
+        let g_dot = 1.0 - (GMS / new_r0) * g2;
+        let new_vel = pos * f_dot + vel * g_dot;
+        Ok((new_pos, new_vel))
+    } else {
+        let (inter_pos, inter_vel) = analytic_2_body((0.5 * time).into(), pos, vel, Some(depth))?;
+        analytic_2_body((time * 0.5).into(), &inter_pos, &inter_vel, Some(depth))
     }
 }
 
@@ -337,6 +347,9 @@ pub fn analytic_2_body(
 /// recommended to use a center of the Sun (10) for this computation.
 ///
 /// This is the fastest method for getting a relatively good estimate of the orbits.
+///
+/// # Errors
+/// Two body calculation may fail in extreme cases.
 pub fn propagate_two_body<T: InertialFrame>(
     state: &State<T>,
     time_final: Time<TDB>,
@@ -380,6 +393,9 @@ impl<T: InertialFrame> CostFunction for MoidCost<T> {
 
 /// Compute the MOID between two states in au.
 /// MOID = Minimum Orbital Intersection Distance
+///
+/// # Errors
+/// Can fail due to orbital element conversion errors, or failing to find minimum.
 pub fn moid<T: InertialFrame>(mut state_a: State<T>, mut state_b: State<T>) -> KeteResult<f64> {
     const N_STEPS: i32 = 50;
 
@@ -389,12 +405,12 @@ pub fn moid<T: InertialFrame>(mut state_a: State<T>, mut state_b: State<T>) -> K
     state_b = propagate_two_body(&state_b, elements_b.peri_time)?;
 
     let state_a_step_size = match elements_a.orbital_period() {
-        p if p.is_finite() => p / N_STEPS as f64,
-        _ => 300.0 / N_STEPS as f64,
+        p if p.is_finite() => p / f64::from(N_STEPS),
+        _ => 300.0 / f64::from(N_STEPS),
     };
     let state_b_step_size = match elements_b.orbital_period() {
-        p if p.is_finite() => p / N_STEPS as f64,
-        _ => 300.0 / N_STEPS as f64,
+        p if p.is_finite() => p / f64::from(N_STEPS),
+        _ => 300.0 / f64::from(N_STEPS),
     };
 
     let mut states_b: Vec<State<_>> = Vec::with_capacity(N_STEPS as usize);
@@ -403,11 +419,11 @@ pub fn moid<T: InertialFrame>(mut state_a: State<T>, mut state_b: State<T>) -> K
     for idx in (-N_STEPS)..N_STEPS {
         states_a.push(propagate_two_body(
             &state_a,
-            (state_a.epoch.jd + idx as f64 * state_a_step_size).into(),
+            (state_a.epoch.jd + f64::from(idx) * state_a_step_size).into(),
         )?);
         states_b.push(propagate_two_body(
             &state_b,
-            (state_b.epoch.jd + idx as f64 * state_b_step_size).into(),
+            (state_b.epoch.jd + f64::from(idx) * state_b_step_size).into(),
         )?);
     }
     let mut best = (f64::INFINITY, state_a.clone(), state_b.clone());
@@ -429,8 +445,7 @@ pub fn moid<T: InertialFrame>(mut state_a: State<T>, mut state_b: State<T>) -> K
 
     let res = Executor::new(cost, solver)
         .configure(|state| state.max_iters(1000))
-        .run()
-        .unwrap();
+        .run()?;
 
     Ok(res.state().get_best_cost())
 }
@@ -464,7 +479,7 @@ mod tests {
     #[test]
     fn test_compute_eccentric_anom_hyperbolic() {
         for mean_anom in -100..100 {
-            let mean_anom = mean_anom as f64;
+            let mean_anom = f64::from(mean_anom);
             assert!(
                 compute_eccentric_anomaly(2.0, mean_anom, 0.1).is_ok(),
                 "Mean Anom: {mean_anom}"

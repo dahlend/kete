@@ -40,6 +40,9 @@ use crate::state::State;
 use polars::prelude::*;
 
 /// Write a collection of states to a parquet table.
+///
+/// # Errors
+/// Saving is fallible due to filesystem calls.
 pub fn write_states_parquet(states: &[State<Equatorial>], filename: &str) -> KeteResult<()> {
     let desigs = Column::new(
         "desig".into(),
@@ -81,8 +84,8 @@ pub fn write_states_parquet(states: &[State<Equatorial>], filename: &str) -> Ket
         states.iter().map(|state| state.center_id).collect_vec(),
     );
     let mut df = DataFrame::new(vec![desigs, jd, x, y, z, vx, vy, vz, center])
-        .expect("Failed to construct dataframe");
-    let file = File::create(filename).expect("could not create file");
+        .map_err(|_| Error::ValueError("Failed to construct dataframe".into()))?;
+    let file = File::create(filename)?;
     let _ = ParquetWriter::new(file)
         .finish(&mut df)
         .map_err(|_| Error::IOError("Failed to write to file".into()))?;
@@ -90,6 +93,14 @@ pub fn write_states_parquet(states: &[State<Equatorial>], filename: &str) -> Ket
 }
 
 /// Read a collection of states from a parquet table.
+///
+/// # Errors
+/// Reading files can fail for numerous reasons, incorrectly formatted, inconsistent
+/// contents, etc.
+///
+/// # Panics
+/// There are a number of unwraps in this function, but it is structured such that they
+/// should not be possible to reach.
 pub fn read_states_parquet(filename: &str) -> KeteResult<Vec<State<Equatorial>>> {
     // this reads the parquet table, then creates iterators over the contents, making
     // states by going through the iterators one at a time.
@@ -105,14 +116,14 @@ pub fn read_states_parquet(filename: &str) -> KeteResult<Vec<State<Equatorial>>>
         .column("desig")
         .map_err(|_| Error::IOError("File doesn't contain the correct columns".into()))?
         .str()
-        .expect("Designations are not all strings.")
+        .map_err(|_| Error::ValueError("Designations are not all strings.".into()))?
         .into_no_null_iter();
 
     let mut center_iter = dataframe
         .column("center")
         .map_err(|_| Error::IOError("File doesn't contain the correct columns".into()))?
         .i32()
-        .expect("Centers are not all ints.")
+        .map_err(|_| Error::ValueError("Centers are not all ints.".into()))?
         .into_no_null_iter();
 
     // the remaining columns are all floats, so here we make a vector of iterators of
@@ -123,10 +134,10 @@ pub fn read_states_parquet(filename: &str) -> KeteResult<Vec<State<Equatorial>>>
         .iter()
         .map(|s| {
             s.f64()
-                .expect("state information is not all floats.")
-                .into_no_null_iter()
+                .map_err(|_| Error::ValueError("state information is not all floats.".into()))
+                .map(ChunkedArray::<Float64Type>::into_no_null_iter)
         })
-        .collect::<Vec<_>>();
+        .collect::<KeteResult<Vec<_>>>()?;
 
     Ok((0..dataframe.height())
         .map(|_| {
@@ -135,13 +146,20 @@ pub fn read_states_parquet(filename: &str) -> KeteResult<Vec<State<Equatorial>>>
                 .expect("should have as many iterations as rows");
             let center_id = center_iter.next().unwrap();
 
-            let jd = state_iters[0].next().unwrap();
-            let x = state_iters[1].next().unwrap();
-            let y = state_iters[2].next().unwrap();
-            let z = state_iters[3].next().unwrap();
-            let vx = state_iters[4].next().unwrap();
-            let vy = state_iters[5].next().unwrap();
-            let vz = state_iters[6].next().unwrap();
+            let [jd, x, y, z, vx, vy, vz] =
+                if let [jd, x, y, z, vx, vy, vz] = state_iters.as_mut_slice() {
+                    [
+                        jd.next().unwrap(),
+                        x.next().unwrap(),
+                        y.next().unwrap(),
+                        z.next().unwrap(),
+                        vx.next().unwrap(),
+                        vy.next().unwrap(),
+                        vz.next().unwrap(),
+                    ]
+                } else {
+                    unreachable!()
+                };
 
             State::new(
                 crate::desigs::Desig::Name(desig.to_string()),

@@ -1,12 +1,8 @@
 //! Model inputs and outputs for NEATM/FRM/Reflected.
 
 use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
 
-use kete_core::{
-    flux::{HGParams, ObserverBands},
-    io::FileIO,
-};
+use kete_core::flux::{BandInfo, HGParams};
 use pyo3::prelude::*;
 
 use crate::{frame::PyFrames, vector::VectorLike};
@@ -28,7 +24,7 @@ use crate::{frame::PyFrames, vector::VectorLike};
 /// magnitudes :
 ///     Magnitudes in the different bands if zero mags were available.
 #[pyclass(frozen, module = "kete.flux", name = "ModelResults")]
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct PyModelResults(pub kete_core::flux::ModelResults);
 
 impl From<kete_core::flux::ModelResults> for PyModelResults {
@@ -50,6 +46,7 @@ impl PyModelResults {
         v_band_flux: f64,
         magnitudes: Option<Vec<f64>>,
     ) -> Self {
+        let magnitudes = magnitudes.unwrap_or(vec![f64::NAN; fluxes.len()]);
         kete_core::flux::ModelResults {
             fluxes,
             magnitudes,
@@ -69,7 +66,7 @@ impl PyModelResults {
 
     /// Magnitudes in the different bands if zero mags were available.
     #[getter]
-    pub fn magnitudes(&self) -> Option<Vec<f64>> {
+    pub fn magnitudes(&self) -> Vec<f64> {
         self.0.magnitudes.clone()
     }
 
@@ -95,35 +92,6 @@ impl PyModelResults {
     #[getter]
     pub fn v_band_flux(&self) -> f64 {
         self.0.v_band_flux.to_degrees()
-    }
-
-    /// Save results to a binary file.
-    #[pyo3(name = "save")]
-    pub fn py_save(&self, filename: String) -> PyResult<usize> {
-        Ok(self.0.save(filename)?)
-    }
-
-    /// Load results from a binary file.
-    #[staticmethod]
-    #[pyo3(name = "load")]
-    pub fn py_load(filename: String) -> PyResult<Self> {
-        Ok(Self(kete_core::flux::ModelResults::load(filename)?))
-    }
-
-    /// Save a list to a binary file.
-    #[staticmethod]
-    #[pyo3(name = "save_list")]
-    pub fn py_save_list(vec: Vec<Self>, filename: String) -> PyResult<()> {
-        let vec: Vec<_> = vec.into_iter().map(|x| x.0).collect();
-        Ok(kete_core::flux::ModelResults::save_vec(&vec, filename)?)
-    }
-
-    /// Load a list from a binary file.
-    #[staticmethod]
-    #[pyo3(name = "load_list")]
-    pub fn py_load_list(filename: String) -> PyResult<Vec<Self>> {
-        let res = kete_core::flux::ModelResults::load_vec(filename)?;
-        Ok(res.into_iter().map(Self).collect())
     }
 
     fn __repr__(&self) -> String {
@@ -193,11 +161,11 @@ impl From<kete_core::flux::NeatmParams> for PyNeatmParams {
 impl PyNeatmParams {
     #[new]
     #[allow(clippy::too_many_arguments, missing_docs)]
-    #[pyo3(signature = (desig, band_wavelength, band_albedos, h_mag=None, diam=None,
+    #[pyo3(signature = (desig, band_wavelengths, band_albedos, h_mag=None, diam=None,
         vis_albedo=None, beaming=1.0, g_param=0.15, c_hg=None, emissivity=0.9, zero_mags=None))]
     pub fn new(
         desig: String,
-        band_wavelength: Vec<f64>,
+        band_wavelengths: Vec<f64>,
         band_albedos: Vec<f64>,
         h_mag: Option<f64>,
         diam: Option<f64>,
@@ -208,13 +176,17 @@ impl PyNeatmParams {
         emissivity: f64,
         zero_mags: Option<Vec<f64>>,
     ) -> PyResult<Self> {
+        let n_bands = band_wavelengths.len();
+
+        let zero_mags = zero_mags.unwrap_or(vec![f64::NAN; n_bands]);
         let hg_params = HGParams::try_new(desig, g_param, h_mag, c_hg, vis_albedo, diam)?;
 
-        let obs_bands = ObserverBands::Generic {
-            solar_correction: vec![1.0; band_wavelength.len()],
-            bands: band_wavelength,
-            zero_mags,
-        };
+        let obs_bands = band_wavelengths
+            .iter()
+            .zip(zero_mags)
+            .map(|(wavelength, z_mag)| BandInfo::new(*wavelength, 1.0, z_mag, None))
+            .collect();
+
         Ok(kete_core::flux::NeatmParams {
             obs_bands,
             beaming,
@@ -373,7 +345,7 @@ impl PyNeatmParams {
     /// List of effective wavelengths in nm.
     #[getter]
     pub fn band_wavelength(&self) -> Vec<f64> {
-        self.0.obs_bands.band_wavelength().to_vec()
+        self.0.obs_bands.iter().map(|x| x.wavelength).collect()
     }
 
     /// List of albedoes of the object, one for each band.
@@ -420,21 +392,8 @@ impl PyNeatmParams {
 
     /// List of the zero mags for each band if provided.
     #[getter]
-    pub fn zero_mags(&self) -> Option<Vec<f64>> {
-        self.0.obs_bands.zero_mags().map(|x| x.to_vec())
-    }
-
-    /// Save results to a binary file.
-    #[pyo3(name = "save")]
-    pub fn py_save(&self, filename: String) -> PyResult<usize> {
-        Ok(self.0.save(filename)?)
-    }
-
-    /// Load results from a binary file.
-    #[staticmethod]
-    #[pyo3(name = "load")]
-    pub fn py_load(filename: String) -> PyResult<Self> {
-        Ok(Self(kete_core::flux::NeatmParams::load(filename)?))
+    pub fn zero_mags(&self) -> Vec<f64> {
+        self.0.obs_bands.iter().map(|x| x.zero_mag).collect()
     }
 
     fn __repr__(&self) -> String {
@@ -453,22 +412,6 @@ impl PyNeatmParams {
             self.emissivity(),
             self.zero_mags(),
         )
-    }
-
-    /// Save a list to a binary file.
-    #[staticmethod]
-    #[pyo3(name = "save_list")]
-    pub fn py_save_list(vec: Vec<Self>, filename: String) -> PyResult<()> {
-        let vec: Vec<_> = vec.into_iter().map(|x| x.0).collect();
-        Ok(kete_core::flux::NeatmParams::save_vec(&vec, filename)?)
-    }
-
-    /// Load a list from a binary file.
-    #[staticmethod]
-    #[pyo3(name = "load_list")]
-    pub fn py_load_list(filename: String) -> PyResult<Vec<Self>> {
-        let res = kete_core::flux::NeatmParams::load_vec(filename)?;
-        Ok(res.into_iter().map(Self).collect())
     }
 }
 
@@ -523,11 +466,11 @@ impl From<kete_core::flux::FrmParams> for PyFrmParams {
 impl PyFrmParams {
     #[new]
     #[allow(clippy::too_many_arguments, missing_docs)]
-    #[pyo3(signature = (desig, band_wavelength, band_albedos, h_mag=None, diam=None,
+    #[pyo3(signature = (desig, band_wavelengths, band_albedos, h_mag=None, diam=None,
         vis_albedo=None, g_param=0.15, c_hg=None, emissivity=0.9, zero_mags=None))]
     pub fn new(
         desig: String,
-        band_wavelength: Vec<f64>,
+        band_wavelengths: Vec<f64>,
         band_albedos: Vec<f64>,
         h_mag: Option<f64>,
         diam: Option<f64>,
@@ -537,12 +480,16 @@ impl PyFrmParams {
         emissivity: f64,
         zero_mags: Option<Vec<f64>>,
     ) -> PyResult<Self> {
+        let n_bands = band_wavelengths.len();
+
+        let zero_mags = zero_mags.unwrap_or(vec![f64::NAN; n_bands]);
         let hg_params = HGParams::try_new(desig, g_param, h_mag, c_hg, vis_albedo, diam)?;
-        let obs_bands = ObserverBands::Generic {
-            solar_correction: vec![1.0; band_wavelength.len()],
-            bands: band_wavelength,
-            zero_mags,
-        };
+
+        let obs_bands = band_wavelengths
+            .iter()
+            .zip(zero_mags)
+            .map(|(wavelength, z_mag)| BandInfo::new(*wavelength, 1.0, z_mag, None))
+            .collect();
 
         Ok(kete_core::flux::FrmParams {
             obs_bands,
@@ -689,7 +636,7 @@ impl PyFrmParams {
     /// List of effective wavelengths in nm.
     #[getter]
     pub fn band_wavelength(&self) -> Vec<f64> {
-        self.0.obs_bands.band_wavelength().to_vec()
+        self.0.obs_bands.iter().map(|x| x.wavelength).collect()
     }
 
     /// List of albedoes of the object, one for each band.
@@ -730,21 +677,8 @@ impl PyFrmParams {
 
     /// List of the zero mags for each band if provided.
     #[getter]
-    pub fn zero_mags(&self) -> Option<Vec<f64>> {
-        self.0.obs_bands.zero_mags().map(|x| x.to_vec())
-    }
-
-    /// Save results to a binary file.
-    #[pyo3(name = "save")]
-    pub fn py_save(&self, filename: String) -> PyResult<usize> {
-        Ok(self.0.save(filename)?)
-    }
-
-    /// Load results from a binary file.
-    #[staticmethod]
-    #[pyo3(name = "load")]
-    pub fn py_load(filename: String) -> PyResult<Self> {
-        Ok(Self(kete_core::flux::FrmParams::load(filename)?))
+    pub fn zero_mags(&self) -> Vec<f64> {
+        self.0.obs_bands.iter().map(|x| x.zero_mag).collect()
     }
 
     fn __repr__(&self) -> String {
@@ -761,21 +695,5 @@ impl PyFrmParams {
             self.emissivity(),
             self.zero_mags(),
         )
-    }
-
-    /// Save a list to a binary file.
-    #[staticmethod]
-    #[pyo3(name = "save_list")]
-    pub fn py_save_list(vec: Vec<Self>, filename: String) -> PyResult<()> {
-        let vec: Vec<_> = vec.into_iter().map(|x| x.0).collect();
-        Ok(kete_core::flux::FrmParams::save_vec(&vec, filename)?)
-    }
-
-    /// Load a list from a binary file.
-    #[staticmethod]
-    #[pyo3(name = "load_list")]
-    pub fn py_load_list(filename: String) -> PyResult<Vec<Self>> {
-        let res = kete_core::flux::FrmParams::load_vec(filename)?;
-        Ok(res.into_iter().map(Self).collect())
     }
 }

@@ -54,6 +54,8 @@ use nalgebra::{Matrix3, Quaternion, Rotation3, Unit, Vector3};
 ///     assert!((euler[2] - 0.3).abs() < 1e-12);
 /// ```
 ///
+#[must_use]
+#[allow(clippy::cast_sign_loss, reason = "Casts are positive by construction")]
 pub fn quaternion_to_euler<const E1: char, const E2: char, const E3: char>(
     quat: Quaternion<f64>,
 ) -> [f64; 3] {
@@ -66,9 +68,9 @@ pub fn quaternion_to_euler<const E1: char, const E2: char, const E3: char>(
         assert!(E1 != E2 && E2 != E3, "Middle axis must not match outer.");
     }
 
-    let i = const { char_to_index::<E1>() };
-    let j = const { char_to_index::<E2>() };
-    let k = const {
+    let idi = const { char_to_index::<E1>() };
+    let idj = const { char_to_index::<E2>() };
+    let idk = const {
         if E1 == E3 {
             // 1 + 2 + 3 = 6, so the remaining axis is 6 - i - j
             6 - char_to_index::<E1>() - char_to_index::<E2>()
@@ -79,34 +81,34 @@ pub fn quaternion_to_euler<const E1: char, const E2: char, const E3: char>(
 
     let proper = const { E1 == E3 };
 
-    let epsilon = f64::from((i - j) * (j - k) * (k - i) / 2);
+    let epsilon = f64::from((idi - idj) * (idj - idk) * (idk - idi) / 2);
 
-    let i = i as usize;
-    let j = j as usize;
-    let k = k as usize;
+    let idi = idi as usize;
+    let idj = idj as usize;
+    let idk = idk as usize;
 
-    let q = [quat.w, quat.i, quat.j, quat.k];
+    let quat = [quat.w, quat.i, quat.j, quat.k];
 
     let [a, b, c, d] = if proper {
-        [q[0], q[i], q[j], q[k] * epsilon]
+        [quat[0], quat[idi], quat[idj], quat[idk] * epsilon]
     } else {
         [
-            q[0] - q[j],
-            q[i] + q[k] * epsilon,
-            q[j] + q[0],
-            q[k] * epsilon - q[i],
+            quat[0] - quat[idj],
+            quat[idi] + quat[idk] * epsilon,
+            quat[idj] + quat[0],
+            quat[idk] * epsilon - quat[idi],
         ]
     };
 
-    let n = a.powi(2) + b.powi(2) + c.powi(2) + d.powi(2);
+    let normal = a.powi(2) + b.powi(2) + c.powi(2) + d.powi(2);
 
-    let mut theta_2 = (2.0 * ((a.powi(2) + b.powi(2)) / n) - 1.0).acos();
+    let mut theta_2 = (2.0 * ((a.powi(2) + b.powi(2)) / normal) - 1.0).acos();
     let theta_plus = b.atan2(a);
     let theta_minus = d.atan2(c);
 
     let (theta_1, mut theta_3) = match theta_2 {
-        t if t.abs() < 1e-10 => (0.0, 2.0 * theta_plus),
-        t if (t - PI / 2.0).abs() < 1e-10 => (0.0, 2.0 * theta_minus),
+        tmp if tmp.abs() < 1e-10 => (0.0, 2.0 * theta_plus),
+        tmp if (tmp - PI / 2.0).abs() < 1e-10 => (0.0, 2.0 * theta_minus),
         _ => (theta_plus - theta_minus, theta_plus + theta_minus),
     };
 
@@ -130,6 +132,7 @@ pub fn quaternion_to_euler<const E1: char, const E2: char, const E3: char>(
 /// second is the derivative of the 3x3 matrix with respect to time. These two matrices
 /// may be used to compute the new position and velocities when moving from one frame
 /// to another.
+#[must_use]
 pub fn euler_rotation<const E1: char, const E2: char, const E3: char>(
     angles: &[f64; 3],
     rates: &[f64; 3],

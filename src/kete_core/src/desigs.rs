@@ -71,6 +71,7 @@ static ORDER_CHARS: &str = "ABCDEFGHJKLMNOPQRSTUVWXYZ";
 /// This enum represents all of the different types of designations
 /// which kete can represent.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Hash, Eq)]
+#[must_use]
 pub enum Desig {
     /// No id assigned.
     Empty,
@@ -84,15 +85,15 @@ pub enum Desig {
     /// Comet Permanent Designation
     /// First element is the orbit type `CPAXD`.
     /// Second is the integer designation.
-    /// Third is if the comet is fragmented or not, if `Some` then the character
-    /// is the fragment letter, if `None` then it is not a fragment.
+    /// Third is if the comet is fragmented or not, if [`Some`] then the character
+    /// is the fragment letter, if [`None`] then it is not a fragment.
     CometPerm(char, u32, Option<char>),
 
     /// Comet Provisional Designation
     /// First element is the orbit type `CPAXD` if available.
     /// Second is the string designation.
-    /// Third is if the comet is fragmented or not, if `Some` then the character
-    /// is the fragment letter, if `None` then it is not a fragment.
+    /// Third is if the comet is fragmented or not, if [`Some`] then the character
+    /// is the fragment letter, if [`None`] then it is not a fragment.
     CometProv(Option<char>, String, Option<char>),
 
     /// Planetary Satellite
@@ -113,12 +114,25 @@ pub enum Desig {
 
 impl Desig {
     /// Return a full string representation of the designation, including the type.
+    #[must_use]
     pub fn full_string(&self) -> String {
         format!("{self:?}")
     }
 
-    /// Try to convert a naif ID into a name.
-    #[must_use]
+    /// Try to convert a [`Desig::Naif`] into a [`Desig::Name`] by looking it up.
+    ///
+    /// If unsuccessful this returns the original type.
+    ///
+    /// ```
+    ///     use kete_core::desigs::Desig;
+    ///
+    ///     let desig = Desig::Naif(399).try_naif_id_to_name();
+    ///     assert_eq!(desig, Desig::Name("earth".into()));
+    ///
+    ///     let desig = Desig::Empty.try_naif_id_to_name();
+    ///     assert_eq!(desig, Desig::Empty);
+    /// ```
+    ///
     pub fn try_naif_id_to_name(self) -> Self {
         if let Self::Naif(id) = &self {
             if let Some(name) = try_name_from_id(*id) {
@@ -131,9 +145,33 @@ impl Desig {
         }
     }
 
-    /// Convert the Desig as close to a NAIF id as is possible.
+    /// Convert the [`Desig::Name`] into a [`Desig::Naif`] if possible.
+    ///
     /// This will lookup a NAIF id from the name if it exists.
-    #[must_use]
+    ///
+    /// ```
+    ///     use kete_core::desigs::Desig;
+    ///
+    ///     // Integers are parsed if possible
+    ///     let desig = Desig::Name("399".into()).try_name_to_naif_id();
+    ///     assert_eq!(desig, Desig::Naif(399));
+    ///
+    ///     // If there is an exact match, then it is returned
+    ///     let desig = Desig::Name("Earth".into()).try_name_to_naif_id();
+    ///     assert_eq!(desig, Desig::Naif(399));
+    ///
+    ///     // Partial but unique matches are returned.
+    ///     let desig = Desig::Name("Earth b".into()).try_name_to_naif_id();
+    ///     assert_eq!(desig, Desig::Naif(3));
+    ///
+    ///     // Partial but not-unique will leave the input unchanged.
+    ///     let desig = Desig::Name("Ear".into()).try_name_to_naif_id();
+    ///     assert_eq!(desig, Desig::Name("Ear".into()));
+    ///
+    ///     // Non-Names are returned unchanged.
+    ///     let desig = Desig::Empty.try_naif_id_to_name();
+    ///     assert_eq!(desig, Desig::Empty);
+    /// ```
     pub fn try_name_to_naif_id(self) -> Self {
         if let Self::Name(name) = &self {
             if let Ok(id) = name.parse::<i32>() {
@@ -141,21 +179,64 @@ impl Desig {
             }
 
             let naif_ids = naif_ids_from_name(name);
-            if naif_ids.len() == 1 {
-                return Self::Naif(naif_ids[0].id);
+            match naif_ids.as_slice() {
+                // if there is a single entry, return it
+                [i] => return Self::Naif(i.id),
+                _ => {
+                    for id in &naif_ids {
+                        // if there is an EXACT match, return it.
+                        if id.name.to_lowercase() == name.to_lowercase() {
+                            return Self::Naif(id.id);
+                        }
+                    }
+                }
             }
+
             // if there are multiple NAIF ids, or none, do not change the designation.
         }
         self
     }
 
-    /// Convert the ``Name`` into an ``ObservatoryCode`` if possible.
-    #[must_use]
+    /// Convert the [`Desig::Name`] into an [`Desig::ObservatoryCode`] if possible.
+    ///
+    /// ```
+    ///     use kete_core::desigs::Desig;
+    ///
+    ///     // If it is an existing observatory code, just upgrade it.
+    ///     let desig = Desig::Name("000".into()).try_name_to_obs_code();
+    ///     assert_eq!(desig, Desig::ObservatoryCode("000".into()));
+    ///
+    ///     // If there is an exact match, then it is returned
+    ///     let desig = Desig::Name("Maunakea".into()).try_name_to_obs_code();
+    ///     assert_eq!(desig, Desig::ObservatoryCode("568".into()));
+    ///
+    ///     // Partial but unique matches are returned.
+    ///     let desig = Desig::Name("Subaru Telescope, Mauna".into()).try_name_to_obs_code();
+    ///     assert_eq!(desig, Desig::ObservatoryCode("T09".into()));
+    ///
+    ///     // Partial but not-unique will leave the input unchanged.
+    ///     let desig = Desig::Name(", Maunakea".into()).try_name_to_obs_code();
+    ///     assert_eq!(desig, Desig::Name(", Maunakea".into()));
+    ///
+    ///     // Non-Names are returned unchanged.
+    ///     let desig = Desig::Empty.try_name_to_obs_code();
+    ///     assert_eq!(desig, Desig::Empty);
+    /// ```
+    ///
     pub fn try_name_to_obs_code(self) -> Self {
         if let Self::Name(name) = &self {
             let obs_codes = try_obs_code_from_name(name);
-            if obs_codes.len() == 1 {
-                return Self::ObservatoryCode(obs_codes[0].name.clone());
+
+            match obs_codes.as_slice() {
+                [i] => return i.code.clone(),
+                _ => {
+                    for id in &obs_codes {
+                        // if there is an EXACT match, return it.
+                        if id.name.to_lowercase() == name.to_lowercase() {
+                            return id.code.clone();
+                        }
+                    }
+                }
             }
             // if there are multiple NAIF ids, or none, do not change the designation.
         }
@@ -194,21 +275,21 @@ impl Desig {
     ///     let desig = Desig::parse_mpc_designation("A801 AA");
     ///     assert_eq!(desig, Ok(Desig::Prov("A801 AA".to_string())));
     ///
-    ///    let desig = Desig::parse_mpc_designation("2026 CZ619");
-    ///    assert_eq!(desig, Ok(Desig::Prov("2026 CZ619".to_string())));
+    ///     let desig = Desig::parse_mpc_designation("2026 CZ619");
+    ///     assert_eq!(desig, Ok(Desig::Prov("2026 CZ619".to_string())));
     ///
-    ///    // Extended Provisional (2025-2035)
-    ///    let desig = Desig::parse_mpc_designation("2026 CA620");
-    ///    assert_eq!(desig, Ok(Desig::Prov("2026 CA620".to_string())));
+    ///     // Extended Provisional (2025-2035)
+    ///     let desig = Desig::parse_mpc_designation("2026 CA620");
+    ///     assert_eq!(desig, Ok(Desig::Prov("2026 CA620".to_string())));
     ///
-    ///    let desig = Desig::parse_mpc_designation("2028 EA339749");
-    ///    assert_eq!(desig, Ok(Desig::Prov("2028 EA339749".to_string())));
+    ///     let desig = Desig::parse_mpc_designation("2028 EA339749");
+    ///     assert_eq!(desig, Ok(Desig::Prov("2028 EA339749".to_string())));
     ///
-    ///    let desig = Desig::parse_mpc_designation("2026 CL591673");
-    ///    assert_eq!(desig, Ok(Desig::Prov("2026 CL591673".to_string())));
+    ///     let desig = Desig::parse_mpc_designation("2026 CL591673");
+    ///     assert_eq!(desig, Ok(Desig::Prov("2026 CL591673".to_string())));
     ///
-    ///    let desig = Desig::parse_mpc_designation("2029 FL591673");
-    ///    assert_eq!(desig, Ok(Desig::Prov("2029 FL591673".to_string())));
+    ///     let desig = Desig::parse_mpc_designation("2029 FL591673");
+    ///     assert_eq!(desig, Ok(Desig::Prov("2029 FL591673".to_string())));
     ///
     ///     // Comet provisional designations
     ///     let desig = Desig::parse_mpc_designation("1996 N2");
@@ -234,6 +315,12 @@ impl Desig {
     ///     assert_eq!(desig, Ok(Desig::PlanetSat(799, 4)));
     ///
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// This may fail for the following reasons:
+    /// - Empty designation provided.
+    /// - Parsing of the designation fails.
     pub fn parse_mpc_designation(designation: &str) -> KeteResult<Self> {
         if designation.is_empty() {
             return Err(Error::ValueError("Designation cannot be empty".to_string()));
@@ -256,7 +343,7 @@ impl Desig {
             // there are no spaces, so it is not a provisional designation
             // it is probably a perm comet designation
             // check if the last character is in 'IP'
-            let orbit_type = designation.chars().last().unwrap();
+            let orbit_type = designation.chars().last().unwrap_or(' ');
             if "IP".contains(orbit_type) {
                 // it is a comet permanent designation
                 let num = designation[..designation.len() - 1]
@@ -325,16 +412,8 @@ impl Desig {
                     "Invalid MPC Designation, looks like a comet provisional: {designation}"
                 )));
             }
-            let fragment = if fragment.is_empty() {
-                None
-            } else {
-                Some(fragment.chars().next().unwrap())
-            };
-            let orbit_type = if orbit_type.is_empty() {
-                None
-            } else {
-                Some(orbit_type.chars().next().unwrap())
-            };
+            let fragment = fragment.chars().next();
+            let orbit_type = orbit_type.chars().next();
             Ok(Self::CometProv(orbit_type, des.to_string(), fragment))
         }
     }
@@ -432,7 +511,22 @@ impl Desig {
     ///    let packed = Desig::PlanetSat(799, 4).try_pack();
     ///    assert_eq!(packed, Ok("U004S".to_string()));
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// This may fail for the following reasons:
+    /// - Empty designation provided.
+    /// - Parsing of the designation fails.
+    #[allow(clippy::missing_panics_doc, reason = "Should not panic.")]
     pub fn try_pack(&self) -> KeteResult<String> {
+        static YEAR_LOOKUP: &[(&str, &str); 5] = &[
+            ("18", "I"),
+            ("19", "J"),
+            ("20", "K"),
+            ("A9", "J"),
+            ("A8", "I"),
+        ];
+
         match self {
             Self::Empty => Err(Error::ValueError(
                 "Cannot pack an empty designation".to_string(),
@@ -501,7 +595,8 @@ impl Desig {
                     match num {
                         num if (num >= 620) => {
                             // order counts A = 1, B = 2 ... skipping I
-                            let single_count = ORDER_CHARS.find(order).unwrap() as u32;
+                            let single_count =
+                                u32::try_from(ORDER_CHARS.find(order).unwrap()).unwrap();
 
                             let total_num = 25 * num + single_count;
                             let num_packed = num_to_mpc_hex(total_num - 15_500);
@@ -515,13 +610,7 @@ impl Desig {
                             // unlike the `order`, this DOES include I...
                             let idx = MPC_HEX.chars().nth(num as usize / 10).unwrap();
                             let idy = num % 10;
-                            static YEAR_LOOKUP: &[(&str, &str); 5] = &[
-                                ("18", "I"),
-                                ("19", "J"),
-                                ("20", "K"),
-                                ("A9", "J"),
-                                ("A8", "I"),
-                            ];
+
                             let century =
                                 YEAR_LOOKUP.iter().find(|&&x| x.0 == &year[0..2]).map_or(
                                     Err(Error::ValueError(format!(
@@ -579,7 +668,7 @@ impl Desig {
                     let packed = Self::Prov(unpacked.to_string()).try_pack()?;
                     Ok(format!(
                         "{}{}",
-                        orbit_type.map_or("".to_string(), |o| o.to_string()),
+                        orbit_type.map_or(String::new(), |o| o.to_string()),
                         packed
                     ))
                 }
@@ -588,6 +677,9 @@ impl Desig {
     }
 
     /// Unpacked a MPC packed designation into a [`Desig`] enum.
+    ///
+    /// # Errors
+    /// Returns error if parsing fails.
     pub fn parse_mpc_packed_designation(packed: &str) -> KeteResult<Self> {
         if packed.len() == 5 {
             unpack_perm_designation(packed)
@@ -641,6 +733,7 @@ impl Display for Desig {
 ///     let hex_str = num_to_mpc_hex(63);
 ///     assert_eq!(hex_str, "11");
 /// ```
+#[must_use]
 pub fn num_to_mpc_hex(mut num: u32) -> String {
     let mut result = String::new();
 
@@ -649,6 +742,10 @@ pub fn num_to_mpc_hex(mut num: u32) -> String {
     }
     while num > 0 {
         let digit = (num % 62) as usize;
+        #[allow(
+            clippy::missing_panics_doc,
+            reason = "MPX_HEX is 62 long, so this unwrap cannot fail."
+        )]
         result.push(MPC_HEX.chars().nth(digit).unwrap());
         num /= 62;
     }
@@ -665,11 +762,19 @@ pub fn num_to_mpc_hex(mut num: u32) -> String {
 ///    let largest = mpc_hex_to_num("zzzzz");
 ///    assert_eq!(largest, Ok(916132831));
 /// ```
+///
+/// # Errors
+/// Fails when input string contains invalid characters.
 pub fn mpc_hex_to_num(hex: &str) -> KeteResult<u32> {
     let mut result = 0_u32;
+
+    #[allow(
+        clippy::missing_panics_doc,
+        reason = "MPX_HEX is 62 long, so this unwrap cannot fail."
+    )]
     for c in hex.chars() {
         if let Some(pos) = MPC_HEX.find(c) {
-            result = result * 62 + pos as u32;
+            result = result * 62 + u32::try_from(pos).unwrap();
         } else {
             return Err(Error::IOError(format!(
                 "Invalid character in MPC hexadecimal string: {c}"
@@ -715,6 +820,11 @@ pub fn mpc_hex_to_num(hex: &str) -> KeteResult<u32> {
 ///     let desig = unpack_perm_designation("N011S");
 ///     assert_eq!(desig, Ok(Desig::PlanetSat(899, 11)));
 /// ```
+///
+/// # Errors
+/// Fails when input string contains invalid characters.
+///
+#[allow(clippy::missing_panics_doc, reason = "Should not panic.")]
 pub fn unpack_perm_designation(designation: &str) -> KeteResult<Desig> {
     if designation.len() != 5 {
         return Err(Error::ValueError(format!(
@@ -771,7 +881,7 @@ pub fn unpack_perm_designation(designation: &str) -> KeteResult<Desig> {
         // split string by first character and remaining
         let (first_char, remaining) = designation.split_at(1);
         if let Some(pos) = MPC_HEX.find(first_char) {
-            let first_num = pos as u32 * 10_000;
+            let first_num = u32::try_from(pos).unwrap() * 10_000;
             let rest_num = remaining.parse::<u32>().map_err(|e| {
                 Error::ValueError(format!("Failed to parse rest of designation: {e}"))
             })?;
@@ -851,6 +961,11 @@ pub fn unpack_perm_designation(designation: &str) -> KeteResult<Desig> {
 ///     let desig = unpack_prov_designation("T3S4101").unwrap();
 ///     assert_eq!(desig, Desig::Prov("4101 T-3".to_string()));
 /// ```
+///
+/// # Errors
+/// Fails when input string contains invalid characters.
+///
+#[allow(clippy::missing_panics_doc, reason = "Should not panic.")]
 pub fn unpack_prov_designation(designation: &str) -> KeteResult<Desig> {
     if designation.len() > 8 {
         return Err(Error::ValueError(format!(
@@ -909,8 +1024,10 @@ pub fn unpack_prov_designation(designation: &str) -> KeteResult<Desig> {
     };
     if is_comet {
         let century = MPC_HEX.find(&designation[..1]).ok_or_else(err)? * 100;
-        let year = designation[1..3].parse::<u32>().map_err(|_| err())? + century as u32;
-        let comet_num = MPC_HEX.find(&designation[4..5]).ok_or_else(err)? as u32 * 10
+        let year =
+            designation[1..3].parse::<u32>().map_err(|_| err())? + u32::try_from(century).unwrap();
+        let comet_num = u32::try_from(MPC_HEX.find(&designation[4..5]).ok_or_else(err)?).unwrap()
+            * 10
             + designation[5..6].parse::<u32>().map_err(|_| err())?;
         let half_month = &designation[3..4];
         let frag = designation.chars().nth(6).unwrap();
@@ -952,14 +1069,14 @@ fn unpack_ast_prov_desig(designation: &str) -> KeteResult<Desig> {
             "Invalid MPC Provisional Designation: {designation}"
         ))
     };
-    let century = MPC_HEX.find(&designation[..1]).ok_or_else(err)? as u32 * 100;
+    let century = u32::try_from(MPC_HEX.find(&designation[..1]).ok_or_else(err)?).unwrap() * 100;
     let year = designation[1..3].parse::<u32>().map_err(|_| err())? + century;
     let year = if year < 1925 {
         format!("A{}", year % 1000)
     } else {
         year.to_string()
     };
-    let obs_num = MPC_HEX.find(&designation[4..5]).ok_or_else(err)? as u32 * 10
+    let obs_num = u32::try_from(MPC_HEX.find(&designation[4..5]).ok_or_else(err)?).unwrap() * 10
         + designation[5..6].parse::<u32>().map_err(|_| err())?;
     let obs_str = if obs_num == 0 {
         String::new()
@@ -983,7 +1100,7 @@ fn unpack_ast_extended_prov_des(designation: &str) -> KeteResult<Desig> {
     if !is_extended || designation.len() != 7 {
         return Err(err());
     }
-    let year = 2000 + MPC_HEX.find(&designation[1..2]).ok_or_else(err)? as u32;
+    let year = 2000 + u32::try_from(MPC_HEX.find(&designation[1..2]).ok_or_else(err)?).unwrap();
     let half_month = designation.chars().nth(2).unwrap();
     let total_count = mpc_hex_to_num(&designation[3..])? + 15_500;
     let count = total_count.div_euclid(25);
@@ -1035,6 +1152,10 @@ static ROMAN_PAIRS: [(u32, &str); 13] = [
 ///     let roman = int_to_roman(0);
 ///     assert_eq!(roman, Err(Error::ValueError("Number must be between 1 and 3999".into())));
 /// ```
+///
+/// # Errors
+/// Fails when input is either 0 or greater than 3999.
+///
 pub fn int_to_roman(mut num: u32) -> KeteResult<String> {
     if num > 3999 || num == 0 {
         return Err(Error::ValueError(
@@ -1070,6 +1191,9 @@ pub fn int_to_roman(mut num: u32) -> KeteResult<String> {
 ///    let num = roman_to_int("XXXXX");
 ///    assert!(num.is_err());
 /// ```
+/// # Errors
+/// Fails when input contains invalid characters.
+///
 pub fn roman_to_int(roman: &str) -> KeteResult<u32> {
     let mut result = 0;
     let mut last_value = 4000;

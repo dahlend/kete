@@ -56,6 +56,7 @@ pub const WISE_WIDTH: f64 = 0.01367174580728;
 ///
 /// * `temps` - Vec of temperatures in kelvin.
 #[inline]
+#[must_use]
 pub fn w1_color_correction(temp: f64) -> f64 {
     let temp = &temp.clamp(100.0, 400.0);
     (-3.78226591e-01 + 3.50431748e-03 * temp + 1.45866307e-05 * temp.powi(2)
@@ -70,6 +71,7 @@ pub fn w1_color_correction(temp: f64) -> f64 {
 ///
 /// * `temps` - Vec of temperatures in kelvin.
 #[inline]
+#[must_use]
 pub fn w2_color_correction(temp: f64) -> f64 {
     let temp = &temp.clamp(100.0, 400.0);
     (-8.60229377e-01 + 1.54988562e-02 * temp - 5.10705456e-05 * temp.powi(2)
@@ -84,6 +86,7 @@ pub fn w2_color_correction(temp: f64) -> f64 {
 ///
 /// * `temps` - Vec of temperatures in kelvin.
 #[inline]
+#[must_use]
 pub fn w3_color_correction(temp: f64) -> f64 {
     let temp = &temp.clamp(100.0, 400.0);
     (-1.29814355 + 2.43268763e-02 * temp - 9.05178737e-05 * temp.powi(2)
@@ -98,6 +101,7 @@ pub fn w3_color_correction(temp: f64) -> f64 {
 ///
 /// * `temps` - Vec of temperatures in kelvin.
 #[inline]
+#[must_use]
 pub fn w4_color_correction(temp: f64) -> f64 {
     let temp = &temp.clamp(100.0, 400.0).ln();
     2.17247804e+01 + -1.46084733e+01 * temp + 3.85364000e+00 * temp.powi(2)
@@ -107,8 +111,8 @@ pub fn w4_color_correction(temp: f64) -> f64 {
 
 /// The combined color corrections for WISE.
 pub const WISE_CC: [ColorCorrFn; 4] = [
-    &w1_color_correction,
-    &w2_color_correction,
-    &w3_color_correction,
-    &w4_color_correction,
+    w1_color_correction,
+    w2_color_correction,
+    w3_color_correction,
+    w4_color_correction,
 ];

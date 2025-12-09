@@ -40,6 +40,7 @@ use std::ops::{Add, AddAssign, Div, Index, IndexMut, Mul, Neg, Sub, SubAssign};
 /// Vector with frame information.
 /// All vectors are 3D vectors in an inertial frame.
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[must_use]
 pub struct Vector<T: InertialFrame> {
     /// Underlying vector data.
     raw: [f64; 3],
@@ -69,6 +70,7 @@ impl<T: InertialFrame> Vector<T> {
 
     /// Are all element of the vector finite.
     #[inline(always)]
+    #[must_use]
     pub fn is_finite(&self) -> bool {
         self.raw.iter().all(|x| x.is_finite())
     }
@@ -96,6 +98,7 @@ impl<T: InertialFrame> Vector<T> {
 
     /// Dot product between two vectors
     #[inline(always)]
+    #[must_use]
     pub fn dot(&self, other: &Self) -> f64 {
         self.raw
             .iter()
@@ -114,18 +117,21 @@ impl<T: InertialFrame> Vector<T> {
 
     /// Squared euclidean length.
     #[inline(always)]
+    #[must_use]
     pub fn norm_squared(&self) -> f64 {
         self.raw.iter().map(|a| a.powi(2)).sum()
     }
 
     /// The euclidean length of the vector.
     #[inline(always)]
+    #[must_use]
     pub fn norm(&self) -> f64 {
         self.raw.iter().map(|a| a.powi(2)).sum::<f64>().sqrt()
     }
 
     /// The angle betweeen two vectors in radians.
     #[inline(always)]
+    #[must_use]
     pub fn angle(&self, other: &Self) -> f64 {
         Vector3::from(self.raw).angle(&Vector3::from(other.raw))
     }
@@ -149,6 +155,7 @@ impl<T: InertialFrame> Vector<T> {
     /// Convert a vector to polar spherical coordinates.
     ///
     /// <https://en.wikipedia.org/wiki/Spherical_coordinate_system#Cartesian_coordinates>
+    #[must_use]
     pub fn to_polar_spherical(&self) -> (f64, f64) {
         let vec = self.normalize();
         let theta = vec.raw[2].acos();
@@ -166,6 +173,7 @@ impl Vector<Ecliptic> {
 
     /// Convert a unit vector to latitude and longitude.
     #[inline(always)]
+    #[must_use]
     pub fn to_lat_lon(self) -> (f64, f64) {
         let (mut lat, mut lon) = self.to_polar_spherical();
         if lat > PI {
@@ -185,6 +193,7 @@ impl Vector<Equatorial> {
 
     /// Convert a unit vector to ra and dec.
     #[inline(always)]
+    #[must_use]
     pub fn to_ra_dec(self) -> (f64, f64) {
         let (mut dec, mut ra) = self.to_polar_spherical();
         if dec > PI {
@@ -199,14 +208,14 @@ impl<T: InertialFrame> Index<usize> for Vector<T> {
     type Output = f64;
     #[inline(always)]
     fn index(&self, index: usize) -> &Self::Output {
-        &self.raw[index]
+        self.raw.index(index)
     }
 }
 
 impl<T: InertialFrame> IndexMut<usize> for Vector<T> {
     #[inline(always)]
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        &mut self.raw[index]
+        self.raw.index_mut(index)
     }
 }
 

@@ -49,6 +49,8 @@ where
     /// Binary file formats as used by kete are not guaranteed to be stable in future
     /// versions.
     ///
+    /// # Errors
+    /// Saving is fallible due to filesystem calls.
     fn save(&self, filename: String) -> KeteResult<usize> {
         let mut f = BufWriter::new(File::create(filename)?);
         encode_into_std_write(self, &mut f, bincode::config::legacy())
@@ -59,6 +61,9 @@ where
     ///
     /// Binary file formats as used by kete are not guaranteed to be stable in future
     /// versions.
+    ///
+    /// # Errors
+    /// Loading is fallible due to filesystem calls.
     fn load(filename: String) -> KeteResult<Self> {
         let mut f = BufReader::new(File::open(filename)?);
         decode_from_std_read(&mut f, bincode::config::legacy())
@@ -69,6 +74,9 @@ where
     ///
     /// Binary file formats as used by kete are not guaranteed to be stable in future
     /// versions.
+    ///
+    /// # Errors
+    /// Saving is fallible due to filesystem calls.
     fn save_vec(vec: &[Self], filename: String) -> KeteResult<()> {
         let mut f = BufWriter::new(File::create(filename)?);
 
@@ -81,6 +89,9 @@ where
     ///
     /// Binary file formats as used by kete are not guaranteed to be stable in future
     /// versions.
+    ///
+    /// # Errors
+    /// Loading is fallible due to filesystem calls.
     fn load_vec(filename: String) -> KeteResult<Vec<Self>> {
         let mut f = BufReader::new(File::open(filename)?);
 

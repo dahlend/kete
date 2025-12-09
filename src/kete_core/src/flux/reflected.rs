@@ -50,6 +50,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// * `g_param` - The G parameter, between 0 and 1.
 /// * `phase` - The phase angle in radians.
+#[must_use]
 pub fn hg_phase_curve_correction(g_param: f64, phase: f64) -> f64 {
     fn helper(a: f64, b: f64, c: f64, phase: f64) -> f64 {
         let phase_s = phase.sin();
@@ -77,6 +78,7 @@ pub fn hg_phase_curve_correction(g_param: f64, phase: f64) -> f64 {
 /// # Arguments
 /// * `phase_angle` - Phase angle in radians.
 ///
+#[must_use]
 #[cfg_attr(feature = "pyo3", pyo3::pyfunction)]
 pub fn cometary_dust_phase_curve_correction(phase_angle: f64) -> f64 {
     const K: f64 = 0.80;
@@ -152,15 +154,16 @@ impl HGParams {
     /// * `g_param` - The G parameter in the HG system.
     /// * `h_mag` - The H parameter of the object in the HG system.
     /// * `c_hg` - The relationship constant of the H-D-pV conversion in km.
+    #[must_use]
     pub fn new(desig: String, g_param: f64, h_mag: f64, c_hg: Option<f64>) -> Self {
         let c_hg = c_hg.unwrap_or(C_V);
         Self {
             desig,
             g_param,
             h_mag,
-            c_hg,
             vis_albedo: None,
             diam: None,
+            c_hg,
         }
     }
 
@@ -189,6 +192,8 @@ impl HGParams {
     /// * `vis_albedo` - Visible geometric albedo of the object.
     /// * `diameter` - Diameter of the object in km.
     ///
+    /// # Errors
+    /// This can fail if parameters are not self consistent between H, diam, and albedo.
     pub fn try_new(
         desig: String,
         g_param: f64,
@@ -202,23 +207,26 @@ impl HGParams {
             desig,
             g_param,
             h_mag,
-            c_hg,
             vis_albedo,
             diam,
+            c_hg,
         })
     }
 
     /// New [`HGParams`] assuming G param is `0.15` and ``c_hg`` is the V band value.
+    #[must_use]
     pub fn default(desig: String, h_mag: f64) -> Self {
         Self::new(desig, 0.15, h_mag, Some(C_V))
     }
 
     /// Diameter of the object in km.
+    #[must_use]
     pub fn diam(&self) -> Option<f64> {
         self.diam
     }
 
     /// Visible geometric albedo of the object.
+    #[must_use]
     pub fn vis_albedo(&self) -> Option<f64> {
         self.vis_albedo
     }
@@ -315,6 +323,7 @@ impl HGParams {
     /// * `sun2obj` - Vector from the sun to the object in AU.
     /// * `sun2obs` - Vector from the sun to the observer in AU.
     ///
+    #[must_use]
     pub fn apparent_mag(&self, sun2obj: &Vector3<f64>, sun2obs: &Vector3<f64>) -> f64 {
         let obj_r = sun2obj.norm();
         let obj2obs = sun2obs - sun2obj;
@@ -355,6 +364,7 @@ impl HGParams {
     /// * `sun2obs` - Vector from the sun to the observer in AU.
     /// * `wavelength` - Central wavelength of light in nm.
     /// * `albedo` - Geometric Albedo at the wavelength provided.
+    #[must_use]
     pub fn apparent_flux(
         &self,
         sun2obj: &Vector3<f64>,

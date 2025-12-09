@@ -120,7 +120,7 @@ impl FromStr for GravParams {
 }
 
 /// Gravity parameter Singleton
-static MASSES_KNOWN: std::sync::LazyLock<ShardedLock<Vec<GravParams>>> =
+pub static MASSES_KNOWN: std::sync::LazyLock<ShardedLock<Vec<GravParams>>> =
     std::sync::LazyLock::new(|| {
         let mut singleton = Vec::new();
         let text = std::str::from_utf8(include_bytes!("../../data/masses.tsv"))
@@ -135,7 +135,7 @@ static MASSES_KNOWN: std::sync::LazyLock<ShardedLock<Vec<GravParams>>> =
     });
 
 /// Gravity parameter Singleton
-static MASSES_SELECTED: std::sync::LazyLock<ShardedLock<Vec<GravParams>>> =
+pub static MASSES_SELECTED: std::sync::LazyLock<ShardedLock<Vec<GravParams>>> =
     std::sync::LazyLock::new(|| {
         let mut singleton = Vec::new();
         // pre-add the planets and the 5 most massive asteroids from the masses_known list
@@ -157,7 +157,8 @@ static MASSES_SELECTED: std::sync::LazyLock<ShardedLock<Vec<GravParams>>> =
 ///
 /// Masses must be provided as a fraction of the Sun's mass, and radius in AU.
 ///
-/// If an object is already registered with the same NAIF ID, it will not be added again.
+/// If an object is already registered with the same NAIF ID, it will not be added
+/// again.
 #[cfg_attr(feature = "pyo3", pyfunction, pyo3(signature=(naif_id, mass, radius=0.0)))]
 pub fn register_custom_mass(naif_id: i32, mass: f64, radius: f32) {
     let params = GravParams::new(naif_id, mass * GMS, radius);
@@ -167,7 +168,11 @@ pub fn register_custom_mass(naif_id: i32, mass: f64, radius: f32) {
 /// Register a new massive object to be used in the extended list of objects.
 ///
 /// This looks up the mass and radius of the object by its NAIF ID of the known
-/// masses, panics if the object is not found.
+/// masses.
+///
+/// # Panics
+/// Panic if a write lock cannot be put on [`MASSES_SELECTED`] or the object's mass is
+/// not known.
 #[cfg_attr(feature = "pyo3", pyfunction)]
 pub fn register_mass(naif_id: i32) {
     let known_masses = GravParams::known_masses();
@@ -178,7 +183,8 @@ pub fn register_mass(naif_id: i32) {
     panic!("Failed to find mass for NAIF ID {naif_id}");
 }
 
-/// List the massive objects in the extended list of objects to be used during orbit propagation.
+/// List the massive objects in the extended list of objects to be used during orbit
+/// propagation.
 ///
 /// This is meant to be human readable, and will return:
 /// (the name of the object,
@@ -186,6 +192,7 @@ pub fn register_mass(naif_id: i32) {
 ///  the mass,
 ///  the radius)
 #[cfg_attr(feature = "pyo3", pyfunction)]
+#[must_use]
 pub fn registered_masses() -> Vec<(String, i32, f64, f32)> {
     let params = GravParams::selected_masses();
     params
@@ -209,6 +216,7 @@ pub fn registered_masses() -> Vec<(String, i32, f64, f32)> {
 ///  the mass,
 ///  the radius)
 #[cfg_attr(feature = "pyo3", pyfunction)]
+#[must_use]
 pub fn known_masses() -> Vec<(String, i32, f64, f32)> {
     let params = GravParams::known_masses();
     params
@@ -226,6 +234,7 @@ pub fn known_masses() -> Vec<(String, i32, f64, f32)> {
 
 impl GravParams {
     /// Create a new [`GravParams`] object.
+    #[must_use]
     pub fn new(naif_id: i32, mass: f64, radius: f32) -> Self {
         Self {
             naif_id,
@@ -281,6 +290,9 @@ impl GravParams {
     }
 
     /// Add this [`GravParams`] to the singleton.
+    ///
+    /// # Panics
+    /// Panic if a write lock cannot be put on [`MASSES_SELECTED`].
     pub fn register(self) {
         let mut params = MASSES_SELECTED.write().unwrap();
         // Check if the GravParams already exists
@@ -291,16 +303,23 @@ impl GravParams {
     }
 
     /// Get a read-only reference to the singleton.
+    ///
+    /// # Panics
+    /// Panic if a read lock cannot be put on [`MASSES_KNOWN`].
     pub fn known_masses() -> crossbeam::sync::ShardedLockReadGuard<'static, Vec<Self>> {
         MASSES_KNOWN.read().unwrap()
     }
 
     /// Currently selected masses for use in orbit propagation.
+    ///
+    /// # Panics
+    /// Panic if a read lock cannot be put on [`MASSES_SELECTED`].
     pub fn selected_masses() -> crossbeam::sync::ShardedLockReadGuard<'static, Vec<Self>> {
         MASSES_SELECTED.read().unwrap()
     }
 
     /// List of all known massive planets and the Moon.
+    #[must_use]
     pub fn planets() -> Vec<Self> {
         let known = Self::known_masses();
         let mut planets = Vec::new();
@@ -313,6 +332,7 @@ impl GravParams {
     }
 
     /// List of Massive planets, but merge the moon and earth together.
+    #[must_use]
     pub fn simplified_planets() -> Vec<Self> {
         let known = Self::known_masses();
         let mut planets = Vec::new();
@@ -335,7 +355,7 @@ fn j2_correction(rel_pos: &Vector3<f64>, radius: f32, j2: &f64, mass: &f64) -> V
 
     // this is formatted a little funny in an attempt to reduce numerical noise
     // 3/2 * j2 * mass * radius^2 / distance^5
-    let coef = 1.5 * j2 * mass * (radius as f64 / r).powi(2) * r.powi(-3);
+    let coef = 1.5 * j2 * mass * (f64::from(radius) / r).powi(2) * r.powi(-3);
     Vector3::<f64>::new(
         rel_pos.x * coef * (z_squared - 1.0),
         rel_pos.y * coef * (z_squared - 1.0),

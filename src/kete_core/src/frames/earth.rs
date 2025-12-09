@@ -67,11 +67,13 @@ pub(super) const OBLIQUITY: f64 = 0.40909280422232897;
 /// Prime vertical radius of curvature.
 /// This is the radius of curvature of the earth surface at the specific geodetic
 /// latitude.
+#[must_use]
 pub fn prime_vert_radius(geodetic_lat: f64) -> f64 {
     EARTH_A / (1.0 - EARTH_E2 * geodetic_lat.sin().powi(2)).sqrt()
 }
 
 /// Compute earths geocentric radius at the specified latitude in km.
+#[must_use]
 pub fn geocentric_radius(geodetic_lat: f64) -> f64 {
     let (sin, cos) = geodetic_lat.sin_cos();
     let a_cos = EARTH_A * cos;
@@ -81,6 +83,7 @@ pub fn geocentric_radius(geodetic_lat: f64) -> f64 {
 }
 
 /// Compute geodetic lat/lon/height in radians/km from ECEF position in km.
+#[must_use]
 pub fn ecef_to_geodetic_lat_lon(x: f64, y: f64, z: f64) -> (f64, f64, f64) {
     let longitude = f64::atan2(y, x);
     let p = (x * x + y * y).sqrt();
@@ -88,32 +91,34 @@ pub fn ecef_to_geodetic_lat_lon(x: f64, y: f64, z: f64) -> (f64, f64, f64) {
 
     // initial guess, and iterate.
     let mut geodetic_lat = geocen_lat;
-    let mut h = 0.0;
+    let mut height = 0.0;
     // this usually converges in only 1-2 iterations, but to reduce CPU branching
     // don't bother with a convergence check.
     for _ in 0..5 {
-        let n = prime_vert_radius(geodetic_lat);
-        h = p / geodetic_lat.cos() - n;
-        geodetic_lat = f64::atan(z / p / (1.0 - EARTH_E2 * n / (n + h)));
+        let vert_rad = prime_vert_radius(geodetic_lat);
+        height = p / geodetic_lat.cos() - vert_rad;
+        geodetic_lat = f64::atan(z / p / (1.0 - EARTH_E2 * vert_rad / (vert_rad + height)));
     }
 
-    (geodetic_lat, longitude, h)
+    (geodetic_lat, longitude, height)
 }
 
-/// Compute geocentric latitude from geodetic lat/height in radians/km .
+/// Compute geocentric latitude from geodetic lat/height in radians/km.
+#[must_use]
 pub fn geodetic_lat_to_geocentric(geodetic_lat: f64, h: f64) -> f64 {
     let n = prime_vert_radius(geodetic_lat);
     ((1.0 - EARTH_E2 * n / (n + h)) * geodetic_lat.tan()).atan()
 }
 
-/// Compute the ECEF X/Y/Z position in km from geodetic lat/lon/height in radians/km
-pub fn geodetic_lat_lon_to_ecef(geodetic_lat: f64, geodetic_lon: f64, h: f64) -> [f64; 3] {
+/// Compute the ECEF X/Y/Z position in km from geodetic lat/lon/height in radians/km.
+#[must_use]
+pub fn geodetic_lat_lon_to_ecef(geodetic_lat: f64, geodetic_lon: f64, height: f64) -> [f64; 3] {
     let n = prime_vert_radius(geodetic_lat);
     let (sin_gd_lat, cos_gd_lat) = geodetic_lat.sin_cos();
     let (sin_gd_lon, cos_gd_lon) = geodetic_lon.sin_cos();
-    let x = (n + h) * cos_gd_lat * cos_gd_lon;
-    let y = (n + h) * cos_gd_lat * sin_gd_lon;
-    let z = ((1.0 - EARTH_E2) * n + h) * sin_gd_lat;
+    let x = (n + height) * cos_gd_lat * cos_gd_lon;
+    let y = (n + height) * cos_gd_lat * sin_gd_lon;
+    let z = ((1.0 - EARTH_E2) * n + height) * sin_gd_lat;
     [x, y, z]
 }
 
@@ -123,6 +128,7 @@ pub fn geodetic_lat_lon_to_ecef(geodetic_lat: f64, geodetic_lon: f64, h: f64) ->
 ///
 /// The equation here is from the 2010 Astronomical Almanac.
 ///
+#[must_use]
 pub fn earth_obliquity(jd: Time<TDB>) -> f64 {
     // centuries from j2000
     let c = (jd - Time::j2000()).elapsed / 365.25 / 100.0;
@@ -138,6 +144,7 @@ pub fn earth_obliquity(jd: Time<TDB>) -> f64 {
 /// The ERA is the angle between the Greenwich meridian and the vernal equinox,
 /// the Equatorial J2000 X-axis.
 ///
+#[must_use]
 pub fn earth_rotation_angle(time: Time<UTC>) -> f64 {
     // Note that second number is not j2000, its the j2000 value in UTC time.
     let dt = time.jd - 2451545.0;
@@ -158,16 +165,16 @@ pub fn earth_rotation_angle(time: Time<UTC>) -> f64 {
 ///
 /// This function is an implementation equation (21) from this paper:
 ///
-/// > "Expressions for IAU 2000 precession quantities"  
-/// > Capitaine, N. ; Wallace, P. T. ; Chapront, J.  
+/// > "Expressions for IAU 2000 precession quantities"\\
+/// > Capitaine, N. ; Wallace, P. T. ; Chapront, J.\\
 /// > Astronomy and Astrophysics, v.412, p.567-586 (2003)
 ///
 /// It is recommended to first look at the following paper, as it provides useful
 /// discussion to help understand the above model. This defines the model used
 /// by JPL Horizons:
 ///
-/// > "Precession matrix based on IAU (1976) system of astronomical constants."  
-/// > Lieske, J. H.  
+/// > "Precession matrix based on IAU (1976) system of astronomical constants."\\
+/// > Lieske, J. H.\\
 /// > Astronomy and Astrophysics, vol. 73, no. 3, Mar. 1979, p. 282-284.
 ///
 /// The IAU 2000 model paper improves accuracy by approximately ~300 mas/century over
@@ -216,6 +223,9 @@ pub fn earth_precession_rotation(time: Time<TDB>) -> NonInertialFrame {
 ///
 /// This will be centered at the Earth, conversion to Sun centered
 /// requires a computation of Earths position.
+///
+/// # Errors
+/// This can fail if the equatorial frame conversion fails.
 pub fn approx_earth_pos_to_ecliptic(
     time: Time<TDB>,
     geodetic_lat: f64,
@@ -277,6 +287,7 @@ pub fn next_sunset_sunrise(
 /// Approximate the Sun's declination angle at solar noon at the specified date.
 ///
 /// Returns the declination in radians.
+#[must_use]
 pub fn approx_sun_dec(time: Time<UTC>) -> f64 {
     let obliquity = earth_obliquity(time.tdb());
 
@@ -303,6 +314,7 @@ pub fn approx_sun_dec(time: Time<UTC>) -> f64 {
 /// This is largely based off the approximation used by the USNO:
 ///     <https://aa.usno.navy.mil/faq/sun_approx>
 ///
+#[must_use]
 pub fn equation_of_time(time: Time<UTC>) -> f64 {
     let time_since_j2000 = (time - Time::j2000()).elapsed;
     let mean_lon_of_sun = (280.459 + 0.98564736 * time_since_j2000).rem_euclid(360.0);
@@ -327,7 +339,7 @@ pub fn approx_solar_noon(time: Time<UTC>, geodetic_lon: f64) -> Time<UTC> {
         let (y, m, d, _) = time.year_month_day();
 
         let frac_of_earth = -geodetic_lon.to_degrees().rem_euclid(360.0) / 360.0;
-        Time::<UTC>::from_year_month_day(y, m, d, 0.5 + frac_of_earth).jd
+        Time::<UTC>::from_year_month_day(y.into(), m, d, 0.5 + frac_of_earth).jd
     };
     let mut noon = noon + equation_of_time(Time::<UTC>::new(noon));
     while noon <= time.jd {

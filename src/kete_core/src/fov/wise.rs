@@ -52,6 +52,7 @@ pub struct WiseCmos {
 
 impl WiseCmos {
     /// Create a Wise fov
+    #[must_use]
     pub fn new(
         pointing: Vector<Equatorial>,
         rotation: f64,
@@ -61,14 +62,15 @@ impl WiseCmos {
     ) -> Self {
         let patch = OnSkyRectangle::new(pointing, rotation, WISE_WIDTH, WISE_WIDTH);
         Self {
-            patch,
             observer,
+            patch,
             frame_num,
             scan_id,
         }
     }
 
     /// Create a Wise fov from corners
+    #[must_use]
     pub fn from_corners(
         corners: [Vector<Equatorial>; 4],
         observer: State<Equatorial>,
@@ -77,8 +79,8 @@ impl WiseCmos {
     ) -> Self {
         let patch = OnSkyRectangle::from_corners(corners, 60_f64.recip().to_radians());
         Self {
-            patch,
             observer,
+            patch,
             frame_num,
             scan_id,
         }
@@ -88,9 +90,7 @@ impl WiseCmos {
 impl FovLike for WiseCmos {
     #[inline]
     fn get_fov(&self, index: usize) -> FOV {
-        if index != 0 {
-            panic!("Wise FOV only has a single patch")
-        }
+        assert!(index == 0, "Wise FOV only has a single patch");
         FOV::Wise(self.clone())
     }
 
