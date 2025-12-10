@@ -26,7 +26,7 @@ beaming = 1.4
 
 # Define the geometry
 geom = kete.shape.TriangleEllipsoid(12)
-obj2sun = np.array([1, 0, 0])
+obj2sun = kete.Vector([1, 0, 0])
 # Note: The TriangleEllipsoid geometry is not used by default in the kete code.
 # This is because its facet normals tend to be slightly correlated with one another.
 # These correlations can be eliminated by setting the number of facets high enough,
@@ -37,11 +37,11 @@ obj2sun = np.array([1, 0, 0])
 
 # Compute the temperature at the subsolar point on the object.
 neatm_subsolar_temp = kete.flux.sub_solar_temperature(
-    -obj2sun, vis_albedo, g_phase, beaming, emissivity
+    obj2sun.r, vis_albedo, g_phase, beaming, emissivity
 )
 # Note that FRM uses a beaming = pi
 frm_subsolar_temp = kete.flux.sub_solar_temperature(
-    -obj2sun, vis_albedo, g_phase, np.pi, emissivity
+    obj2sun.r, vis_albedo, g_phase, np.pi, emissivity
 )
 
 # Compute the FRM and NEATM facet temperatures for the object

@@ -50,7 +50,7 @@ def test_subsolarpoint_temp():
     for r in range(1, 10):
         vec = Vector([r, 0, 0])
         temp = sub_solar_temperature(
-            vec, geom_albedo=0, g_param=0, emissivity=1, beaming=1
+            r, geom_albedo=0, g_param=0, emissivity=1, beaming=1
         )
         temp = temp**4
         expected = constants.SOLAR_FLUX / r**2 / constants.STEFAN_BOLTZMANN
