@@ -21,11 +21,11 @@ beaming = 1.4
 
 # Define the geometry
 geom = kete.shape.TriangleEllipsoid(40)
-obj2sun = np.array([1, 0, 0])
+obj2sun = kete.Vector([1, 0, 0])
 
 # Compute the temperature at the subsolar point on the object.
 subsolar_temp = kete.flux.sub_solar_temperature(
-    -obj2sun, vis_albedo, g_phase, emissivity, beaming
+    obj2sun.r, vis_albedo, g_phase, emissivity, beaming
 )
 
 # Compute the NEATM facet temperatures for the object

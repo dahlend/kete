@@ -121,7 +121,7 @@ impl FrmParams {
 
         let diameter = self.hg_params.diam()?;
         let ss_temp = sub_solar_temperature(
-            &obj2sun,
+            obj2sun.norm(),
             self.hg_params.vis_albedo()?,
             self.hg_params.g_param,
             PI,

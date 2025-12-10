@@ -75,8 +75,8 @@ pub fn solar_flux_py(dist: f64, wavelength: f64) -> PyResult<f64> {
 ///
 /// Parameters
 /// ----------
-/// obj2sun :
-///     Vector from the object to the sun in AU.
+/// sun_dist :
+///     Distance from the object to the sun in AU.
 /// geom_albedo :
 ///     Geometric albedo.
 /// g_param :
@@ -86,16 +86,15 @@ pub fn solar_flux_py(dist: f64, wavelength: f64) -> PyResult<f64> {
 /// emissivity :
 ///     Emissivity of the object, 0.9 by default.
 #[pyfunction]
-#[pyo3(name = "sub_solar_temperature", signature = (obj2sun, geom_albedo, g_param, beaming, emissivity=0.9))]
+#[pyo3(name = "sub_solar_temperature", signature = (sun_dist, geom_albedo, g_param, beaming, emissivity=0.9))]
 pub fn sub_solar_temperature_py(
-    obj2sun: VectorLike,
+    sun_dist: f64,
     geom_albedo: f64,
     g_param: f64,
     beaming: f64,
     emissivity: f64,
 ) -> f64 {
-    let obj2sun = obj2sun.into_vector(PyFrames::Ecliptic).into();
-    sub_solar_temperature(&obj2sun, geom_albedo, g_param, beaming, emissivity)
+    sub_solar_temperature(sun_dist, geom_albedo, g_param, beaming, emissivity)
 }
 
 /// Compute the black body flux at the specified temperatures and wavelength.

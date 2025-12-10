@@ -27,7 +27,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use nalgebra::{UnitVector3, Vector3};
+use nalgebra::UnitVector3;
 use std::f64::consts::PI;
 
 use crate::constants::{
@@ -264,7 +264,7 @@ pub fn lambertian_vis_scale_factor(
 ///
 /// # Arguments
 ///
-/// * `obj2sun` - Vector from the object to the sun in AU.
+/// * `sun_dist` - Object distance to the Sun in AU.
 /// * `geom_albedo` - Geometric Albedo.
 /// * `g_param` - The G phase parameter.
 /// * `beaming` - Beaming of the object, this is geometry dependent.
@@ -272,7 +272,7 @@ pub fn lambertian_vis_scale_factor(
 #[inline(always)]
 #[must_use]
 pub fn sub_solar_temperature(
-    obj2sun: &Vector3<f64>,
+    sun_dist: f64,
     geom_albedo: f64,
     g_param: f64,
     beaming: f64,
@@ -281,7 +281,7 @@ pub fn sub_solar_temperature(
     let phase_integral = 0.29 + 0.684 * g_param;
 
     let bond_albedo = geom_albedo * phase_integral;
-    let reflected = (1.0 - bond_albedo) * SOLAR_FLUX / obj2sun.norm_squared();
+    let reflected = (1.0 - bond_albedo) * SOLAR_FLUX / sun_dist.powi(2);
     let temp = reflected / (beaming * emissivity * STEFAN_BOLTZMANN);
     if temp <= 0.0 {
         return 0.0;
@@ -347,15 +347,12 @@ mod tests {
 
     #[test]
     fn test_sub_solar_temperature() {
-        let obj2sun = [1.0, 0.0, 0.0].into();
-
         // albedo, G set to make bond_albedo == 1
-        let temp = sub_solar_temperature(&obj2sun, 1.0 / 0.29, 1.0, 1.0, 1.0);
+        let temp = sub_solar_temperature(1.0, 1.0 / 0.29, 1.0, 1.0, 1.0);
         assert_eq!(temp, 0.0);
 
         for range in 1..10 {
-            let obj2sun = [f64::from(range), 0.0, 0.0].into();
-            let mut temp = sub_solar_temperature(&obj2sun, 0.0, 0.0, 1.0, 1.0);
+            let mut temp = sub_solar_temperature(f64::from(range), 0.0, 0.0, 1.0, 1.0);
             temp = temp.powi(4);
             let expected = SOLAR_FLUX / f64::from(range).powi(2) / STEFAN_BOLTZMANN;
             assert!((temp - expected).abs() < 1e-5);
