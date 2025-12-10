@@ -52,7 +52,7 @@ for dt in dts:
         ]
     )
 
-    ss_temp = kete.flux.sub_solar_temperature(-obj2obs, albedo, G, emissivity, beaming)
+    ss_temp = kete.flux.sub_solar_temperature(obj2obs.r, albedo, G, emissivity, beaming)
     temps = kete.flux.neatm_facet_temps(new_normals, ss_temp, obj2obs)
     facet_fluxes = [kete.flux.black_body_flux(t, wavelength) for t in temps]
     facet_fluxes = np.array(facet_fluxes) * geom.areas
