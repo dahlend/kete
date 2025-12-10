@@ -38,7 +38,7 @@ def test_subsolarpoint_temp():
     # albedo, G set to make bond_albedo == 1
     assert (
         sub_solar_temperature(
-            vec,
+            vec.r,
             geom_albedo=1 / 0.29,
             g_param=0,
             emissivity=1,

@@ -281,7 +281,7 @@ pub fn sub_solar_temperature(
     let phase_integral = 0.29 + 0.684 * g_param;
 
     let bond_albedo = geom_albedo * phase_integral;
-    let reflected = (1.0 - bond_albedo) * SOLAR_FLUX / sun_dist;
+    let reflected = (1.0 - bond_albedo) * SOLAR_FLUX / sun_dist.powi(2);
     let temp = reflected / (beaming * emissivity * STEFAN_BOLTZMANN);
     if temp <= 0.0 {
         return 0.0;
