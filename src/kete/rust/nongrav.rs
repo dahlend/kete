@@ -82,12 +82,12 @@ impl PyNonGravModel {
     /// density:
     ///     Density in kg/m^3, defaults to 1000 kg/m^3
     /// c_pr:
-    ///     Radiation pressure coefficient, defaults to 1.19 kg/m^2
+    ///     Radiation pressure coefficient, defaults to 1.19e-3 kg/m^2
     /// q_pr:
     ///     Scattering efficiency for radiation pressure, defaults to 1.0
     ///     1.0 is a good estimate for particles larger than 1um (Burns, Lamy & Soter 1979)
     #[staticmethod]
-    #[pyo3(signature=(beta=None, diameter=None, density=1000.0, c_pr=1.19, q_pr=1.0))]
+    #[pyo3(signature=(beta=None, diameter=None, density=1000.0, c_pr=1.19e-3, q_pr=1.0))]
     pub fn new_dust(
         beta: Option<f64>,
         diameter: Option<f64>,

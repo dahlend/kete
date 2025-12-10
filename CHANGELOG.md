@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to thermal and optical models.
 - Throughout the rust code, `Time` is being enforced as inputs for functions instead
   of accepting `f64` in a large number of places.
+- Updated SPHEREx SPICE kernel to include orbit through Dec 10, 2025.
 
 ### Fixed
 

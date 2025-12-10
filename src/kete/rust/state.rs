@@ -144,8 +144,8 @@ impl PyState {
 
     /// JD of the object's state in TDB scaled time.
     #[getter]
-    pub fn jd(&self) -> PyTime {
-        self.raw.epoch.into()
+    pub fn jd(&self) -> f64 {
+        self.raw.epoch.jd
     }
 
     /// Position of the object in AU with respect to the central object.
