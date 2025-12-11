@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a new numerical integrator based on Picard-Chebyshev integration. This
   integrator has only been added to the rust backend at this point, until more
   testing can be done and it be made available on the frontend.
+- Saving`SimultaneousStates` to parquet files can now optionally include a column
+  containing the TDB JD of when the state information was last updated. This allows
+  users to selectively update state vectors only when necessary.
 
 ### Changed
 
@@ -25,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Fixed epoch times in PCK Type 2 frames that were not being converted correctly.
+- Fixed bug in the non-gravitational model constructor for dust, where the default
+  value for converting from diameter to beta values was missing a 1e-3. This only
+  impacted when dust models were constructed using the diameter input.
 
 
 ## [v2.1.5]

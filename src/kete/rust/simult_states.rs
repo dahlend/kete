@@ -3,10 +3,13 @@ use kete_core::errors::Error;
 use kete_core::io::FileIO;
 use kete_core::simult_states::SimultaneousStates;
 use kete_core::spice::LOADED_SPK;
+use kete_core::time::TDB;
+use kete_core::time::Time;
 use pyo3::exceptions;
 use pyo3::prelude::*;
 use pyo3::{PyResult, pyclass, pymethods};
 
+use crate::maybe_vec::MaybeVec;
 use crate::time::PyTime;
 use crate::vector::PyVector;
 use crate::{fovs::AllowedFOV, state::PyState};
@@ -116,27 +119,65 @@ impl PySimultaneousStates {
     }
 
     /// Save states as a parquet file.
-    pub fn save_parquet(&self, filename: String) -> PyResult<()> {
+    ///
+    /// Optionally save the times when the states were last updated.
+    /// If a single value is provided, then all states are assumed to have been updated
+    /// at the same time, otherwise the number of provided times must match the number
+    /// of states.
+    #[pyo3(signature = (filename, last_updated=None))]
+    pub fn save_parquet(
+        &self,
+        filename: String,
+        last_updated: Option<MaybeVec<PyTime>>,
+    ) -> PyResult<()> {
         if self.0.fov.is_some() {
             Err(Error::IOError(
                 "Cannot save a SimultaneousStates object which has a FOV as parquet. \
-                Parquet can only support a basic table format and saving metadata such \
+                Parquet can only support a basic table format. Saving metadata such \
                 as a field of view is not feasible. Consider using the binary saving \
                 method `SimultaneousStates.save`."
                     .into(),
             ))?;
         }
-        kete_core::io::parquet::write_states_parquet(&self.0.states, &filename)?;
+        let last_updated: Option<(Vec<_>, bool)> = last_updated.map(|v| v.into());
+
+        if let Some((update, was_vec)) = &last_updated
+            && *was_vec
+            && update.len() != self.0.states.len()
+        {
+            Err(Error::ValueError(
+                "The number of updated times provided does not match the number of \
+                states."
+                    .into(),
+            ))?;
+        };
+
+        let last_updated: Option<Vec<Time<TDB>>> = last_updated.map(|(v, was_vec)| {
+            if was_vec {
+                v.into_iter().map(|t| t.into()).collect()
+            } else {
+                vec![v.first().unwrap().0; self.0.states.len()]
+            }
+        });
+        kete_core::io::parquet::write_states_parquet(&self.0.states, &filename, last_updated)?;
         Ok(())
     }
 
     /// Load states from a parquet file.
     #[staticmethod]
     pub fn load_parquet(filename: String) -> PyResult<Self> {
-        let states = kete_core::io::parquet::read_states_parquet(&filename)?;
+        let states = kete_core::io::parquet::read_states_parquet(&filename)?.0;
+
         Ok(PySimultaneousStates(Box::new(
             SimultaneousStates::new_exact(states, None)?,
         )))
+    }
+
+    /// Load the last time the states were updated as saved in a parquet file.
+    #[staticmethod]
+    pub fn load_parquet_update_times(filename: String) -> PyResult<Vec<Option<PyTime>>> {
+        let update_times = kete_core::io::parquet::read_update_times_parquet(&filename)?;
+        Ok(update_times.into_iter().map(|x| x.map(PyTime)).collect())
     }
 
     /// Length of states
