@@ -36,14 +36,31 @@ use std::fs::File;
 use crate::errors::{Error, KeteResult};
 use crate::frames::Equatorial;
 use crate::state::State;
+use crate::time::{TDB, Time};
 
 use polars::prelude::*;
 
 /// Write a collection of states to a parquet table.
 ///
+/// If ``last_updated`` is not provided, the associated column will not be saved.
+///
+/// The parquet file will contain the following columns:
+/// * desig - String designation
+/// * center - Center ID
+/// * jd - TDB Scaled JD
+/// * x, y, z - Position in Equatorial frame in units of AU from the center ID
+/// * vx, vy, vz - Velocity in Equatorial frame in units of AU/Day from the center ID
+/// * updated - Optional TDB Scaled JD time when the state was last updated, this is
+///   not required, but allows for record keeping of the last time that the file was
+///   last updated.
+///
 /// # Errors
 /// Saving is fallible due to filesystem calls.
-pub fn write_states_parquet(states: &[State<Equatorial>], filename: &str) -> KeteResult<()> {
+pub fn write_states_parquet(
+    states: &[State<Equatorial>],
+    filename: &str,
+    last_updated: Option<Vec<Time<TDB>>>,
+) -> KeteResult<()> {
     let desigs = Column::new(
         "desig".into(),
         states
@@ -83,8 +100,34 @@ pub fn write_states_parquet(states: &[State<Equatorial>], filename: &str) -> Ket
         "center".into(),
         states.iter().map(|state| state.center_id).collect_vec(),
     );
-    let mut df = DataFrame::new(vec![desigs, jd, x, y, z, vx, vy, vz, center])
-        .map_err(|_| Error::ValueError("Failed to construct dataframe".into()))?;
+
+    if let Some(updated) = &last_updated
+        && updated.len() != states.len()
+    {
+        return Err(Error::ValueError(
+            "Length of provided last_updated values does not match the number of states".into(),
+        ));
+    }
+
+    // The updated column is only saved in the file if it is provided.
+    let mut df = match last_updated {
+        None => DataFrame::new(vec![desigs, jd, x, y, z, vx, vy, vz, center]),
+        Some(updated) => {
+            // If a vec of updates is provided, we will save the updated column as well
+            if updated.len() != states.len() {
+                return Err(Error::ValueError(
+                    "Length of provided last_updated values does not match the number of states"
+                        .into(),
+                ));
+            }
+            let updated: Vec<Option<f64>> = updated.into_iter().map(|t| Some(t.jd)).collect();
+            let updated = Column::new("updated".into(), updated);
+
+            DataFrame::new(vec![desigs, jd, x, y, z, vx, vy, vz, center, updated])
+        }
+    }
+    .map_err(|_| Error::ValueError("Failed to construct dataframe".into()))?;
+
     let file = File::create(filename)?;
     let _ = ParquetWriter::new(file)
         .finish(&mut df)
@@ -94,6 +137,17 @@ pub fn write_states_parquet(states: &[State<Equatorial>], filename: &str) -> Ket
 
 /// Read a collection of states from a parquet table.
 ///
+/// The parquet table will contain the following columns:
+/// * desig - String designation
+/// * center - Center ID
+/// * jd - TDB Scaled JD
+/// * x, y, z - Position in Equatorial frame in units of AU from the center ID
+/// * vx, vy, vz - Velocity in Equatorial frame in units of AU/Day from the center ID
+/// * updated - Optional TDB Scaled JD time when the state was last updated, this is
+///   not required, but allows for record keeping of the last time that the file was
+///   last updated.
+///
+///
 /// # Errors
 /// Reading files can fail for numerous reasons, incorrectly formatted, inconsistent
 /// contents, etc.
@@ -101,7 +155,9 @@ pub fn write_states_parquet(states: &[State<Equatorial>], filename: &str) -> Ket
 /// # Panics
 /// There are a number of unwraps in this function, but it is structured such that they
 /// should not be possible to reach.
-pub fn read_states_parquet(filename: &str) -> KeteResult<Vec<State<Equatorial>>> {
+pub fn read_states_parquet(
+    filename: &str,
+) -> KeteResult<(Vec<State<Equatorial>>, Vec<Option<Time<TDB>>>)> {
     // this reads the parquet table, then creates iterators over the contents, making
     // states by going through the iterators one at a time.
     let r = File::open(filename)?;
@@ -139,7 +195,23 @@ pub fn read_states_parquet(filename: &str) -> KeteResult<Vec<State<Equatorial>>>
         })
         .collect::<KeteResult<Vec<_>>>()?;
 
-    Ok((0..dataframe.height())
+    // Fail on incorrect format, but None for missing data.
+    let updated_times = match dataframe.column("updated") {
+        Ok(column) => {
+            // if data is found it must be None or a number, no exceptions
+            let col = column.f64().map_err(|_| {
+                Error::ValueError("update column information is not all floats.".into())
+            })?;
+
+            col.iter()
+                .map(|maybe_jd| maybe_jd.map(Time::<TDB>::new))
+                .collect()
+        }
+        // if column not found, then None
+        Err(_) => vec![None; dataframe.height()],
+    };
+
+    let states = (0..dataframe.height())
         .map(|_| {
             let desig = desig_iter
                 .next()
@@ -169,5 +241,45 @@ pub fn read_states_parquet(filename: &str) -> KeteResult<Vec<State<Equatorial>>>
                 center_id,
             )
         })
-        .collect())
+        .collect();
+
+    Ok((states, updated_times))
+}
+
+/// Read only the updated time column if present in the file.
+///
+/// # Errors
+/// Reading files can fail for numerous reasons, incorrectly formatted, inconsistent
+/// contents, etc.
+///
+pub fn read_update_times_parquet(filename: &str) -> KeteResult<Vec<Option<Time<TDB>>>> {
+    let r = File::open(filename)?;
+    let reader = ParquetReader::new(r);
+
+    let mut dataframe = reader
+        .with_columns(Some(vec!["updated".into()]))
+        .finish()
+        .map_err(|_| {
+            Error::IOError("Failed to read contents of file as a parquet table.".into())
+        })?;
+
+    let dataframe = dataframe.as_single_chunk_par();
+
+    // Fail on incorrect format, but None for missing data.
+    let updated_times = match dataframe.column("updated") {
+        Ok(column) => {
+            // if data is found it must be None or a number, no exceptions
+            let col = column.f64().map_err(|_| {
+                Error::ValueError("update column information is not all floats.".into())
+            })?;
+
+            col.iter()
+                .map(|maybe_jd| maybe_jd.map(Time::<TDB>::new))
+                .collect()
+        }
+        // if column not found, then None
+        Err(_) => vec![None; dataframe.height()],
+    };
+
+    Ok(updated_times)
 }
