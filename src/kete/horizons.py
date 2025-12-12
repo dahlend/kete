@@ -524,7 +524,7 @@ def fetch_known_orbit_data(update_cache=False):
             (
                 "https://ssd-api.jpl.nasa.gov/sbdb_query.api?fields="
                 "pdes,name,spkid,orbit_id,rms,H,G,diameter,spec_T,spec_B,epoch,"
-                "e,i,q,w,tp,om,A1,A2,A3,DT,M1,M2,K1,K2,PC,rot_per,H_sigma"
+                "e,i,q,w,tp,om,A1,A2,A3,DT,M1,M2,K1,K2,PC,rot_per,H_sigma,soln_date"
                 "&full-prec=1&sb-xfrag=1"
             ),
             timeout=240,
@@ -553,7 +553,7 @@ def fetch_known_orbit_data(update_cache=False):
     table = pd.DataFrame.from_records(file_contents["data"], columns=columns)
     # dont coerce numerics for these columns
     others = table.columns.difference(
-        ["desig", "name", "spkid", "orbit_id", "spec_T", "spec_B"]
+        ["desig", "name", "spkid", "orbit_id", "spec_T", "spec_B", "soln_date"]
     )
     table[others] = table[others].apply(pd.to_numeric, errors="coerce")
     return table
