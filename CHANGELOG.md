@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Saving`SimultaneousStates` to parquet files can now optionally include a column
   containing the TDB JD of when the state information was last updated. This allows
   users to selectively update state vectors only when necessary.
+- Added multi-core propagation support to rust backend.
 
 ### Changed
 

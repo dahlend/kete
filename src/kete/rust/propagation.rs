@@ -125,7 +125,7 @@ pub fn propagation_n_body_spk_py(
         .into_iter()
         .zip(non_gravs.into_iter())
         .collect_vec()
-        .chunks(1000)
+        .chunks(500)
     {
         py.check_signals()?;
 

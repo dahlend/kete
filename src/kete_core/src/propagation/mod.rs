@@ -35,11 +35,13 @@
 use crate::constants::GravParams;
 use crate::errors::Error;
 use crate::frames::Equatorial;
-use crate::prelude::{Desig, KeteResult};
+use crate::prelude::{Desig, KeteResult, SimultaneousStates};
 use crate::spice::LOADED_SPK;
 use crate::state::State;
 use crate::time::{TDB, Time};
+use itertools::Itertools;
 use nalgebra::{DVector, SMatrix, SVector, Vector3};
+use rayon::prelude::*;
 
 mod acceleration;
 mod kepler;
@@ -108,6 +110,84 @@ pub fn propagate_n_body_spk(
     let mut new_state = State::new(state.desig.clone(), jd_final, pos.into(), vel.into(), 0);
     spk.try_change_center(&mut new_state, center)?;
     Ok(new_state)
+}
+
+/// Propagate the provided [`Vec<State<Equatorial>>`] using N body mechanics to the
+/// specified times, no approximations are made, this can be very CPU intensive.
+///
+/// This uses rayon to use as many cores as are available.
+///
+/// This does not compute light delay, however it does include corrections for general
+/// relativity due to the Sun.
+///
+/// # Parameters
+///
+/// states:
+///     The initial states, this is a list of multiple State objects.
+/// jd:
+///     A JD to propagate the initial states to.
+/// ``include_asteroids``:
+///     If this is true, the computation will include the largest 5 asteroids.
+///     The asteroids are: Ceres, Pallas, Interamnia, Hygiea, and Vesta.
+/// ``non_gravs``:
+///     A list of non-gravitational terms for each object. If provided, then every
+///     object must have an associated :class:`~NonGravModel` or `None`.
+/// ``suppress_errors``:
+///     If True, errors during propagation will return NaN for the relevant state
+///     vectors, but propagation will continue.
+///
+/// # Errors
+///
+/// Integration may fail for a large number of reasons. This function accepts a
+/// ``suppress_errors`` parameter which may be used to continue propagation as long
+/// as possible for the most objects as possible.
+pub fn propagation_n_body_spk_par(
+    states: Vec<State<Equatorial>>,
+    jd: Time<TDB>,
+    include_asteroids: bool,
+    non_gravs: Option<Vec<Option<NonGravModel>>>,
+    suppress_errors: bool,
+) -> KeteResult<SimultaneousStates> {
+    let non_gravs = non_gravs.unwrap_or(vec![None; states.len()]);
+
+    if states.len() != non_gravs.len() {
+        Err(Error::ValueError(
+            "non_gravs must be the same length as states.".into(),
+        ))?;
+    }
+
+    let res: KeteResult<Vec<_>> = states
+        .into_iter()
+        .zip(non_gravs)
+        .collect_vec()
+        .into_par_iter()
+        .with_min_len(10)
+        .map(|(state, model)| {
+            let center = state.center_id;
+            let desig = state.desig.clone();
+
+            // if the input has a NAN in it, skip the propagation entirely and return
+            // the nans.
+            if !state.is_finite() {
+                if !suppress_errors {
+                    Err(Error::ValueError("Input state contains NaNs.".into()))?;
+                }
+                return Ok(State::<Equatorial>::new_nan(desig, jd, center));
+            }
+            match propagate_n_body_spk(state, jd, include_asteroids, model) {
+                Ok(state) => Ok(state),
+                Err(er) => {
+                    if suppress_errors {
+                        Ok(State::<Equatorial>::new_nan(desig, jd, center))
+                    } else {
+                        Err(er)?
+                    }
+                }
+            }
+        })
+        .collect();
+
+    SimultaneousStates::new_exact(res?, None)
 }
 
 /// Initialization function for the picard integrator which initializes the state
