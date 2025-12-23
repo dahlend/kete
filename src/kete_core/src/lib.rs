@@ -104,8 +104,11 @@ pub mod prelude {
         lambertian_flux, neatm_facet_temperature,
     };
     pub use crate::frames::{Ecliptic, Equatorial, FK4, Galactic, NonInertialFrame};
-    pub use crate::propagation::{propagate_n_body_spk, propagate_two_body};
+    pub use crate::propagation::{
+        NonGravModel, propagate_n_body_spk, propagate_two_body, propagation_n_body_spk_par,
+    };
     pub use crate::simult_states::SimultaneousStates;
     pub use crate::spice::{LOADED_PCK, LOADED_SPK};
     pub use crate::state::State;
+    pub use crate::time::{TDB, Time, UTC};
 }
