@@ -2,7 +2,7 @@
 //! These field of views are made up of single contiguous patches of sky, typically single image sensors.
 // BSD 3-Clause License
 //
-// Copyright (c) 2025, Dar Dahlen
+// Copyright (c) 2026, Dar Dahlen
 // Copyright (c) 2025, California Institute of Technology
 //
 // Redistribution and use in source and binary forms, with or without

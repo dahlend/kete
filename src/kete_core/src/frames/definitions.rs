@@ -12,7 +12,7 @@
 
 // BSD 3-Clause License
 //
-// Copyright (c) 2025, Dar Dahlen
+// Copyright (c) 2026, Dar Dahlen
 // Copyright (c) 2025, California Institute of Technology
 //
 // Redistribution and use in source and binary forms, with or without
@@ -177,6 +177,13 @@ impl NonInertialFrame {
     }
 
     /// Create non-inertial from from rotations
+    ///
+    /// # Arguments
+    /// * `time` - Time of the frame in TDB.
+    /// * `rotation` - Rotation matrix from this frame to the reference frame.
+    /// * `rotation_rate` - Rotation rate of this frame, if not defined, this is assumed to be zero.
+    /// * `reference_frame_id` - The frame that this frame is defined relative to.
+    /// * `frame_id` - The frame ID of this frame.
     pub fn from_rotations(
         time: Time<TDB>,
         rotation: Rotation3<f64>,
