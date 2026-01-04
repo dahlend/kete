@@ -3,7 +3,7 @@
 //! implementation.
 // BSD 3-Clause License
 //
-// Copyright (c) 2025, Dar Dahlen
+// Copyright (c) 2026, Dar Dahlen
 // Copyright (c) 2025, California Institute of Technology
 //
 // Redistribution and use in source and binary forms, with or without

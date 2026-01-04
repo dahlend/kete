@@ -1,7 +1,7 @@
 //! # Spherex Fov definitions.
 // BSD 3-Clause License
 //
-// Copyright (c) 2025, Dar Dahlen
+// Copyright (c) 2026, Dar Dahlen
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:

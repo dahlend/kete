@@ -1,7 +1,7 @@
 //! Conversion tools to and from WGS84 coordinate system
 // BSD 3-Clause License
 //
-// Copyright (c) 2025, Dar Dahlen
+// Copyright (c) 2026, Dar Dahlen
 // Copyright (c) 2025, California Institute of Technology
 //
 // Redistribution and use in source and binary forms, with or without
@@ -73,6 +73,9 @@ pub fn prime_vert_radius(geodetic_lat: f64) -> f64 {
 }
 
 /// Compute earths geocentric radius at the specified latitude in km.
+///
+/// # Arguments
+/// * `geodetic_lat` - Geodetic latitude in radians.
 #[must_use]
 pub fn geocentric_radius(geodetic_lat: f64) -> f64 {
     let (sin, cos) = geodetic_lat.sin_cos();
@@ -82,7 +85,12 @@ pub fn geocentric_radius(geodetic_lat: f64) -> f64 {
         .sqrt()
 }
 
-/// Compute geodetic lat/lon/height in radians/km from ECEF position in km.
+/// Compute geodetic lat/lon/height in radians/km from ECEF position.
+///
+/// # Arguments
+/// * `x` - ECEF X position in km.
+/// * `y` - ECEF Y position in km.
+/// * `z` - ECEF Z position in km.
 #[must_use]
 pub fn ecef_to_geodetic_lat_lon(x: f64, y: f64, z: f64) -> (f64, f64, f64) {
     let longitude = f64::atan2(y, x);
@@ -103,14 +111,23 @@ pub fn ecef_to_geodetic_lat_lon(x: f64, y: f64, z: f64) -> (f64, f64, f64) {
     (geodetic_lat, longitude, height)
 }
 
-/// Compute geocentric latitude from geodetic lat/height in radians/km.
+/// Compute geocentric latitude from geodetic latitude.
+///
+/// # Arguments
+/// * `geodetic_lat` - Geodetic latitude in radians.
+/// * `h` - Height above sea level in km.
 #[must_use]
-pub fn geodetic_lat_to_geocentric(geodetic_lat: f64, h: f64) -> f64 {
+pub fn geodetic_lat_to_geocentric(geodetic_lat: f64, height: f64) -> f64 {
     let n = prime_vert_radius(geodetic_lat);
-    ((1.0 - EARTH_E2 * n / (n + h)) * geodetic_lat.tan()).atan()
+    ((1.0 - EARTH_E2 * n / (n + height)) * geodetic_lat.tan()).atan()
 }
 
-/// Compute the ECEF X/Y/Z position in km from geodetic lat/lon/height in radians/km.
+/// Compute the ECEF X/Y/Z position in km from geodetic position.
+///
+/// # Arguments
+/// * `geodetic_lat` - Geodetic latitude in radians.
+/// * `geodetic_lon` - Geodetic longitude in radians.
+/// * `height` - Height above sea level in km.
 #[must_use]
 pub fn geodetic_lat_lon_to_ecef(geodetic_lat: f64, geodetic_lon: f64, height: f64) -> [f64; 3] {
     let n = prime_vert_radius(geodetic_lat);
@@ -128,6 +145,9 @@ pub fn geodetic_lat_lon_to_ecef(geodetic_lat: f64, geodetic_lon: f64, height: f6
 ///
 /// The equation here is from the 2010 Astronomical Almanac.
 ///
+/// # Arguments
+/// * `jd` - Time in TDB scaled Julian Days.
+///
 #[must_use]
 pub fn earth_obliquity(jd: Time<TDB>) -> f64 {
     // centuries from j2000
@@ -143,6 +163,9 @@ pub fn earth_obliquity(jd: Time<TDB>) -> f64 {
 ///
 /// The ERA is the angle between the Greenwich meridian and the vernal equinox,
 /// the Equatorial J2000 X-axis.
+///
+/// # Arguments
+/// * `time` - Time in UTC scaled Julian Days.
 ///
 #[must_use]
 pub fn earth_rotation_angle(time: Time<UTC>) -> f64 {
@@ -181,7 +204,6 @@ pub fn earth_rotation_angle(time: Time<UTC>) -> f64 {
 /// the 1976 model.
 ///
 /// # Arguments
-///
 /// * `time` - Time in TDB scaled Julian Days.
 ///
 #[inline(always)]
@@ -224,6 +246,13 @@ pub fn earth_precession_rotation(time: Time<TDB>) -> NonInertialFrame {
 /// This will be centered at the Earth, conversion to Sun centered
 /// requires a computation of Earths position.
 ///
+/// # Arguments
+/// * `time` - Time in TDB scaled Julian Days.
+/// * `geodetic_lat` - Geodetic latitude in radians.
+/// * `geodetic_lon` - Geodetic longitude in radians.
+/// * `height` - Height above sea level in km.
+/// * `desig` - Designation for the resulting state.
+///
 /// # Errors
 /// This can fail if the equatorial frame conversion fails.
 pub fn approx_earth_pos_to_ecliptic(
@@ -250,9 +279,9 @@ pub fn approx_earth_pos_to_ecliptic(
 /// This is approximate, but should be good to within a few minutes.
 ///
 /// # Arguments
-///    * `geodetic_lat` - Geodetic latitude in radians.
-///    * `geodetic_lon` - Geodetic longitude in radians.
-///    * `time` - Time in UTC scaled Julian Days.
+/// * `geodetic_lat` - Geodetic latitude in radians.
+/// * `geodetic_lon` - Geodetic longitude in radians.
+/// * `time` - Time in UTC scaled Julian Days.
 pub fn next_sunset_sunrise(
     geodetic_lat: f64,
     geodetic_lon: f64,
@@ -287,6 +316,9 @@ pub fn next_sunset_sunrise(
 /// Approximate the Sun's declination angle at solar noon at the specified date.
 ///
 /// Returns the declination in radians.
+///
+/// # Arguments
+/// * `time` - Time in UTC scaled Julian Days.
 #[must_use]
 pub fn approx_sun_dec(time: Time<UTC>) -> f64 {
     let obliquity = earth_obliquity(time.tdb());
@@ -314,6 +346,8 @@ pub fn approx_sun_dec(time: Time<UTC>) -> f64 {
 /// This is largely based off the approximation used by the USNO:
 ///     <https://aa.usno.navy.mil/faq/sun_approx>
 ///
+/// # Arguments
+/// * `time` - Time in UTC scaled Julian Days.
 #[must_use]
 pub fn equation_of_time(time: Time<UTC>) -> f64 {
     let time_since_j2000 = (time - Time::j2000()).elapsed;
@@ -333,6 +367,9 @@ pub fn equation_of_time(time: Time<UTC>) -> f64 {
 
 /// Approximate the next local solar noon time for a given geodetic longitude.
 ///
+/// # Arguments
+/// * `time` - Time in UTC scaled Julian Days.
+/// * `geodetic_lon` - Geodetic longitude in radians.
 pub fn approx_solar_noon(time: Time<UTC>, geodetic_lon: f64) -> Time<UTC> {
     // compute the next clock noon after the given time
     let noon = {
