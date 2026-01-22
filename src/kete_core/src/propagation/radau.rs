@@ -222,7 +222,7 @@ where
                     step_failures = 0;
                 }
                 Err(error) => match error {
-                    Error::Bounds(_) | Error::Impact(_, _) => Err(error)?,
+                    Error::Bounds(_) | Error::Impact(_, _) | Error::OutOfMemory => Err(error)?,
                     Error::Convergence(_)
                     | Error::ValueError(_)
                     | Error::UnknownFrame(_)

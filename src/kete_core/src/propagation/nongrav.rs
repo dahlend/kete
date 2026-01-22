@@ -40,21 +40,25 @@ use super::analytic_2_body;
 /// the solar system.
 #[derive(Debug, Clone)]
 pub enum NonGravModel {
-    /// JPL's non-gravitational forces are modeled as defined on page 139 of the Comets II
-    /// textbook.
+    /// JPL's non-gravitational forces are modeled as defined on page 139 of the
+    /// Comets II textbook.
     ///
     /// This model adds 3 "A" terms to the acceleration which the object feels. These
-    /// A terms represent additional radial, tangential, and normal forces on the object.
+    /// A terms represent additional radial, tangential, and normal forces on the
+    /// object.
     ///
+    /// The additional acceleration is:
     /// `accel_additional = A_1 * g(r) * r_vec + A_2 * g(r) * t_vec + A_3 * g(r) * n_vec`
-    /// Where `r_vec`, `t_vec`, `n_vec` are the radial, tangential, and normal unit vectors for
-    /// the object.
     ///
-    /// The g(r) function is defined by the equation:
-    /// g(r) = alpha (r / r0) ^ -m * (1 + (r / r0) ^ n) ^ -k
+    /// where `r_vec`, `t_vec`, and `n_vec` are the radial, tangential, and normal unit
+    /// vectors.
     ///
-    /// When alpha=1.0, n=0.0, k=0.0, r0=1.0, and m=2.0, this is equivalent to a 1/r^2
-    /// correction.
+    /// The `g(r)` function is defined as:
+    /// `g(r) = alpha * (r / r_0)^(-m) * (1 + (r / r_0)^n)^(-k)`
+    ///
+    /// When `alpha = 1.0`, `n = 0.0`, `k = 0.0`, `r_0 = 1.0`, and `m = 2.0`, this
+    /// reduces to a `1/r^2` dependence.
+    ///
     JplComet {
         /// Constant for the radial non-gravitational force.
         a1: f64,

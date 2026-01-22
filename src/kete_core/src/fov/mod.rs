@@ -55,6 +55,7 @@ use crate::{frames::Vector, prelude::*};
 /// Allowed FOV objects, either contiguous or joint.
 /// Many of these exist solely to carry additional metadata.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[non_exhaustive]
 pub enum FOV {
     /// Omni-Directional FOV.
     OmniDirectional(OmniDirectional),

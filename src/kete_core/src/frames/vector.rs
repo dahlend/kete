@@ -129,7 +129,7 @@ impl<T: InertialFrame> Vector<T> {
         self.raw.iter().map(|a| a.powi(2)).sum::<f64>().sqrt()
     }
 
-    /// The angle betweeen two vectors in radians.
+    /// The angle between two vectors in radians.
     #[inline(always)]
     #[must_use]
     pub fn angle(&self, other: &Self) -> f64 {

@@ -149,10 +149,13 @@ pub struct AccelSPKMeta<'a> {
 ///
 /// # Arguments
 ///
-/// * `time` - Time of the evaluation in JD in TDB scaled time multiplied by `SUN_GMS_SQRT`.
+/// * `time` - Time of the evaluation in JD in TDB scaled time multiplied by
+///   `SUN_GMS_SQRT`.
 /// * `pos` - A vector which defines the position with respect to the Sun in AU.
-/// * `vel` - A vector which defines the velocity with respect to the Sun in AU/Day multiplied by `SUN_GMS_SQRT`.
-/// * `meta` - Metadata object [`AccelSPKMeta`] which records values at each integration step.
+/// * `vel` - A vector which defines the velocity with respect to the Sun in AU/Day
+///   multiplied by `SUN_GMS_SQRT`.
+/// * `meta` - Metadata object [`AccelSPKMeta`] which records values at each integration
+///   step.
 ///
 /// # Errors
 /// This is actually infallible, but must have this signature for the integrator.

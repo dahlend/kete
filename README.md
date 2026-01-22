@@ -134,6 +134,26 @@ environment variable `KETE_CACHE_DIR`. The default directory is `~/.kete/`.
 export KETE_CACHE_DIR="~/.kete/"
 ```
 
+### Use with Containers - Docker/Podman
+
+Be aware that kete downloads several large SPICE kernel files on first use, which are
+saved to a cache directory.
+
+**Important for Docker/Podman:**
+- If you trigger the download **during the Docker build** (e.g.,
+  `RUN python -c "import kete"`), the files will be baked into the image.
+- If you skip this step, the files will download on first container run but
+  **will be lost when the container stops** unless you use a volume mount for the cache
+  directory.
+
+**Recommended Dockerfile approach:**
+```dockerfile
+RUN pip install kete && \
+    python -c "import kete"  # Triggers kernel downloads during build
+```
+
+This ensures the SPICE kernels are part of your image and don't need re-downloading.
+
 # Developer information:
 
 Information below is aimed for developers, and is not necessary for end users.

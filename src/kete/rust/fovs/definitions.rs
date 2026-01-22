@@ -346,6 +346,7 @@ impl From<fov::FOV> for AllowedFOV {
             fov::FOV::PtfField(fov) => AllowedFOV::PTFField(PyPtfField(fov)),
             fov::FOV::SpherexCmos(fov) => AllowedFOV::SPHEREx(PySpherexCmos(fov)),
             fov::FOV::SpherexField(fov) => AllowedFOV::SPHERExField(PySpherexField(fov)),
+            _ => panic!("Unsupported FOV type"),
         }
     }
 }
