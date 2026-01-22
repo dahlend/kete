@@ -665,7 +665,7 @@ impl Desig {
                     ))
                 } else {
                     // its an asteroid like designation
-                    let packed = Self::Prov(unpacked.to_string()).try_pack()?;
+                    let packed = Self::Prov(unpacked.clone()).try_pack()?;
                     Ok(format!(
                         "{}{}",
                         orbit_type.map_or(String::new(), |o| o.to_string()),

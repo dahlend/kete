@@ -38,7 +38,7 @@ use crate::{errors::Error, prelude::KeteResult};
 ///
 /// This accepts a three functions, the first being a single input function for which
 /// the root is desired. The second function being the derivative of the first with
-/// respect to the input variable. The third is the third derivative.
+/// respect to the input variable. The third is the second derivative.
 ///
 /// ```
 ///     use kete_core::fitting::halley;
@@ -49,6 +49,13 @@ use crate::{errors::Error, prelude::KeteResult};
 ///     assert!((root - 1.0).abs() < 1e-12);
 /// ```
 ///
+/// # Arguments
+/// * `func` - Function for which the root is desired.
+/// * `der` - Derivative of the function.
+/// * `sec_der` - Second derivative of the function.
+/// * `start` - Initial guess for the root.
+/// * `atol` - Absolute tolerance for convergence.
+///
 /// # Errors
 ///
 /// [`Error::Convergence`] may be returned in the following cases:
@@ -56,18 +63,13 @@ use crate::{errors::Error, prelude::KeteResult};
 ///     - Derivative is zero but not converged.
 ///     - Failed to converge within 100 iterations.
 #[inline(always)]
-pub fn halley<Func, Der, SecDer>(
-    func: Func,
-    der: Der,
-    sec_der: SecDer,
+pub fn halley(
+    func: impl Fn(f64) -> f64,
+    der: impl Fn(f64) -> f64,
+    sec_der: impl Fn(f64) -> f64,
     start: f64,
     atol: f64,
-) -> KeteResult<f64>
-where
-    Func: Fn(f64) -> f64,
-    Der: Fn(f64) -> f64,
-    SecDer: Fn(f64) -> f64,
-{
+) -> KeteResult<f64> {
     let mut x = start;
 
     // if the starting position has derivative of 0, nudge it a bit.

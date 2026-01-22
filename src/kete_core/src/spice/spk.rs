@@ -486,7 +486,7 @@ impl SpkCollection {
             "Multiple NAIF IDs found for name '{}':\n{}",
             name,
             ids.iter()
-                .map(|id| id.name.to_string())
+                .map(|id| id.name.clone())
                 .collect::<Vec<String>>()
                 .join(",\n")
         )))

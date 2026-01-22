@@ -63,6 +63,9 @@ pub enum Error {
 
     /// Failed to acquire lock on memory.
     LockFailed,
+
+    /// Out of memory error.
+    OutOfMemory,
 }
 
 impl error::Error for Error {}
@@ -82,6 +85,9 @@ impl fmt::Display for Error {
             }
             Self::LockFailed => {
                 write!(f, "Failed to acquire lock on memory.")
+            }
+            Self::OutOfMemory => {
+                write!(f, "The system ran out of memory.")
             }
         }
     }
@@ -112,6 +118,9 @@ impl From<Error> for PyErr {
                 let t = t.jd;
                 format!("Propagation detected an impact with {s} at time {t}")
             }),
+            Error::OutOfMemory => {
+                Self::new::<exceptions::PyMemoryError, _>("The system ran out of memory.")
+            }
         }
     }
 }
