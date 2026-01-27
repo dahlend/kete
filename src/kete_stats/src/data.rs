@@ -95,6 +95,18 @@ where
         Self(data)
     }
 
+    /// Compute the minimum value of the data.
+    #[must_use]
+    pub fn min(&self) -> T {
+        self.0.iter().fold(T::infinity(), |a, &b| a.min(b))
+    }
+
+    /// Compute the maximum value of the data.
+    #[must_use]
+    pub fn max(&self) -> T {
+        self.0.iter().fold(T::neg_infinity(), |a, &b| a.max(b))
+    }
+
     /// Compute the mean value of the data.
     ///
     /// If you are using the std as well, consider using [`Data::mean_std`] instead.
@@ -114,6 +126,15 @@ where
     #[must_use]
     pub fn std(&self) -> T {
         self.mean_std().1
+    }
+
+    /// Compute the median value of the data.
+    ///
+    /// This mutates the internal data order but is O(n) average case.
+    #[must_use]
+    pub fn median(&mut self) -> T {
+        let half = T::one() / (T::one() + T::one());
+        self.quantile(half)
     }
 
     /// Compute the mean and standard deviation of the data.
@@ -188,15 +209,6 @@ where
         }
     }
 
-    /// Compute the median value of the data using quickselect.
-    ///
-    /// This mutates the internal data order but is O(n) average case.
-    #[must_use]
-    pub fn median(&mut self) -> T {
-        let half = T::one() / (T::one() + T::one());
-        self.quantile(half)
-    }
-
     /// Compute the MAD (Median Absolute Deviation) value of the data.
     ///
     /// This mutates the internal data order but is O(n) average case.
@@ -223,6 +235,23 @@ where
             let upper = quickselect(&mut abs_deviation_from_med[half - 1..], 1);
             (lower + upper) / (T::one() + T::one())
         }
+    }
+
+    /// Compute the standard deviation estimate from the MAD value.
+    ///
+    /// This is not the std, or MAD, but an estimate of the std based on the MAD
+    /// assuming that the data is normally distributed. This is more robust to outliers
+    /// than the standard deviation.
+    #[must_use]
+    #[allow(
+        clippy::missing_panics_doc,
+        reason = "By construction this cannot panic."
+    )]
+    pub fn std_from_mad(&mut self) -> T {
+        let mad = self.mad();
+        // Taken from wikipedia
+        let c = T::from(1.4826).unwrap();
+        mad * c
     }
 
     /// Return a sorted version of this dataset.
@@ -349,12 +378,109 @@ where
             T::epsilon() * T::from(1000.0).unwrap(),
         )
     }
+
+    /// Length of the dataset.
+    #[must_use]
+    #[allow(clippy::len_without_is_empty, reason = "Cannot have empty dataset.")]
+    pub fn len(&self) -> usize {
+        self.values.0.len()
+    }
 }
 
 impl<T> SortedData<T>
 where
     T: num_traits::Float + num_traits::float::TotalOrder + num_traits::NumAssignOps + Debug,
 {
+    /// Compute the minimum value of the data.
+    #[must_use]
+    pub fn min(&self) -> T {
+        self.0.0.iter().fold(T::infinity(), |a, &b| a.min(b))
+    }
+
+    /// Compute the maximum value of the data.
+    #[must_use]
+    pub fn max(&self) -> T {
+        self.0.0.iter().fold(T::neg_infinity(), |a, &b| a.max(b))
+    }
+
+    /// Compute the median value of the sorted data.
+    ///
+    /// This is O(1) since the data is already sorted.
+    #[must_use]
+    pub fn median(&self) -> T {
+        let half = T::one() / (T::one() + T::one());
+        self.quantile(half)
+    }
+
+    /// Compute the mean value of the sorted data.
+    #[must_use]
+    pub fn mean(&self) -> T {
+        self.0.mean()
+    }
+
+    /// Compute the standard deviation of the sorted data.
+    #[must_use]
+    pub fn std(&self) -> T {
+        self.0.std()
+    }
+
+    /// Compute the mean and standard deviation of the sorted data.
+    #[must_use]
+    pub fn mean_std(&self) -> (T, T) {
+        self.0.mean_std()
+    }
+
+    /// Length of the dataset.
+    #[must_use]
+    #[allow(clippy::len_without_is_empty, reason = "Cannot have empty dataset.")]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Compute the standard deviation estimate from the MAD value.
+    ///
+    /// This is not the std, or MAD, but an estimate of the std based on the MAD
+    /// assuming that the data is normally distributed. This is more robust to outliers
+    /// than the standard deviation.
+    #[must_use]
+    #[allow(
+        clippy::missing_panics_doc,
+        reason = "By construction this cannot panic."
+    )]
+    pub fn std_from_mad(&self) -> T {
+        let mad = self.mad();
+        // Taken from wikipedia
+        let c = T::from(1.4826).unwrap();
+        mad * c
+    }
+
+    /// Compute the MAD value of the data.
+    ///
+    /// <https://en.wikipedia.org/wiki/Median_absolute_deviation>
+    ///
+    #[must_use]
+    #[allow(
+        clippy::missing_panics_doc,
+        reason = "By construction this cannot panic."
+    )]
+    pub fn mad(&self) -> T {
+        let median = self.median();
+        let mut abs_deviation_from_med: Vec<T> = self
+            .as_slice()
+            .iter()
+            .map(|d| (*d - median).abs())
+            .collect();
+        let n = abs_deviation_from_med.len();
+        let half = n / 2;
+        if n % 2 == 1 {
+            quickselect(&mut abs_deviation_from_med, half)
+        } else {
+            let lower = quickselect(&mut abs_deviation_from_med, half - 1);
+            let upper = quickselect(&mut abs_deviation_from_med[half - 1..], 1);
+            (lower + upper) / (T::one() + T::one())
+        }
+    }
+
     /// Compute the KS Test two sample statistic.
     ///
     /// <https://en.wikipedia.org/wiki/Kolmogorov%E2%80%93Smirnov_test>
@@ -460,62 +586,13 @@ where
             }
         }
     }
-
-    /// Compute the median value of the sorted data.
-    ///
-    /// This is O(1) since the data is already sorted.
-    #[must_use]
-    pub fn median(&self) -> T {
-        let half = T::one() / (T::one() + T::one());
-        self.quantile(half)
-    }
-
-    /// Compute the MAD value of the data.
-    ///
-    /// <https://en.wikipedia.org/wiki/Median_absolute_deviation>
-    ///
-    #[must_use]
-    #[allow(
-        clippy::missing_panics_doc,
-        reason = "By construction this cannot panic."
-    )]
-    pub fn mad(&self) -> T {
-        let median = self.median();
-        let mut abs_deviation_from_med: Vec<T> = self
-            .as_slice()
-            .iter()
-            .map(|d| (*d - median).abs())
-            .collect();
-        let n = abs_deviation_from_med.len();
-        let half = n / 2;
-        if n % 2 == 1 {
-            quickselect(&mut abs_deviation_from_med, half)
-        } else {
-            let lower = quickselect(&mut abs_deviation_from_med, half - 1);
-            let upper = quickselect(&mut abs_deviation_from_med[half - 1..], 1);
-            (lower + upper) / (T::one() + T::one())
-        }
-    }
-
-    /// Compute the mean value of the sorted data.
-    #[must_use]
-    pub fn mean(&self) -> T {
-        self.0.mean()
-    }
-
-    /// Compute the standard deviation of the sorted data.
-    #[must_use]
-    pub fn std(&self) -> T {
-        self.0.std()
-    }
-
-    /// Compute the mean and standard deviation of the sorted data.
-    #[must_use]
-    pub fn mean_std(&self) -> (T, T) {
-        self.0.mean_std()
-    }
 }
 
+/// Quickselect algorithm to find the k-th smallest element in an array.
+///
+/// This is an in-place algorithm with average O(n) time complexity.
+/// If the data is allowed to be mutable, than this is more efficient than sorting the
+/// entire array.
 fn quickselect<T>(arr: &mut [T], k: usize) -> T
 where
     T: Copy + PartialOrd,
