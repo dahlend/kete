@@ -2,7 +2,7 @@
 //! Fitting tools, including root finding.
 // BSD 3-Clause License
 //
-// Copyright (c) 2025, California Institute of Technology
+// Copyright (c) 2026, Dar Dahlen
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:
@@ -31,8 +31,25 @@
 
 mod halley;
 mod newton;
-mod reduced_chi2;
 
 pub use self::halley::halley;
 pub use self::newton::newton_raphson;
-pub use self::reduced_chi2::{fit_reduced_chi2, reduced_chi2, reduced_chi2_der};
+
+/// Error type for fitting operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ConvergenceError {
+    /// Maximum number of iterations reached without convergence.
+    #[error("Maximum number of iterations reached without convergence")]
+    Iterations,
+
+    /// Non-finite value encountered during evaluation.
+    #[error("Non-finite value encountered during evaluation")]
+    NonFinite,
+
+    /// Zero derivative encountered during evaluation.
+    #[error("Zero derivative encountered during evaluation")]
+    ZeroDerivative,
+}
+
+/// Result type for fitting operations.
+pub type FittingResult<T> = Result<T, ConvergenceError>;

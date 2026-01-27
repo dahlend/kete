@@ -317,13 +317,14 @@ impl Sclk {
 
         let (exp_partition, partition_count) = self.partition_tick_count(tick)?;
 
-        if partition.is_some() && Some(exp_partition) != partition {
+        if let Some(partition) = partition
+            && exp_partition != partition
+        {
             return Err(Error::ValueError(format!(
-                "Partition mismatch: expected {}, found {}",
-                partition.unwrap(),
-                exp_partition
+                "Partition mismatch: expected {exp_partition}, found {partition}",
             )));
         }
+
         tick += partition_count;
         Ok((exp_partition, tick))
     }

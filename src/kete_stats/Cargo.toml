@@ -1,0 +1,21 @@
+[package]
+name = "kete_stats"
+readme = "README.md"
+keywords = ["physics", "simulation", "astronomy", "asteroid", "comet"]
+categories = ["Aerospace", "Science", "Simulation"]
+description = "Kete - Simulator of telescope surveys of the Solar System."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "kete_stats"
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = "*"
+num-traits = "*"

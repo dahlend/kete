@@ -12,8 +12,8 @@ license.workspace = true
 repository.workspace = true
 
 [workspace]
-members = ["src/kete_core"]
-default-members = ["src/kete_core"]
+members = ["src/kete_core", "src/kete_stats"]
+default-members = ["src/kete_core", "src/kete_stats"]
 
 [workspace.package]
 version = "2.1.5"
@@ -25,6 +25,7 @@ repository = "https://github.com/dahlend/kete"
 
 [dependencies]
 kete_core = { version = "*", path = "src/kete_core", features=["pyo3", "polars"]}
+kete_stats = {version = "*", path = "src/kete_stats"}
 pyo3 = { version =  "^0.25.0", features = ["extension-module", "abi3-py39"] }
 serde = { version = "^1.0.203", features = ["derive"] }
 nalgebra = {version = "^0.33.0", features = ["rayon"]}
