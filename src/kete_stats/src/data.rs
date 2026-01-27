@@ -87,7 +87,7 @@ impl<T> Data<T>
 where
     T: num_traits::Float + num_traits::float::TotalOrder + num_traits::NumAssignOps + Debug,
 {
-    /// Create a new [`ValidData`] without checking the data.
+    /// Create a new [`Data`] without checking the data.
     ///
     /// Data cannot contain non-finite values.
     #[must_use]
@@ -97,7 +97,7 @@ where
 
     /// Compute the mean value of the data.
     ///
-    /// If you are using the std as well, consider using [`ValidData::mean_std`] instead.
+    /// If you are using the std as well, consider using [`Data::mean_std`] instead.
     #[must_use]
     pub fn mean(&self) -> T {
         let n: T = unsafe { T::from(self.len()).unwrap_unchecked() };
@@ -110,7 +110,7 @@ where
 
     /// Compute the standard deviation of the data.
     ///
-    /// If you are using the mean as well, consider using [`ValidData::mean_std`] instead.
+    /// If you are using the mean as well, consider using [`Data::mean_std`] instead.
     #[must_use]
     pub fn std(&self) -> T {
         self.mean_std().1
@@ -118,7 +118,7 @@ where
 
     /// Compute the mean and standard deviation of the data.
     ///
-    /// More efficient than calling [`ValidData::mean`] and [`ValidData::std`] separately.
+    /// More efficient than calling [`Data::mean`] and [`Data::std`] separately.
     #[must_use]
     pub fn mean_std(&self) -> (T, T) {
         let n: T = unsafe { T::from(self.len()).unwrap_unchecked() };
