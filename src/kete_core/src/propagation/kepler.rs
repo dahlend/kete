@@ -34,7 +34,6 @@
 
 use crate::constants::{GMS, GMS_SQRT};
 use crate::errors::Error;
-use crate::fitting::newton_raphson;
 use crate::frames::InertialFrame;
 use crate::prelude::{CometElements, KeteResult};
 use crate::state::State;
@@ -42,11 +41,28 @@ use crate::time::{Duration, TDB, Time};
 use argmin::core::{CostFunction, Error as ArgminErr, Executor};
 use argmin::solver::neldermead::NelderMead;
 use core::f64;
+use kete_stats::fitting::{ConvergenceError, newton_raphson};
 use nalgebra::{ComplexField, Vector3};
 use std::f64::consts::TAU;
 
 /// How close to ecc=1 do we assume the orbit is parabolic
 pub const PARABOLIC_ECC_LIMIT: f64 = 1e-4;
+
+impl From<ConvergenceError> for Error {
+    fn from(err: ConvergenceError) -> Self {
+        match err {
+            ConvergenceError::Iterations => {
+                Self::Convergence("Maximum number of iterations reached without convergence".into())
+            }
+            ConvergenceError::NonFinite => {
+                Self::Convergence("Non-finite value encountered during evaluation".into())
+            }
+            ConvergenceError::ZeroDerivative => {
+                Self::Convergence("Zero derivative encountered during evaluation".into())
+            }
+        }
+    }
+}
 
 /// Compute the eccentric anomaly for all orbital classes.
 ///

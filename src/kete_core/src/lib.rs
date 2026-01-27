@@ -81,7 +81,6 @@ pub mod constants;
 pub mod desigs;
 pub mod elements;
 pub mod errors;
-pub mod fitting;
 pub mod flux;
 pub mod fov;
 pub mod frames;
@@ -90,7 +89,6 @@ pub mod propagation;
 pub mod simult_states;
 pub mod spice;
 pub mod state;
-pub mod stats;
 pub mod time;
 pub mod util;
 

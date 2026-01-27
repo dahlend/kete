@@ -13,10 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a new numerical integrator based on Picard-Chebyshev integration. This
   integrator has only been added to the rust backend at this point, until more
   testing can be done and it be made available on the frontend.
-- Saving`SimultaneousStates` to parquet files can now optionally include a column
+- Saving `SimultaneousStates` to parquet files can now optionally include a column
   containing the TDB JD of when the state information was last updated. This allows
   users to selectively update state vectors only when necessary.
 - Added multi-core propagation support to rust backend.
+- Added `kete_stats` as a new rust crate, moving some of the fitting and statistics
+  tools that have been in kete into their own crate. This is in support for some
+  upcoming changes, and is being used as a test case for breaking up kete into smaller
+  crates for easier consumption in the rust ecosystem.
 
 ### Changed
 
