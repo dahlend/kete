@@ -225,6 +225,23 @@ where
         }
     }
 
+    /// Compute the standard deviation estimate from the MAD value.
+    ///
+    /// This is not the std, or MAD, but an estimate of the std based on the MAD
+    /// assuming that the data is normally distributed. This is more robust to outliers
+    /// than the standard deviation.
+    #[must_use]
+    #[allow(
+        clippy::missing_panics_doc,
+        reason = "By construction this cannot panic."
+    )]
+    pub fn std_from_mad(&mut self) -> T {
+        let mad = self.mad();
+        // Taken from wikipedia
+        let c = T::from(1.4826).unwrap();
+        mad * c
+    }
+
     /// Return a sorted version of this dataset.
     #[must_use]
     pub fn into_sorted(mut self) -> SortedData<T> {
@@ -497,6 +514,23 @@ where
         }
     }
 
+    /// Compute the standard deviation estimate from the MAD value.
+    ///
+    /// This is not the std, or MAD, but an estimate of the std based on the MAD
+    /// assuming that the data is normally distributed. This is more robust to outliers
+    /// than the standard deviation.
+    #[must_use]
+    #[allow(
+        clippy::missing_panics_doc,
+        reason = "By construction this cannot panic."
+    )]
+    pub fn std_from_mad(&self) -> T {
+        let mad = self.mad();
+        // Taken from wikipedia
+        let c = T::from(1.4826).unwrap();
+        mad * c
+    }
+
     /// Compute the mean value of the sorted data.
     #[must_use]
     pub fn mean(&self) -> T {
@@ -516,6 +550,11 @@ where
     }
 }
 
+/// Quickselect algorithm to find the k-th smallest element in an array.
+///
+/// This is an in-place algorithm with average O(n) time complexity.
+/// If the data is allowed to be mutable, than this is more efficient than sorting the
+/// entire array.
 fn quickselect<T>(arr: &mut [T], k: usize) -> T
 where
     T: Copy + PartialOrd,
