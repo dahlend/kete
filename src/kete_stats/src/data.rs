@@ -32,8 +32,6 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 use std::{fmt::Debug, ops::Index};
 
-use crate::fitting::{FittingResult, newton_raphson};
-
 /// Error types for statistics calculations.
 #[derive(Debug, Clone, Copy, thiserror::Error)]
 #[non_exhaustive]
@@ -70,16 +68,21 @@ where
 
 /// Dataset with associated uncertainties.
 ///
+/// This structure pairs measurements with their one-sigma (1σ) uncertainties, representing
+/// the standard deviation of each measurement. All statistical methods using these
+/// uncertainties assume they represent Gaussian (normal) errors.
+///
 /// There is a one-to-one correspondence between values and uncertainties.
 #[derive(Clone, Debug)]
 pub struct UncertainData<T>
 where
     T: num_traits::Float,
 {
-    /// Values of the dataset.
+    /// Measured values of the dataset.
     pub values: Data<T>,
 
-    /// Uncertainties associated with the dataset.
+    /// One-sigma (1σ) uncertainties (standard deviations) for each measurement
+    /// assuming Gaussian errors.
     pub uncertainties: Data<T>,
 }
 
@@ -265,6 +268,25 @@ where
         SortedData(self)
     }
 
+    /// Shuffle the dataset in-place using a Fisher-Yates shuffle.
+    ///
+    /// This uses a simple Linear Congruential Generator (LCG) for pseudorandom
+    /// number generation with the given seed for reproducibility.
+    ///
+    /// # Arguments
+    ///
+    /// * `seed` - The seed for the random number generator.
+    pub fn shuffle(&mut self, seed: u64) {
+        let mut rng_state = seed;
+        for i in (1..self.0.len()).rev() {
+            rng_state = rng_state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let j = (rng_state as usize) % (i + 1);
+            self.0.swap(i, j);
+        }
+    }
+
     /// Select a sample of N data points from the dataset, this always returns at
     /// least one data point. This does not panic.
     ///
@@ -353,6 +375,76 @@ impl<T> UncertainData<T>
 where
     T: num_traits::Float + num_traits::NumAssignOps + std::iter::Sum,
 {
+    /// Compute the weighted mean using inverse variance weighting (1/σ²).
+    ///
+    /// This is the optimal estimator for combining measurements with different uncertainties,
+    /// and is mathematically equivalent to the value that minimizes the reduced chi-squared
+    /// statistic. This provides the same result as fitting via chi-squared minimization
+    /// but is computed directly without iterative optimization.
+    ///
+    /// # Formula
+    /// ``weighted_mean = Σ(x_i / σ_i²) / Σ(1 / σ_i²)``
+    #[must_use]
+    pub fn weighted_mean(&self) -> T {
+        let mut sum_weights = T::zero();
+        let mut sum_weighted_values = T::zero();
+
+        for (value, sigma) in self.values.0.iter().zip(self.uncertainties.0.iter()) {
+            let weight = T::one() / sigma.powi(2);
+            sum_weighted_values += *value * weight;
+            sum_weights += weight;
+        }
+
+        sum_weighted_values / sum_weights
+    }
+
+    /// Compute the weighted variance using inverse variance weighting.
+    ///
+    /// # Formula
+    /// ``weighted_variance = 1 / Σ(1 / σ_i²)``
+    #[must_use]
+    pub fn weighted_variance(&self) -> T {
+        let sum_weights: T = self
+            .uncertainties
+            .0
+            .iter()
+            .map(|sigma| T::one() / sigma.powi(2))
+            .sum();
+
+        T::one() / sum_weights
+    }
+
+    /// Compute the weighted standard deviation.
+    ///
+    /// This is the square root of the weighted variance and represents the
+    /// uncertainty in the weighted mean.
+    #[must_use]
+    pub fn weighted_std(&self) -> T {
+        self.weighted_variance().sqrt()
+    }
+
+    /// Compute the effective sample size accounting for varying uncertainties.
+    ///
+    /// When all uncertainties are equal, this equals the number of samples.
+    /// When uncertainties vary, this is reduced based on the variance of the weights.
+    ///
+    /// # Formula
+    /// ``n_eff = (Σw_i)² / Σ(w_i²) where w_i = 1/σ_i²``
+    #[must_use]
+    pub fn effective_sample_size(&self) -> T {
+        let weights: Vec<T> = self
+            .uncertainties
+            .0
+            .iter()
+            .map(|sigma| T::one() / sigma.powi(2))
+            .collect();
+
+        let sum_weights: T = weights.iter().copied().sum();
+        let sum_weights_squared: T = weights.iter().map(|w| w.powi(2)).sum();
+
+        sum_weights.powi(2) / sum_weights_squared
+    }
+
     /// Compute the reduced chi squared value from known values and standard deviations.
     /// This computes the reduced chi squared against a single desired value.
     #[inline(always)]
@@ -365,48 +457,27 @@ where
             .sum::<T>()
     }
 
-    /// Compute the derivative of reduced chi squared value with respect to the set value.
-    #[inline(always)]
-    fn reduced_chi2_der(&self, val: T) -> T {
-        let two = T::from(2.0).unwrap();
-        self.values
-            .0
-            .iter()
-            .zip(self.uncertainties.0.iter())
-            .map(|(d, sigma)| two * (val - *d) / sigma.powi(2))
-            .sum::<T>()
-    }
-
-    /// Compute the second derivative of reduced chi squared value with respect to the set value.
-    #[inline(always)]
-    fn reduced_chi2_der_der(&self) -> T {
-        let two = T::from(2.0).unwrap();
-        self.uncertainties
-            .0
-            .iter()
-            .map(|sigma| two / sigma.powi(2))
-            .sum::<T>()
-    }
-
-    /// Given a collection of data and standard deviations, fit the best reduced chi squared value
-    /// for the provided data.
+    /// Shuffle both values and uncertainties in-place using a Fisher-Yates shuffle.
     ///
-    /// # Errors
-    /// [`crate::fitting::ConvergenceError`] may be returned if newton raphson fails to converge.
-    #[allow(
-        clippy::missing_panics_doc,
-        reason = "By construction this cannot panic."
-    )]
-    pub fn fit_reduced_chi2(&self) -> FittingResult<T> {
-        let n_sigmas = T::from(self.uncertainties.0.len()).unwrap();
-        let cost = |val: T| -> T { self.reduced_chi2_der(val) / n_sigmas };
-        let der = |_: T| -> T { self.reduced_chi2_der_der() / n_sigmas };
-        newton_raphson(
-            cost,
-            der,
-            self.values.0[0],
-            T::epsilon() * T::from(1000.0).unwrap(),
-        )
+    /// This maintains the one-to-one correspondence between values and their
+    /// uncertainties by applying the same permutation to both arrays.
+    ///
+    /// This uses a simple Linear Congruential Generator (LCG) for pseudorandom
+    /// number generation with the given seed for reproducibility.
+    ///
+    /// # Arguments
+    ///
+    /// * `seed` - The seed for the random number generator.
+    pub fn shuffle(&mut self, seed: u64) {
+        let mut rng_state = seed;
+        for i in (1..self.values.0.len()).rev() {
+            rng_state = rng_state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let j = (rng_state as usize) % (i + 1);
+            self.values.0.swap(i, j);
+            self.uncertainties.0.swap(i, j);
+        }
     }
 
     /// Length of the dataset.
@@ -1264,60 +1335,216 @@ mod tests {
     }
 
     #[test]
-    fn test_fit_reduced_chi2_simple() {
+    fn test_weighted_mean_equal_uncertainties() {
         use super::UncertainData;
 
-        // Test fitting chi2 - should return the mean when uncertainties are equal
-        let values = vec![4.0, 5.0, 6.0];
+        // When uncertainties are equal, weighted mean should equal regular mean
+        let values = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let uncertainties = vec![1.0, 1.0, 1.0, 1.0, 1.0];
+
+        let data: UncertainData<f64> = (values.as_slice(), uncertainties.as_slice())
+            .try_into()
+            .unwrap();
+
+        let weighted_mean = data.weighted_mean();
+        let regular_mean = data.values.mean();
+
+        assert!((weighted_mean - regular_mean).abs() < 1e-10);
+        assert!((weighted_mean - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_weighted_mean_different_uncertainties() {
+        use super::UncertainData;
+
+        // Test that weighted mean gives more weight to more precise measurements
+        // Value 1.0 with σ=0.1 should dominate over value 10.0 with σ=10.0
+        let values = vec![1.0, 10.0];
+        let uncertainties = vec![0.1, 10.0];
+
+        let data: UncertainData<f64> = (values.as_slice(), uncertainties.as_slice())
+            .try_into()
+            .unwrap();
+
+        let weighted_mean = data.weighted_mean();
+
+        // Should be much closer to 1.0 than 10.0
+        assert!(weighted_mean < 2.0);
+        assert!((weighted_mean - 1.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_weighted_std() {
+        use super::UncertainData;
+
+        // Weighted std should decrease as we add more measurements
+        let values = vec![5.0, 5.0, 5.0];
         let uncertainties = vec![1.0, 1.0, 1.0];
 
         let data: UncertainData<f64> = (values.as_slice(), uncertainties.as_slice())
             .try_into()
             .unwrap();
 
-        let fitted = data.fit_reduced_chi2().unwrap();
-        // Should converge to the mean (5.0)
-        assert!((fitted - 5.0).abs() < 1e-6);
+        let weighted_std = data.weighted_std();
+        let weighted_var = data.weighted_variance();
+
+        // Variance should be 1 / (3 * 1/1²) = 1/3
+        assert!((weighted_var - 1.0 / 3.0).abs() < 1e-10);
+        assert!((weighted_std - (1.0 / 3.0_f64.sqrt())).abs() < 1e-10);
     }
 
     #[test]
-    fn test_fit_reduced_chi2_weighted() {
+    fn test_effective_sample_size_equal_uncertainties() {
         use super::UncertainData;
 
-        // Test fitting with different uncertainties
-        // The fit should be weighted by 1/sigma^2
-        let values = vec![1.0, 10.0];
-        let uncertainties = vec![0.1, 10.0]; // First point has much smaller uncertainty
+        // When uncertainties are equal, n_eff should equal n
+        let values = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let uncertainties = vec![1.0, 1.0, 1.0, 1.0, 1.0];
 
         let data: UncertainData<f64> = (values.as_slice(), uncertainties.as_slice())
             .try_into()
             .unwrap();
 
-        let fitted = data.fit_reduced_chi2().unwrap();
-        // Should be much closer to 1.0 than 10.0 due to weighting
-        assert!(fitted < 5.0);
-        assert!((fitted - 1.0).abs() < 0.5);
+        let n_eff = data.effective_sample_size();
+
+        assert!((n_eff - 5.0).abs() < 1e-10);
     }
 
     #[test]
-    fn test_fit_reduced_chi2_convergence() {
+    fn test_effective_sample_size_different_uncertainties() {
         use super::UncertainData;
 
-        // Test with more data points to ensure convergence
-        let values = vec![2.0, 3.0, 4.0, 5.0, 6.0];
-        let uncertainties = vec![0.5, 0.5, 0.5, 0.5, 0.5];
+        // When uncertainties vary, n_eff < n
+        let values = vec![1.0, 2.0, 3.0];
+        let uncertainties = vec![0.1, 1.0, 10.0]; // Very different uncertainties
 
         let data: UncertainData<f64> = (values.as_slice(), uncertainties.as_slice())
             .try_into()
             .unwrap();
 
-        let fitted = data.fit_reduced_chi2().unwrap();
-        // Should converge to the mean (4.0)
-        assert!((fitted - 4.0).abs() < 1e-6);
+        let n_eff = data.effective_sample_size();
 
-        // Verify the chi2 at the fitted value is minimized
-        let chi2_at_fit = data.reduced_chi2(fitted);
-        let chi2_slightly_off = data.reduced_chi2(fitted + 0.1);
-        assert!(chi2_at_fit < chi2_slightly_off);
+        // Should be less than 3 due to varying weights
+        assert!(n_eff < 3.0);
+        assert!(n_eff > 0.0);
+    }
+
+    #[test]
+    fn test_weighted_mean_minimizes_chi2() {
+        use super::UncertainData;
+
+        // The weighted mean should minimize the chi2 value
+        let values = vec![4.0, 5.0, 6.0];
+        let uncertainties = vec![1.0, 0.5, 1.0];
+
+        let data: UncertainData<f64> = (values.as_slice(), uncertainties.as_slice())
+            .try_into()
+            .unwrap();
+
+        let weighted_mean = data.weighted_mean();
+        let chi2_at_mean = data.reduced_chi2(weighted_mean);
+        let chi2_slightly_off = data.reduced_chi2(weighted_mean + 0.1);
+
+        // Chi2 should be minimized at the weighted mean
+        assert!(chi2_at_mean < chi2_slightly_off);
+    }
+
+    #[test]
+    fn test_data_shuffle() {
+        use super::Data;
+
+        // Test that shuffle changes order but preserves elements
+        let original = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let mut data = Data::try_from(original.as_slice()).unwrap();
+
+        // Calculate sum and length before shuffle
+        let original_sum: f64 = original.iter().sum();
+        let original_len = original.len();
+
+        let (original_mean, original_std) = data.mean_std();
+
+        data.shuffle(42);
+
+        // Sum and length should be preserved
+        let shuffled_sum: f64 = data.as_slice().iter().sum();
+        assert_eq!(data.len(), original_len);
+        assert!((original_sum - shuffled_sum).abs() < 1e-10);
+
+        // Order should have changed (with high probability)
+        let changed = data.as_slice() != original.as_slice();
+        assert!(changed);
+
+        // mean and std should be preserved
+        let (shuffled_mean, shuffled_std) = data.mean_std();
+        assert!((original_std - shuffled_std).abs() < 1e-10);
+        assert!((original_mean - shuffled_mean).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_data_shuffle_reproducibility() {
+        use super::Data;
+
+        // Test that same seed produces same shuffle
+        let original = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+
+        let mut data1 = Data::try_from(original.as_slice()).unwrap();
+        let mut data2 = data1.clone();
+
+        data1.shuffle(12345);
+        data2.shuffle(12345);
+
+        // Same seed should produce same result
+        assert_eq!(data1.as_slice(), data2.as_slice());
+
+        data1.shuffle(111);
+        data2.shuffle(222);
+
+        // Different seeds should produce different results (with high probability)
+        assert_ne!(data1.as_slice(), data2.as_slice());
+    }
+
+    #[test]
+    fn test_uncertain_data_shuffle_preserves_pairing() {
+        use super::UncertainData;
+
+        // Test that shuffle maintains value-uncertainty correspondence
+        let values = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let uncertainties = vec![0.1, 0.2, 0.3, 0.4, 0.5];
+
+        let mut data: UncertainData<f64> = (values.as_slice(), uncertainties.as_slice())
+            .try_into()
+            .unwrap();
+
+        // Store original pairings
+        let original_pairs: Vec<(f64, f64)> = values
+            .iter()
+            .zip(uncertainties.iter())
+            .map(|(&v, &u)| (v, u))
+            .collect();
+
+        data.shuffle(999);
+
+        // Check that all original pairs still exist
+        for i in 0..data.len() {
+            let pair = (data.values.as_slice()[i], data.uncertainties.as_slice()[i]);
+            assert!(
+                original_pairs.contains(&pair),
+                "Shuffled pair ({}, {}) not found in original pairs",
+                pair.0,
+                pair.1
+            );
+        }
+
+        let mut data2 = data.clone();
+
+        data.shuffle(54321);
+        data2.shuffle(54321);
+
+        // Same seed should produce same result
+        assert_eq!(data.values.as_slice(), data2.values.as_slice());
+        assert_eq!(
+            data.uncertainties.as_slice(),
+            data2.uncertainties.as_slice()
+        );
     }
 }
