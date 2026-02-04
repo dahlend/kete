@@ -30,7 +30,6 @@ use state::PyState;
 pub mod covariance;
 pub mod desigs;
 pub mod elements;
-pub mod fitting;
 pub mod flux;
 pub mod fovs;
 pub mod frame;
@@ -177,9 +176,6 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(spice::predict_tle, m)?)?;
 
     m.add_function(wrap_pyfunction!(state_transition::compute_stm_py, m)?)?;
-
-    m.add_function(wrap_pyfunction!(fitting::ks_test_py, m)?)?;
-    m.add_function(wrap_pyfunction!(fitting::fit_chi2_py, m)?)?;
 
     m.add_function(wrap_pyfunction!(kete_core::cache::cache_path, m)?)?;
 
