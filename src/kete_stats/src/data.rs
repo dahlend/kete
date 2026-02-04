@@ -1,6 +1,6 @@
-//! # Statistics
+//! # Data
 //!
-//! Commonly used statistical methods.
+//! Handling of finite, nonempty datasets for basic statistical calculations.
 //!
 // BSD 3-Clause License
 //
@@ -167,8 +167,11 @@ where
     }
 
     /// Find the k-th smallest element in the dataset.
+    ///
+    /// If k is larger than the length of the data, it returns the final element.
     #[must_use]
     pub fn kth_smallest(&mut self, k: usize) -> T {
+        let k = k.min(self.len() - 1);
         quickselect(&mut self.0, k)
     }
 
@@ -262,15 +265,28 @@ where
         SortedData(self)
     }
 
-    /// Select a sample of N data points from the dataset.
+    /// Select a sample of N data points from the dataset, this always returns at
+    /// least one data point. This does not panic.
     ///
     /// If more data is requested than exists, the full dataset is returned.
+    ///
+    /// If 0 data points are requested, a single data point is returned.
     ///
     /// This assumes the data is nearly IID, samples at nearly even step sizes.
     #[must_use]
     pub fn sample_n(&self, n: usize) -> Self {
+        if n == 0 {
+            // Cannot sample 0 elements, return a single element
+            return Self::new_unchecked(vec![self.0[0]].into_boxed_slice());
+        }
+
         if n >= self.len() {
             return Self::new_unchecked(self.0.clone());
+        }
+
+        if n == 1 {
+            // Special case to avoid division by zero
+            return Self::new_unchecked(vec![self.0[0]].into_boxed_slice());
         }
 
         let mut sampled_data = Vec::with_capacity(n);
@@ -292,12 +308,19 @@ where
     ///
     /// Exits early if no data points are removed in an iteration (convergence).
     ///
+    /// If all data points are filtered out, returns a dataset containing only the median
+    /// value to maintain the invariant that `Data` is never empty.
+    ///
     /// # Arguments
     /// * `lower_std` - Lower standard deviation threshold.
     /// * `upper_std` - Upper standard deviation threshold.
     /// * `n_iter` - Number of iterations to perform.
     #[must_use]
     pub fn sigma_clip(&self, lower_std: T, upper_std: T, n_iter: usize) -> Self {
+        // to avoid confusion with users passing negative std values
+        let lower_std = -lower_std.abs();
+        let upper_std = upper_std.abs();
+
         let mut clipped_data = self.0.to_vec();
         for _ in 0..n_iter {
             let prev_len = clipped_data.len();
@@ -313,6 +336,13 @@ where
             // Exit early if converged (no points removed)
             if clipped_data.len() == prev_len {
                 break;
+            }
+
+            // If all points were filtered out, return median value to maintain invariant
+            if clipped_data.is_empty() {
+                let mut median_data = Self::new_unchecked(self.0.clone());
+                let median = median_data.median();
+                return Self::new_unchecked(vec![median].into_boxed_slice());
             }
         }
         Self::new_unchecked(clipped_data.into_boxed_slice())
@@ -623,10 +653,10 @@ where
     let mut j = arr.len() - 1;
 
     loop {
-        while arr[i] < pivot {
+        while i < arr.len() && arr[i] < pivot {
             i += 1;
         }
-        while arr[j] > pivot {
+        while j > 0 && arr[j] > pivot {
             j -= 1;
         }
         if i >= j {
@@ -668,6 +698,17 @@ where
     }
 }
 
+impl<T> TryFrom<Box<[T]>> for Data<T>
+where
+    T: num_traits::Float,
+{
+    type Error = DataError;
+
+    fn try_from(value: Box<[T]>) -> Result<Self, Self::Error> {
+        value.into_vec().try_into()
+    }
+}
+
 impl<T> TryFrom<Vec<T>> for Data<T>
 where
     T: Copy + num_traits::Float,
@@ -683,6 +724,28 @@ where
         } else {
             Ok(Self(value.into_boxed_slice()))
         }
+    }
+}
+
+impl<T> TryFrom<Vec<T>> for SortedData<T>
+where
+    T: Copy + num_traits::Float + num_traits::float::TotalOrder + num_traits::NumAssignOps + Debug,
+{
+    type Error = DataError;
+
+    fn try_from(value: Vec<T>) -> Result<Self, Self::Error> {
+        Data::try_from(value).map(Data::into_sorted)
+    }
+}
+
+impl<T> TryFrom<&[T]> for SortedData<T>
+where
+    T: num_traits::Float + num_traits::float::TotalOrder + num_traits::NumAssignOps + Debug,
+{
+    type Error = DataError;
+
+    fn try_from(value: &[T]) -> Result<Self, Self::Error> {
+        Data::try_from(value).map(Data::into_sorted)
     }
 }
 
@@ -894,6 +957,24 @@ mod tests {
     }
 
     #[test]
+    fn test_sample_n_edge_case_n_is_one() {
+        // Edge case: sampling exactly 1 element (tests division by zero fix)
+        let data: Data<_> = vec![1.0, 2.0, 3.0, 4.0, 5.0].try_into().unwrap();
+        let sampled = data.sample_n(1);
+        assert_eq!(sampled.len(), 1);
+        // Should return the first element
+        assert_eq!(sampled[0], 1.0);
+    }
+
+    #[test]
+    fn test_kth_smallest_out_of_bounds() {
+        // Test that kth_smallest clamps to valid range when k is out of bounds
+        let mut data: Data<_> = vec![1.0, 2.0, 3.0].try_into().unwrap();
+        // k=5 is out of bounds for length 3, should return the last element
+        assert_eq!(data.kth_smallest(5), 3.0);
+    }
+
+    #[test]
     fn test_two_sample_ks_statistic_identical() {
         let data1: Data<_> = vec![1.0, 2.0, 3.0, 4.0, 5.0].try_into().unwrap();
         let data2: Data<_> = vec![1.0, 2.0, 3.0, 4.0, 5.0].try_into().unwrap();
@@ -1059,6 +1140,29 @@ mod tests {
 
         // All values should be within 3 sigma
         assert!(clipped.len() <= data.len());
+    }
+
+    #[test]
+    fn test_sigma_clip_edge_case_all_equal() {
+        // Edge case: all values are equal (tests quickselect with pivot == all elements)
+        let data: Data<_> = vec![5.0, 5.0, 5.0, 5.0, 5.0].try_into().unwrap();
+
+        // Should not panic and should keep all data (std is 0)
+        let clipped = data.sigma_clip(2.0, 2.0, 1);
+        assert_eq!(clipped.len(), 5);
+    }
+
+    #[test]
+    fn test_sigma_clip_all_filtered() {
+        // Edge case: threshold so tight that all data is filtered out
+        let data: Data<_> = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0].try_into().unwrap();
+
+        // Use impossibly tight threshold - should return median value
+        let clipped = data.sigma_clip(0.001, 0.001, 1);
+
+        // Should return a single element (the median)
+        assert_eq!(clipped.len(), 1);
+        assert_eq!(clipped[0], 3.5); // median of [1,2,3,4,5,6] is 3.5
     }
 
     #[test]
