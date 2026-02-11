@@ -1044,8 +1044,10 @@ impl PyZtfField {
     ///     List containing all of the CCD FOVs.
     ///     These must have matching metadata.
     #[new]
-    pub fn new(ztf_ccd_fields: Vec<PyZtfCcdQuad>) -> Self {
-        PyZtfField(fov::ZtfField::new(ztf_ccd_fields.into_iter().map(|x| x.0).collect()).unwrap())
+    pub fn new(ztf_ccd_fields: Vec<PyZtfCcdQuad>) -> PyResult<Self> {
+        Ok(PyZtfField(fov::ZtfField::new(
+            ztf_ccd_fields.into_iter().map(|x| x.0).collect(),
+        )?))
     }
 
     /// State of the observer for this FOV.
@@ -1270,8 +1272,10 @@ impl PyPtfField {
     ///     List containing all of the CCD FOVs.
     ///     These must have matching metadata.
     #[new]
-    pub fn new(ptf_ccd_fields: Vec<PyPtfCcd>) -> Self {
-        PyPtfField(fov::PtfField::new(ptf_ccd_fields.into_iter().map(|x| x.0).collect()).unwrap())
+    pub fn new(ptf_ccd_fields: Vec<PyPtfCcd>) -> PyResult<Self> {
+        Ok(PyPtfField(fov::PtfField::new(
+            ptf_ccd_fields.into_iter().map(|x| x.0).collect(),
+        )?))
     }
 
     /// State of the observer for this FOV.
