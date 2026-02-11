@@ -39,6 +39,7 @@ jobs:
 
           # Linux arm
           - os: ubuntu-24.04-arm64
+            platform_id: ubuntu_arm64
             sdist:
 
           # MacOS - latest is now arm64, no longer x86_64
@@ -48,6 +49,7 @@ jobs:
 
           # MacOS - last remaining intel mac
           - os: macos-15-intel
+            platform_id: macosx_intel
             sdist: 
     steps:
       - uses: actions/checkout@v4
