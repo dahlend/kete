@@ -3,6 +3,7 @@ use kete_core::constants;
 use kete_core::flux::HGParams;
 use kete_core::flux::cometary_dust_phase_curve_correction;
 use kete_core::flux::hg_phase_curve_correction;
+use pyo3::PyResult;
 use pyo3::pyfunction;
 
 /// This computes the phase curve correction in the IAU format.
@@ -102,7 +103,7 @@ pub fn hg_apparent_flux_py(
     h_mag: Option<f64>,
     diameter: Option<f64>,
     c_hg: Option<f64>,
-) -> f64 {
+) -> PyResult<f64> {
     let c_hg = c_hg.unwrap_or(constants::C_V);
     let sun2obj = sun2obj.into_vector(PyFrames::Equatorial).into();
     let sun2obs = sun2obs.into_vector(PyFrames::Equatorial).into();
@@ -113,11 +114,14 @@ pub fn hg_apparent_flux_py(
         Some(c_hg),
         Some(v_albedo),
         diameter,
-    )
-    .unwrap();
+    )?;
     params
         .apparent_flux(&sun2obj, &sun2obs, wavelength, v_albedo)
-        .unwrap()
+        .ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err(
+                "Failed to compute apparent flux. Ensure h_mag or diameter is provided.",
+            )
+        })
 }
 
 /// Compute the apparent magnitude of an object using the absolute magnitude H, G, and

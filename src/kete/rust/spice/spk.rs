@@ -70,29 +70,45 @@ pub fn spk_loaded_objects_py() -> Vec<String> {
 /// Reset the contents of the SPK shared memory.
 #[pyfunction]
 #[pyo3(name = "spk_reset")]
-pub fn spk_reset_py() {
-    LOADED_SPK.write().unwrap().reset()
+pub fn spk_reset_py() -> PyResult<()> {
+    LOADED_SPK
+        .write()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("SPK lock poisoned"))?
+        .reset();
+    Ok(())
 }
 
 /// Reload the core SPK files.
 #[pyfunction]
 #[pyo3(name = "spk_load_core")]
-pub fn spk_load_core_py() {
-    LOADED_SPK.write().unwrap().load_core().unwrap()
+pub fn spk_load_core_py() -> PyResult<()> {
+    LOADED_SPK
+        .write()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("SPK lock poisoned"))?
+        .load_core()?;
+    Ok(())
 }
 
 /// Reload the core PCK files.
 #[pyfunction]
 #[pyo3(name = "pck_load_core")]
-pub fn pck_load_core_py() {
-    LOADED_PCK.write().unwrap().load_core().unwrap()
+pub fn pck_load_core_py() -> PyResult<()> {
+    LOADED_PCK
+        .write()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("PCK lock poisoned"))?
+        .load_core()?;
+    Ok(())
 }
 
 /// Reload the cache SPK files.
 #[pyfunction]
 #[pyo3(name = "spk_load_cache")]
-pub fn spk_load_cache_py() {
-    LOADED_SPK.write().unwrap().load_cache().unwrap()
+pub fn spk_load_cache_py() -> PyResult<()> {
+    LOADED_SPK
+        .write()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("SPK lock poisoned"))?
+        .load_cache()?;
+    Ok(())
 }
 
 /// Calculates the :class:`~kete.State` of the target object at the

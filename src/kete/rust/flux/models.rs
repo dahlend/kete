@@ -320,7 +320,7 @@ impl PyNeatmParams {
         &self,
         sun2obj_vecs: Vec<VectorLike>,
         sun2obs_vecs: Vec<VectorLike>,
-    ) -> Vec<PyModelResults> {
+    ) -> PyResult<Vec<PyModelResults>> {
         sun2obj_vecs
             .into_par_iter()
             .zip(sun2obs_vecs)
@@ -330,8 +330,10 @@ impl PyNeatmParams {
 
                 self.0
                     .apparent_total_flux(&sun2obj, &sun2obs)
-                    .unwrap()
-                    .into()
+                    .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(
+                        "Failed to compute flux. Ensure diameter and visible albedo are available."
+                    ))
+                    .map(|r| r.into())
             })
             .collect()
     }
@@ -363,13 +365,13 @@ impl PyNeatmParams {
     /// Diameter of the object in km.
     #[getter]
     pub fn diam(&self) -> f64 {
-        self.0.hg_params.diam().unwrap()
+        self.0.hg_params.diam().unwrap_or(f64::NAN)
     }
 
     /// Albedo in V band.
     #[getter]
     pub fn vis_albedo(&self) -> f64 {
-        self.0.hg_params.vis_albedo().unwrap()
+        self.0.hg_params.vis_albedo().unwrap_or(f64::NAN)
     }
 
     /// Beaming parameter.
@@ -611,7 +613,7 @@ impl PyFrmParams {
         &self,
         sun2obj_vecs: Vec<VectorLike>,
         sun2obs_vecs: Vec<VectorLike>,
-    ) -> Vec<PyModelResults> {
+    ) -> PyResult<Vec<PyModelResults>> {
         sun2obj_vecs
             .into_par_iter()
             .zip(sun2obs_vecs)
@@ -621,8 +623,10 @@ impl PyFrmParams {
 
                 self.0
                     .apparent_total_flux(&sun2obj, &sun2obs)
-                    .unwrap()
-                    .into()
+                    .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(
+                        "Failed to compute flux. Ensure diameter and visible albedo are available."
+                    ))
+                    .map(|r| r.into())
             })
             .collect()
     }
@@ -653,14 +657,20 @@ impl PyFrmParams {
 
     /// Diameter of the object in km.
     #[getter]
-    pub fn diam(&self) -> f64 {
-        self.0.hg_params.diam().unwrap()
+    pub fn diam(&self) -> PyResult<f64> {
+        self.0.hg_params.diam()
+            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(
+                "Diameter is not available for this object. Provide diameter or (h_mag + vis_albedo) to compute it."
+            ))
     }
 
     /// Albedo in V band.
     #[getter]
-    pub fn vis_albedo(&self) -> f64 {
-        self.0.hg_params.vis_albedo().unwrap()
+    pub fn vis_albedo(&self) -> PyResult<f64> {
+        self.0.hg_params.vis_albedo()
+            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(
+                "Visible albedo is not available for this object. Provide vis_albedo or (h_mag + diameter) to compute it."
+            ))
     }
 
     /// G Phase parameter.
@@ -689,8 +699,8 @@ impl PyFrmParams {
             self.band_wavelength(),
             self.band_albedos(),
             self.h_mag(),
-            self.diam(),
-            self.vis_albedo(),
+            self.diam().ok(),
+            self.vis_albedo().ok(),
             self.g_param(),
             self.emissivity(),
             self.zero_mags(),

@@ -87,8 +87,12 @@ pub fn find_obs_code_py(name: &str) -> PyResult<(f64, f64, f64, String, String)>
 
 /// Predict the state of an object in earths orbit from the two line elements
 #[pyfunction]
-pub fn predict_tle(line1: String, line2: String, time: PyTime) -> ([f64; 3], [f64; 3]) {
-    let elements = sgp4::Elements::from_tle(None, line1.as_bytes(), line2.as_bytes()).unwrap();
+pub fn predict_tle(line1: String, line2: String, time: PyTime) -> PyResult<([f64; 3], [f64; 3])> {
+    let elements =
+        sgp4::Elements::from_tle(None, line1.as_bytes(), line2.as_bytes()).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("Invalid TLE format: {}", e))
+        })?;
+
     let orbit = sgp4::Orbit::from_kozai_elements(
         &sgp4::WGS84,
         elements.inclination * (core::f64::consts::PI / 180.0),
@@ -98,7 +102,9 @@ pub fn predict_tle(line1: String, line2: String, time: PyTime) -> ([f64; 3], [f6
         elements.mean_anomaly * (core::f64::consts::PI / 180.0),
         elements.mean_motion * (core::f64::consts::PI / 720.0),
     )
-    .expect("Failed to load orbit values");
+    .map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("Failed to create orbit from TLE: {}", e))
+    })?;
 
     let constants = Constants::new(
         sgp4::WGS84,
@@ -107,14 +113,29 @@ pub fn predict_tle(line1: String, line2: String, time: PyTime) -> ([f64; 3], [f6
         elements.drag_term,
         orbit,
     )
-    .expect("Failed to load orbit values");
+    .map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "Failed to initialize SGP4 constants: {}",
+            e
+        ))
+    })?;
 
     let time = time.0.utc();
 
-    let min_diff = elements
-        .datetime_to_minutes_since_epoch(&time.to_datetime().unwrap().naive_utc())
-        .unwrap();
+    let naive_time = time
+        .to_datetime()
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err("Failed to convert time to datetime"))?
+        .naive_utc();
 
-    let state = constants.propagate(min_diff).expect("Failed to propagate");
-    (state.position, state.velocity)
+    let min_diff = elements
+        .datetime_to_minutes_since_epoch(&naive_time)
+        .map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("Failed to convert time: {}", e))
+        })?;
+
+    let state = constants.propagate(min_diff).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("Failed to propagate TLE: {}", e))
+    })?;
+
+    Ok((state.position, state.velocity))
 }
