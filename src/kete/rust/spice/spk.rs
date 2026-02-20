@@ -20,11 +20,12 @@ pub fn spk_load_py(py: Python<'_>, filenames: Vec<String>) -> PyResult<()> {
     }
     for filename in filenames.iter() {
         py.check_signals()?;
-        let load = (*singleton).load_file(filename);
+        let load = (*singleton).load_file_only(filename);
         if let Err(err) = load {
             eprintln!("{filename} failed to load. {err}");
         }
     }
+    singleton.build_mapping();
     Ok(())
 }
 

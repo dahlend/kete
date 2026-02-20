@@ -291,7 +291,7 @@ impl SpkCollection {
     ///
     /// These mappings are used to be able to change the center ID from whatever is saved in
     /// the spks to any possible combination.
-    fn build_mapping(&mut self) {
+    pub fn build_mapping(&mut self) {
         static PRECACHE: &[i32] = &[0, 10, 399];
 
         fn update_nodes(segment: &SpkSegment, nodes: &mut HashMap<i32, HashSet<(i32, i32)>>) {
@@ -362,10 +362,29 @@ impl SpkCollection {
     /// Given an SPK filename, load all the segments present inside of it.
     /// These segments are added to the SPK singleton in memory.
     ///
+    /// This also rebuilds the internal mapping. If loading many files at once,
+    /// prefer using [`Self::load_file_only`] followed by a single call to
+    /// [`Self::build_mapping`] for much better performance.
+    ///
     /// # Errors
     /// Loading files may fail for a number of reasons, including incorrect formatted
     /// files or IO errors.
     pub fn load_file(&mut self, filename: &str) -> KeteResult<()> {
+        self.load_file_only(filename)?;
+        self.build_mapping();
+        Ok(())
+    }
+
+    /// Given an SPK filename, load all the segments present inside of it
+    /// **without** rebuilding the internal mapping.
+    ///
+    /// When loading many files, call this for each file and then call
+    /// [`Self::build_mapping`] once at the end.
+    ///
+    /// # Errors
+    /// Loading files may fail for a number of reasons, including incorrect formatted
+    /// files or IO errors.
+    pub fn load_file_only(&mut self, filename: &str) -> KeteResult<()> {
         let file = DafFile::from_file(filename)?;
 
         if !matches!(file.daf_type, DAFType::Spk) {
@@ -384,7 +403,6 @@ impl SpkCollection {
                     .push(segment.try_into()?);
             }
         }
-        self.build_mapping();
         Ok(())
     }
 
@@ -415,6 +433,8 @@ impl SpkCollection {
 
     /// Load all SPK files from a directory.
     ///
+    /// The internal mapping is rebuilt once after all files are loaded.
+    ///
     /// # Errors
     /// May fail if there are IO or Parsing errors.
     pub fn load_directory(&mut self, directory: &str) -> KeteResult<()> {
@@ -423,11 +443,12 @@ impl SpkCollection {
                 && entry.path().is_file()
                 && let Some(filename) = entry.path().to_str()
                 && filename.to_lowercase().ends_with(".bsp")
-                && let Err(err) = self.load_file(filename)
+                && let Err(err) = self.load_file_only(filename)
             {
                 eprintln!("Failed to load SPK file {filename}: {err}");
             }
         });
+        self.build_mapping();
         Ok(())
     }
 
