@@ -44,6 +44,7 @@ use nalgebra::{DVector, SMatrix, SVector, Vector3};
 use rayon::prelude::*;
 
 mod acceleration;
+mod jacobian;
 mod kepler;
 mod nongrav;
 mod picard;

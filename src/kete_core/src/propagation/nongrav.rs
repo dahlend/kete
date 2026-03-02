@@ -182,7 +182,9 @@ impl NonGravModel {
                 let mut pos = *pos;
                 let pos_norm = pos.normalize();
                 let t_vec = (vel - pos_norm * vel.dot(&pos_norm)).normalize();
-                let n_vec = t_vec.cross(&pos_norm).normalize();
+
+                // normalized by construction
+                let n_vec = t_vec.cross(&pos_norm);
 
                 if !dt.is_zero() {
                     (pos, _) = analytic_2_body((-dt).into(), &pos, vel, None).unwrap();

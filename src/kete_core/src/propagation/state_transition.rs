@@ -1,6 +1,6 @@
 // BSD 3-Clause License
 //
-// Copyright (c) 2025, California Institute of Technology
+// Copyright (c) 2026, Dar Dahlen
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:
@@ -27,123 +27,108 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use crate::constants::GMS_SQRT;
+use crate::constants::GravParams;
 use crate::frames::Equatorial;
 use crate::prelude::{KeteResult, State};
-use crate::propagation::{
-    CentralAccelMeta, PC15, central_accel, central_accel_grad, dumb_picard_init,
-};
+use crate::propagation::AccelSPKMeta;
+use crate::propagation::jacobian::{n_params, stm_augmented_accel};
+use crate::propagation::nongrav::NonGravModel;
+use crate::propagation::radau::RadauIntegrator;
 use crate::time::{TDB, Time};
-use nalgebra::{Const, Matrix6, SVector, U1, U6, Vector3};
+use nalgebra::{DMatrix, Matrix3, SVector, Vector3};
 
-fn stm_ivp_eqn(
-    jd: Time<TDB>,
-    state: &SVector<f64, 42>,
-    meta: &mut CentralAccelMeta,
-    exact_eval: bool,
-) -> KeteResult<SVector<f64, 42>> {
-    let mut res = SVector::<f64, 42>::zeros();
-
-    // first 6 values of the state are pos and vel respectively.
-    let pos = Vector3::new(state[0], state[1], state[2]);
-    let vel = Vector3::new(state[3], state[4], state[5]);
-    let accel = central_accel(jd, &pos, &vel, meta, exact_eval)?;
-
-    // the derivative of pos is the velocity, and the derivative of vel is the acceleration
-    // set those as appropriate for the output state
-    res.fixed_rows_mut::<3>(0).set_column(0, &vel);
-    res.fixed_rows_mut::<3>(3).set_column(0, &accel);
-
-    // the remainder of res is the state transition matrix calculation.
-    let mut stm = Matrix6::<f64>::zeros();
-    stm.fixed_view_mut::<3, 3>(0, 3)
-        .set_diagonal(&Vector3::repeat(1.0));
-
-    let grad = central_accel_grad(0.0, &pos, &vel, meta);
-    let mut view = stm.fixed_view_mut::<3, 3>(3, 0);
-    view.set_row(0, &grad.row(0));
-    view.set_row(1, &grad.row(1));
-    view.set_row(2, &grad.row(2));
-
-    let vec_reshape = state
-        .fixed_rows::<36>(6)
-        .into_owned()
-        .reshape_generic(U6, U6);
-    res.rows_mut(6, 36).set_column(
-        0,
-        &(stm * vec_reshape)
-            .into_owned()
-            .reshape_generic(Const::<36>, U1),
-    );
-
-    Ok(res)
-}
-
-/// Compute a state transition matrix assuming only 2-body mechanics.
+/// Compute the state transition matrix and optional parameter sensitivities using the
+/// Radau 15th-order integrator with full N-body physics.
 ///
-/// This uses the Picard-Chebyshev integrator [`PC15`].
+/// Returns the propagated [`State`] and a 6x(6+N) sensitivity matrix where N is
+/// the number of free non-gravitational parameters (0 for none, 1 for `Dust`, 3 for
+/// `JplComet`). Column ordering is:
+///
+/// ```text
+/// cols 0-5  : 6x6 state transition matrix  d(r_f, v_f) / d(r_0, v_0)
+/// col  6+k  : parameter sensitivity        d(r_f, v_f) / dp_k
+/// ```
+///
+/// The returned state preserves the designation and `center_id` of the input.
 ///
 /// # Errors
-/// Error is returned if convergence fails.
+/// Fails when SPK queries fail or integration does not converge.
 pub fn compute_state_transition(
-    state: &mut State<Equatorial>,
+    state: &State<Equatorial>,
     jd: Time<TDB>,
-    central_mass: f64,
-) -> KeteResult<([[f64; 3]; 2], Matrix6<f64>)> {
-    let mut meta = CentralAccelMeta {
-        mass_scaling: central_mass,
-        ..Default::default()
+    massive_obj: &[GravParams],
+    non_grav_model: Option<NonGravModel>,
+) -> KeteResult<(State<Equatorial>, DMatrix<f64>)> {
+    let np = n_params(non_grav_model.as_ref());
+
+    // Build initial augmented state (30-dim, unused elements stay zero)
+    let mut pos_aug = SVector::<f64, 30>::zeros();
+    let mut vel_aug = SVector::<f64, 30>::zeros();
+
+    // Physical position and velocity (unscaled, matching spk_accel conventions)
+    pos_aug
+        .fixed_rows_mut::<3>(0)
+        .copy_from(&Vector3::from(state.pos));
+    vel_aug
+        .fixed_rows_mut::<3>(0)
+        .copy_from(&Vector3::from(state.vel));
+
+    // Phi_rr(0) = I3 (elements 3..12, column-major)
+    pos_aug[3] = 1.0;
+    pos_aug[7] = 1.0;
+    pos_aug[11] = 1.0;
+
+    // Phi_rv'(0) = I3 (elements 12..21 of vel_aug, column-major)
+    vel_aug[12] = 1.0;
+    vel_aug[16] = 1.0;
+    vel_aug[20] = 1.0;
+
+    let metadata = AccelSPKMeta {
+        close_approach: None,
+        non_grav_model,
+        massive_obj,
     };
 
-    let mut initial_state = SVector::<f64, 42>::zeros();
-
-    initial_state.rows_mut(6, 36).set_column(
-        0,
-        &Matrix6::<f64>::identity().reshape_generic(Const::<36>, U1),
-    );
-
-    initial_state
-        .fixed_rows_mut::<3>(0)
-        .set_column(0, &state.pos.into());
-    initial_state
-        .fixed_rows_mut::<3>(3)
-        .set_column(0, &(Vector3::from(state.vel) / GMS_SQRT));
-
-    let integrator = &PC15;
-    let rad = integrator.integrate(
-        &stm_ivp_eqn,
-        &dumb_picard_init,
-        initial_state,
-        (state.epoch.jd * GMS_SQRT).into(),
-        (jd.jd * GMS_SQRT).into(),
-        1.0,
-        &mut meta,
+    let (pos_f, vel_f, _meta) = RadauIntegrator::integrate(
+        &stm_augmented_accel,
+        pos_aug,
+        vel_aug,
+        state.epoch,
+        jd,
+        metadata,
     )?;
 
-    let vec_reshape = rad
-        .fixed_rows::<36>(6)
-        .into_owned()
-        .reshape_generic(U6, U6)
-        .transpose();
-
-    let scaling_a = Matrix6::<f64>::from_diagonal(
-        &[
-            1.0,
-            1.0,
-            1.0,
-            1.0 / GMS_SQRT,
-            1.0 / GMS_SQRT,
-            1.0 / GMS_SQRT,
-        ]
-        .into(),
+    let final_state = State::new(
+        state.desig.clone(),
+        jd,
+        [pos_f[0], pos_f[1], pos_f[2]].into(),
+        [vel_f[0], vel_f[1], vel_f[2]].into(),
+        state.center_id,
     );
-    let scaling_b =
-        Matrix6::<f64>::from_diagonal(&[1.0, 1.0, 1.0, GMS_SQRT, GMS_SQRT, GMS_SQRT].into());
-    Ok((
-        [
-            rad.fixed_rows::<3>(0).into(),
-            (rad.fixed_rows::<3>(3) * GMS_SQRT).into(),
-        ],
-        scaling_a * vec_reshape * scaling_b,
-    ))
+
+    // Build the 6x(6+N) sensitivity matrix
+    let ncols = 6 + np;
+    let mut sens = DMatrix::<f64>::zeros(6, ncols);
+
+    // 6x6 STM from the four 3x3 blocks
+    let phi_rr = Matrix3::from_column_slice(&pos_f.as_slice()[3..12]);
+    let phi_rv = Matrix3::from_column_slice(&pos_f.as_slice()[12..21]);
+    let phi_vr = Matrix3::from_column_slice(&vel_f.as_slice()[3..12]);
+    let phi_vv = Matrix3::from_column_slice(&vel_f.as_slice()[12..21]);
+
+    sens.fixed_view_mut::<3, 3>(0, 0).copy_from(&phi_rr);
+    sens.fixed_view_mut::<3, 3>(0, 3).copy_from(&phi_rv);
+    sens.fixed_view_mut::<3, 3>(3, 0).copy_from(&phi_vr);
+    sens.fixed_view_mut::<3, 3>(3, 3).copy_from(&phi_vv);
+
+    // Parameter sensitivity columns (if any)
+    for k in 0..np {
+        let base = 21 + k * 3;
+        for i in 0..3 {
+            sens[(i, 6 + k)] = pos_f[base + i]; // dr_f/dp_k
+            sens[(3 + i, 6 + k)] = vel_f[base + i]; // dv_f/dp_k
+        }
+    }
+
+    Ok((final_state, sens))
 }
