@@ -252,11 +252,14 @@ pub fn neatm_thermal_py(
         emissivity,
         beaming,
     };
-    params.apparent_thermal_flux(&sun2obj, &sun2obs)
+    params
+        .apparent_thermal_flux(&sun2obj, &sun2obs)
         .and_then(|fluxes| fluxes.first().copied())
-        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(
-            "Failed to compute thermal flux. Check input parameters."
-        ))
+        .ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err(
+                "Failed to compute thermal flux. Check input parameters.",
+            )
+        })
 }
 
 /// Calculate the flux from an object using the FRM thermal model in Jansky.
@@ -318,11 +321,14 @@ pub fn frm_thermal_py(
         hg_params,
         emissivity,
     };
-    params.apparent_thermal_flux(&sun2obj, &sun2obs)
+    params
+        .apparent_thermal_flux(&sun2obj, &sun2obs)
         .and_then(|fluxes| fluxes.first().copied())
-        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(
-            "Failed to compute thermal flux. Check input parameters."
-        ))
+        .ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err(
+                "Failed to compute thermal flux. Check input parameters.",
+            )
+        })
 }
 
 /// Given the M1/K1 and M2/K2 values, compute the apparent Comet visible magnitudes.

@@ -129,6 +129,57 @@ impl NonGravModel {
         Self::Dust { beta }
     }
 
+    /// Number of free (solvable) parameters in this model.
+    ///
+    /// - `JplComet`: 3 (a1, a2, a3)
+    /// - `Dust`: 1 (beta)
+    #[must_use]
+    pub fn n_free_params(&self) -> usize {
+        match self {
+            Self::JplComet { .. } => 3,
+            Self::Dust { .. } => 1,
+        }
+    }
+
+    /// Return the free parameters as a vector.
+    ///
+    /// - `JplComet`: `[a1, a2, a3]`
+    /// - `Dust`: `[beta]`
+    #[must_use]
+    pub fn get_free_params(&self) -> Vec<f64> {
+        match self {
+            Self::JplComet { a1, a2, a3, .. } => vec![*a1, *a2, *a3],
+            Self::Dust { beta } => vec![*beta],
+        }
+    }
+
+    /// Update the free parameters from a slice.
+    ///
+    /// # Panics
+    /// Panics if the slice length does not match `n_free_params()`.
+    pub fn set_free_params(&mut self, params: &[f64]) {
+        match self {
+            Self::JplComet { a1, a2, a3, .. } => {
+                assert!(
+                    params.len() == 3,
+                    "JplComet requires 3 params, got {}",
+                    params.len()
+                );
+                *a1 = params[0];
+                *a2 = params[1];
+                *a3 = params[2];
+            }
+            Self::Dust { beta } => {
+                assert!(
+                    params.len() == 1,
+                    "Dust requires 1 param, got {}",
+                    params.len()
+                );
+                *beta = params[0];
+            }
+        }
+    }
+
     /// Construct a new non-grav model which follows the default comet drop-off.
     #[must_use]
     pub fn new_jpl_comet_default(a1: f64, a2: f64, a3: f64) -> Self {

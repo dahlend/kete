@@ -5,7 +5,7 @@ from . import _core
 from .vector import State
 
 
-def compute_stm_radau(
+def compute_stm(
     state: State,
     jd_end: float,
     include_asteroids: bool = False,
@@ -40,9 +40,7 @@ def compute_stm_radau(
     tuple[State, np.ndarray]
         A tuple of (final_state, sensitivity_matrix).
     """
-    final_state, mat = _core.compute_stm_radau(
-        state, jd_end, include_asteroids, non_grav
-    )
+    final_state, mat = _core.compute_stm(state, jd_end, include_asteroids, non_grav)
     return final_state, np.array(mat)
 
 
@@ -69,5 +67,5 @@ def propagate_covariance(state: State, covariance: NDArray, jd_end: float) -> ND
     np.ndarray
         The propagated 6x6 covariance matrix in the same units.
     """
-    _, stm = compute_stm_radau(state, jd_end)
+    _, stm = compute_stm(state, jd_end)
     return stm @ covariance @ stm.T

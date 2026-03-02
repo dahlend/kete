@@ -1,0 +1,21 @@
+[package]
+name = "kete_fitting"
+readme = "README.md"
+keywords = ["physics", "simulation", "astronomy", "asteroid", "comet"]
+categories = ["Aerospace", "Science", "Simulation"]
+description = "Orbit determination and fitting for Kete."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "kete_fitting"
+
+[lints]
+workspace = true
+
+[dependencies]
+kete_core = {version = "*", path = "../kete_core"}
+nalgebra = {version = "^0.33.0", features = ["rayon"]}
