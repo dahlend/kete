@@ -96,6 +96,7 @@ pub fn compute_state_transition(
         state.epoch,
         jd,
         metadata,
+        Some(3),
     )?;
 
     let final_state = State::new(

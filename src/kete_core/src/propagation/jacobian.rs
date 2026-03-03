@@ -40,11 +40,11 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //
-use crate::constants::GMS;
-use crate::frames::Equatorial;
+use crate::constants::{C_AU_PER_DAY_INV_SQUARED, EARTH_J2, GMS, JUPITER_J2, SUN_J2};
+use crate::frames::{Ecliptic, Equatorial, InertialFrame};
 use crate::prelude::KeteResult;
 use crate::propagation::nongrav::NonGravModel;
-use crate::propagation::{AccelSPKMeta, spk_accel};
+use crate::propagation::{AccelSPKMeta, spk_accel_cached};
 use crate::spice::LOADED_SPK;
 use crate::time::{TDB, Time};
 use nalgebra::{Matrix3, SVector, Vector3};
@@ -54,29 +54,104 @@ use super::analytic_2_body;
 /// Perturbation size for finite-difference Jacobians.
 const EPS: f64 = 1e-7;
 
-/// Compute da/dr and da/dv via central finite differences of [`spk_accel`].
+/// Compute the analytical J2 oblateness Jacobian `da_J2/dd` in the body's
+/// pole-aligned frame.
 ///
-/// This automatically captures contributions from all forces (N-body gravity, GR, J2,
-/// non-gravitational). The 12 perturbed evaluations use `exact_eval = false` to avoid
-/// polluting close-approach metadata.
-fn spk_accel_jacobians(
-    time: Time<TDB>,
+/// Arguments:
+/// - `d`: relative position in the body's pole-aligned frame
+/// - `radius`: equatorial radius of the body (AU)
+/// - `j2`: J2 coefficient
+/// - `mass`: GM of the body (AU^3/day^2)
+fn j2_jacobian(d: &Vector3<f64>, radius: f64, j2: f64, mass: f64) -> Matrix3<f64> {
+    let d = *d;
+    let r = d.norm();
+    let r2 = r * r;
+    let z = d.z;
+
+    // lam = 3/2 * J2 * GM * Re^2 / r^5
+    let lambda = 1.5 * j2 * mass * (radius / r).powi(2) / (r2 * r);
+
+    // Z = 5 z_hat^2 = 5z^2/r^2
+    let big_z = 5.0 * z * z / r2;
+
+    // a/lam = [dx(Z-1), dy(Z-1), dz(Z-3)]
+    let a_norm = Vector3::new(
+        d.x * (big_z - 1.0),
+        d.y * (big_z - 1.0),
+        d.z * (big_z - 3.0),
+    );
+
+    // F = diag(Z-1, Z-1, Z-3)
+    let f_diag = Matrix3::from_diagonal(&Vector3::new(big_z - 1.0, big_z - 1.0, big_z - 3.0));
+
+    // dZ/dd = (10z/r^2)(e_hat_z - z d/r^2)  (column vector)
+    let e_z = Vector3::new(0.0, 0.0, 1.0);
+    let dz_dd = (10.0 * z / r2) * (e_z - (z / r2) * d);
+
+    // da/dd = lam (-5/r^2 * (a/lam) d^T  +  F  +  d (dZ/dd)^T)
+    lambda * (-5.0 / r2 * a_norm * d.transpose() + f_diag + d * dz_dd.transpose())
+}
+
+/// Analytical Dust (SRP + Poynting-Robertson) Jacobians `da/dr` and `da/dv`.
+///
+/// Position and velocity are Sun-relative.
+fn dust_jacobians(
     pos: &Vector3<f64>,
     vel: &Vector3<f64>,
-    meta: &mut AccelSPKMeta<'_>,
-) -> KeteResult<(Matrix3<f64>, Matrix3<f64>)> {
-    let saved_ca = meta.close_approach;
+    beta: f64,
+) -> (Matrix3<f64>, Matrix3<f64>) {
+    let pos = *pos;
+    let vel = *vel;
+    let r = pos.norm();
+    let r2 = r * r;
+    let d_hat = pos / r;
+    let cinv2 = C_AU_PER_DAY_INV_SQUARED;
+    let r_dot = d_hat.dot(&vel);
+    let s = GMS * beta / r2;
+    let ident = Matrix3::<f64>::identity();
+
+    // inner = a_dust / s = (1 - r_dot cinv2) d_hat - cinv2 v
+    let inner = (1.0 - r_dot * cinv2) * d_hat - cinv2 * vel;
+
+    // dd_hat/dd = (I - d_hat d_hat^T) / r
+    let dd_hat = (ident - d_hat * d_hat.transpose()) / r;
+
+    // dr_dot/dd = ((v - r_dot d_hat) / r)^T  (column vector; transposed in the outer product)
+    let dr_dot_col = (vel - r_dot * d_hat) / r;
+
+    // da/dd = (-2s/r^2) inner pos^T  +  s (-cinv2 d_hat (dr_dot/dd) + (1-r_dot cinv2)(dd_hat/dd))
+    let da_dr = (-2.0 * s / r2) * inner * pos.transpose()
+        + s * (-cinv2 * d_hat * dr_dot_col.transpose() + (1.0 - r_dot * cinv2) * dd_hat);
+
+    // da/dv = -s cinv2 (d_hat d_hat^T + I)
+    let da_dv = -s * cinv2 * (d_hat * d_hat.transpose() + ident);
+
+    (da_dr, da_dv)
+}
+
+/// Compute non-gravitational Jacobians via targeted finite differences.
+///
+/// Used for the JPL Comet model whose RTN-frame derivatives are complex.
+/// Only 12 evaluations of [`NonGravModel::add_acceleration`] are needed (no SPK
+/// lookups), so the cost is negligible.
+fn nongrav_jacobians_fd(
+    model: &NonGravModel,
+    pos: &Vector3<f64>,
+    vel: &Vector3<f64>,
+) -> (Matrix3<f64>, Matrix3<f64>) {
+    let inv_2eps = 0.5 / EPS;
     let mut da_dr = Matrix3::<f64>::zeros();
     let mut da_dv = Matrix3::<f64>::zeros();
-    let inv_2eps = 0.5 / EPS;
 
     for i in 0..3 {
         let mut pos_p = *pos;
         let mut pos_m = *pos;
         pos_p[i] += EPS;
         pos_m[i] -= EPS;
-        let a_p = spk_accel(time, &pos_p, vel, meta, false)?;
-        let a_m = spk_accel(time, &pos_m, vel, meta, false)?;
+        let mut a_p = Vector3::zeros();
+        let mut a_m = Vector3::zeros();
+        model.add_acceleration(&mut a_p, &pos_p, vel);
+        model.add_acceleration(&mut a_m, &pos_m, vel);
         da_dr.set_column(i, &((a_p - a_m) * inv_2eps));
     }
 
@@ -85,13 +160,107 @@ fn spk_accel_jacobians(
         let mut vel_m = *vel;
         vel_p[i] += EPS;
         vel_m[i] -= EPS;
-        let a_p = spk_accel(time, pos, &vel_p, meta, false)?;
-        let a_m = spk_accel(time, pos, &vel_m, meta, false)?;
+        let mut a_p = Vector3::zeros();
+        let mut a_m = Vector3::zeros();
+        model.add_acceleration(&mut a_p, pos, &vel_p);
+        model.add_acceleration(&mut a_m, pos, &vel_m);
         da_dv.set_column(i, &((a_p - a_m) * inv_2eps));
     }
 
-    meta.close_approach = saved_ca;
-    Ok((da_dr, da_dv))
+    (da_dr, da_dv)
+}
+
+/// Compute analytical `da/dr` and `da/dv` for the full force model.
+///
+/// Includes contributions from:
+/// - Newtonian N-body gravity (all massive bodies)
+/// - General relativity correction (Sun, Jupiter)
+/// - J2 oblateness (Sun, Jupiter, Earth)
+/// - Non-gravitational forces (Dust: analytical; JPL Comet: targeted FD)
+fn analytical_jacobians(
+    pos: &Vector3<f64>,
+    vel: &Vector3<f64>,
+    cached_states: &[(Vector3<f64>, Vector3<f64>)],
+    meta: &AccelSPKMeta<'_>,
+) -> (Matrix3<f64>, Matrix3<f64>) {
+    let pos = *pos;
+    let vel = *vel;
+    let mut da_dr = Matrix3::<f64>::zeros();
+    let mut da_dv = Matrix3::<f64>::zeros();
+    let ident = Matrix3::<f64>::identity();
+
+    for (grav_params, (body_pos, body_vel)) in meta.massive_obj.iter().zip(cached_states) {
+        let d = pos - body_pos;
+        let v = vel - body_vel;
+        let r = d.norm();
+        let r2 = r * r;
+        let r3 = r2 * r;
+        let r5 = r2 * r3;
+        let mass = grav_params.mass;
+
+        // 1. Newtonian point-mass: da/dr = -GM/r^5 (r^2I - 3 d d^T)
+        da_dr -= (mass / r5) * (r2 * ident - 3.0 * d * d.transpose());
+
+        match grav_params.naif_id {
+            5 | 10 => {
+                // 2. GR correction (Sec 3.2)
+                let cinv2 = C_AU_PER_DAY_INV_SQUARED;
+                let kappa = mass * cinv2 / r3;
+                let v2 = v.norm_squared();
+                let big_c = 4.0 * mass / r - v2;
+                let big_r = 4.0 * d.dot(&v);
+                let a_gr = big_c * d + big_r * v;
+
+                // da_GR/dr
+                da_dr += (-3.0 * kappa / r2) * a_gr * d.transpose()
+                    + kappa
+                        * ((-4.0 * mass / r3) * d * d.transpose()
+                            + big_c * ident
+                            + 4.0 * v * v.transpose());
+
+                // da_GR/dv
+                da_dv +=
+                    kappa * (-2.0 * d * v.transpose() + 4.0 * v * d.transpose() + big_r * ident);
+
+                // 3. J2 oblateness (Sec 3.3  -  ecliptic frame for Sun/Jupiter)
+                let j2_val = if grav_params.naif_id == 10 {
+                    SUN_J2
+                } else {
+                    JUPITER_J2
+                };
+                let d_ec = Ecliptic::from_equatorial(d);
+                let j2_jac = j2_jacobian(&d_ec, f64::from(grav_params.radius), j2_val, mass);
+                // Rotate back: R * J * R^T
+                let rot = *Ecliptic::rotation_to_equatorial().matrix();
+                da_dr += rot * j2_jac * rot.transpose();
+            }
+            399 => {
+                // J2 for Earth (Sec 3.3  -  equatorial frame directly)
+                da_dr += j2_jacobian(&d, f64::from(grav_params.radius), EARTH_J2, mass);
+            }
+            _ => {}
+        }
+    }
+
+    // Non-gravitational forces (Sec 3.4)
+    if let Some(model) = &meta.non_grav_model {
+        let sun_idx = meta
+            .massive_obj
+            .iter()
+            .position(|g| g.naif_id == 10)
+            .expect("Sun must be in massive_obj for non-grav models");
+        let (sun_pos, sun_vel) = &cached_states[sun_idx];
+        let rel_pos = pos - sun_pos;
+        let rel_vel = vel - sun_vel;
+        let (ng_dr, ng_dv) = match model {
+            NonGravModel::Dust { beta } => dust_jacobians(&rel_pos, &rel_vel, *beta),
+            NonGravModel::JplComet { .. } => nongrav_jacobians_fd(model, &rel_pos, &rel_vel),
+        };
+        da_dr += ng_dr;
+        da_dv += ng_dv;
+    }
+
+    (da_dr, da_dv)
 }
 
 /// Compute analytical partial derivatives of the non-gravitational acceleration
@@ -132,8 +301,8 @@ fn nongrav_param_partials(
             let norm2_inv = pos.norm_squared().recip();
             let scale = GMS * norm2_inv;
             let partial = scale
-                * ((1.0 - r_dot * crate::constants::C_AU_PER_DAY_INV_SQUARED) * pos_hat
-                    - vel * crate::constants::C_AU_PER_DAY_INV_SQUARED);
+                * ((1.0 - r_dot * C_AU_PER_DAY_INV_SQUARED) * pos_hat
+                    - vel * C_AU_PER_DAY_INV_SQUARED);
             vec![partial]
         }
     }
@@ -171,12 +340,25 @@ pub(crate) fn stm_augmented_accel(
     let pos: Vector3<f64> = pos_aug.fixed_rows::<3>(0).into();
     let vel: Vector3<f64> = vel_aug.fixed_rows::<3>(0).into();
 
+    // Cache planet states once  -  reused by the base acceleration evaluation,
+    // the analytical Jacobians, and the non-grav parameter partials.
+    let cached_states: Vec<(Vector3<f64>, Vector3<f64>)> = {
+        let spk = &LOADED_SPK.try_read()?;
+        meta.massive_obj
+            .iter()
+            .map(|g| {
+                let state = spk.try_get_state_with_center::<Equatorial>(g.naif_id, time, 0)?;
+                Ok((Vector3::from(state.pos), Vector3::from(state.vel)))
+            })
+            .collect::<KeteResult<_>>()?
+    };
+
     // Physical acceleration
-    let accel = spk_accel(time, &pos, &vel, meta, exact_eval)?;
+    let accel = spk_accel_cached(time, &pos, &vel, &cached_states, meta, exact_eval)?;
     result.fixed_rows_mut::<3>(0).copy_from(&accel);
 
-    // State Jacobians via finite differences
-    let (da_dr, da_dv) = spk_accel_jacobians(time, &pos, &vel, meta)?;
+    // State Jacobians via analytical expressions (gravity, GR, J2, non-grav)
+    let (da_dr, da_dv) = analytical_jacobians(&pos, &vel, &cached_states, meta);
 
     // Phi_rr'' = da_dr * Phi_rr + da_dv * Phi_rr'
     let phi_rr = Matrix3::from_column_slice(&pos_aug.as_slice()[3..12]);
@@ -193,10 +375,15 @@ pub(crate) fn stm_augmented_accel(
     // Parameter sensitivities: s_k'' = da_dr * s_k + da_dv * s_k' + da/dp_k
     // Non-grav partials must use Sun-relative pos/vel, matching spk_accel internals.
     if let Some(model) = meta.non_grav_model.as_ref() {
-        let spk = &LOADED_SPK.try_read()?;
-        let sun_state = spk.try_get_state_with_center::<Equatorial>(10, time, 0)?;
-        let rel_pos = pos - Vector3::from(sun_state.pos);
-        let rel_vel = vel - Vector3::from(sun_state.vel);
+        // Find the Sun (NAIF ID 10) in the cached states.
+        let sun_idx = meta
+            .massive_obj
+            .iter()
+            .position(|g| g.naif_id == 10)
+            .expect("Sun must be in massive_obj for non-grav models");
+        let (sun_pos, sun_vel) = &cached_states[sun_idx];
+        let rel_pos = pos - sun_pos;
+        let rel_vel = vel - sun_vel;
         let partials = nongrav_param_partials(model, &rel_pos, &rel_vel);
         for (k, partial_k) in partials.iter().enumerate() {
             let base = 21 + k * 3;
@@ -219,6 +406,52 @@ mod tests {
     use crate::propagation::propagate_n_body_spk;
     use crate::propagation::state_transition::compute_state_transition;
     use crate::state::State;
+
+    /// Compute da/dr and da/dv via central finite differences of [`spk_accel_cached`].
+    ///
+    /// This automatically captures contributions from all forces (N-body gravity, GR, J2,
+    /// non-gravitational). The 12 perturbed evaluations use `exact_eval = false` to avoid
+    /// polluting close-approach metadata.
+    ///
+    /// `cached_states` must contain pre-fetched `(pos, vel)` for each massive body,
+    /// avoiding redundant SPK lookups across the 12 perturbations.
+    ///
+    /// Retained as a test-only reference for validating `analytical_jacobians`.
+    fn spk_accel_jacobians(
+        time: Time<TDB>,
+        pos: &Vector3<f64>,
+        vel: &Vector3<f64>,
+        cached_states: &[(Vector3<f64>, Vector3<f64>)],
+        meta: &mut AccelSPKMeta<'_>,
+    ) -> KeteResult<(Matrix3<f64>, Matrix3<f64>)> {
+        let saved_ca = meta.close_approach;
+        let mut da_dr = Matrix3::<f64>::zeros();
+        let mut da_dv = Matrix3::<f64>::zeros();
+        let inv_2eps = 0.5 / EPS;
+
+        for i in 0..3 {
+            let mut pos_p = *pos;
+            let mut pos_m = *pos;
+            pos_p[i] += EPS;
+            pos_m[i] -= EPS;
+            let a_p = spk_accel_cached(time, &pos_p, vel, cached_states, meta, false)?;
+            let a_m = spk_accel_cached(time, &pos_m, vel, cached_states, meta, false)?;
+            da_dr.set_column(i, &((a_p - a_m) * inv_2eps));
+        }
+
+        for i in 0..3 {
+            let mut vel_p = *vel;
+            let mut vel_m = *vel;
+            vel_p[i] += EPS;
+            vel_m[i] -= EPS;
+            let a_p = spk_accel_cached(time, pos, &vel_p, cached_states, meta, false)?;
+            let a_m = spk_accel_cached(time, pos, &vel_m, cached_states, meta, false)?;
+            da_dv.set_column(i, &((a_p - a_m) * inv_2eps));
+        }
+
+        meta.close_approach = saved_ca;
+        Ok((da_dr, da_dv))
+    }
 
     /// Helper: create a test state at ~1 AU from the Sun (solar-system barycenter centered).
     fn test_state() -> State<Equatorial> {
@@ -481,6 +714,87 @@ mod tests {
         assert!(
             (det - 1.0).abs() < 1e-3,
             "Long-arc STM determinant should be ~1, got {det}"
+        );
+    }
+
+    /// Compare analytical Jacobians against the FD reference at a given state.
+    fn check_jacobians_match(non_grav: Option<NonGravModel>, tol: f64) {
+        let state = test_state();
+        let time = state.epoch;
+        let pos: Vector3<f64> = state.pos.into();
+        let vel: Vector3<f64> = state.vel.into();
+        let planets = GravParams::planets();
+
+        let cached_states: Vec<(Vector3<f64>, Vector3<f64>)> = {
+            let spk = &LOADED_SPK.try_read().unwrap();
+            planets
+                .iter()
+                .map(|g| {
+                    let s = spk
+                        .try_get_state_with_center::<Equatorial>(g.naif_id, time, 0)
+                        .unwrap();
+                    (Vector3::from(s.pos), Vector3::from(s.vel))
+                })
+                .collect()
+        };
+
+        let mut meta = AccelSPKMeta {
+            close_approach: None,
+            non_grav_model: non_grav,
+            massive_obj: &planets,
+        };
+
+        let (fd_dr, fd_dv) =
+            spk_accel_jacobians(time, &pos, &vel, &cached_states, &mut meta).unwrap();
+        let (an_dr, an_dv) = analytical_jacobians(&pos, &vel, &cached_states, &meta);
+
+        // FD round-off noise is ~eps_machine * |a| / EPS ~= 3e-13.
+        // For Jacobian elements at or below this floor (e.g. GR da/dv ~ 1e-12),
+        // FD accuracy is poor.  Use combined absolute + relative criterion:
+        //   |err| < max(scale * rel_tol, abs_tol)
+        let abs_tol = 1e-12;
+
+        for i in 0..3 {
+            for j in 0..3 {
+                // da/dr
+                let fd = fd_dr[(i, j)];
+                let an = an_dr[(i, j)];
+                let abs_err = (fd - an).abs();
+                let scale = fd.abs().max(an.abs());
+                let threshold = (scale * tol).max(abs_tol);
+                assert!(
+                    abs_err < threshold,
+                    "da_dr[{i},{j}]: analytical={an:.10e}, fd={fd:.10e}, err={abs_err:.4e}, thr={threshold:.4e}"
+                );
+                // da/dv
+                let fd = fd_dv[(i, j)];
+                let an = an_dv[(i, j)];
+                let abs_err = (fd - an).abs();
+                let scale = fd.abs().max(an.abs());
+                let threshold = (scale * tol).max(abs_tol);
+                assert!(
+                    abs_err < threshold,
+                    "da_dv[{i},{j}]: analytical={an:.10e}, fd={fd:.10e}, err={abs_err:.4e}, thr={threshold:.4e}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn analytical_vs_fd_gravity_only() {
+        check_jacobians_match(None, 5e-6);
+    }
+
+    #[test]
+    fn analytical_vs_fd_dust() {
+        check_jacobians_match(Some(NonGravModel::new_dust(0.01)), 5e-6);
+    }
+
+    #[test]
+    fn analytical_vs_fd_jpl_comet() {
+        check_jacobians_match(
+            Some(NonGravModel::new_jpl_comet_default(1e-8, 1e-9, 1e-10)),
+            5e-6,
         );
     }
 }

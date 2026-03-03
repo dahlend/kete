@@ -320,7 +320,7 @@ impl PyOrbitFit {
 /// non_grav : NonGravModel, optional
 ///     Non-gravitational force model, if any.
 /// max_iter : int, optional
-///     Maximum number of iterations. Default is 20.
+///     Maximum number of iterations. Default is 50.
 /// tol : float, optional
 ///     Convergence tolerance on the state correction norm. Default is 1e-8.
 ///
@@ -331,7 +331,7 @@ impl PyOrbitFit {
 #[pyfunction]
 #[pyo3(
     name = "differential_correction",
-    signature = (initial_state, observations, include_asteroids=false, non_grav=None, max_iter=20, tol=1e-8)
+    signature = (initial_state, observations, include_asteroids=false, non_grav=None, max_iter=50, tol=1e-8)
 )]
 pub fn differential_correction_py(
     initial_state: PyState,
@@ -379,7 +379,7 @@ pub fn differential_correction_py(
 /// non_grav : NonGravModel, optional
 ///     Non-gravitational force model, if any.
 /// max_iter : int, optional
-///     Maximum iterations per convergence pass. Default is 20.
+///     Maximum iterations per convergence pass. Default is 50.
 /// tol : float, optional
 ///     Convergence tolerance. Default is 1e-8.
 /// chi2_threshold : float, optional
@@ -399,7 +399,7 @@ pub fn differential_correction_py(
         observations,
         include_asteroids=false,
         non_grav=None,
-        max_iter=20,
+        max_iter=50,
         tol=1e-8,
         chi2_threshold=9.0,
         max_reject_passes=3,

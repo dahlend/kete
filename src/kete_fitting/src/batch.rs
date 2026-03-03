@@ -164,10 +164,17 @@ fn n_nongrav_params(ng: Option<&NonGravModel>) -> usize {
     ng.map_or(0, NonGravModel::n_free_params)
 }
 
-/// Run the iterative convergence loop.
+/// Run the iterative convergence loop with adaptive Levenberg-Marquardt
+/// damping and step-size limiting.
 ///
-/// Iterates `one_iteration` -> `apply_correction` -> check tolerance.
-/// On convergence, computes the covariance and post-fit residuals.
+/// Each iteration accumulates the normal equations at the current
+/// linearisation point, then solves `(N + lambda * diag(N)) dx = b`.
+/// If the weighted chi-squared increased from the previous iteration the
+/// damping parameter `lambda` is raised (more gradient-descent-like);
+/// a decrease lets `lambda` shrink back toward pure Gauss-Newton.
+///
+/// Position and velocity corrections are capped per iteration to prevent
+/// wild jumps from a poor initial guess.
 fn solve_once(
     initial_state: &State<Equatorial>,
     obs: &[Observation],
@@ -178,10 +185,32 @@ fn solve_once(
     tol: f64,
 ) -> KeteResult<OrbitFit> {
     let mut state_epoch = initial_state.clone();
+    let mut lambda = 0.0_f64;
+    let mut prev_chi2 = f64::MAX;
 
-    for _iter in 0..max_iter {
-        let (dx, n_mat) =
-            one_iteration(&state_epoch, obs, included, massive_obj, non_grav.as_ref())?;
+    for iter in 0..max_iter {
+        let (n_mat, b_vec, chi2) = accumulate_normal_equations(
+            &state_epoch,
+            obs,
+            included,
+            massive_obj,
+            non_grav.as_ref(),
+        )?;
+
+        // Adaptive Levenberg-Marquardt damping.
+        if iter > 0 {
+            if chi2 >= prev_chi2 {
+                // Last step made things worse: increase damping.
+                lambda = if lambda < 1e-6 { 1.0 } else { lambda * 10.0 };
+            } else {
+                // Improvement: relax toward pure Gauss-Newton.
+                lambda *= 0.1;
+            }
+        }
+        prev_chi2 = chi2;
+
+        let dx = solve_damped(&n_mat, &b_vec, lambda)?;
+        let dx = limit_correction(dx);
         apply_correction(&mut state_epoch, &dx, &mut non_grav);
 
         if dx.norm() < tol {
@@ -204,22 +233,24 @@ fn solve_once(
     )))
 }
 
-/// Perform one iteration of the batch least squares.
+/// Accumulate the weighted normal equations for one linearisation pass.
 ///
-/// Returns `(dx, N)` where `dx` is the D-dimensional state correction vector
-/// (D = 6 + Np) and `N` is the normal matrix (for covariance on convergence).
-fn one_iteration(
+/// Returns `(N, b, chi2)` where `N` is the D x D information matrix,
+/// `b` is the D-dimensional right-hand side, and `chi2` is the current
+/// weighted sum of squared residuals.
+fn accumulate_normal_equations(
     state_epoch: &State<Equatorial>,
     obs: &[Observation],
     included: &[bool],
     massive_obj: &[GravParams],
     non_grav: Option<&NonGravModel>,
-) -> KeteResult<(DVector<f64>, DMatrix<f64>)> {
+) -> KeteResult<(DMatrix<f64>, DVector<f64>, f64)> {
     let np = n_nongrav_params(non_grav);
     let d = 6 + np;
 
     let mut n_mat = DMatrix::<f64>::zeros(d, d);
     let mut b_vec = DVector::<f64>::zeros(d);
+    let mut chi2 = 0.0;
 
     // Cumulative STM: 6 x D.
     // Initialized to [I_6 | 0_{6 x Np}].
@@ -277,9 +308,11 @@ fn one_iteration(
         // Weight vector.
         let w = observation.weights();
 
-        // Accumulate normal equations: N += H^T W H, b += H^T W r.
-        // W is diagonal, stored as a DVector.
+        // Accumulate chi-squared, normal matrix, and RHS.
         let m = observation.measurement_dim();
+        for k in 0..m {
+            chi2 += residual[k] * residual[k] * w[k];
+        }
         for ii in 0..d {
             for jj in 0..d {
                 for k in 0..m {
@@ -292,13 +325,56 @@ fn one_iteration(
         }
     }
 
-    // Solve: dx = N^{-1} * b via SVD (robust to near-singular N).
-    let svd = n_mat.clone().svd(true, true);
-    let dx = svd
-        .solve(&b_vec, 1e-14)
-        .map_err(|_| Error::ValueError("SVD solve failed on normal matrix".into()))?;
+    Ok((n_mat, b_vec, chi2))
+}
 
-    Ok((dx, n_mat))
+/// Solve `(N + lambda * diag(N)) * dx = b` via SVD.
+///
+/// When `lambda > 0` the diagonal of N is augmented, pulling the solution
+/// toward a steepest-descent step and stabilising poorly-constrained
+/// directions.
+fn solve_damped(
+    n_mat: &DMatrix<f64>,
+    b_vec: &DVector<f64>,
+    lambda: f64,
+) -> KeteResult<DVector<f64>> {
+    let mut n_work = n_mat.clone();
+    if lambda > 0.0 {
+        for i in 0..n_work.nrows() {
+            n_work[(i, i)] += lambda * n_mat[(i, i)].abs().max(1e-15);
+        }
+    }
+    let svd = n_work.svd(true, true);
+    svd.solve(b_vec, 1e-14)
+        .map_err(|_| Error::ValueError("SVD solve failed on damped normal matrix".into()))
+}
+
+/// Cap position and velocity corrections to prevent wild jumps.
+///
+/// Position is limited to 0.5 AU and velocity to 0.005 AU/day per iteration.
+/// Non-grav parameters (indices 6..) are left uncapped since the LM damping
+/// already regulates them.
+fn limit_correction(mut dx: DVector<f64>) -> DVector<f64> {
+    const MAX_POS: f64 = 0.5; // AU
+    const MAX_VEL: f64 = 0.005; // AU/day
+
+    let pos_norm = (dx[0] * dx[0] + dx[1] * dx[1] + dx[2] * dx[2]).sqrt();
+    if pos_norm > MAX_POS {
+        let s = MAX_POS / pos_norm;
+        for v in dx.rows_mut(0, 3).iter_mut() {
+            *v *= s;
+        }
+    }
+
+    let vel_norm = (dx[3] * dx[3] + dx[4] * dx[4] + dx[5] * dx[5]).sqrt();
+    if vel_norm > MAX_VEL {
+        let s = MAX_VEL / vel_norm;
+        for v in dx.rows_mut(3, 3).iter_mut() {
+            *v *= s;
+        }
+    }
+
+    dx
 }
 
 /// Apply a state correction vector to the epoch state and (optionally)

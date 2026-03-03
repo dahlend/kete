@@ -201,6 +201,52 @@ pub fn spk_accel(
     Ok(accel)
 }
 
+/// Like [`spk_accel`], but uses pre-fetched planet states instead of querying SPK.
+///
+/// `cached_states` must contain one `(pos, vel)` pair per entry in
+/// `meta.massive_obj`, in the same order, already SSB-centered.
+///
+/// This avoids redundant SPK interpolations when the same planet states are needed
+/// for multiple evaluations at the same time (e.g. finite-difference Jacobians).
+pub(crate) fn spk_accel_cached(
+    time: Time<TDB>,
+    pos: &Vector3<f64>,
+    vel: &Vector3<f64>,
+    cached_states: &[(Vector3<f64>, Vector3<f64>)],
+    meta: &mut AccelSPKMeta<'_>,
+    exact_eval: bool,
+) -> KeteResult<Vector3<f64>> {
+    let mut accel = Vector3::<f64>::zeros();
+
+    for (grav_params, (body_pos, body_vel)) in meta.massive_obj.iter().zip(cached_states) {
+        let radius = grav_params.radius;
+        let rel_pos: Vector3<f64> = pos - body_pos;
+        let rel_vel: Vector3<f64> = vel - body_vel;
+
+        if exact_eval {
+            let r = rel_pos.norm();
+            if let Some(close_approach) = meta.close_approach.as_mut()
+                && r <= close_approach.2
+            {
+                *close_approach = (grav_params.naif_id, time, r);
+            }
+
+            if r as f32 <= radius {
+                Err(Error::Impact(grav_params.naif_id, time))?;
+            }
+        }
+        grav_params.add_acceleration(&mut accel, &rel_pos, &rel_vel);
+
+        // If the center is the sun, add non-gravitational forces
+        if grav_params.naif_id == 10
+            && let Some(non_grav) = &meta.non_grav_model
+        {
+            non_grav.add_acceleration(&mut accel, &rel_pos, &rel_vel);
+        }
+    }
+    Ok(accel)
+}
+
 /// Convert the second order ODE acceleration function into a first order.
 /// This allows the second order ODE to be used with the picard integrator.
 ///

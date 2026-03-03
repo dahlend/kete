@@ -54,6 +54,7 @@ mod state_transition;
 mod util;
 
 // expose the public methods in spk to the outside world.
+pub(crate) use acceleration::spk_accel_cached;
 pub use acceleration::{
     AccelSPKMeta, AccelVecMeta, CentralAccelMeta, accel_grad, central_accel, central_accel_grad,
     spk_accel, spk_accel_first_order, vec_accel,
@@ -105,6 +106,7 @@ pub fn propagate_n_body_spk(
             state.epoch,
             jd_final,
             metadata,
+            None,
         )?
     };
 
@@ -365,6 +367,7 @@ pub fn propagate_n_body_vec(
             jd_init,
             jd_final,
             meta,
+            None,
         )?
     };
     let sun_pos = pos.fixed_rows::<3>(0);
