@@ -7,7 +7,6 @@ use kete_core::prelude::*;
 use kete_core::spice::LOADED_SPK;
 use kete_fitting::{
     Observation, OrbitFit, differential_correction, differential_correction_with_rejection,
-    gauss_iod, laplace_iod,
 };
 use pyo3::{PyResult, pyclass, pyfunction, pymethods};
 
@@ -244,7 +243,8 @@ impl PyObservation {
 /// included : list[bool]
 ///     Whether each observation (time-sorted) was included or rejected.
 /// rms : float
-///     Weighted RMS of post-fit residuals (included observations only).
+///     Reduced weighted RMS of post-fit residuals (included observations
+///     only), divided by degrees of freedom.
 #[pyclass(frozen, module = "kete.fitting", name = "OrbitFit")]
 #[derive(Debug, Clone)]
 pub struct PyOrbitFit(pub OrbitFit);
@@ -268,12 +268,24 @@ impl PyOrbitFit {
     }
 
     /// Post-fit residuals as a list of lists (time-sorted order).
+    ///
+    /// For optical observations the two elements are (DeltaRA, DeltaDec) in
+    /// **arcseconds**.  Radar residuals remain in AU or AU/day.
     #[getter]
     fn residuals(&self) -> Vec<Vec<f64>> {
+        let rad_to_arcsec = 180.0 * 3600.0 / std::f64::consts::PI;
         self.0
             .residuals
             .iter()
-            .map(|r| r.iter().copied().collect())
+            .map(|r| {
+                // Optical residuals have 2 elements (RA, Dec) in radians;
+                // radar residuals have 1 element in AU or AU/day.
+                if r.len() == 2 {
+                    r.iter().map(|v| v * rad_to_arcsec).collect()
+                } else {
+                    r.iter().copied().collect()
+                }
+            })
             .collect()
     }
 
@@ -283,7 +295,7 @@ impl PyOrbitFit {
         self.0.included.clone()
     }
 
-    /// Weighted RMS of post-fit residuals.
+    /// Reduced weighted RMS of post-fit residuals.
     #[getter]
     fn rms(&self) -> f64 {
         self.0.rms
@@ -295,13 +307,22 @@ impl PyOrbitFit {
         self.0.non_grav.clone().map(PyNonGravModel)
     }
 
+    /// Whether the solver achieved strict convergence.
+    ///
+    /// When ``False`` the fit is the best found within the iteration
+    /// limit but the correction norm did not drop below `tol`.
+    #[getter]
+    fn converged(&self) -> bool {
+        self.0.converged
+    }
+
     /// String representation.
     fn __repr__(&self) -> String {
         let n_obs = self.0.included.len();
         let n_inc = self.0.included.iter().filter(|&&b| b).count();
         format!(
-            "OrbitFit(rms={:.6e}, obs={}/{}, epoch={:.6})",
-            self.0.rms, n_inc, n_obs, self.0.state.epoch.jd,
+            "OrbitFit(rms={:.6e}, obs={}/{}, converged={}, epoch={:.6})",
+            self.0.rms, n_inc, n_obs, self.0.converged, self.0.state.epoch.jd,
         )
     }
 }
@@ -451,47 +472,15 @@ pub fn differential_correction_with_rejection_py(
 /// ----------
 /// observations : list[Observation]
 ///     Observations to use for IOD.
-/// method : str
-///     IOD method name: ``"gauss"``, ``"laplace"``, or ``"known"``.
-/// known_state : State, optional
-///     Required when ``method="known"``. The known initial state to use
-///     as-is (bypasses IOD computation).
 ///
 /// Returns
 /// -------
 /// list[State]
-///     One or more candidate initial states (multiple roots possible
-///     for Gauss and Laplace methods).
+///     One or more candidate initial states.
 #[pyfunction]
-#[pyo3(name = "initial_orbit_determination", signature = (observations, method, known_state=None))]
-pub fn initial_orbit_determination_py(
-    observations: Vec<PyObservation>,
-    method: &str,
-    known_state: Option<PyState>,
-) -> PyResult<Vec<PyState>> {
+#[pyo3(name = "initial_orbit_determination")]
+pub fn initial_orbit_determination_py(observations: Vec<PyObservation>) -> PyResult<Vec<PyState>> {
     let obs: Vec<Observation> = observations.into_iter().map(|o| o.0).collect();
-
-    let states = match method.to_lowercase().as_str() {
-        "gauss" => gauss_iod(&obs)?,
-        "laplace" => laplace_iod(&obs)?,
-        "known" => {
-            let state = known_state.ok_or_else(|| {
-                Error::ValueError("known_state is required when method='known'".into())
-            })?;
-            let mut raw = state.raw;
-            {
-                let spk = &LOADED_SPK.try_read().map_err(Error::from)?;
-                spk.try_change_center(&mut raw, 0)?;
-            }
-            vec![raw]
-        }
-        _ => {
-            return Err(Error::ValueError(format!(
-                "Unknown IOD method '{}'. Use 'gauss', 'laplace', or 'known'.",
-                method
-            ))
-            .into());
-        }
-    };
+    let states = kete_fitting::initial_orbit_determination(&obs)?;
     Ok(states.into_iter().map(Into::into).collect())
 }

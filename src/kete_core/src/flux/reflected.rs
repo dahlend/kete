@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Specifically page Page 550 - Equation (A4):
 ///
-/// Asteroids II. University of Arizona Press, Tucson, pp. 524–556.
+/// Asteroids II. University of Arizona Press, Tucson, pp. 524-556.
 /// Bowell, E., Hapke, B., Domingue, D., Lumme, K., Peltoniemi, J., Harris,
 /// A.W., 1989. Application of photometric models to asteroids, in: Binzel,
 /// R.P., Gehrels, T., Matthews, M.S. (Eds.)
@@ -105,7 +105,7 @@ pub fn cometary_dust_phase_curve_correction(phase_angle: f64) -> f64 {
 ///
 /// Specifically page Page 549 - Equation (A1) of:
 ///
-/// Asteroids II. University of Arizona Press, Tucson, pp. 524–556.
+/// Asteroids II. University of Arizona Press, Tucson, pp. 524-556.
 /// Bowell, E., Hapke, B., Domingue, D., Lumme, K., Peltoniemi, J., Harris,
 /// A.W., 1989. Application of photometric models to asteroids, in: Binzel,
 /// R.P., Gehrels, T., Matthews, M.S. (Eds.)

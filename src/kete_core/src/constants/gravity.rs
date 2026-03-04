@@ -53,10 +53,6 @@ pub const GMS_SQRT: f64 = 0.01720209894996;
 ///
 /// This paper below a source, however there are several papers which all put
 /// the Sun's J2 at 2.2e-7.
-///
-/// "Prospects of Dynamical Determination of General Relativity Parameter β and Solar
-/// Quadrupole Moment J2 with Asteroid Radar Astronomy"
-/// The Astrophysical Journal, 845:166 (5pp), 2017 August 20
 pub const SUN_J2: f64 = 2.2e-7;
 
 /// Earth J2 Parameter
@@ -71,7 +67,7 @@ pub const EARTH_J4: f64 = -0.00000161098761;
 
 /// Jupiter J2 Parameter
 ///
-/// "Measurement of Jupiter’s asymmetric gravity field"
+/// "Measurement of Jupiter's asymmetric gravity field"
 /// <https://www.nature.com/articles/nature25776>
 /// Nature 555, 220-220, 2018 March 8
 pub const JUPITER_J2: f64 = 0.014696572;

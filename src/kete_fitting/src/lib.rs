@@ -4,10 +4,12 @@
 //! initial orbit determination, and observation modeling for the Kete solar
 //! system survey simulator.
 
-mod batch;
+mod diff_correction;
 mod iod;
 mod obs;
 
-pub use batch::{OrbitFit, differential_correction, differential_correction_with_rejection};
-pub use iod::{gauss_iod, laplace_iod};
+pub use diff_correction::{
+    OrbitFit, differential_correction, differential_correction_with_rejection,
+};
+pub use iod::initial_orbit_determination;
 pub use obs::Observation;

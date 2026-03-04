@@ -68,7 +68,7 @@ where
 
 /// Dataset with associated uncertainties.
 ///
-/// This structure pairs measurements with their one-sigma (1σ) uncertainties, representing
+/// This structure pairs measurements with their one-sigma (1-sigma) uncertainties, representing
 /// the standard deviation of each measurement. All statistical methods using these
 /// uncertainties assume they represent Gaussian (normal) errors.
 ///
@@ -81,7 +81,7 @@ where
     /// Measured values of the dataset.
     pub values: Data<T>,
 
-    /// One-sigma (1σ) uncertainties (standard deviations) for each measurement
+    /// One-sigma (1-sigma) uncertainties (standard deviations) for each measurement
     /// assuming Gaussian errors.
     pub uncertainties: Data<T>,
 }
@@ -375,7 +375,7 @@ impl<T> UncertainData<T>
 where
     T: num_traits::Float + num_traits::NumAssignOps + std::iter::Sum,
 {
-    /// Compute the weighted mean using inverse variance weighting (1/σ²).
+    /// Compute the weighted mean using inverse variance weighting (1/sigma^2).
     ///
     /// This is the optimal estimator for combining measurements with different uncertainties,
     /// and is mathematically equivalent to the value that minimizes the reduced chi-squared
@@ -383,7 +383,7 @@ where
     /// but is computed directly without iterative optimization.
     ///
     /// # Formula
-    /// ``weighted_mean = Σ(x_i / σ_i²) / Σ(1 / σ_i²)``
+    /// ``weighted_mean = Sum(x_i / sigma_i^2) / Sum(1 / sigma_i^2)``
     #[must_use]
     pub fn weighted_mean(&self) -> T {
         let mut sum_weights = T::zero();
@@ -401,7 +401,7 @@ where
     /// Compute the weighted variance using inverse variance weighting.
     ///
     /// # Formula
-    /// ``weighted_variance = 1 / Σ(1 / σ_i²)``
+    /// ``weighted_variance = 1 / Sum(1 / sigma_i^2)``
     #[must_use]
     pub fn weighted_variance(&self) -> T {
         let sum_weights: T = self
@@ -429,7 +429,7 @@ where
     /// When uncertainties vary, this is reduced based on the variance of the weights.
     ///
     /// # Formula
-    /// ``n_eff = (Σw_i)² / Σ(w_i²) where w_i = 1/σ_i²``
+    /// ``n_eff = (Sum w_i)^2 / Sum(w_i^2) where w_i = 1/sigma_i^2``
     #[must_use]
     pub fn effective_sample_size(&self) -> T {
         let weights: Vec<T> = self
@@ -1094,7 +1094,7 @@ mod tests {
     fn test_std_known_values() {
         // Standard deviation of [2, 4, 6, 8] with mean 5
         // Variance = ((2-5)^2 + (4-5)^2 + (6-5)^2 + (8-5)^2) / 4 = (9 + 1 + 1 + 9) / 4 = 5
-        // Std = sqrt(5) ≈ 2.236
+        // Std = sqrt(5) ~= 2.236
         let data: Data<_> = vec![2.0, 4.0, 6.0, 8.0].try_into().unwrap();
         assert!((data.std() - 5_f64.sqrt()).abs() < 1e-10);
     }
@@ -1185,8 +1185,8 @@ mod tests {
 
     #[test]
     fn test_sigma_clip() {
-        // Test data with outliers: mean=5, std≈3.16
-        // Values at ±3σ would be roughly -4.5 and 14.5
+        // Test data with outliers: mean=5, std~=3.16
+        // Values at +/-3sigma would be roughly -4.5 and 14.5
         let data: Data<_> = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 100.0]
             .try_into()
             .unwrap();
@@ -1358,7 +1358,7 @@ mod tests {
         use super::UncertainData;
 
         // Test that weighted mean gives more weight to more precise measurements
-        // Value 1.0 with σ=0.1 should dominate over value 10.0 with σ=10.0
+        // Value 1.0 with sigma=0.1 should dominate over value 10.0 with sigma=10.0
         let values = vec![1.0, 10.0];
         let uncertainties = vec![0.1, 10.0];
 
@@ -1388,7 +1388,7 @@ mod tests {
         let weighted_std = data.weighted_std();
         let weighted_var = data.weighted_variance();
 
-        // Variance should be 1 / (3 * 1/1²) = 1/3
+        // Variance should be 1 / (3 * 1/1^2) = 1/3
         assert!((weighted_var - 1.0 / 3.0).abs() < 1e-10);
         assert!((weighted_std - (1.0 / 3.0_f64.sqrt())).abs() < 1e-10);
     }

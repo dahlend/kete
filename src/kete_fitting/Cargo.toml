@@ -18,4 +18,5 @@ workspace = true
 
 [dependencies]
 kete_core = {version = "*", path = "../kete_core"}
+kete_stats = {version = "*", path = "../kete_stats"}
 nalgebra = {version = "^0.33.0", features = ["rayon"]}

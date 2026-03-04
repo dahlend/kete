@@ -34,11 +34,16 @@ use crate::propagation::AccelSPKMeta;
 use crate::propagation::jacobian::{n_params, stm_augmented_accel};
 use crate::propagation::nongrav::NonGravModel;
 use crate::propagation::radau::RadauIntegrator;
+use crate::spice::LOADED_SPK;
 use crate::time::{TDB, Time};
 use nalgebra::{DMatrix, Matrix3, SVector, Vector3};
 
 /// Compute the state transition matrix and optional parameter sensitivities using the
 /// Radau 15th-order integrator with full N-body physics.
+///
+/// The input state may be centered on any body; it is automatically re-centered
+/// to the solar system barycenter (SSB) for integration and restored to the
+/// original center on output.
 ///
 /// Returns the propagated [`State`] and a 6x(6+N) sensitivity matrix where N is
 /// the number of free non-gravitational parameters (0 for none, 1 for `Dust`, 3 for
@@ -60,18 +65,27 @@ pub fn compute_state_transition(
     non_grav_model: Option<NonGravModel>,
 ) -> KeteResult<(State<Equatorial>, DMatrix<f64>)> {
     let np = n_params(non_grav_model.as_ref());
+    let original_center = state.center_id;
+
+    // Re-center to SSB for integration (acceleration functions query body
+    // positions relative to center=0).
+    let mut ssb_state = state.clone();
+    if original_center != 0 {
+        let spk = &LOADED_SPK.try_read()?;
+        spk.try_change_center(&mut ssb_state, 0)?;
+    }
 
     // Build initial augmented state (30-dim, unused elements stay zero)
     let mut pos_aug = SVector::<f64, 30>::zeros();
     let mut vel_aug = SVector::<f64, 30>::zeros();
 
-    // Physical position and velocity (unscaled, matching spk_accel conventions)
+    // Physical position and velocity (SSB-centered)
     pos_aug
         .fixed_rows_mut::<3>(0)
-        .copy_from(&Vector3::from(state.pos));
+        .copy_from(&Vector3::from(ssb_state.pos));
     vel_aug
         .fixed_rows_mut::<3>(0)
-        .copy_from(&Vector3::from(state.vel));
+        .copy_from(&Vector3::from(ssb_state.vel));
 
     // Phi_rr(0) = I3 (elements 3..12, column-major)
     pos_aug[3] = 1.0;
@@ -93,19 +107,25 @@ pub fn compute_state_transition(
         &stm_augmented_accel,
         pos_aug,
         vel_aug,
-        state.epoch,
+        ssb_state.epoch,
         jd,
         metadata,
         Some(3),
     )?;
 
-    let final_state = State::new(
+    let mut final_state = State::new(
         state.desig.clone(),
         jd,
         [pos_f[0], pos_f[1], pos_f[2]].into(),
         [vel_f[0], vel_f[1], vel_f[2]].into(),
-        state.center_id,
+        0, // SSB-centered after integration
     );
+
+    // Restore the original center if needed.
+    if original_center != 0 {
+        let spk = &LOADED_SPK.try_read()?;
+        spk.try_change_center(&mut final_state, original_center)?;
+    }
 
     // Build the 6x(6+N) sensitivity matrix
     let ncols = 6 + np;

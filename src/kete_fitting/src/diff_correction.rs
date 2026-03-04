@@ -31,13 +31,19 @@ pub struct OrbitFit {
     /// outlier gating (false). Time-sorted order.
     pub included: Vec<bool>,
 
-    /// Weighted RMS of residuals (included observations only).
+    /// Reduced weighted RMS of residuals (included observations only).
+    /// Divided by degrees of freedom (`n_measurements` - `n_params`).
     pub rms: f64,
 
     /// Fitted non-gravitational model (if any). When non-grav parameters
     /// are included in the solve-for state, this contains the updated
     /// model with fitted parameter values.
     pub non_grav: Option<NonGravModel>,
+
+    /// Whether the solver achieved strict convergence (correction norm
+    /// dropped below `tol`). When `false` the fit is the best found
+    /// within the iteration limit but may not be fully converged.
+    pub converged: bool,
 }
 
 /// Run batch least-squares differential correction.
@@ -68,7 +74,7 @@ pub fn differential_correction(
     }
     let sorted = sort_by_epoch(obs);
     let included = vec![true; sorted.len()];
-    solve_once(
+    let fit = iterate_to_convergence(
         initial_state,
         &sorted,
         &included,
@@ -76,14 +82,24 @@ pub fn differential_correction(
         non_grav.cloned(),
         max_iter,
         tol,
-    )
+    )?;
+    if !fit.converged {
+        return Err(Error::Convergence(format!(
+            "Differential correction did not converge in {max_iter} iterations"
+        )));
+    }
+    Ok(fit)
 }
 
-/// Run differential correction with chi-squared outlier rejection.
+/// Run arc-expanding differential correction with chi-squared outlier rejection.
 ///
-/// First converges using all observations, then rejects outliers and
-/// re-converges. The `chi2_threshold` controls the rejection threshold
-/// (default suggestion: 9.0 for optical, 8.0 for 1-D radar).
+/// For arcs longer than 180 days, progressively wider time windows are
+/// fitted around the reference epoch so that each stage bootstraps from
+/// the previous converged solution.  The final pass fits the full arc
+/// and re-evaluates all observations for outlier rejection.
+///
+/// Short arcs (<= 180 days) skip the expansion and go straight to a
+/// single full-arc fit with rejection.
 ///
 /// # Errors
 /// Fails if any internal propagation or solve fails.
@@ -101,41 +117,134 @@ pub fn differential_correction_with_rejection(
         return Err(Error::ValueError("No observations provided".into()));
     }
     let sorted = sort_by_epoch(obs);
-    let included = vec![true; sorted.len()];
+    let ref_jd = initial_state.epoch.jd;
 
-    // First pass: converge with all observations.
-    let mut fit = solve_once(
-        initial_state,
+    // Compute arc span.  The `obs.is_empty()` guard above ensures these
+    // are safe.
+    let jd_first = sorted[0].epoch().jd;
+    let jd_last = sorted[sorted.len() - 1].epoch().jd;
+    let arc_span = jd_last - jd_first;
+
+    // Build adaptive window schedule.
+    // Short arcs: just fit everything. Medium: seed +/-90, then full.
+    // Long (>720 d): seed +/-90, intermediate +/-half_arc, full.
+    let windows: Vec<f64> = if arc_span <= 180.0 {
+        vec![f64::INFINITY]
+    } else if arc_span <= 720.0 {
+        vec![90.0, f64::INFINITY]
+    } else {
+        vec![90.0, arc_span / 2.0, f64::INFINITY]
+    };
+
+    let mut state = initial_state.clone();
+    let mut ng = non_grav.cloned();
+
+    // Expansion stages: converge + reject on each window.
+    for &radius in &windows[..windows.len() - 1] {
+        let included = select_obs_within_window(&sorted, ref_jd, radius);
+        let n_in_window = included.iter().filter(|&&v| v).count();
+        if n_in_window < 4 {
+            continue; // too few observations in this window
+        }
+        if let Ok(fit) = solve_with_rejection(
+            &state,
+            &sorted,
+            &included,
+            massive_obj,
+            ng.clone(),
+            max_iter,
+            tol,
+            chi2_threshold,
+            max_reject_passes,
+        ) {
+            state = fit.state;
+            ng = fit.non_grav;
+        }
+        // On error: keep previous state, try the next wider window.
+    }
+
+    // Final full-arc pass: re-include all observations and reject anew.
+    let included = vec![true; sorted.len()];
+    solve_with_rejection(
+        &state,
         &sorted,
         &included,
         massive_obj,
-        non_grav.cloned(),
+        ng,
+        max_iter,
+        tol,
+        chi2_threshold,
+        max_reject_passes,
+    )
+}
+
+/// Build a boolean inclusion mask for observations within +/-`dt_days` of
+/// `ref_jd`.
+fn select_obs_within_window(sorted_obs: &[Observation], ref_jd: f64, dt_days: f64) -> Vec<bool> {
+    sorted_obs
+        .iter()
+        .map(|ob| (ob.epoch().jd - ref_jd).abs() <= dt_days)
+        .collect()
+}
+
+/// Converge + outlier-reject on a subset defined by `included`.
+///
+/// First converges using `solve_once`, then iteratively rejects the single
+/// worst outlier exceeding `chi2_threshold` and re-converges.
+fn solve_with_rejection(
+    initial_state: &State<Equatorial>,
+    sorted_obs: &[Observation],
+    included: &[bool],
+    massive_obj: &[GravParams],
+    non_grav: Option<NonGravModel>,
+    max_iter: usize,
+    tol: f64,
+    chi2_threshold: f64,
+    max_reject_passes: usize,
+) -> KeteResult<OrbitFit> {
+    let mut fit = iterate_to_convergence(
+        initial_state,
+        sorted_obs,
+        included,
+        massive_obj,
+        non_grav,
         max_iter,
         tol,
     )?;
 
-    // Rejection passes.
+    // Rejection loop: remove one outlier at a time from the included set.
+    let np = fit.non_grav.as_ref().map_or(0, NonGravModel::n_free_params);
+    let min_included = (6 + np).max(4);
+
     for _ in 0..max_reject_passes {
-        let mut any_rejected = false;
+        let n_included = fit.included.iter().filter(|&&inc| inc).count();
+        if n_included <= min_included {
+            break;
+        }
+
+        // Find the single worst included observation by chi-squared.
+        let mut worst_idx = None;
+        let mut worst_chi2 = chi2_threshold;
         for (i, res) in fit.residuals.iter().enumerate() {
             if !fit.included[i] {
                 continue;
             }
-            let w = sorted[i].weights();
+            let w = sorted_obs[i].weights();
             let chi2: f64 = res.iter().zip(w.iter()).map(|(r, wi)| r * r * wi).sum();
-            if chi2 > chi2_threshold {
-                fit.included[i] = false;
-                any_rejected = true;
+            if chi2 > worst_chi2 {
+                worst_chi2 = chi2;
+                worst_idx = Some(i);
             }
         }
-        if !any_rejected {
-            break;
-        }
 
-        // Re-solve from current best state with updated inclusion mask.
-        fit = solve_once(
+        let Some(idx) = worst_idx else {
+            break;
+        };
+        fit.included[idx] = false;
+
+        fit = iterate_to_convergence(
             &fit.state,
-            &sorted,
+            sorted_obs,
             &fit.included,
             massive_obj,
             fit.non_grav.clone(),
@@ -167,15 +276,18 @@ fn n_nongrav_params(ng: Option<&NonGravModel>) -> usize {
 /// Run the iterative convergence loop with adaptive Levenberg-Marquardt
 /// damping and step-size limiting.
 ///
-/// Each iteration accumulates the normal equations at the current
-/// linearisation point, then solves `(N + lambda * diag(N)) dx = b`.
-/// If the weighted chi-squared increased from the previous iteration the
-/// damping parameter `lambda` is raised (more gradient-descent-like);
-/// a decrease lets `lambda` shrink back toward pure Gauss-Newton.
+/// Each iteration re-linearises at the current state, solves the damped
+/// normal equations `(N + lambda * diag(N)) dx = b`, limits the step magnitude,
+/// and moves forward unconditionally.  Re-linearising every iteration is
+/// essential: the step limiter caps *magnitude* but not *direction*, so
+/// recycling a stale Jacobian would repeatedly propose the same capped
+/// step and stall.
 ///
-/// Position and velocity corrections are capped per iteration to prevent
-/// wild jumps from a poor initial guess.
-fn solve_once(
+/// Lambda is adjusted heuristically: decreased when chi-squared improves,
+/// increased when it worsens.  This steers the solver between
+/// Gauss-Newton (fast near the solution) and steepest descent (safe far
+/// from it).
+fn iterate_to_convergence(
     initial_state: &State<Equatorial>,
     obs: &[Observation],
     included: &[bool],
@@ -188,8 +300,12 @@ fn solve_once(
     let mut lambda = 0.0_f64;
     let mut prev_chi2 = f64::MAX;
 
-    for iter in 0..max_iter {
-        let (n_mat, b_vec, chi2) = accumulate_normal_equations(
+    // Cache from the last iteration so we don't have to re-propagate
+    // the entire arc when the loop exhausts max_iter.
+    let mut last_info_mat = None;
+
+    for _iter in 0..max_iter {
+        let (info_mat, rhs_vec, chi2) = accumulate_normal_equations(
             &state_epoch,
             obs,
             included,
@@ -197,26 +313,33 @@ fn solve_once(
             non_grav.as_ref(),
         )?;
 
-        // Adaptive Levenberg-Marquardt damping.
-        if iter > 0 {
-            if chi2 >= prev_chi2 {
-                // Last step made things worse: increase damping.
-                lambda = if lambda < 1e-6 { 1.0 } else { lambda * 10.0 };
-            } else {
-                // Improvement: relax toward pure Gauss-Newton.
+        // Adaptive LM damping: relax on improvement, tighten on worsening.
+        if prev_chi2 < f64::MAX {
+            if chi2 < prev_chi2 {
                 lambda *= 0.1;
+            } else {
+                lambda = if lambda < 1e-6 { 1.0 } else { lambda * 10.0 };
             }
         }
         prev_chi2 = chi2;
 
-        let dx = solve_damped(&n_mat, &b_vec, lambda)?;
+        let dx = solve_damped(&info_mat, &rhs_vec, lambda)?;
         let dx = limit_correction(dx);
+
+        let converged = dx.norm() < tol;
+
+        // Save the information matrix *before* applying the correction,
+        // since it was linearised at the current state_epoch.
+        last_info_mat = Some(info_mat);
+
         apply_correction(&mut state_epoch, &dx, &mut non_grav);
 
-        if dx.norm() < tol {
-            let covariance = svd_pseudo_inverse(&n_mat, 1e-14)?;
+        if converged {
+            // Re-compute residuals at the newly corrected state.
+            let covariance = svd_pseudo_inverse(last_info_mat.as_ref().unwrap(), 1e-14)?;
             let residuals = compute_residuals(&state_epoch, obs, massive_obj, non_grav.as_ref())?;
-            let rms = weighted_rms(&residuals, obs, included);
+            let n_params = 6 + n_nongrav_params(non_grav.as_ref());
+            let rms = weighted_rms(&residuals, obs, included, n_params);
             return Ok(OrbitFit {
                 state: state_epoch,
                 covariance,
@@ -224,20 +347,51 @@ fn solve_once(
                 included: included.to_vec(),
                 rms,
                 non_grav,
+                converged: true,
             });
         }
     }
 
-    Err(Error::Convergence(format!(
-        "Differential correction did not converge in {max_iter} iterations"
-    )))
+    // Did not converge -- return best-effort result with converged=false.
+    // This allows callers (e.g. the arc-expanding loop) to use the
+    // partially-converged state as a seed for the next stage.
+    //
+    // Reuse the cached information matrix from the last iteration instead
+    // of re-computing it (saves a full arc propagation).
+    let n_params = 6 + n_nongrav_params(non_grav.as_ref());
+    let info_mat = match last_info_mat {
+        Some(m) => m,
+        None => {
+            // max_iter == 0: never entered the loop.
+            accumulate_normal_equations(
+                &state_epoch,
+                obs,
+                included,
+                massive_obj,
+                non_grav.as_ref(),
+            )?
+            .0
+        }
+    };
+    let covariance = svd_pseudo_inverse(&info_mat, 1e-14)?;
+    let residuals = compute_residuals(&state_epoch, obs, massive_obj, non_grav.as_ref())?;
+    let rms = weighted_rms(&residuals, obs, included, n_params);
+    Ok(OrbitFit {
+        state: state_epoch,
+        covariance,
+        residuals,
+        included: included.to_vec(),
+        rms,
+        non_grav,
+        converged: false,
+    })
 }
 
 /// Accumulate the weighted normal equations for one linearisation pass.
 ///
-/// Returns `(N, b, chi2)` where `N` is the D x D information matrix,
-/// `b` is the D-dimensional right-hand side, and `chi2` is the current
-/// weighted sum of squared residuals.
+/// Returns `(info_mat, rhs_vec, chi2)` where `info_mat` is the
+/// (6+Np) x (6+Np) information matrix, `rhs_vec` is the right-hand
+/// side, and `chi2` is the current weighted sum of squared residuals.
 fn accumulate_normal_equations(
     state_epoch: &State<Equatorial>,
     obs: &[Observation],
@@ -308,21 +462,28 @@ fn accumulate_normal_equations(
         // Weight vector.
         let w = observation.weights();
 
-        // Accumulate chi-squared, normal matrix, and RHS.
+        // Accumulate chi-squared.
         let m = observation.measurement_dim();
         for k in 0..m {
             chi2 += residual[k] * residual[k] * w[k];
         }
-        for ii in 0..d {
-            for jj in 0..d {
-                for k in 0..m {
-                    n_mat[(ii, jj)] += h_epoch[(k, ii)] * w[k] * h_epoch[(k, jj)];
-                }
+
+        // Accumulate normal matrix and RHS via weighted outer products:
+        //   N += H^T W H,  b += H^T W r
+        // Build sqrt(W) * H and sqrt(W) * r for efficient rank-m update.
+        let mut hw = h_epoch.clone(); // m x d
+        let mut wr = residual.clone(); // m x 1
+        for k in 0..m {
+            let sw = w[k].sqrt();
+            for j in 0..d {
+                hw[(k, j)] *= sw;
             }
-            for k in 0..m {
-                b_vec[ii] += h_epoch[(k, ii)] * w[k] * residual[k];
-            }
+            wr[k] *= sw;
         }
+        // N += (sqrt(W) H)^T (sqrt(W) H)  =  H^T W H
+        n_mat += hw.transpose() * &hw;
+        // b += (sqrt(W) H)^T (sqrt(W) r)  =  H^T W r
+        b_vec += hw.transpose() * &wr;
     }
 
     Ok((n_mat, b_vec, chi2))
@@ -428,6 +589,12 @@ fn svd_pseudo_inverse(mat: &DMatrix<f64>, eps: f64) -> KeteResult<DMatrix<f64>> 
 }
 
 /// Compute post-fit residuals for all observations (time-sorted order).
+///
+/// NOTE: This reuses `compute_state_transition` for propagation even
+/// though only the state (not the STM) is needed.  The STM integrator
+/// carries a 30-dim augmented state vs 6-dim for plain N-body, making
+/// this ~5x more expensive than necessary.  A dedicated propagator
+/// accepting a custom mass list would eliminate this overhead.
 fn compute_residuals(
     state_epoch: &State<Equatorial>,
     obs: &[Observation],
@@ -454,10 +621,18 @@ fn compute_residuals(
     Ok(residuals)
 }
 
-/// Compute weighted RMS of residuals for included observations.
-fn weighted_rms(residuals: &[DVector<f64>], obs: &[Observation], included: &[bool]) -> f64 {
+/// Compute reduced weighted RMS of residuals for included observations.
+///
+/// Uses degrees of freedom (`n_measurements` - `n_params`) as divisor so the
+/// value is comparable regardless of the number of observations.
+fn weighted_rms(
+    residuals: &[DVector<f64>],
+    obs: &[Observation],
+    included: &[bool],
+    n_params: usize,
+) -> f64 {
     let mut sum = 0.0;
-    let mut count = 0.0;
+    let mut n_meas: usize = 0;
     for (i, res) in residuals.iter().enumerate() {
         if !included[i] {
             continue;
@@ -465,11 +640,14 @@ fn weighted_rms(residuals: &[DVector<f64>], obs: &[Observation], included: &[boo
         let w = obs[i].weights();
         for (r, wi) in res.iter().zip(w.iter()) {
             sum += r * r * wi;
-            count += 1.0;
+            n_meas += 1;
         }
     }
-    if count > 0.0 {
-        (sum / count).sqrt()
+    let dof = n_meas.saturating_sub(n_params);
+    if dof > 0 {
+        (sum / dof as f64).sqrt()
+    } else if n_meas > 0 {
+        (sum / n_meas as f64).sqrt()
     } else {
         0.0
     }
@@ -488,11 +666,11 @@ mod tests {
         State::new(Desig::Empty, jd.into(), pos.into(), vel.into(), 0)
     }
 
-    /// Generate synthetic optical observations with an optional non-grav model.
+    /// Generate synthetic optical observations, optionally with a non-grav model.
     ///
     /// Uses the full N-body SPK propagator so that the physics model is
     /// consistent with the batch least-squares solver.
-    fn synth_observations_ng(
+    fn synth_observations(
         true_state: &State<Equatorial>,
         epochs: &[f64],
         observer_pos_fn: impl Fn(f64) -> ([f64; 3], [f64; 3]),
@@ -513,45 +691,6 @@ mod tests {
             .unwrap();
 
             let obj_lt = two_body_lt_state(&obj_at, &observer).unwrap();
-            let (ra, dec) = (obj_lt.pos - observer.pos).to_ra_dec();
-
-            observations.push(Observation::Optical {
-                observer,
-                ra,
-                dec,
-                sigma_ra: sigma,
-                sigma_dec: sigma,
-            });
-        }
-        observations
-    }
-
-    /// Generate synthetic optical observations for a given true state.
-    ///
-    /// Uses the full N-body SPK propagator so that the physics model is
-    /// consistent with the batch least-squares solver (which chains the
-    /// variational STM inside the same integrator).
-    fn synth_observations(
-        true_state: &State<Equatorial>,
-        epochs: &[f64],
-        observer_pos_fn: impl Fn(f64) -> ([f64; 3], [f64; 3]),
-        sigma: f64,
-    ) -> Vec<Observation> {
-        let mut observations = Vec::new();
-        for &jd in epochs {
-            let (obs_pos, obs_vel) = observer_pos_fn(jd);
-            let observer = make_state(obs_pos, obs_vel, jd);
-
-            // Propagate true object to this epoch via N-body SPK (same physics
-            // as the solver) so there is no model mismatch.
-            let obj_at =
-                propagate_n_body_spk(true_state.clone(), Time::<TDB>::new(jd), false, None)
-                    .unwrap();
-
-            // Apply two-body light-time correction (consistent with solver).
-            let obj_lt = two_body_lt_state(&obj_at, &observer).unwrap();
-
-            // Compute RA/Dec.
             let (ra, dec) = (obj_lt.pos - observer.pos).to_ra_dec();
 
             observations.push(Observation::Optical {
@@ -590,7 +729,7 @@ mod tests {
         // Generate 10 observations over 60 days.
         let epochs: Vec<f64> = (0..10).map(|i| 2460000.5 + f64::from(i) * 6.0).collect();
         let sigma = 1e-6; // ~0.2 arcsec
-        let observations = synth_observations(&true_state, &epochs, earth_observer, sigma);
+        let observations = synth_observations(&true_state, &epochs, earth_observer, sigma, None);
 
         // Perturbed initial state (5% error in position, 3% in velocity).
         let perturbed = make_state([r * 1.05, 0.0, 0.0], [0.0, v * 0.97, 0.0], 2460000.5);
@@ -632,7 +771,7 @@ mod tests {
         // 8 observations over 40 days.
         let epochs: Vec<f64> = (0..8).map(|i| 2460000.5 + f64::from(i) * 5.0).collect();
         let sigma = 1e-6;
-        let observations = synth_observations(&true_state, &epochs, earth_observer, sigma);
+        let observations = synth_observations(&true_state, &epochs, earth_observer, sigma, None);
 
         // Perturbed initial state.
         let perturbed = make_state(
@@ -663,7 +802,8 @@ mod tests {
 
         let epochs: Vec<f64> = (0..10).map(|i| 2460000.5 + f64::from(i) * 6.0).collect();
         let sigma = 1e-6;
-        let mut observations = synth_observations(&true_state, &epochs, earth_observer, sigma);
+        let mut observations =
+            synth_observations(&true_state, &epochs, earth_observer, sigma, None);
 
         // Corrupt observation 3 with a large offset (100x sigma).
         if let Observation::Optical { ref mut ra, .. } = observations[3] {
@@ -705,7 +845,7 @@ mod tests {
         let epochs: Vec<f64> = (0..15).map(|i| 2460000.5 + f64::from(i) * 6.0).collect();
         let sigma = 1e-7; // tight observations
         let observations =
-            synth_observations_ng(&true_state, &epochs, earth_observer, sigma, Some(&true_ng));
+            synth_observations(&true_state, &epochs, earth_observer, sigma, Some(&true_ng));
 
         // Start from true state + non-grav model with a2=0 and fit.
         let init_ng = NonGravModel::new_jpl_comet_default(0.0, 0.0, 0.0);
@@ -752,7 +892,7 @@ mod tests {
         let epochs: Vec<f64> = (0..15).map(|i| 2460000.5 + f64::from(i) * 6.0).collect();
         let sigma = 1e-7;
         let observations =
-            synth_observations_ng(&true_state, &epochs, earth_observer, sigma, Some(&true_ng));
+            synth_observations(&true_state, &epochs, earth_observer, sigma, Some(&true_ng));
 
         // Start from true state with beta=0.
         let init_ng = NonGravModel::new_dust(0.0);
@@ -782,5 +922,100 @@ mod tests {
         assert_eq!(fit.covariance.ncols(), 7, "Expected 7x7 covariance");
 
         assert!(fit.rms < 1e-3, "Weighted RMS {:.6e} too large", fit.rms);
+    }
+
+    #[test]
+    fn test_gradual_fit_long_arc() {
+        // 2-year arc with a perturbed initial state.
+        // The gradual fitting should converge where a direct full-arc
+        // fit from the same initial guess would struggle.
+        let r = 2.0;
+        let v = (GMS / r).sqrt();
+        let true_state = make_state([r, 0.0, 0.0], [0.0, v, 0.0], 2460000.5);
+
+        // 40 observations over ~720 days.
+        let epochs: Vec<f64> = (0..40).map(|i| 2460000.5 + f64::from(i) * 18.0).collect();
+        let sigma = 1e-6;
+        let observations = synth_observations(&true_state, &epochs, earth_observer, sigma, None);
+
+        // Perturb initial state by 10% position and 5% velocity.
+        let perturbed = make_state([r * 1.10, 0.0, 0.0], [0.0, v * 0.95, 0.0], 2460000.5);
+
+        let massive = GravParams::planets();
+
+        let fit = differential_correction_with_rejection(
+            &perturbed,
+            &observations,
+            &massive,
+            None,
+            50,
+            1e-8,
+            9.0,
+            3,
+        )
+        .unwrap();
+
+        let pos_err = (fit.state.pos - true_state.pos).norm();
+        assert!(
+            pos_err < 1e-3,
+            "Gradual long-arc: pos error {pos_err:.6e} too large"
+        );
+        assert!(
+            fit.converged,
+            "Gradual long-arc should converge, rms={:.6e}",
+            fit.rms
+        );
+    }
+
+    #[test]
+    fn test_gradual_fit_rejection_reinclusion() {
+        // Verify that observations rejected in early windows are
+        // re-evaluated in the final pass.
+        let r = 1.8;
+        let v = (GMS / r).sqrt();
+        let true_state = make_state([r, 0.0, 0.0], [0.0, v, 0.0], 2460000.5);
+
+        // 20 observations over 400 days.
+        let epochs: Vec<f64> = (0..20).map(|i| 2460000.5 + f64::from(i) * 20.0).collect();
+        let sigma = 1e-6;
+        let mut observations =
+            synth_observations(&true_state, &epochs, earth_observer, sigma, None);
+
+        // Corrupt one observation near the end of the arc (beyond the
+        // seed window).  With a bad initial guess this might look like an
+        // outlier during early windows but should be correctly handled
+        // in the final pass.
+        if let Observation::Optical { ref mut ra, .. } = observations[18] {
+            *ra += 50.0 * sigma;
+        }
+
+        let massive = GravParams::planets();
+
+        let fit = differential_correction_with_rejection(
+            &true_state,
+            &observations,
+            &massive,
+            None,
+            50,
+            1e-8,
+            9.0,
+            5,
+        )
+        .unwrap();
+
+        // The corrupted observation should be rejected.
+        // Sort order matches input (already sorted by epoch).
+        let n_rejected = fit.included.iter().filter(|&&inc| !inc).count();
+        assert!(
+            n_rejected >= 1,
+            "Expected at least 1 rejection, got {n_rejected}"
+        );
+
+        // Orbit should still be good.
+        let pos_err = (fit.state.pos - true_state.pos).norm();
+        assert!(
+            pos_err < 1e-3,
+            "Rejection re-inclusion: pos error {pos_err:.6e} too large"
+        );
     }
 }

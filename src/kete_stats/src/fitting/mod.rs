@@ -30,9 +30,11 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 mod halley;
+mod nelder_mead;
 mod newton;
 
 pub use self::halley::halley;
+pub use self::nelder_mead::{NelderMeadResult, nelder_mead};
 pub use self::newton::newton_raphson;
 
 /// Error type for fitting operations.

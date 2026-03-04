@@ -38,7 +38,7 @@ use nalgebra::{Matrix3, Quaternion, Rotation3, Unit, Vector3};
 /// Implementation of:
 ///     "Quaternion to Euler angles conversion: A direct,
 ///     general and computationally efficient method"
-///     Evandro Bernardes, Stéphane Viollet 2022
+///     Evandro Bernardes, Stephane Viollet 2022
 ///     10.1371/journal.pone.0276302
 ///
 /// The const generics of this function are used to specify the output axis.
