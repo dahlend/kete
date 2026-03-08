@@ -469,10 +469,9 @@ mod tests {
         // Validate the variational STM against finite-difference-of-trajectory.
         let state = test_state();
         let jd_final = (2451545.0 + 30.0).into(); // 30 days
-        let planets = GravParams::planets();
 
         let (_final_state, sens) =
-            compute_state_transition(&state, jd_final, &planets, None).unwrap();
+            compute_state_transition(&state, jd_final, false, None).unwrap();
 
         // Build STM via finite differences of Radau propagations
         let eps = 1e-6;
@@ -532,10 +531,9 @@ mod tests {
         // For conservative forces (no non-grav), det(STM) should be ~1.
         let state = test_state();
         let jd_final = (2451545.0 + 30.0).into();
-        let planets = GravParams::planets();
 
         let (_final_state, sens) =
-            compute_state_transition(&state, jd_final, &planets, None).unwrap();
+            compute_state_transition(&state, jd_final, false, None).unwrap();
 
         // Extract the 6x6 STM
         let stm = sens.fixed_view::<6, 6>(0, 0);
@@ -553,13 +551,11 @@ mod tests {
         let a2 = 1e-9;
         let a3 = 1e-10;
         let model = NonGravModel::new_jpl_comet_default(a1, a2, a3);
-
         let state = test_state();
         let jd_final = (2451545.0 + 30.0).into();
-        let planets = GravParams::planets();
 
         let (_final_state, sens) =
-            compute_state_transition(&state, jd_final, &planets, Some(model.clone())).unwrap();
+            compute_state_transition(&state, jd_final, false, Some(model.clone())).unwrap();
 
         // Finite-difference test for each A parameter
         // Use a moderate perturbation; the FD accuracy is limited by the nonlinearity
@@ -609,10 +605,9 @@ mod tests {
 
         let state = test_state();
         let jd_final = (2451545.0 + 30.0).into();
-        let planets = GravParams::planets();
 
         let (_final_state, sens) =
-            compute_state_transition(&state, jd_final, &planets, Some(model.clone())).unwrap();
+            compute_state_transition(&state, jd_final, false, Some(model.clone())).unwrap();
 
         // Sensitivity matrix should be 6x7 (6 state + 1 beta parameter)
         assert_eq!(sens.ncols(), 7, "Expected 6+1 columns for Dust model");
@@ -649,10 +644,9 @@ mod tests {
         // Validate STM over a 90-day arc against finite-difference-of-trajectory.
         let state = test_state();
         let jd_final = (2451545.0 + 90.0).into(); // 90 days
-        let planets = GravParams::planets();
 
         let (_final_state, sens) =
-            compute_state_transition(&state, jd_final, &planets, None).unwrap();
+            compute_state_transition(&state, jd_final, false, None).unwrap();
 
         // Finite-difference validation of each STM column
         let eps = 1e-6;

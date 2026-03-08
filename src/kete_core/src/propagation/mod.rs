@@ -61,7 +61,7 @@ pub use acceleration::{
 };
 pub use kepler::{
     PARABOLIC_ECC_LIMIT, analytic_2_body, compute_eccentric_anomaly, compute_true_anomaly,
-    eccentric_anomaly_from_true, moid, propagate_two_body,
+    eccentric_anomaly_from_true, light_time_correct, moid, propagate_two_body,
 };
 pub use nongrav::NonGravModel;
 pub use picard::{PC15, PC25, PicardIntegrator, PicardStep, dumb_picard_init};

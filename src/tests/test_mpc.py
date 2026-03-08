@@ -1,6 +1,6 @@
 import pytest
 
-from kete import mpc, fitting
+from kete import fitting, mpc
 
 
 @pytest.mark.parametrize(

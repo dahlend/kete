@@ -32,7 +32,7 @@ use crate::fitting::{ConvergenceError, FittingResult};
 /// Result of Nelder-Mead optimization.
 #[derive(Debug, Clone)]
 pub struct NelderMeadResult {
-    /// The point that minimises the objective function.
+    /// The point that minimizes the objective function.
     pub point: Vec<f64>,
 
     /// The objective function value at the optimum.
@@ -42,7 +42,7 @@ pub struct NelderMeadResult {
     pub func_evals: usize,
 }
 
-/// Minimise a scalar objective function using the Nelder-Mead simplex method.
+/// Minimize a scalar objective function using the Nelder-Mead simplex method.
 ///
 /// This is a derivative-free optimizer well-suited to low-dimensional problems
 /// (typically <= 10 parameters). It maintains a simplex of `n+1` vertices in

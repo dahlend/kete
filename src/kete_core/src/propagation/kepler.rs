@@ -32,10 +32,11 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use crate::constants::{GMS, GMS_SQRT};
+use crate::constants::{C_AU_PER_DAY_INV, GMS, GMS_SQRT};
 use crate::errors::Error;
 use crate::frames::InertialFrame;
 use crate::prelude::{CometElements, KeteResult};
+use crate::spice::LOADED_SPK;
 use crate::state::State;
 use crate::time::{Duration, TDB, Time};
 use argmin::core::{CostFunction, Error as ArgminErr, Executor};
@@ -384,6 +385,43 @@ pub fn propagate_two_body<T: InertialFrame>(
         vel.into(),
         state.center_id,
     ))
+}
+
+/// Apply a single-iteration two-body light-time correction.
+///
+/// Propagates `state` backward by `tau = |state.pos - obs_pos| / c` using
+/// Keplerian (two-body) motion.  This is the standard geometric light-time
+/// correction used throughout the codebase (FOV checks, residual computation,
+/// synthetic observation generation).
+///
+/// The state may be centered on any body.  Internally it is re-centered to
+/// the Sun (`center_id = 10`) for the Kepler backward step, then restored
+/// to the original center.  `obs_pos` must be in the same frame and center
+/// as `state`.
+///
+/// # Errors
+/// Returns an error if the SPK lookup or Kepler solver fails.
+pub fn light_time_correct<T: InertialFrame>(
+    state: &State<T>,
+    obs_pos: &crate::frames::Vector<T>,
+) -> KeteResult<State<T>> {
+    let tau = (state.pos - obs_pos).norm() * C_AU_PER_DAY_INV;
+    let center = state.center_id;
+
+    // Re-center to Sun for the two-body backward step.
+    let spk = &LOADED_SPK.try_read()?;
+    let mut sun_state = state.clone();
+    if center != 10 {
+        spk.try_change_center(&mut sun_state, 10)?;
+    }
+
+    let mut lt_state = propagate_two_body(&sun_state, sun_state.epoch - tau)?;
+
+    // Restore original center.
+    if center != 10 {
+        spk.try_change_center(&mut lt_state, center)?;
+    }
+    Ok(lt_state)
 }
 
 struct MoidCost<T: InertialFrame> {

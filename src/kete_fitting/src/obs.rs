@@ -1,10 +1,37 @@
 //! Observation types, predicted measurements, and geometric partial derivatives.
+//!
+// BSD 3-Clause License
+//
+// Copyright (c) 2026, Dar Dahlen
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
+//
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use kete_core::constants::C_AU_PER_DAY_INV;
 use kete_core::frames::Equatorial;
 use kete_core::prelude::{Error, KeteResult, State};
-use kete_core::propagation::propagate_two_body;
-use kete_core::spice::LOADED_SPK;
+use kete_core::propagation::light_time_correct;
 use nalgebra::{DVector, Matrix2x3, Matrix3x1, RowVector6};
 
 /// A single astrometric or radar observation.
@@ -109,40 +136,6 @@ impl Observation {
     }
 }
 
-/// Two-body light-time correction.
-///
-/// Computes the state of the object by propagating backward along a
-/// Keplerian orbit by the light travel time `tau = |rho| / c`.  The state is
-/// temporarily converted to heliocentric for the two-body step.
-///
-/// Falls back to linear extrapolation for pathological intermediate states
-/// that the Kepler solver cannot handle (only during early iterations of
-/// differential correction).
-pub(crate) fn two_body_lt_state(
-    state: &State<Equatorial>,
-    observer: &State<Equatorial>,
-) -> KeteResult<State<Equatorial>> {
-    let tau = (state.pos - observer.pos).norm() * C_AU_PER_DAY_INV;
-
-    let spk = LOADED_SPK.try_read()?;
-    let mut helio = state.clone();
-    spk.try_change_center(&mut helio, 10)?;
-
-    if let Ok(mut delayed) = propagate_two_body(&helio, state.epoch - tau) {
-        spk.try_change_center(&mut delayed, 0)?;
-        Ok(delayed)
-    } else {
-        let pos = state.pos - state.vel * tau;
-        Ok(State::new(
-            state.desig.clone(),
-            state.epoch - tau,
-            pos,
-            state.vel,
-            state.center_id,
-        ))
-    }
-}
-
 impl Observation {
     /// Compute the predicted measurement and residual (observed - computed).
     ///
@@ -158,7 +151,27 @@ impl Observation {
         obj_state: &State<Equatorial>,
     ) -> KeteResult<(DVector<f64>, DVector<f64>)> {
         let obs = self.observer();
-        let obj_lt = two_body_lt_state(obj_state, obs)?;
+        let obj_lt = light_time_correct(obj_state, &obs.pos)?;
+        Ok(self.residual_predicted_from_corrected(&obj_lt))
+    }
+
+    /// Compute residual from an already light-time-corrected object state.
+    ///
+    /// This avoids a redundant two-body propagation when the caller has
+    /// already applied `light_time_correct`.
+    #[must_use]
+    pub fn residual_from_corrected(&self, obj_lt: &State<Equatorial>) -> DVector<f64> {
+        self.residual_predicted_from_corrected(obj_lt).0
+    }
+
+    /// Core residual computation from a light-time-corrected state.
+    ///
+    /// Returns `(residual, predicted)`.
+    fn residual_predicted_from_corrected(
+        &self,
+        obj_lt: &State<Equatorial>,
+    ) -> (DVector<f64>, DVector<f64>) {
+        let obs = self.observer();
 
         match self {
             Self::Optical { ra, dec, .. } => {
@@ -170,25 +183,25 @@ impl Observation {
                 } else if d_ra < -std::f64::consts::PI {
                     d_ra += 2.0 * std::f64::consts::PI;
                 }
-                Ok((
+                (
                     DVector::from_vec(vec![d_ra, dec - dec_pred]),
                     DVector::from_vec(vec![ra_pred, dec_pred]),
-                ))
+                )
             }
             Self::RadarRange { range, .. } => {
                 let pred = (obj_lt.pos - obs.pos).norm();
-                Ok((
+                (
                     DVector::from_vec(vec![range - pred]),
                     DVector::from_vec(vec![pred]),
-                ))
+                )
             }
             Self::RadarRate { range_rate, .. } => {
                 let d_pos = obj_lt.pos - obs.pos;
                 let pred = d_pos.dot(&(obj_lt.vel - obs.vel)) / d_pos.norm();
-                Ok((
+                (
                     DVector::from_vec(vec![range_rate - pred]),
                     DVector::from_vec(vec![pred]),
-                ))
+                )
             }
         }
     }
@@ -288,9 +301,11 @@ impl Observation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kete_core::constants::C_AU_PER_DAY_INV;
     use kete_core::desigs::Desig;
     use kete_core::frames::Equatorial;
     use kete_core::prelude::State;
+    use kete_core::propagation::propagate_two_body;
 
     /// Helper: build a simple state at the given position/velocity.
     fn make_state(pos: [f64; 3], vel: [f64; 3], jd: f64) -> State<Equatorial> {

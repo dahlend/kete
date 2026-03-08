@@ -11,6 +11,7 @@ API
 
    cache
    conversion
+   fitting
    flux
    fov
    interface

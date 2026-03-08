@@ -1,16 +1,35 @@
 //! JPL Horizons data representation
 use std::fmt::Debug;
 
-use crate::covariance::Covariance;
 use crate::elements::PyCometElements;
 use crate::state::PyState;
+use crate::uncertain_state::PyUncertainState;
+use kete_core::elements::CometElements;
+use kete_core::propagation::NonGravModel;
 use kete_core::{io::FileIO, prelude};
+use nalgebra::DMatrix;
 use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 
+/// Serializable covariance data for HorizonsProperties FileIO.
+///
+/// Stores the raw parameter names/values and covariance matrix from JPL
+/// Horizons in a serde-friendly format.  The Python API exposes this as
+/// an [`UncertainState`] via a computed getter.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct RawCovariance {
+    /// Epoch of the covariance (JD, TDB) -- may differ from the orbital
+    /// element epoch.
+    epoch: f64,
+    /// Parameter name/value pairs in the Horizons ordering.
+    params: Vec<(String, f64)>,
+    /// Covariance matrix (rows x cols), same ordering as `params`.
+    cov_matrix: Vec<Vec<f64>>,
+}
+
 /// Horizons object properties
 /// Physical, orbital, and observational properties of a solar system object as recorded in JPL Horizons.
-#[pyclass(frozen, get_all, module = "kete")]
+#[pyclass(frozen, module = "kete")]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct HorizonsProperties {
     /// The MPC designation of the object.
@@ -59,8 +78,8 @@ pub struct HorizonsProperties {
     /// observations of the object in days.
     arc_len: Option<f64>,
 
-    /// Covariance values in the orbit fit.
-    covariance: Option<Covariance>,
+    /// Raw covariance data from the Horizons query (serializable).
+    covariance: Option<RawCovariance>,
 }
 
 impl FileIO for HorizonsProperties {}
@@ -68,11 +87,24 @@ impl FileIO for HorizonsProperties {}
 #[pymethods]
 impl HorizonsProperties {
     /// Construct a new HorizonsProperties Object
+    ///
+    /// Parameters
+    /// ----------
+    /// desig : str
+    ///     MPC designation.
+    /// covariance_params : list[tuple[str, float]], optional
+    ///     Parameter name/value pairs for the covariance (e.g.
+    ///     ``[("eccentricity", 0.5), ("peri_dist", 1.2), ...]``).
+    /// covariance_matrix : list[list[float]], optional
+    ///     Covariance matrix matching the parameter ordering.
+    /// covariance_epoch : float, optional
+    ///     Epoch of the covariance (JD, TDB).
     #[new]
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (desig, group=None, epoch=None, eccentricity=None, inclination=None,
         lon_of_ascending=None, peri_arg=None, peri_dist=None, peri_time=None, h_mag=None,
-        vis_albedo=None, diameter=None, moid=None, g_phase=None, arc_len=None, covariance=None))]
+        vis_albedo=None, diameter=None, moid=None, g_phase=None, arc_len=None,
+        covariance_params=None, covariance_matrix=None, covariance_epoch=None))]
     pub fn new(
         desig: String,
         group: Option<String>,
@@ -89,8 +121,21 @@ impl HorizonsProperties {
         moid: Option<f64>,
         g_phase: Option<f64>,
         arc_len: Option<f64>,
-        covariance: Option<Covariance>,
+        covariance_params: Option<Vec<(String, f64)>>,
+        covariance_matrix: Option<Vec<Vec<f64>>>,
+        covariance_epoch: Option<f64>,
     ) -> Self {
+        let covariance = match (covariance_params, covariance_matrix) {
+            (Some(params), Some(cov_matrix)) => {
+                let cov_epoch = covariance_epoch.or(epoch).unwrap_or(0.0);
+                Some(RawCovariance {
+                    epoch: cov_epoch,
+                    params,
+                    cov_matrix,
+                })
+            }
+            _ => None,
+        };
         Self {
             desig,
             group,
@@ -111,10 +156,245 @@ impl HorizonsProperties {
         }
     }
 
+    /// The MPC designation of the object.
+    #[getter]
+    fn desig(&self) -> &str {
+        &self.desig
+    }
+
+    /// Optional group name.
+    #[getter]
+    fn group(&self) -> Option<&str> {
+        self.group.as_deref()
+    }
+
+    /// Epoch of the orbital elements (JD, TDB).
+    #[getter]
+    fn epoch(&self) -> Option<f64> {
+        self.epoch
+    }
+
+    /// Eccentricity.
+    #[getter]
+    fn eccentricity(&self) -> Option<f64> {
+        self.eccentricity
+    }
+
+    /// Inclination in degrees.
+    #[getter]
+    fn inclination(&self) -> Option<f64> {
+        self.inclination
+    }
+
+    /// Longitude of ascending node in degrees.
+    #[getter]
+    fn lon_of_ascending(&self) -> Option<f64> {
+        self.lon_of_ascending
+    }
+
+    /// Argument of perihelion in degrees.
+    #[getter]
+    fn peri_arg(&self) -> Option<f64> {
+        self.peri_arg
+    }
+
+    /// Perihelion distance in AU.
+    #[getter]
+    fn peri_dist(&self) -> Option<f64> {
+        self.peri_dist
+    }
+
+    /// Time of perihelion (JD, TDB).
+    #[getter]
+    fn peri_time(&self) -> Option<f64> {
+        self.peri_time
+    }
+
+    /// H magnitude.
+    #[getter]
+    fn h_mag(&self) -> Option<f64> {
+        self.h_mag
+    }
+
+    /// Visible albedo (0-1).
+    #[getter]
+    fn vis_albedo(&self) -> Option<f64> {
+        self.vis_albedo
+    }
+
+    /// Diameter in km.
+    #[getter]
+    fn diameter(&self) -> Option<f64> {
+        self.diameter
+    }
+
+    /// MOID to Earth in AU.
+    #[getter]
+    fn moid(&self) -> Option<f64> {
+        self.moid
+    }
+
+    /// G phase parameter.
+    #[getter]
+    fn g_phase(&self) -> Option<f64> {
+        self.g_phase
+    }
+
+    /// Arc length in days.
+    #[getter]
+    fn arc_len(&self) -> Option<f64> {
+        self.arc_len
+    }
+
+    /// The uncertain orbit state, constructed from the Horizons covariance.
+    ///
+    /// Returns ``None`` if no covariance was provided.  When present, the
+    /// cometary-element covariance is automatically transformed to a
+    /// Cartesian covariance via a numerical Jacobian.
+    #[getter]
+    fn uncertain_state(&self) -> PyResult<Option<PyUncertainState>> {
+        let raw = match &self.covariance {
+            Some(c) => c,
+            None => return Ok(None),
+        };
+
+        // Lookup helper -- shared by both branches.
+        let lower_names: Vec<String> = raw.params.iter().map(|(k, _)| k.to_lowercase()).collect();
+        let get = |key: &str| -> PyResult<f64> {
+            raw.params
+                .iter()
+                .find(|(k, _)| k.to_lowercase() == key)
+                .map(|(_, v)| *v)
+                .ok_or_else(|| {
+                    prelude::Error::ValueError(format!("Horizons covariance missing '{key}'"))
+                        .into()
+                })
+        };
+
+        // Classify parameters.
+        let elem_keys: &[&str] = &[
+            "eccentricity",
+            "peri_dist",
+            "peri_time",
+            "lon_of_ascending",
+            "peri_arg",
+            "inclination",
+        ];
+        let cart_keys: &[&str] = &["x", "y", "z", "vx", "vy", "vz"];
+        let is_cometary = lower_names.iter().any(|k| elem_keys.contains(&k.as_str()));
+        let core_keys = if is_cometary { elem_keys } else { cart_keys };
+
+        // ---- Shared: indices, non-grav model, reorder map ----
+        let core_indices: Vec<usize> = core_keys
+            .iter()
+            .filter_map(|&key| lower_names.iter().position(|k| k == key))
+            .collect();
+        let nongrav_indices: Vec<usize> = (0..lower_names.len())
+            .filter(|i| !core_indices.contains(i))
+            .collect();
+
+        // Build a non-grav model from extra params if they match a known
+        // model.  Unrecognized params (e.g. RHO, AMRAT) are silently
+        // ignored and only the 6x6 orbital covariance is kept.
+        let non_grav = if nongrav_indices.is_empty() {
+            None
+        } else {
+            let ng_hash: std::collections::HashMap<&str, f64> = nongrav_indices
+                .iter()
+                .map(|&i| (lower_names[i].as_str(), raw.params[i].1))
+                .collect();
+            build_nongrav_from_hash(&ng_hash)
+        };
+
+        let np = non_grav.as_ref().map_or(0, NonGravModel::n_free_params);
+        let n = 6 + np;
+
+        // Build full reorder map: output row/col -> Horizons source index.
+        // Core (orbital) params map directly; non-grav params are matched
+        // by name to the model's free-param vector so that any subset of
+        // A1/A2/A3 lands in the correct position (missing params get None).
+        let ng_param_names: Vec<&str> = match &non_grav {
+            Some(ng) => ng.param_names().to_vec(),
+            None => Vec::new(),
+        };
+        let reorder: Vec<Option<usize>> = (0..n)
+            .map(|i| {
+                if i < 6 {
+                    Some(core_indices[i])
+                } else {
+                    let model_name = ng_param_names.get(i - 6)?;
+                    nongrav_indices
+                        .iter()
+                        .find(|&&ni| lower_names[ni] == *model_name)
+                        .copied()
+                }
+            })
+            .collect();
+
+        // ---- Branch-specific construction ----
+        if is_cometary {
+            let elements = CometElements {
+                desig: prelude::Desig::Name(self.desig.clone()),
+                epoch: raw.epoch.into(),
+                eccentricity: get("eccentricity")?,
+                inclination: get("inclination")?.to_radians(),
+                peri_arg: get("peri_arg")?.to_radians(),
+                peri_dist: get("peri_dist")?,
+                peri_time: get("peri_time")?.into(),
+                lon_of_ascending: get("lon_of_ascending")?.to_radians(),
+            };
+
+            // JPL Horizons covariance uses degrees for angles.
+            // Scale angular rows/cols to radians:
+            //   C_rad[i,j] = C_deg[i,j] * s[i] * s[j]
+            // Indices 3, 4, 5 in elem_keys are the angular params.
+            let deg2rad = std::f64::consts::PI / 180.0;
+            let scale: Vec<f64> = (0..n)
+                .map(|i| if (3..6).contains(&i) { deg2rad } else { 1.0 })
+                .collect();
+
+            let mat = DMatrix::from_fn(n, n, |r, c| match (reorder[r], reorder[c]) {
+                (Some(sr), Some(sc)) => raw.cov_matrix[sr][sc] * scale[r] * scale[c],
+                _ => 0.0,
+            });
+
+            let us = kete_fitting::UncertainState::from_cometary(&elements, &mat, non_grav)?;
+            Ok(Some(PyUncertainState(us)))
+        } else {
+            // Cartesian covariance -- construct UncertainState directly.
+            let x = get("x")?;
+            let y = get("y")?;
+            let z = get("z")?;
+            let vx = get("vx")?;
+            let vy = get("vy")?;
+            let vz = get("vz")?;
+
+            let desig_val = match self.desig.as_str() {
+                "" => prelude::Desig::Empty,
+                _ => prelude::Desig::Name(self.desig.clone()),
+            };
+            let state: prelude::State<prelude::Equatorial> = prelude::State::new(
+                desig_val,
+                prelude::Time::new(raw.epoch),
+                [x, y, z].into(),
+                [vx, vy, vz].into(),
+                10,
+            );
+
+            let mat = DMatrix::from_fn(n, n, |r, c| match (reorder[r], reorder[c]) {
+                (Some(sr), Some(sc)) => raw.cov_matrix[sr][sc],
+                _ => 0.0,
+            });
+
+            let us = kete_fitting::UncertainState::new(state, mat, non_grav)?;
+            Ok(Some(PyUncertainState(us)))
+        }
+    }
+
     /// Cometary orbital elements.
     #[getter]
     pub fn elements(&self) -> PyResult<PyCometElements> {
-        Ok(PyCometElements(prelude::CometElements {
+        Ok(PyCometElements(CometElements {
             desig: prelude::Desig::Name(self.desig.clone()),
             epoch: self
                 .epoch
@@ -170,7 +450,7 @@ impl HorizonsProperties {
             "HorizonsObject(desig={:?}, group={:}, epoch={:}, eccentricity={:}, inclination={:}, \
             lon_of_ascending={:}, peri_arg={:}, peri_dist={:}, peri_time={:}, h_mag={:}, \
             vis_albedo={:}, diameter={:}, moid={:}, g_phase={:}, arc_len={:}, \
-            covariance={:})",
+            uncertain_state={:})",
             self.desig,
             cleanup(self.group.clone()),
             cleanup(self.epoch),
@@ -201,5 +481,44 @@ impl HorizonsProperties {
     #[pyo3(name = "load")]
     pub fn py_load(filename: String) -> PyResult<Self> {
         Ok(Self::load(filename)?)
+    }
+}
+
+/// Build a [`NonGravModel`] from leftover (non-orbital) sampled parameters.
+///
+/// Returns `Some(model)` only when the parameter names match a supported
+/// non-gravitational model:
+///  - **JplComet**: at least one of `a1`, `a2`, `a3` is present.
+///  - **Dust**: `beta` is present.
+///
+/// Unrecognized parameter sets (e.g. `rho`, `amrat`) yield `None`;
+/// the caller should then fall back to a pure orbital covariance.
+fn build_nongrav_from_hash(hash: &std::collections::HashMap<&str, f64>) -> Option<NonGravModel> {
+    let get = |key: &str, default: f64| -> f64 { hash.get(key).copied().unwrap_or(default) };
+
+    let has_jpl = hash.contains_key("a1") || hash.contains_key("a2") || hash.contains_key("a3");
+    let has_dust = hash.contains_key("beta");
+
+    if has_jpl {
+        Some(NonGravModel::new_jpl(
+            get("a1", 0.0),
+            get("a2", 0.0),
+            get("a3", 0.0),
+            get("alpha", 0.111_262_042_6),
+            get("r_0", 2.808),
+            get("m", 2.15),
+            get("n", 5.093),
+            get("k", 4.6142),
+            get("dt", 0.0),
+        ))
+    } else if has_dust {
+        Some(NonGravModel::new_dust(get("beta", 0.0)))
+    } else {
+        let unknown: Vec<&str> = hash.keys().copied().collect();
+        eprintln!(
+            "Warning: Horizons covariance contains unrecognized non-gravitational \
+             parameters {unknown:?}; ignoring and using orbital covariance only."
+        );
+        None
     }
 }

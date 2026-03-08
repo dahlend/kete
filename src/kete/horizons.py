@@ -15,9 +15,8 @@ import numpy as np
 import pandas as pd
 import requests
 
-from ._core import CometElements, Covariance, HorizonsProperties, NonGravModel
+from ._core import HorizonsProperties, NonGravModel
 from .cache import cache_path
-from .covariance import generate_sample_from_cov
 from .mpc import pack_designation, unpack_designation
 from .time import Time
 
@@ -104,7 +103,9 @@ def fetch(name, update_name=True, cache=True, update_cache=False, exact_name=Fal
         "peri_time": None,
         "arc_len": None,
         "epoch": None,
-        "covariance": None,
+        "covariance_params": None,
+        "covariance_matrix": None,
+        "covariance_epoch": None,
     }
     if "orbit" in props:
         lookup = {
@@ -153,7 +154,9 @@ def fetch(name, update_name=True, cache=True, update_cache=False, exact_name=Fal
             params = [
                 (lookup_rev.get(x, x.lower()), elements.get(x, np.nan)) for x in labels
             ]
-            phys["covariance"] = Covariance(name, cov_epoch, params, mat)
+            phys["covariance_params"] = params
+            phys["covariance_matrix"] = mat.tolist()
+            phys["covariance_epoch"] = cov_epoch
     else:
         raise ValueError(
             f"Horizons did not return orbit information for this object:\n{props}"
@@ -318,53 +321,11 @@ def _sample(self, n_samples):
     n_samples :
         The number of samples to take of the covariance.
     """
-    if self.covariance is None:
+    if self.uncertain_state is None:
         raise ValueError(
             "This object does not have a covariance matrix, cannot sample from it."
         )
-    matrix = self.covariance.cov_matrix
-    epoch = Time(self.covariance.epoch, scaling="utc").jd
-    samples = generate_sample_from_cov(n_samples, matrix)
-
-    elem_keywords = [
-        "eccentricity",
-        "inclination",
-        "lon_of_ascending",
-        "peri_arg",
-        "peri_dist",
-        "peri_time",
-    ]
-
-    orbit = self.json["orbit"]
-    has_nongrav = "model_pars" in orbit
-    has_warned = False
-
-    states = []
-    non_gravs = []
-    for sample in samples:
-        names, vals = zip(*self.covariance.params)
-        sample_params = dict(zip(names, np.array(vals) + sample))
-        elem_params = {x: sample_params.pop(x) for x in elem_keywords}
-        state = CometElements(self.desig, epoch, **elem_params).state
-        if has_nongrav:
-            params = _default_nongrav_params()
-            for key, value in sample_params.items():
-                if key in _PARAM_MAP:
-                    params[_PARAM_MAP[key]] = value
-                elif not has_warned:
-                    warn(
-                        f"Unknown non-grav parameter {key} in sample, "
-                        "this may cause issues with the non-grav model.",
-                        stacklevel=2,
-                    )
-                    has_warned = True
-            non_grav = NonGravModel.new_comet(**params)
-        else:
-            non_grav = None
-        states.append(state)
-        non_gravs.append(non_grav)
-
-    return states, non_gravs
+    return self.uncertain_state.sample(n_samples)
 
 
 @property  # type: ignore

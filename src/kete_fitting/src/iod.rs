@@ -3,25 +3,57 @@
 //! Given optical observations, compute an approximate heliocentric state that
 //! can seed the batch least-squares differential corrector.
 //!
-//! The scanning method works on any observation arc from days to years.  It
-//! scans topocentric distance on a log-spaced grid, identifies candidate
-//! basins, and refines each with Nelder-Mead optimisation in 2-D.
+//! Two methods are provided:
+//!
+//! - [`initial_orbit_determination`]: Range-scanning IOD for arcs of several
+//!   days or longer.  Estimates velocity from finite differences.
+//! - [`short_arc_iod`]: Vaisala-style IOD for very short arcs (minutes to
+//!   ~2 days) where finite-difference velocity is too noisy.  Assumes a
+//!   near-circular orbit and scans geocentric distance.
+//!
+// BSD 3-Clause License
+//
+// Copyright (c) 2026, Dar Dahlen
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
+//
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use kete_core::constants::GMS;
 use kete_core::frames::{Equatorial, Vector};
-use kete_core::prelude::{Error, KeteResult, State};
-use kete_core::propagation::propagate_two_body;
+use kete_core::prelude::{CometElements, Error, KeteResult, State};
+use kete_core::propagation::{light_time_correct, propagate_two_body};
 
 use crate::Observation;
-
-// --- Public entry point ------------------------------------------------------
 
 /// Range-scanning IOD: a robust approach to initial orbit determination.
 ///
 /// Works on any observation arc from days to years.  The algorithm:
 ///
 /// 1. Select a pair of observations with ideal time separation (~3-30 days).
-/// 2. Coarse 1-D scan of topocentric distance (log-scale, 200 points).
+/// 2. Coarse 2-D scan over (`log rho_a`, `log rho_b`), the topocentric distances
+///    at each observation.  40x40 grid, log-spaced 0.002-120 AU.
 /// 3. Take the top candidates from the scan as seed basins.
 /// 4. Refine each with Nelder-Mead in 2-D (`log rho_a`, `log rho_b`).
 /// 5. Return the best candidates, de-duplicated by position.
@@ -50,9 +82,195 @@ pub fn initial_orbit_determination(obs: &[Observation]) -> KeteResult<Vec<State<
     scanning_iod_core(&sorted)
 }
 
-// --- Core algorithm ----------------------------------------------------------
+/// Short-arc IOD assuming near-circular orbits (Vaisala-like method).
+///
+/// Works for tracklets spanning minutes to roughly 2 days where the standard
+/// range-scanning IOD cannot reliably estimate velocity from finite
+/// differences.
+///
+/// # Algorithm
+///
+/// 1. Compute the mean line-of-sight direction and angular rate from the
+///    tracklet (first -> last observation).
+/// 2. Scan geocentric distance on a log-spaced grid (0.01 - 100 AU).
+/// 3. At each distance, place the object on the line of sight, then derive
+///    the full velocity vector from:
+///    - the circular-orbit constraint (`v . r = 0`, `|v| = sqrt(GM/r)`), and
+///    - the observed angular rate (sets the transverse velocity direction).
+/// 4. Score each candidate against *all* observations via two-body
+///    propagation.
+/// 5. Refine the best seeds with 1-D Nelder-Mead on `log rho`.
+///
+/// Returns up to 5 candidate states (SSB-centered, Equatorial), sorted by
+/// residual score.
+///
+/// # Errors
+/// - Fewer than 2 optical observations.
+/// - All observations at the same epoch.
+/// - No valid candidates found.
+pub fn short_arc_iod(obs: &[Observation]) -> KeteResult<Vec<State<Equatorial>>> {
+    if obs.len() < 2 {
+        return Err(Error::ValueError(
+            "short_arc_iod requires at least 2 optical observations".into(),
+        ));
+    }
+
+    let mut sorted_obs = obs.to_vec();
+    sorted_obs.sort_by(|a, b| {
+        a.epoch()
+            .jd
+            .partial_cmp(&b.epoch().jd)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let n = sorted_obs.len();
+
+    // Reference observation: middle of the arc.
+    let i_ref = n / 2;
+    let (ra_ref, dec_ref, obs_ref) = sorted_obs[i_ref].as_optical()?;
+    let los_ref = Vector::<Equatorial>::from_ra_dec(ra_ref, dec_ref);
+
+    // Compute the angular rate from first -> last observation.
+    let (ra_first, dec_first, obs_first) = sorted_obs[0].as_optical()?;
+    let (ra_last, dec_last, obs_last) = sorted_obs[n - 1].as_optical()?;
+
+    let los_first = Vector::<Equatorial>::from_ra_dec(ra_first, dec_first);
+    let los_last = Vector::<Equatorial>::from_ra_dec(ra_last, dec_last);
+
+    let dt_arc = obs_last.epoch.jd - obs_first.epoch.jd;
+    if dt_arc.abs() < 1e-8 {
+        return Err(Error::ValueError(
+            "short_arc_iod: all observations at the same epoch".into(),
+        ));
+    }
+
+    // Angular rate vector (direction of apparent motion on the sky).
+    // Project L_last - L_first perpendicular to the reference LOS so it
+    // is a pure sky-plane vector.
+    let d_los = los_last - los_first;
+    let along = d_los.dot(&los_ref);
+    let d_los_perp = d_los - los_ref * along;
+    // rad/day, sky-plane
+    let mu_vec = d_los_perp / dt_arc;
+
+    // 1-D grid scan
+    let n_scan: usize = 300;
+    let log_min = 0.01_f64.ln();
+    let log_max = 100.0_f64.ln();
+
+    // (score, rho)
+    let mut scan_scores: Vec<(f64, f64)> = Vec::new();
+
+    for i in 0..n_scan {
+        let frac = i as f64 / (n_scan - 1) as f64;
+        let rho = (log_min + (log_max - log_min) * frac).exp();
+
+        let Some(state) = circular_state_at_rho(obs_ref, &los_ref, &mu_vec, rho) else {
+            continue;
+        };
+
+        let Some(score) = observation_residual(&state, &sorted_obs) else {
+            continue;
+        };
+
+        scan_scores.push((score, rho));
+    }
+
+    if scan_scores.is_empty() {
+        return Err(Error::ValueError(
+            "short_arc_iod: no valid candidates found in grid scan".into(),
+        ));
+    }
+
+    // Select seed basins
+    scan_scores.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    let mut seeds: Vec<(f64, f64)> = Vec::new();
+    for &entry in &scan_scores {
+        let dominated = seeds.iter().any(|s| {
+            let ratio = entry.1 / s.1;
+            ratio > 0.67 && ratio < 1.5
+        });
+        if !dominated {
+            seeds.push(entry);
+        }
+        if seeds.len() >= 5 {
+            break;
+        }
+    }
+
+    // Refine each seed with 1-D Nelder-Mead on log(rho)
+    let objective = |x: &[f64]| -> f64 {
+        let rho = x[0].exp();
+        if rho < 1e-3 {
+            return 1e20;
+        }
+        let Some(state) = circular_state_at_rho(obs_ref, &los_ref, &mu_vec, rho) else {
+            return 1e20;
+        };
+        observation_residual(&state, &sorted_obs).unwrap_or(1e20)
+    };
+
+    let mut refined: Vec<(f64, State<Equatorial>)> = Vec::new();
+
+    for &(_, rho) in &seeds {
+        let log_rho = rho.ln();
+        let scale = (log_rho.abs() * 0.1).max(0.1);
+
+        let nm_result =
+            kete_stats::fitting::nelder_mead(objective, &[log_rho], &[scale], 1e-14, 300);
+
+        let (best_log_rho, best_score) = match nm_result {
+            Ok(res) => (res.point[0], res.value),
+            Err(_) => (log_rho, objective(&[log_rho])),
+        };
+
+        if best_score >= 1e20 {
+            continue;
+        }
+
+        let rho_opt = best_log_rho.exp();
+        if let Some(state) = circular_state_at_rho(obs_ref, &los_ref, &mu_vec, rho_opt) {
+            refined.push((best_score, state));
+        }
+    }
+
+    if refined.is_empty() {
+        return Err(Error::ValueError(
+            "short_arc_iod: refinement produced no valid candidates".into(),
+        ));
+    }
+
+    // Score-filter and de-duplicate
+    refined.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    let best_score = refined[0].0;
+    let score_cutoff = best_score * 10.0;
+
+    let mut results: Vec<State<Equatorial>> = Vec::new();
+    for (score, state) in refined {
+        if score > score_cutoff {
+            continue;
+        }
+        results.push(state);
+    }
+
+    if results.is_empty() {
+        return Err(Error::ValueError(
+            "short_arc_iod: all candidates filtered out".into(),
+        ));
+    }
+
+    dedup_states(&mut results);
+    results.truncate(5);
+    Ok(results)
+}
 
 /// Core range-scanning IOD on pre-sorted observations.
+///
+/// Selects 2-3 ranging pairs (short, medium, and full-arc baselines),
+/// runs a 2D grid scan + Nelder-Mead refinement for each, then rescores
+/// all candidates against a nearby observation window and deduplicates.
 fn scanning_iod_core(sorted_obs: &[Observation]) -> KeteResult<Vec<State<Equatorial>>> {
     let n = sorted_obs.len();
     if n < 3 {
@@ -61,8 +279,85 @@ fn scanning_iod_core(sorted_obs: &[Observation]) -> KeteResult<Vec<State<Equator
         ));
     }
 
-    // 1. Select a good pair for ranging.
-    let (i_a, i_b) = select_ranging_pair(sorted_obs);
+    let pairs = select_ranging_pairs(sorted_obs);
+    if pairs.is_empty() {
+        return Err(Error::ValueError(
+            "IOD: could not find a usable observation pair".into(),
+        ));
+    }
+
+    let mut all_refined: Vec<(f64, State<Equatorial>)> = Vec::new();
+
+    for (i_a, i_b) in &pairs {
+        if let Ok(mut candidates) = run_ranging_for_pair(sorted_obs, *i_a, *i_b) {
+            all_refined.append(&mut candidates);
+        }
+    }
+
+    if all_refined.is_empty() {
+        return Err(Error::ValueError(
+            "IOD: no physically valid candidates found from any pair".into(),
+        ));
+    }
+
+    // Rescore every candidate against the SAME observation set so scores
+    // are directly comparable.  Use observations near the earliest pair
+    // epoch -- ranging states are defined at obs_a.epoch, so scoring near
+    // there minimizes two-body propagation error.
+    let first_jd = sorted_obs[0].epoch().jd;
+    let rescore_indices = select_scoring_cluster(sorted_obs, first_jd);
+    let rescore_obs: Vec<Observation> = rescore_indices
+        .iter()
+        .map(|&i| sorted_obs[i].clone())
+        .collect();
+
+    for entry in &mut all_refined {
+        if let Some(score) = observation_residual(&entry.1, &rescore_obs) {
+            entry.0 = score;
+        } else {
+            entry.0 = 1e20;
+        }
+    }
+
+    all_refined.retain(|s| s.0.is_finite() && s.0 < 1e20);
+
+    if all_refined.is_empty() {
+        return Err(Error::ValueError(
+            "IOD: all candidates filtered out after rescoring".into(),
+        ));
+    }
+
+    all_refined.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let best_score = all_refined[0].0;
+    let score_cutoff = best_score * 10.0;
+
+    let mut results: Vec<State<Equatorial>> = Vec::new();
+    for (score, state) in all_refined {
+        if score > score_cutoff {
+            continue;
+        }
+        results.push(state);
+    }
+
+    if results.is_empty() {
+        return Err(Error::ValueError("IOD: all candidates filtered out".into()));
+    }
+
+    dedup_states(&mut results);
+    results.truncate(5);
+    Ok(results)
+}
+
+/// Run the scan + Nelder-Mead refinement for a single ranging pair.
+///
+/// Returns a vector of `(score, state)` candidates, scored against a
+/// local subset of observations near the pair midpoint.
+fn run_ranging_for_pair(
+    sorted_obs: &[Observation],
+    i_a: usize,
+    i_b: usize,
+) -> KeteResult<Vec<(f64, State<Equatorial>)>> {
     let (ra_a, dec_a, obs_a) = sorted_obs[i_a].as_optical()?;
     let (ra_b, dec_b, obs_b) = sorted_obs[i_b].as_optical()?;
 
@@ -76,61 +371,61 @@ fn scanning_iod_core(sorted_obs: &[Observation]) -> KeteResult<Vec<State<Equator
         ));
     }
 
-    // 2. Build a scoring subset near the ranging pair epoch.
+    // Score against a dense observation cluster near the pair midpoint.
+    // Clusters are short enough that two-body is accurate for any orbit,
+    // and dense enough to average out observation noise.
     let ref_jd = f64::midpoint(obs_a.epoch.jd, obs_b.epoch.jd);
-    let scoring_indices = select_scoring_subset(sorted_obs, 20, ref_jd, 90.0);
+    let scoring_indices = select_scoring_cluster(sorted_obs, ref_jd);
     let scoring_obs: Vec<Observation> = scoring_indices
         .iter()
         .map(|&i| sorted_obs[i].clone())
         .collect();
 
-    // 3. Coarse 1-D grid scan (log-spaced).
-    let n_scan: usize = 200;
-    let log_min = 0.005_f64.ln();
+    // 2-D grid scan over (log rho_a, log rho_b).
+    // Independent distances for the two observations -- no equal-helio-distance
+    // constraint, so eccentric and hyperbolic orbits are naturally sampled.
+    let n_scan: usize = 40;
+    let log_min = 0.002_f64.ln();
     let log_max = 120.0_f64.ln();
 
-    let mut scan_scores: Vec<(f64, f64, f64)> = Vec::new(); // (score, rho_a, rho_b)
+    // (score, rho_a, rho_b)
+    let mut scan_scores: Vec<(f64, f64, f64)> = Vec::new();
 
-    for i in 0..n_scan {
-        let frac = i as f64 / (n_scan - 1) as f64;
-        let rho = (log_min + (log_max - log_min) * frac).exp();
+    for ia in 0..n_scan {
+        let frac_a = ia as f64 / (n_scan - 1) as f64;
+        let rho_a = (log_min + (log_max - log_min) * frac_a).exp();
+        let r_a = obs_a.pos + los_a * rho_a;
 
-        let r_a = obs_a.pos + los_a * rho;
-        let r_helio = r_a.norm();
+        for ib in 0..n_scan {
+            let frac_b = ib as f64 / (n_scan - 1) as f64;
+            let rho_b = (log_min + (log_max - log_min) * frac_b).exp();
+            let r_b = obs_b.pos + los_b * rho_b;
 
-        let Some(rho_b) = rho_for_helio_distance(&obs_b.pos, &los_b, r_helio) else {
-            continue;
-        };
-        if rho_b < 1e-5 {
-            continue;
+            let vel = (r_b - r_a) / dt;
+            let state = State::new(kete_core::desigs::Desig::Empty, obs_a.epoch, r_a, vel, 0);
+
+            if !is_physically_valid(&state) {
+                continue;
+            }
+
+            let Some(score) = observation_residual(&state, &scoring_obs) else {
+                continue;
+            };
+
+            scan_scores.push((score, rho_a, rho_b));
         }
-
-        let r_b = obs_b.pos + los_b * rho_b;
-        let vel = (r_b - r_a) / dt;
-
-        let state = State::new(kete_core::desigs::Desig::Empty, obs_a.epoch, r_a, vel, 0);
-
-        if !is_physically_valid(&state) {
-            continue;
-        }
-
-        let Some(score) = observation_residual(&state, &scoring_obs) else {
-            continue;
-        };
-
-        scan_scores.push((score, rho, rho_b));
     }
 
     if scan_scores.is_empty() {
         return Err(Error::ValueError(
-            "IOD: no physically valid candidates found".into(),
+            "IOD: no valid candidates in scan for this pair".into(),
         ));
     }
 
-    // 4. Pick the best seeds from the scan.
-    //    Sort by score and take up to 5, requiring they differ by at least 50%
-    //    in distance so we sample distinct basins.
-    scan_scores.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    // Pick the best seeds, requiring they differ by at least 50% in
+    // distance so we sample distinct basins.
+    scan_scores.retain(|s| s.0.is_finite());
+    scan_scores.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut seeds: Vec<(f64, f64, f64)> = Vec::new();
     for &entry in &scan_scores {
@@ -146,49 +441,67 @@ fn scanning_iod_core(sorted_obs: &[Observation]) -> KeteResult<Vec<State<Equator
         }
     }
 
-    // 5. Refine each seed with Nelder-Mead in 2-D (log rho_a, log rho_b).
-    let objective = |x: &[f64]| -> f64 {
-        let rho_a = x[0].exp();
-        let rho_b_val = x[1].exp();
-
-        if rho_a < 1e-5 || rho_b_val < 1e-5 {
-            return 1e20;
-        }
-
-        let r_a = obs_a.pos + los_a * rho_a;
-        let r_b = obs_b.pos + los_b * rho_b_val;
-        let vel = (r_b - r_a) / dt;
-
-        let state = State::new(kete_core::desigs::Desig::Empty, obs_a.epoch, r_a, vel, 0);
-
-        if !is_physically_valid(&state) {
-            return 1e20;
-        }
-
-        observation_residual(&state, &scoring_obs).unwrap_or(1e20)
-    };
-
+    // Refine each seed with nested local grid search.
+    // Two levels of zoom: each 11x11 grid narrows by 5x per level.
+    // This stays in the neighborhood of the coarse-scan minimum,
+    // unlike Nelder-Mead which can wander to extreme eccentricities.
     let mut refined: Vec<(f64, State<Equatorial>)> = Vec::new();
 
-    for (_, rho_a, rho_b_val) in &seeds {
-        let log_rho_a = rho_a.ln();
-        let log_rho_b = rho_b_val.ln();
+    for &(seed_score, rho_a_seed, rho_b_seed) in &seeds {
+        let mut best_log_a = rho_a_seed.ln();
+        let mut best_log_b = rho_b_seed.ln();
+        let mut best_score = seed_score;
 
-        let scale_a = (log_rho_a.abs() * 0.1).max(0.1);
-        let scale_b = (log_rho_b.abs() * 0.1).max(0.1);
+        // Start with window = 1 grid cell from the coarse scan.
+        let coarse_step = (log_max - log_min) / (n_scan - 1) as f64;
+        let mut half_width = coarse_step;
 
-        let nm_result = kete_stats::fitting::nelder_mead(
-            objective,
-            &[log_rho_a, log_rho_b],
-            &[scale_a, scale_b],
-            1e-14,
-            500,
-        );
+        for _level in 0..2 {
+            let n_refine: usize = 11;
+            let center_a = best_log_a;
+            let center_b = best_log_b;
 
-        let (best_log_a, best_log_b, best_score) = match nm_result {
-            Ok(res) => (res.point[0], res.point[1], res.value),
-            Err(_) => (log_rho_a, log_rho_b, objective(&[log_rho_a, log_rho_b])),
-        };
+            for ia in 0..n_refine {
+                let frac_a = ia as f64 / (n_refine - 1) as f64;
+                let log_a = (center_a - half_width) + 2.0 * half_width * frac_a;
+                let rho_a = log_a.exp();
+                if rho_a < 1e-5 {
+                    continue;
+                }
+                let r_a = obs_a.pos + los_a * rho_a;
+
+                for ib in 0..n_refine {
+                    let frac_b = ib as f64 / (n_refine - 1) as f64;
+                    let log_b = (center_b - half_width) + 2.0 * half_width * frac_b;
+                    let rho_b = log_b.exp();
+                    if rho_b < 1e-5 {
+                        continue;
+                    }
+                    let r_b = obs_b.pos + los_b * rho_b;
+
+                    let vel = (r_b - r_a) / dt;
+                    let state =
+                        State::new(kete_core::desigs::Desig::Empty, obs_a.epoch, r_a, vel, 0);
+
+                    if !is_physically_valid(&state) {
+                        continue;
+                    }
+
+                    let Some(score) = observation_residual(&state, &scoring_obs) else {
+                        continue;
+                    };
+
+                    if score < best_score {
+                        best_score = score;
+                        best_log_a = log_a;
+                        best_log_b = log_b;
+                    }
+                }
+            }
+
+            // Narrow the window by 5x for the next level.
+            half_width /= 5.0;
+        }
 
         if best_score >= 1e20 {
             continue;
@@ -204,147 +517,207 @@ fn scanning_iod_core(sorted_obs: &[Observation]) -> KeteResult<Vec<State<Equator
         refined.push((best_score, state));
     }
 
-    if refined.is_empty() {
-        return Err(Error::ValueError(
-            "IOD: refinement produced no valid candidates".into(),
-        ));
-    }
-
-    // 6. Score-filter and de-duplicate.
-    refined.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-
-    let best_score = refined[0].0;
-    let score_cutoff = best_score * 10.0;
-
-    let mut results: Vec<State<Equatorial>> = Vec::new();
-    for (score, state) in refined {
-        if score > score_cutoff {
-            continue;
-        }
-        results.push(state);
-    }
-
-    if results.is_empty() {
-        return Err(Error::ValueError("IOD: all candidates filtered out".into()));
-    }
-
-    dedup_states(&mut results);
-    results.truncate(3);
-    Ok(results)
+    Ok(refined)
 }
 
-// --- Helpers -----------------------------------------------------------------
-
-/// Select a pair of observation indices with time separation in the ideal
-/// range for finite-difference velocity estimation.
+/// Construct a state from a circular-orbit assumption at geocentric distance
+/// `rho` from the given observer.
 ///
-/// Prefers a baseline of 3-30 days.  Falls back to the widest pair if none
-/// exists in that range.  Returns `(i_a, i_b)` with `i_a < i_b`.
-fn select_ranging_pair(sorted_obs: &[Observation]) -> (usize, usize) {
+/// The velocity is determined by:
+/// - The observed angular rate `mu_vec` sets the sky-plane (transverse) velocity.
+/// - The circular-orbit constraint `v . r = 0` fixes the radial component.
+///
+/// Returns `None` if the geometry or speed is unphysical.
+fn circular_state_at_rho(
+    obs: &State<Equatorial>,
+    los: &Vector<Equatorial>,
+    mu_vec: &Vector<Equatorial>,
+    rho: f64,
+) -> Option<State<Equatorial>> {
+    // Heliocentric position (SSB ~= Sun for IOD purposes).
+    let r = obs.pos + *los * rho;
+    let r_helio = r.norm();
+
+    if !(0.05..=500.0).contains(&r_helio) {
+        return None;
+    }
+
+    // Circular orbit speed.
+    let v_circ = (GMS / r_helio).sqrt();
+
+    // Transverse (sky-plane) velocity at this distance.
+    let v_sky = *mu_vec * rho;
+
+    // Full heliocentric velocity:
+    //   v = v_obs + v_sky + v_rad * L_hat
+    // Circular orbit constraint: v . r = 0.
+    //   (v_obs + v_sky) . r + v_rad * (L . r) = 0
+    //   v_rad = -((v_obs + v_sky) . r) / (L . r)
+    let l_dot_r = los.dot(&r);
+    if l_dot_r.abs() < 1e-15 {
+        return None;
+    }
+
+    let v_base = obs.vel + v_sky;
+    let v_radial = -v_base.dot(&r) / l_dot_r;
+
+    let v = v_base + *los * v_radial;
+
+    // Reject if speed is far from circular. sqrt(2) * v_circ is escape speed;
+    // 1.5x gives a small margin for high-eccentricity ellipses near perihelion.
+    let v_mag = v.norm();
+    if v_mag > 1.5 * v_circ || v_mag < 0.2 * v_circ {
+        return None;
+    }
+
+    Some(State::new(
+        kete_core::desigs::Desig::Empty,
+        obs.epoch,
+        r,
+        v,
+        0,
+    ))
+}
+
+/// Select observation pairs for ranging.
+///
+/// Returns up to 3 distinct `(i_a, i_b)` pairs:
+/// - ~3-day baseline (good for NEOs and close encounters)
+/// - ~10-day baseline (good for main-belt and distant objects)
+/// - first-last fallback (always included if baseline > 0.5 days)
+///
+/// With 2D grid scanning and improved scoring, two well-chosen pairs
+/// are sufficient. The first-last pair provides coverage when the data
+/// cadence doesn't match the target baselines.
+fn select_ranging_pairs(sorted_obs: &[Observation]) -> Vec<(usize, usize)> {
     let n = sorted_obs.len();
-    let ideal_min = 3.0_f64;
-    let ideal_max = 30.0_f64;
+    if n < 2 {
+        return vec![];
+    }
 
-    let mut best = (0_usize, n - 1);
-    let mut best_score = f64::MAX;
+    let target_baselines = [3.0, 10.0];
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
 
-    let mut j = 0_usize;
-    for i in 0..n {
-        if j <= i {
-            j = i + 1;
-        }
-        while j < n && (sorted_obs[j].epoch().jd - sorted_obs[i].epoch().jd) < ideal_min {
-            j += 1;
-        }
-        if j >= n {
-            break;
-        }
-        let dt = sorted_obs[j].epoch().jd - sorted_obs[i].epoch().jd;
-        let score = if dt <= ideal_max {
-            (dt - 10.0).abs()
-        } else {
-            100.0 + dt
-        };
-        if score < best_score {
-            best_score = score;
-            best = (i, j);
+    for &target in &target_baselines {
+        if let Some(pair) = best_pair_near_baseline(sorted_obs, target)
+            && !pairs.contains(&pair)
+        {
+            pairs.push(pair);
         }
     }
 
-    if best_score >= 100.0 {
-        best = (0, n - 1);
+    // Always include first-last as a fallback.
+    let full = (0, n - 1);
+    if sorted_obs[full.1].epoch().jd - sorted_obs[full.0].epoch().jd > 0.5 && !pairs.contains(&full)
+    {
+        pairs.push(full);
+    }
+
+    pairs
+}
+
+/// Find the pair `(i, j)` whose time separation is closest to `target_days`.
+///
+/// Sliding-window approach: for each `i`, advance `j` until `dt(i,j)`
+/// brackets the target, then check both sides.  O(n) time.
+///
+/// Only considers pairs where `dt >= 0.5` days to avoid near-degenerate
+/// baselines.  Returns `None` if no such pair exists.
+fn best_pair_near_baseline(sorted_obs: &[Observation], target_days: f64) -> Option<(usize, usize)> {
+    let n = sorted_obs.len();
+    let mut best: Option<(usize, usize)> = None;
+    let mut best_dist = f64::MAX;
+
+    let mut j = 1_usize;
+    for i in 0..n {
+        // Advance j until dt(i,j) >= target (bracket from below).
+        while j < n && (sorted_obs[j].epoch().jd - sorted_obs[i].epoch().jd) < target_days {
+            j += 1;
+        }
+        // Check j-1 and j (they bracket the target baseline).
+        for &candidate in &[j.saturating_sub(1), j] {
+            if candidate <= i || candidate >= n {
+                continue;
+            }
+            let dt = sorted_obs[candidate].epoch().jd - sorted_obs[i].epoch().jd;
+            if dt < 0.5 {
+                continue;
+            }
+            let dist = (dt - target_days).abs();
+            if dist < best_dist {
+                best_dist = dist;
+                best = Some((i, candidate));
+            }
+        }
     }
 
     best
 }
 
-/// Select a well-distributed scoring subset of up to `max_n` observations
-/// near a reference epoch.
-fn select_scoring_subset(
-    sorted_obs: &[Observation],
-    max_n: usize,
-    ref_jd: f64,
-    max_dt_days: f64,
-) -> Vec<usize> {
-    let mut nearby: Vec<usize> = sorted_obs
+/// Select observations for scoring IOD candidates.
+///
+/// IOD scoring only needs to answer "does this candidate roughly match?"
+/// -- not "is this a good orbit fit?". We want observations spanning enough
+/// arc for distance leverage (>= ~1 day) but short enough that two-body
+/// is reliable at IOD-level precision.
+///
+/// Uses a 60-day window around `ref_jd`: short enough for two-body on any
+/// orbit at IOD precision (~arcminutes), long enough for Earth's parallax
+/// to break distance degeneracy even with sparse cadence.
+fn select_scoring_cluster(sorted_obs: &[Observation], ref_jd: f64) -> Vec<usize> {
+    let mut indices: Vec<usize> = sorted_obs
         .iter()
         .enumerate()
-        .filter(|(_, ob)| (ob.epoch().jd - ref_jd).abs() <= max_dt_days)
+        .filter(|(_, ob)| (ob.epoch().jd - ref_jd).abs() <= 60.0)
         .map(|(i, _)| i)
         .collect();
 
-    if nearby.len() < 3 {
+    // Fallback: 5 nearest observations regardless of window.
+    if indices.len() < 3 {
         let mut by_dist: Vec<(usize, f64)> = sorted_obs
             .iter()
             .enumerate()
             .map(|(i, ob)| (i, (ob.epoch().jd - ref_jd).abs()))
             .collect();
-        by_dist.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-        nearby = by_dist
+        by_dist.sort_by(|a, b| a.1.total_cmp(&b.1));
+        return by_dist
             .iter()
-            .take(3.min(sorted_obs.len()))
+            .take(5.min(sorted_obs.len()))
             .map(|&(i, _)| i)
             .collect();
-        nearby.sort_unstable();
     }
 
-    let n = nearby.len();
-    if n <= max_n {
-        return nearby;
-    }
-
-    let mut indices = Vec::with_capacity(max_n);
-    indices.push(nearby[0]);
-    let step = (n - 1) as f64 / (max_n - 1) as f64;
-    for k in 1..max_n - 1 {
-        #[allow(clippy::cast_sign_loss, reason = "step is always positive")]
-        let idx = (k as f64 * step).round() as usize;
-        let obs_idx = nearby[idx];
-        if obs_idx != *indices.last().unwrap() {
-            indices.push(obs_idx);
+    // Stride down to 20 if too many observations.
+    if indices.len() > 20 {
+        let n = indices.len();
+        let step = (n - 1) as f64 / 19.0;
+        let mut strided = Vec::with_capacity(20);
+        for k in 0..20 {
+            #[allow(clippy::cast_sign_loss, reason = "product is always positive")]
+            let idx = (f64::from(k) * step).round() as usize;
+            strided.push(indices[idx]);
         }
+        indices = strided;
     }
-    if *indices.last().unwrap() != nearby[n - 1] {
-        indices.push(nearby[n - 1]);
-    }
+
     indices
 }
 
 /// Check that a candidate state represents a physically plausible solar system orbit.
 fn is_physically_valid(state: &State<Equatorial>) -> bool {
     let r = state.pos.norm();
-    let v = state.vel.norm();
 
-    if !(0.05..=500.0).contains(&r) {
-        return false;
-    }
-    if v > 0.06 {
+    if !(0.05..=100.0).contains(&r) {
         return false;
     }
 
-    // Require bound (elliptical) orbit.
-    let energy = 0.5 * v * v - GMS / r;
-    energy < 0.0
+    // Eccentricity safety bound -- only accept bound orbits.
+    let elements = CometElements::from_state(&state.clone().into_frame());
+    if elements.eccentricity >= 1.0 {
+        return false;
+    }
+
+    true
 }
 
 /// Remove near-duplicate candidate states (position within 0.01 AU).
@@ -371,51 +744,53 @@ fn dedup_states(states: &mut Vec<State<Equatorial>>) {
     });
 }
 
-/// Compute the positive topocentric distance rho such that
-/// `|R_obs + rho * L_hat| = r_target`.
-fn rho_for_helio_distance(
-    r_obs: &Vector<Equatorial>,
-    los: &Vector<Equatorial>,
-    r_target: f64,
-) -> Option<f64> {
-    let b = 2.0 * r_obs.dot(los);
-    let c = r_obs.dot(r_obs) - r_target * r_target;
-    let disc = b * b - 4.0 * c;
-    if disc < 0.0 {
-        return None;
-    }
-    let sqrt_d = disc.sqrt();
-    let rho_plus = (-b + sqrt_d) * 0.5;
-    let rho_minus = (-b - sqrt_d) * 0.5;
-    match (rho_plus > 0.0, rho_minus > 0.0) {
-        (true, true) => Some(rho_plus.min(rho_minus)),
-        (true, false) => Some(rho_plus),
-        (false, true) => Some(rho_minus),
-        _ => None,
-    }
-}
-
-/// Total angular residual (sum of squared angular errors in radians) between
-/// a state's two-body prediction and the observed LOS directions.
+/// Trimmed-mean angular residual between a state's two-body prediction and
+/// the observed LOS directions.
+///
+/// Computes the angular separation^2 for each observation, then returns the
+/// mean of the best 90% (dropping the worst 10%).  This makes scoring
+/// robust against misidentified observations and blunders.
+///
+/// Observations that fail two-body propagation or light-time correction are
+/// silently skipped rather than aborting the entire computation.  Returns
+/// `None` only when fewer than [`MIN_OBS`] observations could be scored.
 fn observation_residual(state: &State<Equatorial>, obs: &[Observation]) -> Option<f64> {
-    let mut total = 0.0;
+    const MIN_OBS: usize = 2;
+
+    let mut residuals: Vec<f64> = Vec::with_capacity(obs.len());
+
     for ob in obs {
-        let (ra_obs, dec_obs, obs_state) = ob.as_optical().ok()?;
-        let predicted = propagate_two_body(state, obs_state.epoch).ok()?;
+        let Ok((ra_obs, dec_obs, obs_state)) = ob.as_optical() else {
+            continue;
+        };
+        let Ok(predicted) = propagate_two_body(state, obs_state.epoch) else {
+            continue;
+        };
+        let Ok(predicted) = light_time_correct(&predicted, &obs_state.pos) else {
+            continue;
+        };
         let los_pred = predicted.pos - obs_state.pos;
         let rho_pred = los_pred.norm();
         if rho_pred < 1e-10 {
-            return None;
+            continue;
         }
         let los_unit = los_pred / rho_pred;
         let los_obs = Vector::<Equatorial>::from_ra_dec(ra_obs, dec_obs);
         let cos_angle = los_unit.dot(&los_obs).clamp(-1.0, 1.0);
-        total += cos_angle.acos().powi(2);
+        residuals.push(cos_angle.acos().powi(2));
     }
-    Some(total)
-}
 
-// --- Tests -------------------------------------------------------------------
+    if residuals.len() < MIN_OBS {
+        return None;
+    }
+
+    // Trimmed mean: drop the worst 10% of residuals.
+    residuals.sort_by(f64::total_cmp);
+    #[allow(clippy::cast_sign_loss, reason = "product is always positive")]
+    let n_keep = (residuals.len() as f64 * 0.9).ceil() as usize;
+    let trimmed_sum: f64 = residuals[..n_keep].iter().sum();
+    Some(trimmed_sum / n_keep as f64)
+}
 
 #[cfg(test)]
 mod tests {
@@ -504,7 +879,7 @@ mod tests {
             .min_by(|a, b| {
                 let da = (a.pos - truth.pos).norm();
                 let db = (b.pos - truth.pos).norm();
-                da.partial_cmp(&db).unwrap()
+                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
             })
             .unwrap()
     }
@@ -809,7 +1184,7 @@ mod tests {
                     .try_get_state_with_center(399, Time::<TDB>::new(jd), 0)
                     .expect("Earth SPK lookup failed");
 
-                let obj_lt = crate::obs::two_body_lt_state(&obj_at, &observer)
+                let obj_lt = light_time_correct(&obj_at, &observer.pos)
                     .expect("light-time correction failed");
 
                 let d = obj_lt.pos - observer.pos;
@@ -846,6 +1221,244 @@ mod tests {
         assert!(
             pos_err / r_true < 0.30,
             "NEO long arc: pos error {pos_err:.4} too large relative to r={r_true:.4}"
+        );
+    }
+
+    #[test]
+    fn test_scanning_close_encounter_neo() {
+        // Apophis-like close encounter: a ~ 0.92 AU, e ~ 0.19, i ~ 3 deg.
+        // Object passes ~0.1 AU from Earth with high apparent motion.
+        // Observations span ~20 days around closest approach.
+        let a = 0.92;
+        let e = 0.19;
+        let r_peri = a * (1.0 - e);
+        let v_peri = (GMS * (2.0 / r_peri - 1.0 / a)).sqrt();
+
+        let obl = 23.44_f64.to_radians();
+        let inc = 3.4_f64.to_radians();
+        let total_tilt = obl + inc;
+
+        // Start near perihelion where the NEO is close to Earth's orbit.
+        let obj = make_state(
+            [r_peri, 0.0, 0.0],
+            [0.0, v_peri * total_tilt.cos(), v_peri * total_tilt.sin()],
+            2460000.5,
+        );
+
+        // 20-day arc with observations every 1-2 days (close encounter cadence).
+        let mut epochs = Vec::new();
+        for day in 0..20 {
+            let base = 2460000.5 + f64::from(day);
+            epochs.push(base);
+            if day % 2 == 0 {
+                epochs.push(base + 0.25 / 24.0);
+            }
+        }
+        let observations = synth_optical_ecliptic(&obj, &epochs, 1.0, 31415);
+
+        let results = initial_orbit_determination(&observations);
+        assert!(
+            results.is_ok(),
+            "Should handle close-encounter NEO: {:?}",
+            results.err()
+        );
+        let results = results.unwrap();
+        assert!(
+            !results.is_empty(),
+            "Should find at least one candidate for close-encounter NEO"
+        );
+
+        // At least one candidate should have a heliocentric distance
+        // in the right ballpark (within 3x of true).
+        let obj_at = propagate_two_body(&obj, Time::<TDB>::new(epochs[0])).unwrap();
+        let true_r = obj_at.pos.norm();
+        let has_reasonable = results.iter().any(|c| {
+            let cr = c.pos.norm();
+            cr > true_r / 3.0 && cr < true_r * 3.0
+        });
+        assert!(
+            has_reasonable,
+            "Close-encounter NEO: at least one candidate within 3x of true r={true_r:.3}, \
+             got distances: {:?}",
+            results.iter().map(|c| c.pos.norm()).collect::<Vec<_>>()
+        );
+    }
+
+    // -- Short-arc IOD tests --------------------------------------------------
+
+    #[test]
+    fn test_short_arc_circular_2au() {
+        // Circular orbit at 2 AU, 4 observations over 4 hours on one night.
+        let r = 2.0;
+        let v = (GMS / r).sqrt();
+        let obl = 23.44_f64.to_radians();
+        let i = 5.0_f64.to_radians();
+        let obj = make_state(
+            [r, 0.0, 0.0],
+            [0.0, v * (obl + i).cos(), v * (obl + i).sin()],
+            2460000.5,
+        );
+
+        // 80-minute cadence
+        let dt = 80.0 / (24.0 * 60.0);
+        let epochs = [
+            2460000.5,
+            2460000.5 + dt,
+            2460000.5 + 2.0 * dt,
+            2460000.5 + 3.0 * dt,
+        ];
+        let observations = synth_optical_ecliptic(&obj, &epochs, 0.5, 44444);
+
+        let results = short_arc_iod(&observations);
+        assert!(
+            results.is_ok(),
+            "short_arc_iod should work for circular 2 AU: {:?}",
+            results.err()
+        );
+        let results = results.unwrap();
+        assert!(!results.is_empty(), "Should find at least one candidate");
+
+        let has_reasonable = results.iter().any(|c| {
+            let cr = c.pos.norm();
+            cr > r / 3.0 && cr < r * 3.0
+        });
+        assert!(
+            has_reasonable,
+            "At least one candidate should be within 3x of true distance {r} AU, \
+             got distances: {:?}",
+            results.iter().map(|c| c.pos.norm()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_short_arc_neo_single_night() {
+        // Apollo-type NEO at ~1.5 AU, 6 observations over 6 hours.
+        let a = 1.8;
+        // Observed near aphelion-ish.
+        let r = 1.5;
+        let v = (GMS * (2.0 / r - 1.0 / a)).sqrt();
+        let obl = 23.44_f64.to_radians();
+        let i = 8.0_f64.to_radians();
+        let obj = make_state(
+            [r, 0.0, 0.0],
+            [0.0, v * (obl + i).cos(), v * (obl + i).sin()],
+            2460000.5,
+        );
+
+        // ~72-minute cadence
+        let dt = 72.0 / (24.0 * 60.0);
+        let epochs = [
+            2460000.5,
+            2460000.5 + dt,
+            2460000.5 + 2.0 * dt,
+            2460000.5 + 3.0 * dt,
+            2460000.5 + 4.0 * dt,
+            2460000.5 + 5.0 * dt,
+        ];
+        let observations = synth_optical_ecliptic(&obj, &epochs, 1.0, 55555);
+
+        let results = short_arc_iod(&observations);
+        assert!(
+            results.is_ok(),
+            "short_arc_iod should work for NEO single night: {:?}",
+            results.err()
+        );
+        let results = results.unwrap();
+        assert!(!results.is_empty(), "Should find at least one candidate");
+
+        // Should get at least one candidate within 3x of true heliocentric distance.
+        let has_reasonable = results.iter().any(|c| {
+            let cr = c.pos.norm();
+            cr > r / 3.0 && cr < r * 3.0
+        });
+        assert!(
+            has_reasonable,
+            "At least one candidate should be within 3x of true distance {r} AU, \
+             got distances: {:?}",
+            results.iter().map(|c| c.pos.norm()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_short_arc_mba_40min() {
+        // Main-belt asteroid at 2.5 AU, 3 observations over ~40 minutes.
+        let r = 2.5;
+        let v = (GMS / r).sqrt();
+        let obl = 23.44_f64.to_radians();
+        let i = 3.0_f64.to_radians();
+        let obj = make_state(
+            [r, 0.0, 0.0],
+            [0.0, v * (obl + i).cos(), v * (obl + i).sin()],
+            2460000.5,
+        );
+
+        // 20-minute cadence
+        let dt = 20.0 / (24.0 * 60.0);
+        let epochs = [2460000.5, 2460000.5 + dt, 2460000.5 + 2.0 * dt];
+        let observations = synth_optical_ecliptic(&obj, &epochs, 0.5, 66666);
+
+        let results = short_arc_iod(&observations);
+        assert!(
+            results.is_ok(),
+            "short_arc_iod should work for MBA 40-min arc: {:?}",
+            results.err()
+        );
+        let results = results.unwrap();
+        assert!(!results.is_empty(), "Should find at least one candidate");
+
+        let has_reasonable = results.iter().any(|c| {
+            let cr = c.pos.norm();
+            cr > r / 3.0 && cr < r * 3.0
+        });
+        assert!(
+            has_reasonable,
+            "At least one candidate within 3x of {r} AU, got: {:?}",
+            results.iter().map(|c| c.pos.norm()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_short_arc_minimum_2obs() {
+        // Minimum requirement: 2 observations.
+        let r = 2.0;
+        let v = (GMS / r).sqrt();
+        let obl = 23.44_f64.to_radians();
+        let obj = make_state(
+            [r, 0.0, 0.0],
+            [0.0, v * obl.cos(), v * obl.sin()],
+            2460000.5,
+        );
+
+        // 1-hour separation
+        let dt = 60.0 / (24.0 * 60.0);
+        let epochs = [2460000.5, 2460000.5 + dt];
+        let observations = synth_optical_ecliptic(&obj, &epochs, 0.5, 77777);
+
+        let results = short_arc_iod(&observations);
+        assert!(
+            results.is_ok(),
+            "short_arc_iod should work with just 2 obs: {:?}",
+            results.err()
+        );
+        assert!(!results.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_short_arc_rejects_1obs() {
+        // Should fail with only 1 observation.
+        let r = 2.0;
+        let v = (GMS / r).sqrt();
+        let obl = 23.44_f64.to_radians();
+        let obj = make_state(
+            [r, 0.0, 0.0],
+            [0.0, v * obl.cos(), v * obl.sin()],
+            2460000.5,
+        );
+
+        let observations = synth_optical_ecliptic(&obj, &[2460000.5], 0.5, 88888);
+        assert!(
+            short_arc_iod(&observations).is_err(),
+            "short_arc_iod should reject a single observation"
         );
     }
 }

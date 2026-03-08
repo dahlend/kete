@@ -1,15 +1,45 @@
 //! # Orbit Determination and Fitting
 //!
 //! Batch least-squares differential correction with chained STM propagation,
-//! initial orbit determination, and observation modeling for the Kete solar
-//! system survey simulator.
+//! initial orbit determination, and observation modeling for Kete.
+//!
+// BSD 3-Clause License
+//
+// Copyright (c) 2026, Dar Dahlen
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
+//
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 mod diff_correction;
 mod iod;
+mod mcmc;
 mod obs;
+mod uncertain_state;
 
-pub use diff_correction::{
-    OrbitFit, differential_correction, differential_correction_with_rejection,
-};
-pub use iod::initial_orbit_determination;
+pub use diff_correction::{OrbitFit, differential_correction};
+pub use iod::{initial_orbit_determination, short_arc_iod};
+pub use mcmc::{OrbitSamples, nuts_sample};
 pub use obs::Observation;
+pub use uncertain_state::UncertainState;

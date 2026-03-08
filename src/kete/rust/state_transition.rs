@@ -1,5 +1,4 @@
 //! State Transition matrix computation
-use kete_core::constants::GravParams;
 use kete_core::prelude::*;
 use kete_core::propagation::compute_state_transition;
 use kete_core::spice::LOADED_SPK;
@@ -15,7 +14,9 @@ use crate::time::PyTime;
 /// Returns `(final_state, sensitivity_matrix)` where the sensitivity matrix is a
 /// list-of-lists with 6 rows and 6+N columns (N = number of free non-grav parameters).
 ///
-/// The state must be SSB-centered internally; the function handles re-centering.
+/// The input state may use any center; this wrapper re-centers to SSB for the
+/// underlying `compute_state_transition` (which requires SSB) and restores the
+/// original center on output.
 #[pyfunction]
 #[pyo3(name = "compute_stm", signature = (state, jd_end, include_asteroids=false, non_grav=None))]
 pub fn compute_stm_py(
@@ -38,16 +39,8 @@ pub fn compute_stm_py(
     let non_grav_model = non_grav.map(|ng| ng.0);
     let jd = jd_end.into();
 
-    // Call with the appropriate mass list; selected_masses returns a lock guard,
-    // planets returns a Vec, so we call separately to satisfy the borrow checker.
-    let result = if include_asteroids {
-        let masses = GravParams::selected_masses();
-        compute_state_transition(&raw_state, jd, &masses, non_grav_model)?
-    } else {
-        let masses = GravParams::planets();
-        compute_state_transition(&raw_state, jd, &masses, non_grav_model)?
-    };
-    let (mut final_state, sens) = result;
+    let (mut final_state, sens) =
+        compute_state_transition(&raw_state, jd, include_asteroids, non_grav_model)?;
 
     // Re-center back to original center
     {

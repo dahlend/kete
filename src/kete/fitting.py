@@ -12,25 +12,31 @@ import numpy as np
 from ._core import (
     Observation,
     OrbitFit,
+    OrbitSamples,
+    UncertainState,
     differential_correction,
-    differential_correction_with_rejection,
     initial_orbit_determination,
+    nuts_sample,
+    short_arc_iod,
 )
 
 __all__ = [
     "Observation",
     "OrbitFit",
+    "OrbitSamples",
+    "UncertainState",
     "differential_correction",
-    "differential_correction_with_rejection",
     "initial_orbit_determination",
     "mpc_obs_to_observations",
+    "nuts_sample",
+    "short_arc_iod",
 ]
 
 
 def mpc_obs_to_observations(
     mpc_obs: list,
-    sigma_ra: float = 1.0,
-    sigma_dec: float = 1.0,
+    sigma_ra: float = 0.1,
+    sigma_dec: float = 0.1,
 ) -> list[Observation]:
     """
     Convert a list of MPCObservation objects to fitting Observations.

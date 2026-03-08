@@ -153,6 +153,21 @@ impl NonGravModel {
         }
     }
 
+    /// Names of the free (solvable) parameters.
+    ///
+    /// The order matches [`get_free_params`](Self::get_free_params) and
+    /// [`set_free_params`](Self::set_free_params).
+    ///
+    /// - `JplComet`: `["a1", "a2", "a3"]`
+    /// - `Dust`: `["beta"]`
+    #[must_use]
+    pub fn param_names(&self) -> &[&str] {
+        match self {
+            Self::JplComet { .. } => &["a1", "a2", "a3"],
+            Self::Dust { .. } => &["beta"],
+        }
+    }
+
     /// Update the free parameters from a slice.
     ///
     /// # Panics

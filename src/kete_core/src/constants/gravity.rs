@@ -51,7 +51,7 @@ pub const GMS_SQRT: f64 = 0.01720209894996;
 
 /// Sun J2 Parameter
 ///
-/// This paper below a source, however there are several papers which all put
+/// This paper below is a source, however there are several papers which all put
 /// the Sun's J2 at 2.2e-7.
 pub const SUN_J2: f64 = 2.2e-7;
 

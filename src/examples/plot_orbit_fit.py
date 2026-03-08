@@ -1,6 +1,6 @@
 """
 Orbit Fitting from Scratch
-===========================
+==========================
 
 Observe Ceres 10 times over six months using SPICE ephemerides, then recover
 the orbit from scratch using initial orbit determination (IOD) and batch
@@ -21,7 +21,7 @@ import kete
 
 # %%
 # Generate Synthetic Observations
-# --------------------------------
+# -------------------------------
 # We observe Ceres from Palomar Mountain (MPC code 675) at 10 epochs spread
 # evenly over six months.  We use ``OmniDirectionalFOV`` and
 # ``fov_state_check`` which apply proper light-time correction automatically.
@@ -40,7 +40,7 @@ for jd in jd_obs:
     observer = kete.spice.mpc_code_to_ecliptic("675", jd)
     fovs.append(kete.OmniDirectionalFOV(observer))
 
-# Check visibility — this propagates Ceres to each epoch with light-time.
+# Check visibility -- this propagates Ceres to each epoch with light-time.
 visible = kete.fov_state_check([ceres_state], fovs)
 
 # Convert each detection to a fitting Observation.
@@ -54,8 +54,8 @@ for vis in visible:
         observer=observer,
         ra=ra,
         dec=dec,
-        sigma_ra=1.0 / max(np.cos(np.radians(dec)), 1e-6),
-        sigma_dec=1.0,
+        sigma_ra=0.1 / max(np.cos(np.radians(dec)), 1e-6),
+        sigma_dec=0.1,
     )
     observations.append(obs)
 
@@ -66,11 +66,11 @@ for i, obs in enumerate(observations):
     print(f"  [{i}] JD {obs.epoch.jd:.2f}  RA={obs.ra:.4f}  Dec={obs.dec:.4f}")
 
 # %%
-# Initial Orbit Determination (Gauss IOD)
-# ---------------------------------------
+# Initial Orbit Determination
+# ---------------------------
 
-candidates = kete.fitting.initial_orbit_determination(observations[:3], method="gauss")
-print(f"\nGauss IOD returned {len(candidates)} candidate(s)")
+candidates = kete.fitting.initial_orbit_determination(observations)
+print(f"\nIOD returned {len(candidates)} candidate(s)")
 
 # Pick the lowest eccentricity
 best = min(candidates, key=lambda s: s.elements.eccentricity)
@@ -82,7 +82,7 @@ print(
 
 # %%
 # Differential Correction
-# -------------------------
+# -----------------------
 # Refine the IOD solution using all 10 observations.
 
 fit = kete.fitting.differential_correction(best, observations)
@@ -121,14 +121,13 @@ t0 = epochs[0]
 
 fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(8, 5))
 
-# Residuals are in radians internally; convert to arcsec for display
-rad_to_arcsec = 180 * 3600 / np.pi
-ax1.scatter(np.array(epochs) - t0, residuals[:, 0] * rad_to_arcsec, c="tab:blue")
+# The residuals getter already returns arcseconds for optical observations.
+ax1.scatter(np.array(epochs) - t0, residuals[:, 0], c="tab:blue")
 ax1.axhline(0, color="gray", ls="--", lw=0.5)
 ax1.set_ylabel("RA residual (arcsec)")
 ax1.set_title("Post-fit residuals for Ceres (10 obs over 6 months)")
 
-ax2.scatter(np.array(epochs) - t0, residuals[:, 1] * rad_to_arcsec, c="tab:orange")
+ax2.scatter(np.array(epochs) - t0, residuals[:, 1], c="tab:orange")
 ax2.axhline(0, color="gray", ls="--", lw=0.5)
 ax2.set_ylabel("Dec residual (arcsec)")
 ax2.set_xlabel(f"Days since JD {t0:.1f}")
