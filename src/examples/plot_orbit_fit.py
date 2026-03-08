@@ -96,8 +96,8 @@ print(
     f"i={fitted_elem.inclination:.4f} deg"
 )
 
-# Compare to SPICE truth at the same epoch
-truth = kete.spice.get_state("Ceres", fit.state.jd, center=0).as_equatorial
+# Compare to SPICE truth at the same epoch (Sun-centered Ecliptic, matching fit.state)
+truth = kete.spice.get_state("Ceres", fit.state.jd)
 truth_elem = truth.elements
 print(
     f"SPICE truth:      a={truth_elem.semi_major:.6f} AU, "

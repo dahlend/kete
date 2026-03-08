@@ -2,15 +2,20 @@
 //!
 //! Wraps `kete_fitting` types and functions for use from Python.
 
+use kete_core::frames::{Equatorial, Vector};
 use kete_core::prelude::*;
+use kete_core::propagation::NonGravModel;
 use kete_core::spice::LOADED_SPK;
-use kete_fitting::{Observation, OrbitFit, OrbitSamples, differential_correction, nuts_sample};
+use kete_fitting::{
+    Observation, OrbitFit, OrbitSamples, differential_correction, lambert, nuts_sample,
+};
 use pyo3::{PyResult, pyclass, pyfunction, pymethods};
 
 use crate::nongrav::PyNonGravModel;
 use crate::state::PyState;
 use crate::time::PyTime;
 use crate::uncertain_state::PyUncertainState;
+use crate::vector::PyVector;
 
 /// Astronomical observation for orbit determination.
 ///
@@ -237,25 +242,43 @@ impl PyObservation {
     /// String representation.
     fn __repr__(&self) -> String {
         let epoch = self.0.epoch().jd;
+        let rad_to_arcsec = 180.0 * 3600.0 / std::f64::consts::PI;
         match &self.0 {
-            Observation::Optical { ra, dec, .. } => {
+            Observation::Optical {
+                ra,
+                dec,
+                sigma_ra,
+                sigma_dec,
+                ..
+            } => {
                 format!(
-                    "Observation.optical(epoch={:.6}, ra={:.8}, dec={:.8})",
+                    "Observation.optical(epoch={:.6}, ra={:.8}, dec={:.8}, \
+                     sigma_ra={:.4}, sigma_dec={:.4})",
                     epoch,
                     ra.to_degrees(),
-                    dec.to_degrees()
+                    dec.to_degrees(),
+                    sigma_ra * rad_to_arcsec,
+                    sigma_dec * rad_to_arcsec,
                 )
             }
-            Observation::RadarRange { range, .. } => {
+            Observation::RadarRange {
+                range, sigma_range, ..
+            } => {
                 format!(
-                    "Observation.radar_range(epoch={:.6}, range={:.10})",
-                    epoch, range
+                    "Observation.radar_range(epoch={:.6}, range={:.10}, \
+                     sigma_range={:.6e})",
+                    epoch, range, sigma_range
                 )
             }
-            Observation::RadarRate { range_rate, .. } => {
+            Observation::RadarRate {
+                range_rate,
+                sigma_range_rate,
+                ..
+            } => {
                 format!(
-                    "Observation.radar_rate(epoch={:.6}, range_rate={:.10})",
-                    epoch, range_rate
+                    "Observation.radar_rate(epoch={:.6}, range_rate={:.10}, \
+                     sigma_range_rate={:.6e})",
+                    epoch, range_rate, sigma_range_rate
                 )
             }
         }
@@ -411,7 +434,7 @@ impl PyOrbitFit {
     fn __repr__(&self) -> String {
         let n_obs = self.0.observations.len();
         format!(
-            "OrbitFit(rms={:.6e}, obs={}, converged={}, epoch={:.6})",
+            "OrbitFit(rms={:.6e}, observations={}, converged={}, epoch={:.6})",
             self.0.rms, n_obs, self.0.converged, self.0.uncertain_state.state.epoch.jd,
         )
     }
@@ -470,6 +493,7 @@ impl PyOrbitFit {
 /// -------
 /// OrbitFit
 ///     The converged orbit fit result.
+#[allow(clippy::too_many_arguments)]
 #[pyfunction]
 #[pyo3(
     name = "differential_correction",
@@ -526,17 +550,24 @@ pub fn differential_correction_py(
 /// Parameters
 /// ----------
 /// observations : list[Observation]
-///     Observations to use for IOD.
+///     At least 2 optical observations.
+/// epoch : float, optional
+///     Reference epoch (JD, TDB) for returned states.  Defaults to the
+///     last observation epoch (for forward prediction).
 ///
 /// Returns
 /// -------
 /// list[State]
-///     One or more candidate initial states.
+///     One or more candidate initial states at the reference epoch.
 #[pyfunction]
-#[pyo3(name = "initial_orbit_determination")]
-pub fn initial_orbit_determination_py(observations: Vec<PyObservation>) -> PyResult<Vec<PyState>> {
+#[pyo3(name = "initial_orbit_determination", signature = (observations, epoch=None))]
+pub fn initial_orbit_determination_py(
+    observations: Vec<PyObservation>,
+    epoch: Option<f64>,
+) -> PyResult<Vec<PyState>> {
     let obs: Vec<Observation> = observations.into_iter().map(|o| o.0).collect();
-    let states = kete_fitting::initial_orbit_determination(&obs)?;
+    let epoch_tdb = epoch.map(Time::new);
+    let states = kete_fitting::initial_orbit_determination(&obs, epoch_tdb)?;
     let spk = LOADED_SPK.try_read().map_err(Error::from)?;
     states
         .into_iter()
@@ -549,35 +580,49 @@ pub fn initial_orbit_determination_py(observations: Vec<PyObservation>) -> PyRes
         .collect()
 }
 
-/// Short-arc IOD assuming near-circular orbits (Vaisala-like method).
+/// Solve Lambert's problem for a single-revolution Keplerian transfer.
 ///
-/// Works for tracklets spanning minutes to roughly 2 days where the standard
-/// :func:`initial_orbit_determination` cannot reliably estimate velocity.
+/// Given two heliocentric position vectors and a transfer time, compute the
+/// velocity vectors at departure and arrival that connect them via two-body
+/// (Keplerian) motion.
 ///
 /// Parameters
 /// ----------
-/// observations : list[Observation]
-///     At least 2 optical observations from a short tracklet.
+/// r1 : Vector
+///     Heliocentric position at departure (AU).
+/// r2 : Vector
+///     Heliocentric position at arrival (AU).
+/// dt : float
+///     Transfer time in days. Must be positive.
+/// prograde : bool, optional
+///     If True (default), selects the short-way transfer (transfer angle
+///     less than 180 degrees for prograde orbits). If False, selects
+///     the long-way transfer.
 ///
 /// Returns
 /// -------
-/// list[State]
-///     Up to 5 candidate initial states, sorted by residual score.
+/// tuple[Vector, Vector]
+///     ``(v1, v2)`` -- velocity at ``r1`` and ``r2`` respectively (AU/day).
+///
+/// Raises
+/// ------
+/// ValueError
+///     If ``dt <= 0``, positions are zero-length, or positions are nearly
+///     collinear (transfer angle near 0 or 180 degrees).
+/// RuntimeError
+///     If the iterative solver fails to converge.
 #[pyfunction]
-#[pyo3(name = "short_arc_iod")]
-pub fn short_arc_iod_py(observations: Vec<PyObservation>) -> PyResult<Vec<PyState>> {
-    let obs: Vec<Observation> = observations.into_iter().map(|o| o.0).collect();
-    let states = kete_fitting::short_arc_iod(&obs)?;
-    let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-    states
-        .into_iter()
-        .map(|mut st| {
-            if st.center_id != 10 {
-                spk.try_change_center(&mut st, 10)?;
-            }
-            Ok(st.into())
-        })
-        .collect()
+#[pyo3(name = "lambert", signature = (r1, r2, dt, prograde=true))]
+pub fn lambert_py(
+    r1: PyVector,
+    r2: PyVector,
+    dt: f64,
+    prograde: bool,
+) -> PyResult<(PyVector, PyVector)> {
+    let r1_eq: Vector<Equatorial> = r1.into();
+    let r2_eq: Vector<Equatorial> = r2.into();
+    let (v1, v2) = lambert(&r1_eq, &r2_eq, dt, prograde)?;
+    Ok((v1.into(), v2.into()))
 }
 
 /// Posterior orbit samples from NUTS MCMC.
@@ -714,6 +759,10 @@ impl PyOrbitSamples {
 /// and far cheaper -- each NUTS draw requires a full STM propagation, so
 /// MCMC is orders of magnitude more expensive.
 ///
+/// Seeds are raw ``State`` objects (e.g. from IOD).  No prior
+/// differential correction is required -- the sampler builds its own
+/// mass matrix from a single-pass linearization at each seed.
+///
 /// Chains are automatically spread across available CPU cores.  When there
 /// are fewer seeds than cores, each seed spawns multiple sub-chains (each
 /// with its own RNG seed and tuning phase).  The ``chain_id`` in the
@@ -726,15 +775,13 @@ impl PyOrbitSamples {
 ///
 /// All seeds must share the same reference epoch.
 ///
-/// The non-gravitational model (if any) is taken from each seed's
-/// :attr:`OrbitFit.non_grav`, which already contains the fitted parameter
-/// values that the covariance was linearized around.
-///
 /// Parameters
 /// ----------
-/// seeds : list[OrbitFit]
-///     Converged orbit fits, one per orbital mode (from
-///     :func:`differential_correction`).
+/// seeds : list[State]
+///     Candidate states (e.g. from :func:`initial_orbit_determination`),
+///     one per orbital mode.  Seeds at different
+///     epochs are automatically propagated to the first seed's epoch via
+///     two-body.  The input states are re-centered to SSB Equatorial internally.
 /// observations : list[Observation]
 ///     Observations to evaluate the likelihood against.
 /// include_asteroids : bool, optional
@@ -744,14 +791,15 @@ impl PyOrbitSamples {
 ///     Default is 1000.
 /// num_tune : int, optional
 ///     Number of tuning (warmup) steps per sub-chain used to adapt the
-///     step size and mass matrix.  Because sampling uses whitened
-///     coordinates (via the MAP covariance Cholesky), the posterior is
-///     approximately standard-normal and adaptation converges quickly.
-///     Each sub-chain pays its own warmup cost, so keep this small.
-///     Default is 50.
+///     step size and mass matrix.  Default is 500.
 /// student_nu : float, optional
 ///     Student-t degrees of freedom for the likelihood.  Use ``float('inf')``
 ///     for Gaussian (default).  Lower values (e.g. 5) down-weight outliers.
+/// non_grav : NonGravModel, optional
+///     Shared non-gravitational force model applied to all chains.
+/// maxdepth : int, optional
+///     Maximum NUTS tree depth.  Depth N allows up to 2^N leapfrog steps
+///     per draw.  Default is 10 (1024 steps).
 ///
 /// Returns
 /// -------
@@ -761,22 +809,36 @@ impl PyOrbitSamples {
 /// Raises
 /// ------
 /// ValueError
-///     If ``seeds`` is empty or the seeds have different reference epochs.
+///     If ``seeds`` is empty or two-body epoch propagation fails.
 #[pyfunction]
 #[pyo3(
     name = "nuts_sample",
-    signature = (seeds, observations, include_asteroids=false, num_draws=1000, num_tune=50, student_nu=f64::INFINITY)
+    signature = (seeds, observations, include_asteroids=false, num_draws=1000, num_tune=500, student_nu=f64::INFINITY, non_grav=None, maxdepth=10)
 )]
+#[allow(clippy::too_many_arguments)]
 pub fn nuts_sample_py(
-    seeds: Vec<PyOrbitFit>,
+    seeds: Vec<PyState>,
     observations: Vec<PyObservation>,
     include_asteroids: bool,
     num_draws: usize,
     num_tune: usize,
     student_nu: f64,
+    non_grav: Option<PyNonGravModel>,
+    maxdepth: u64,
 ) -> PyResult<PyOrbitSamples> {
-    let raw_seeds: Vec<OrbitFit> = seeds.into_iter().map(|s| s.0).collect();
+    let spk = LOADED_SPK.try_read().map_err(Error::from)?;
+    let raw_seeds: Vec<State<Equatorial>> = seeds
+        .into_iter()
+        .map(|s| {
+            let mut st = s.raw;
+            if st.center_id != 0 {
+                spk.try_change_center(&mut st, 0)?;
+            }
+            Ok(st)
+        })
+        .collect::<KeteResult<Vec<_>>>()?;
     let obs: Vec<Observation> = observations.into_iter().map(|o| o.0).collect();
+    let ng: Option<NonGravModel> = non_grav.map(|m| m.0);
 
     let result = nuts_sample(
         &raw_seeds,
@@ -785,6 +847,8 @@ pub fn nuts_sample_py(
         num_draws,
         num_tune,
         student_nu,
+        ng.as_ref(),
+        maxdepth,
     )?;
     Ok(PyOrbitSamples(result))
 }

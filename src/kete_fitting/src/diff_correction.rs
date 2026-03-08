@@ -622,7 +622,8 @@ fn make_non_converged_result(
 /// residual, and the local geometric Jacobian needed to build either
 /// normal equations (batch least squares) or log-posterior gradients
 /// (MCMC sampling).
-pub(crate) struct StmObs {
+#[derive(Debug, Clone)]
+pub struct StmObs {
     /// Cumulative STM from the reference epoch to this observation, 6 x D.
     pub phi_cum: DMatrix<f64>,
     /// Observation residual (observed - computed), m-vector.
@@ -643,7 +644,13 @@ pub(crate) struct StmObs {
 ///
 /// The returned vector contains one `StmObs` per *included* observation
 /// (not per input observation), in time-sorted order.
-pub(crate) fn stm_sweep(
+///
+/// # Errors
+/// Returns an error if propagation or observation evaluation fails.
+///
+/// # Panics
+/// Panics if the observer state position has zero norm.
+pub fn stm_sweep(
     state_epoch: &State<Equatorial>,
     obs: &[Observation],
     included: &[bool],
@@ -731,7 +738,10 @@ pub(crate) fn stm_sweep(
 /// Returns `(info_mat, rhs_vec, chi2)` where `info_mat` is the
 /// (6+Np) x (6+Np) information matrix, `rhs_vec` is the right-hand
 /// side, and `chi2` is the current weighted sum of squared residuals.
-fn accumulate_normal_equations(
+///
+/// # Errors
+/// Returns an error if the underlying STM sweep fails.
+pub fn accumulate_normal_equations(
     state_epoch: &State<Equatorial>,
     obs: &[Observation],
     included: &[bool],

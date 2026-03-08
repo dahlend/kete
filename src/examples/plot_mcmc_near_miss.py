@@ -3,21 +3,19 @@ MCMC Posterior for a Near-Miss Asteroid
 =======================================
 
 Create a synthetic near-Earth asteroid on a close-approach trajectory,
-observe it over a single night from Palomar Mountain, then recover the
-full non-Gaussian posterior using NUTS MCMC sampling.
+observe it over three consecutive nights from Palomar Mountain, then
+recover the full non-Gaussian posterior using NUTS MCMC sampling.
 
-A single-night (~6-hour) arc is too short for range-scanning IOD but
-:func:`kete.fitting.short_arc_iod` (circular-orbit Vaisala method) can
-still find good orbit seeds.  The posterior from such a short arc is
-strongly non-Gaussian -- exactly the case where MCMC matters for impact
-probability assessment.
+The posterior from such a short arc is strongly non-Gaussian -- exactly
+the case where MCMC matters for impact probability assessment.
 
 This demonstrates the workflow:
 
 1. Build an Apollo-type NEO orbit that approaches Earth.
-2. Observe it from Palomar on a single night (6 obs over ~6 hours).
-3. Run short-arc IOD + differential correction to get MAP orbit(s).
-4. Run :func:`kete.fitting.nuts_sample` to sample the posterior.
+2. Observe it from Palomar over 3 nights (2 obs per night, 6 total).
+3. Run Gauss IOD to get candidate states.
+4. Run :func:`kete.fitting.nuts_sample` directly on the IOD candidates
+   to sample the posterior (no differential correction needed).
 5. Visualize the distribution in orbital elements and the
    close-approach distance spread.
 """
@@ -27,24 +25,28 @@ import numpy as np
 
 import kete
 
+np.random.seed(42)
+
 # %%
 # 1. Build a Near-Miss Orbit
 # ---------------------------
 # Apollo-type orbit: a > 1 AU, q < 1 AU, low inclination.
-# The object will be observed ~100 days before perihelion, at moderate
-# geocentric distance (~1-2 AU), giving a realistic short-arc scenario.
+# The orbital orientation is chosen so perihelion falls near Earth's
+# ecliptic longitude ~60 days after the observations, producing a
+# realistic discovery scenario at ~0.3 AU geocentric distance with
+# a genuine close approach (~0.04 AU) weeks later.
 
 epoch = kete.Time.from_ymd(2028, 9, 15)
 
 elements = kete.CometElements(
     desig="NearMiss",
     epoch=epoch,
-    eccentricity=0.55,
+    eccentricity=0.45,
     inclination=5.0,
-    peri_arg=45.0,
-    lon_of_ascending=180.0,
-    peri_time=kete.Time(epoch.jd + 100),  # perihelion 100 days after epoch
-    peri_dist=0.85,  # AU -- crosses Earth's orbit
+    peri_arg=15.0,
+    lon_of_ascending=40.0,
+    peri_time=kete.Time(epoch.jd + 60),  # perihelion 60 days after epoch
+    peri_dist=0.97,  # AU -- just inside Earth's orbit
 )
 true_state = elements.state
 print(f"True state at epoch: {true_state}")
@@ -79,8 +81,8 @@ print(
 # %%
 # 2. Generate Synthetic Observations
 # ----------------------------------
-# Observe over a single ~6-hour night from Palomar Mountain (MPC 675).
-# Six observations spaced ~1 hour apart.
+# Observe over three consecutive nights from Palomar Mountain (MPC 675).
+# Two observations per night, ~1.5 hours apart.
 
 # Print geocentric distance at the obs epoch.
 earth_obs = kete.spice.get_state("Earth", epoch.jd)
@@ -89,7 +91,13 @@ geo_dist = (obj_obs.pos - earth_obs.pos).r
 print(f"\nGeocentric distance at obs epoch: {geo_dist:.3f} AU")
 
 obs_night_start = epoch.jd
-obs_times = obs_night_start + np.linspace(0, 6 / 24, 6)  # 6 obs over 6 hours
+obs_times = np.concatenate(
+    [
+        obs_night_start + np.array([0.0, 1.5 / 24]),  # night 1
+        obs_night_start + 1 + np.array([0.0, 1.5 / 24]),  # night 2
+        obs_night_start + 2 + np.array([0.0, 1.5 / 24]),  # night 3
+    ]
+)
 
 arc_hours = (obs_times[-1] - obs_times[0]) * 24
 
@@ -107,8 +115,8 @@ for vis in visible:
     observer = vis.fov.observer.as_equatorial.change_center(0)
     ra, dec, _, _ = vis.ra_dec_with_rates[0]
 
-    # Add realistic astrometric noise: 0.5 arcsec
-    sigma = 0.5
+    # Add realistic astrometric noise: 0.3 arcsec
+    sigma = 0.3
     obs = kete.fitting.Observation.optical(
         observer=observer,
         ra=ra + np.random.normal(0, sigma / 3600) / max(np.cos(np.radians(dec)), 0.1),
@@ -123,57 +131,43 @@ for i, obs in enumerate(observations):
     print(f"  [{i}] JD {obs.epoch.jd:.4f}  RA={obs.ra:.5f}  Dec={obs.dec:.5f}")
 
 # %%
-# 3. Short-Arc IOD + Differential Correction
-# --------------------------------------------
-# Use Vaisala-style short-arc IOD (circular orbit assumption) to get
-# orbit seeds from this single-night tracklet.
+# 3. Initial Orbit Determination
+# --------------------------------
+# Use the unified IOD which works on any arc length from single-night
+# tracklets to multi-year arcs.  These raw IOD states are passed
+# directly to MCMC -- no differential correction is needed.
 
-candidates = kete.fitting.short_arc_iod(observations)
-print(f"\nShort-arc IOD returned {len(candidates)} candidate(s)")
+candidates = []
 
-# Try differential correction on each candidate.  For very short arcs the
-# unconstrained least-squares corrector can wander to hyperbolic solutions;
-# when that happens we fall back to the IOD seed (circular-orbit assumption)
-# wrapped in an OrbitFit with a generous diagonal covariance.
-fits = []
+try:
+    iod_cands = kete.fitting.initial_orbit_determination(observations)
+    print(f"\nIOD returned {len(iod_cands)} candidate(s)")
+    candidates.extend(iod_cands)
+except Exception as ex:
+    print(f"\nIOD failed: {ex}")
+
+if not candidates:
+    raise RuntimeError("No IOD candidates found -- try different observations")
+
+print(f"\nTotal IOD candidates: {len(candidates)}")
 for i, cand in enumerate(candidates):
-    try:
-        fit = kete.fitting.differential_correction(cand, observations)
-        e = fit.state.elements
-        if e.eccentricity < 1 and fit.converged:
-            fits.append(fit)
-            print(
-                f"  Candidate {i}: converged, RMS={fit.rms:.2e}, "
-                f"a={e.semi_major:.4f}, e={e.eccentricity:.4f}"
-            )
-        else:
-            # Diff correction gave an unphysical orbit -- use IOD seed.
-            fallback = kete.fitting.OrbitFit.from_state(cand)
-            fits.append(fallback)
-            print(
-                f"  Candidate {i}: diff-corr hyperbolic (e={e.eccentricity:.2f}), "
-                f"using IOD seed instead"
-            )
-    except Exception as ex:
-        # Diff correction failed entirely -- use IOD seed.
-        fallback = kete.fitting.OrbitFit.from_state(cand)
-        fits.append(fallback)
-        print(f"  Candidate {i}: diff-corr failed ({ex}), using IOD seed")
-
-if not fits:
-    raise RuntimeError("No candidates found -- try different observations")
-
-print(f"\n{len(fits)} fit(s) will seed the MCMC chains")
+    e = cand.elements
+    print(f"  Candidate {i}: a={e.semi_major:.4f} AU, e={e.eccentricity:.4f}")
 
 # %%
 # 4. NUTS MCMC Sampling
 # ---------------------
-# Run the sampler with 1000 draws per chain.
+# Run the sampler directly on the IOD candidates -- no differential
+# correction required.  Using a Student-t likelihood (nu=5) makes the
+# sampler robust to occasional outlier steps in a poorly-constrained
+# posterior from a short arc.
 
 samples = kete.fitting.nuts_sample(
-    seeds=fits,
+    seeds=candidates,
     observations=observations,
-    num_draws=1000,
+    num_draws=2000,
+    num_tune=500,
+    student_nu=5,
 )
 
 n_div = sum(samples.divergent)
@@ -236,7 +230,7 @@ chain_colors = [f"C{cid % 10}" for cid in chain_ids[bound]]
 
 fig, axes = plt.subplots(2, 2, figsize=(10, 8))
 fig.suptitle(
-    f"Posterior Distribution -- {n_chains} chain(s) from short arc",
+    f"Posterior Distribution -- {n_chains} chain(s) from 3-night arc",
     fontsize=13,
 )
 

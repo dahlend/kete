@@ -16,8 +16,8 @@ from ._core import (
     UncertainState,
     differential_correction,
     initial_orbit_determination,
+    lambert,
     nuts_sample,
-    short_arc_iod,
 )
 
 __all__ = [
@@ -27,9 +27,9 @@ __all__ = [
     "UncertainState",
     "differential_correction",
     "initial_orbit_determination",
+    "lambert",
     "mpc_obs_to_observations",
     "nuts_sample",
-    "short_arc_iod",
 ]
 
 

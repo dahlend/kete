@@ -186,7 +186,7 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
         fitting::initial_orbit_determination_py,
         m
     )?)?;
-    m.add_function(wrap_pyfunction!(fitting::short_arc_iod_py, m)?)?;
+    m.add_function(wrap_pyfunction!(fitting::lambert_py, m)?)?;
     m.add_function(wrap_pyfunction!(fitting::nuts_sample_py, m)?)?;
 
     m.add_function(wrap_pyfunction!(kete_core::cache::cache_path, m)?)?;

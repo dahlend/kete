@@ -34,12 +34,16 @@
 
 mod diff_correction;
 mod iod;
+mod lambert;
 mod mcmc;
 mod obs;
 mod uncertain_state;
 
-pub use diff_correction::{OrbitFit, differential_correction};
-pub use iod::{initial_orbit_determination, short_arc_iod};
+pub use diff_correction::{
+    OrbitFit, StmObs, accumulate_normal_equations, differential_correction, stm_sweep,
+};
+pub use iod::initial_orbit_determination;
+pub use lambert::lambert;
 pub use mcmc::{OrbitSamples, nuts_sample};
 pub use obs::Observation;
 pub use uncertain_state::UncertainState;
