@@ -43,8 +43,8 @@ We construct an Apollo-type orbit (``a > 1 AU``, ``q < 1 AU``) with low
 inclination.  The orbital orientation is chosen so that perihelion falls
 near Earth's ecliptic longitude about 60 days after the observation epoch.
 This produces a realistic discovery scenario: the object is first seen at
-roughly 0.3 AU geocentric distance, and a genuine close approach of about
-0.04 AU occurs a few weeks later.
+roughly 0.3 AU geocentric distance, and a close approach of about 0.04 AU
+occurs a few weeks later.
 
 .. code-block:: python
 
@@ -114,7 +114,7 @@ arc with 6 total astrometric measurements -- a common situation for a newly
 discovered NEO before additional follow-up is obtained.
 
 Each observation is given 0.3 arcsecond Gaussian noise, representative of
-modern CCD astrometry.  The RA uncertainty is inflated by ``1/cos(dec)``
+imperfect astrometry.  The RA uncertainty is inflated by ``1/cos(dec)``
 to account for the convergence of right ascension lines toward the poles.
 
 .. code-block:: python
@@ -183,11 +183,12 @@ each one and pools the results, which naturally captures multi-modality.
 
 ::
 
-    IOD returned 4 candidate(s)
-      [0] a=2.513 AU, e=0.630
-      [1] a=-3.381 AU, e=1.269
-      [2] a=-0.483 AU, e=2.851
-      [3] a=-0.700 AU, e=2.807
+    IOD returned 5 candidate(s)
+      [0] a=3.583 AU, e=0.745
+      [1] a=-5.555 AU, e=1.164
+      [2] a=-0.518 AU, e=2.674
+      [3] a=-0.724 AU, e=2.250
+      [4] a=-0.653 AU, e=2.875
 
 
 4. Orbit Uncertainty Estimation
