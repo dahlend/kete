@@ -25,3 +25,9 @@ PTF
 .. automodule:: kete.ptf
    :members:
    :inherited-members:
+
+SPHEREx
+-------
+.. automodule:: kete.spherex
+   :members:
+   :inherited-members:

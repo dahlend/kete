@@ -36,8 +36,9 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+use kete_core::constants::GMS_SQRT;
 use kete_core::frames::{Equatorial, Vector};
-use kete_core::prelude::{CometElements, Error, KeteResult, State};
+use kete_core::prelude::{Error, KeteResult, State};
 use kete_core::propagation::{light_time_correct, propagate_two_body};
 use kete_core::time::{TDB, Time};
 
@@ -108,13 +109,6 @@ fn scanning_iod_core(
     sorted_obs: &[Observation],
     ref_epoch: Time<TDB>,
 ) -> KeteResult<Vec<State<Equatorial>>> {
-    let n = sorted_obs.len();
-    if n < 2 {
-        return Err(Error::ValueError(
-            "IOD requires at least 2 observations".into(),
-        ));
-    }
-
     let pairs = select_ranging_pairs(sorted_obs);
     if pairs.is_empty() {
         return Err(Error::ValueError(
@@ -235,7 +229,7 @@ fn run_ranging_for_pair(
     // constraint, so eccentric and hyperbolic orbits are naturally sampled.
     let n_scan: usize = 40;
     let log_min = 0.001_f64.ln();
-    let log_max = 500.0_f64.ln();
+    let log_max = 1000.0_f64.ln();
 
     // (score, rho_a, rho_b)
     let mut scan_scores: Vec<(f64, f64, f64)> = Vec::new();
@@ -514,15 +508,24 @@ fn is_physically_valid(state: &State<Equatorial>) -> bool {
         return false;
     }
 
-    let elements = CometElements::from_state(&state.clone().into_frame());
-    if elements.eccentricity >= 5.0 {
+    // Eccentricity is frame-independent; compute directly from pos/vel
+    // without the full CometElements construction and frame conversion.
+    let vel_scaled = state.vel / GMS_SQRT;
+    let v_mag2 = vel_scaled.norm_squared();
+    let vp_dot = state.pos.dot(&vel_scaled);
+    let ecc_vec = (v_mag2 - 1.0 / r) * state.pos - vp_dot * vel_scaled;
+    if ecc_vec.norm() >= 5.0 {
         return false;
     }
 
     true
 }
 
-/// Remove near-duplicate candidate states (position within 0.01 AU).
+/// Remove near-duplicate candidate states.
+///
+/// Uses a distance-adaptive threshold: 0.01 AU or 0.1% of heliocentric
+/// distance, whichever is larger.  This prevents over-pruning at large
+/// distances and under-pruning near the Sun.
 fn dedup_states(states: &mut Vec<State<Equatorial>>) {
     let mut keep = vec![true; states.len()];
     for i in 0..states.len() {
@@ -533,7 +536,9 @@ fn dedup_states(states: &mut Vec<State<Equatorial>>) {
             if !keep[j] {
                 continue;
             }
-            if (states[i].pos - states[j].pos).norm() < 0.01 {
+            let r = states[i].pos.norm();
+            let threshold = (0.001 * r).max(0.01);
+            if (states[i].pos - states[j].pos).norm() < threshold {
                 keep[j] = false;
             }
         }

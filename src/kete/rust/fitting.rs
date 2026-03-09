@@ -591,8 +591,6 @@ pub fn lambert_py(
 ///     Seed index (0-based) that generated each draw.
 /// divergent : list[bool]
 ///     True if the draw was a divergent transition.
-/// logp : list[float]
-///     Log-posterior value at each draw (NaN where unavailable).
 #[pyclass(frozen, module = "kete.fitting", name = "OrbitSamples")]
 #[derive(Debug, Clone)]
 pub struct PyOrbitSamples(pub OrbitSamples);
@@ -672,12 +670,6 @@ impl PyOrbitSamples {
     #[getter]
     fn divergent(&self) -> Vec<bool> {
         self.0.divergent.clone()
-    }
-
-    /// Per-draw log-posterior value.
-    #[getter]
-    fn logp(&self) -> Vec<f64> {
-        self.0.logp.clone()
     }
 
     /// Number of posterior draws.

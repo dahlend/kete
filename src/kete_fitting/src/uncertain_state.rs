@@ -305,7 +305,7 @@ fn cometary_to_cartesian_jacobian(elements: &CometElements) -> KeteResult<DMatri
     ];
 
     for col in 0..6 {
-        let h = finite_diff_step(nominal_vals[col], col);
+        let h = finite_diff_step(nominal_vals[col]);
 
         let elem_plus = perturb_element(elements, col, h);
         let elem_minus = perturb_element(elements, col, -h);
@@ -326,7 +326,7 @@ fn cometary_to_cartesian_jacobian(elements: &CometElements) -> KeteResult<DMatri
 }
 
 /// Choose a finite-difference step size appropriate for the parameter.
-fn finite_diff_step(nominal: f64, _col: usize) -> f64 {
+fn finite_diff_step(nominal: f64) -> f64 {
     // Use a relative step scaled by machine epsilon^(1/3), which is
     // optimal for central differences.  Floor at 1e-10 for values
     // near zero.

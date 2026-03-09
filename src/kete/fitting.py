@@ -1,8 +1,17 @@
 """
 Orbit fitting and initial orbit determination.
 
-This module provides batch least-squares differential correction and initial
-orbit determination (IOD) for asteroid and comet observations.
+This module provides tools for determining and refining orbits from
+astronomical observations:
+
+- **Initial Orbit Determination (IOD)** -- statistical ranging to produce
+  candidate orbits from a handful of optical observations.
+- **Differential Correction** -- batch least-squares with
+  Levenberg--Marquardt damping and optional outlier rejection.
+- **NUTS MCMC Sampling** -- No-U-Turn posterior sampling for short-arc
+  orbit characterization where a Gaussian approximation is insufficient.
+- **Lambert Solver** -- single-revolution Keplerian transfer between two
+  position vectors.
 """
 
 from __future__ import annotations

@@ -122,16 +122,16 @@ impl Observation {
                 sigma_ra,
                 sigma_dec,
                 ..
-            } => DVector::from_vec(vec![
+            } => DVector::from_column_slice(&[
                 1.0 / (sigma_ra * sigma_ra),
                 1.0 / (sigma_dec * sigma_dec),
             ]),
             Self::RadarRange { sigma_range, .. } => {
-                DVector::from_vec(vec![1.0 / (sigma_range * sigma_range)])
+                DVector::from_column_slice(&[1.0 / (sigma_range * sigma_range)])
             }
             Self::RadarRate {
                 sigma_range_rate, ..
-            } => DVector::from_vec(vec![1.0 / (sigma_range_rate * sigma_range_rate)]),
+            } => DVector::from_column_slice(&[1.0 / (sigma_range_rate * sigma_range_rate)]),
         }
     }
 }
@@ -184,23 +184,23 @@ impl Observation {
                     d_ra += 2.0 * std::f64::consts::PI;
                 }
                 (
-                    DVector::from_vec(vec![d_ra, dec - dec_pred]),
-                    DVector::from_vec(vec![ra_pred, dec_pred]),
+                    DVector::from_column_slice(&[d_ra, dec - dec_pred]),
+                    DVector::from_column_slice(&[ra_pred, dec_pred]),
                 )
             }
             Self::RadarRange { range, .. } => {
                 let pred = (obj_lt.pos - obs.pos).norm();
                 (
-                    DVector::from_vec(vec![range - pred]),
-                    DVector::from_vec(vec![pred]),
+                    DVector::from_column_slice(&[range - pred]),
+                    DVector::from_column_slice(&[pred]),
                 )
             }
             Self::RadarRate { range_rate, .. } => {
                 let d_pos = obj_lt.pos - obs.pos;
                 let pred = d_pos.dot(&(obj_lt.vel - obs.vel)) / d_pos.norm();
                 (
-                    DVector::from_vec(vec![range_rate - pred]),
-                    DVector::from_vec(vec![pred]),
+                    DVector::from_column_slice(&[range_rate - pred]),
+                    DVector::from_column_slice(&[pred]),
                 )
             }
         }
@@ -218,11 +218,18 @@ fn optical_partials_pos(obj: &State<Equatorial>, obs: &State<Equatorial>) -> Mat
     let dz = d[2];
     let rho2 = d.norm_squared();
     let xy2 = dx * dx + dy * dy;
-    let xy = xy2.sqrt();
+
+    // Guard against the pole singularity (dec ≈ ±90°).
+    // When xy2 → 0 the RA partial is undefined and the Dec partial
+    // diverges.  Clamp to a small floor so the Jacobian stays finite;
+    // the residual itself is still well-defined, and the solver will
+    // not be driven by a single near-pole observation.
+    let xy2_safe = xy2.max(1e-30);
+    let xy = xy2_safe.sqrt();
 
     // dRA/d(pos)
-    let dra_dx = -dy / xy2;
-    let dra_dy = dx / xy2;
+    let dra_dx = -dy / xy2_safe;
+    let dra_dy = dx / xy2_safe;
 
     // dDec/d(pos)
     let ddec_dx = -dx * dz / (rho2 * xy);
@@ -232,7 +239,7 @@ fn optical_partials_pos(obj: &State<Equatorial>, obs: &State<Equatorial>) -> Mat
     Matrix2x3::new(dra_dx, dra_dy, 0.0, ddec_dx, ddec_dy, ddec_dz)
 }
 
-/// Radar range partials: d(range)/d(pos) as a 1x3 row vector (unit vector).
+/// Radar range partials: d(range)/d(pos) as a 3x1 column vector (unit vector).
 fn range_partials_pos(obj: &State<Equatorial>, obs: &State<Equatorial>) -> Matrix3x1<f64> {
     let d = obj.pos - obs.pos;
     let range_inv = 1.0 / d.norm();

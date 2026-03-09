@@ -504,7 +504,7 @@ fn iterate_to_convergence(
         }
 
         // Linearize at the trial state.
-        let trial = accumulate_normal_equations(
+        let trial_sweep = stm_sweep(
             &trial_state,
             obs,
             included,
@@ -512,7 +512,9 @@ fn iterate_to_convergence(
             trial_ng.as_ref(),
         );
 
-        if let Ok((new_info, new_rhs, new_chi2)) = trial {
+        if let Ok(sweep) = trial_sweep {
+            let (new_info, new_rhs, new_chi2, sweep_residuals) =
+                accumulate_from_sweep(&sweep, trial_ng.as_ref());
             if new_chi2 <= chi2 {
                 // Accept step: chi^2 improved (or stayed equal).
                 state_epoch = trial_state;
@@ -524,8 +526,24 @@ fn iterate_to_convergence(
 
                 if converged {
                     let covariance = svd_pseudo_inverse(&info_mat, 1e-14)?;
-                    let residuals =
-                        compute_residuals(&state_epoch, obs, include_asteroids, non_grav.as_ref())?;
+
+                    // Build per-obs residuals from the sweep (included
+                    // observations only have meaningful values; excluded
+                    // get NaN since they are never used downstream).
+                    let mut residuals = Vec::with_capacity(obs.len());
+                    let mut sweep_idx = 0;
+                    for (i, observation) in obs.iter().enumerate() {
+                        if included[i] {
+                            residuals.push(sweep_residuals[sweep_idx].clone());
+                            sweep_idx += 1;
+                        } else {
+                            residuals.push(DVector::from_element(
+                                observation.measurement_dim(),
+                                f64::NAN,
+                            ));
+                        }
+                    }
+
                     let n_params = 6 + n_nongrav_params(non_grav.as_ref());
                     let rms = weighted_rms(&residuals, obs, included, n_params);
                     return Ok(ConvergenceResult {
@@ -657,6 +675,10 @@ pub fn stm_sweep(
     include_asteroids: bool,
     non_grav: Option<&NonGravModel>,
 ) -> KeteResult<Vec<StmObs>> {
+    debug_assert!(
+        obs.windows(2).all(|w| w[0].epoch().jd <= w[1].epoch().jd),
+        "stm_sweep: observations must be sorted by epoch"
+    );
     let np = n_nongrav_params(non_grav);
     let d = 6 + np;
 
@@ -710,9 +732,7 @@ pub fn stm_sweep(
         // Apply two-body light-time correction once;
         // use the corrected state for both residual and partials.
         let obs_state = observation.observer();
-        let obj_lt = light_time_correct(&state_cur, &obs_state.pos).inspect_err(|_| {
-            panic!("{:?}  {:?}", &state_cur, &obs_state.pos);
-        })?;
+        let obj_lt = light_time_correct(&state_cur, &obs_state.pos)?;
 
         let residual = observation.residual_from_corrected(&obj_lt);
 
@@ -748,16 +768,28 @@ pub fn accumulate_normal_equations(
     include_asteroids: bool,
     non_grav: Option<&NonGravModel>,
 ) -> KeteResult<(DMatrix<f64>, DVector<f64>, f64)> {
+    let sweep = stm_sweep(state_epoch, obs, included, include_asteroids, non_grav)?;
+    let (n_mat, b_vec, chi2, _) = accumulate_from_sweep(&sweep, non_grav);
+    Ok((n_mat, b_vec, chi2))
+}
+
+/// Accumulate normal equations from a pre-computed STM sweep.
+///
+/// Returns `(info_mat, rhs_vec, chi2, residuals)` where `residuals`
+/// contains one entry per included observation (matching the sweep).
+fn accumulate_from_sweep(
+    sweep: &[StmObs],
+    non_grav: Option<&NonGravModel>,
+) -> (DMatrix<f64>, DVector<f64>, f64, Vec<DVector<f64>>) {
     let np = n_nongrav_params(non_grav);
     let d = 6 + np;
-
-    let sweep = stm_sweep(state_epoch, obs, included, include_asteroids, non_grav)?;
 
     let mut n_mat = DMatrix::<f64>::zeros(d, d);
     let mut b_vec = DVector::<f64>::zeros(d);
     let mut chi2 = 0.0;
+    let mut residuals = Vec::with_capacity(sweep.len());
 
-    for entry in &sweep {
+    for entry in sweep {
         let m = entry.residual.len();
 
         // Map to epoch: H_epoch = H_local * Phi_cum  (m x D).
@@ -767,6 +799,8 @@ pub fn accumulate_normal_equations(
         for k in 0..m {
             chi2 += entry.residual[k] * entry.residual[k] * entry.weights[k];
         }
+
+        residuals.push(entry.residual.clone());
 
         // Accumulate normal matrix and RHS via weighted outer products:
         //   N += H^T W H,  b += H^T W r
@@ -787,7 +821,7 @@ pub fn accumulate_normal_equations(
         b_vec += hw.transpose() * &wr;
     }
 
-    Ok((n_mat, b_vec, chi2))
+    (n_mat, b_vec, chi2, residuals)
 }
 
 /// Solve `(N + lambda * diag(N)) * dx = b` via SVD.

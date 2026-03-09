@@ -47,6 +47,7 @@ use nuts_rs::{
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 
 /// Posterior orbit samples from NUTS MCMC.
 #[derive(Debug, Clone)]
@@ -64,8 +65,6 @@ pub struct OrbitSamples {
     pub chain_id: Vec<usize>,
     /// True if the draw was a divergent transition.
     pub divergent: Vec<bool>,
-    /// Log-posterior at each draw.
-    pub logp: Vec<f64>,
 }
 
 /// Error returned by [`OrbitalPosterior::logp`] when propagation fails.
@@ -96,7 +95,7 @@ impl LogpError for PropagationError {
 /// Minimum heliocentric distance (AU) before penalty ramps up.
 const PRIOR_R_MIN: f64 = 0.01;
 /// Maximum heliocentric distance (AU) before penalty ramps up.
-const PRIOR_R_MAX: f64 = 10.0;
+const PRIOR_R_MAX: f64 = 1000.0;
 /// Steepness of the logistic barrier.
 const PRIOR_K: f64 = 100.0;
 
@@ -204,8 +203,8 @@ struct OrbitalPosterior {
     chol_l: DMatrix<f64>,
     /// Seed state vector (position ++ velocity ++ non-grav params), D-vector.
     seed_vec: DVector<f64>,
-    /// Observations (time-sorted).
-    obs: Vec<Observation>,
+    /// Observations (time-sorted, shared across chains).
+    obs: Arc<[Observation]>,
     /// Inclusion mask (all true).
     included: Vec<bool>,
     /// Whether to include extended (asteroid) perturbers.
@@ -485,7 +484,7 @@ pub fn nuts_sample(
         })
         .collect::<KeteResult<Vec<_>>>()?;
 
-    // Sort observations once.
+    // Sort observations once and share across chains.
     let mut sorted_obs = obs.to_vec();
     sorted_obs.sort_by(|a, b| {
         a.epoch()
@@ -493,6 +492,7 @@ pub fn nuts_sample(
             .partial_cmp(&b.epoch().jd)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+    let sorted_obs: Arc<[Observation]> = sorted_obs.into();
 
     // Distribute num_draws across seeds, then sub-chains across cores.
     let n_cores = std::thread::available_parallelism()
@@ -527,7 +527,7 @@ pub fn nuts_sample(
         .collect();
 
     // Run all chains in parallel.
-    let chain_results: Vec<(usize, KeteResult<(Vec<Vec<f64>>, Vec<bool>, Vec<f64>)>)> = tasks
+    let chain_results: Vec<(usize, KeteResult<(Vec<Vec<f64>>, Vec<bool>)>)> = tasks
         .par_iter()
         .map(|&(seed_idx, draws, rng_seed)| {
             let result = run_single_chain(
@@ -550,15 +550,13 @@ pub fn nuts_sample(
     let mut all_draws = Vec::new();
     let mut all_chain_id = Vec::new();
     let mut all_divergent = Vec::new();
-    let mut all_logp = Vec::new();
 
     for (seed_idx, result) in chain_results {
-        let (draws, divergent, logp_vals) = result?;
+        let (draws, divergent) = result?;
         let n = draws.len();
         all_draws.extend(draws);
         all_chain_id.extend(std::iter::repeat_n(seed_idx, n));
         all_divergent.extend(divergent);
-        all_logp.extend(logp_vals);
     }
 
     Ok(OrbitSamples {
@@ -567,7 +565,6 @@ pub fn nuts_sample(
         draws: all_draws,
         chain_id: all_chain_id,
         divergent: all_divergent,
-        logp: all_logp,
     })
 }
 
@@ -575,7 +572,7 @@ pub fn nuts_sample(
 fn run_single_chain(
     seed: &State<Equatorial>,
     chol_l: &DMatrix<f64>,
-    sorted_obs: &[Observation],
+    sorted_obs: &Arc<[Observation]>,
     include_asteroids: bool,
     non_grav: Option<&NonGravModel>,
     num_draws: usize,
@@ -583,7 +580,7 @@ fn run_single_chain(
     student_nu: f64,
     maxdepth: u64,
     chain_idx: u64,
-) -> KeteResult<(Vec<Vec<f64>>, Vec<bool>, Vec<f64>)> {
+) -> KeteResult<(Vec<Vec<f64>>, Vec<bool>)> {
     let np = non_grav.map_or(0, NonGravModel::n_free_params);
     let d = 6 + np;
 
@@ -605,7 +602,7 @@ fn run_single_chain(
         seed_state: seed.clone(),
         chol_l: chol_l.clone(),
         seed_vec: seed_vec.clone(),
-        obs: sorted_obs.to_vec(),
+        obs: Arc::clone(sorted_obs),
         included: vec![true; sorted_obs.len()],
         include_asteroids,
         non_grav: non_grav.cloned(),
@@ -634,7 +631,6 @@ fn run_single_chain(
     let total_draws = num_tune as u64 + num_draws as u64;
     let mut draws = Vec::with_capacity(num_draws);
     let mut divergent = Vec::with_capacity(num_draws);
-    let mut logp_vals = Vec::with_capacity(num_draws);
 
     for _ in 0..total_draws {
         let (position, progress) = sampler
@@ -650,10 +646,9 @@ fn run_single_chain(
         let x = &seed_vec + chol_l * &xi_vec;
         draws.push(x.as_slice().to_vec());
         divergent.push(progress.diverging);
-        logp_vals.push(f64::NAN);
     }
 
-    Ok((draws, divergent, logp_vals))
+    Ok((draws, divergent))
 }
 
 #[cfg(test)]
@@ -701,7 +696,7 @@ mod tests {
 
     #[test]
     fn physical_prior_too_far_penalized() {
-        // r = 5000 AU — well above PRIOR_R_MAX = 1000.
+        // r = 5000 AU — well above PRIOR_R_MAX.
         let mut x = DVector::<f64>::zeros(6);
         x[0] = 5000.0;
         x[4] = 1e-5;
