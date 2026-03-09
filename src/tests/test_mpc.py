@@ -115,12 +115,11 @@ def test_mpc_obs_to_observations_ground():
     assert abs(obs.ra - mpc_obs[0].ra) < 1e-10
     assert abs(obs.dec - mpc_obs[0].dec) < 1e-10
 
-    # Observer should be SSB-centered (center_id = 0) and Equatorial.
-    assert obs.observer.center_id == 0
-
-    # Sigma should be in arcseconds (default 1 arcsec).
-    assert abs(obs.sigma_dec - 1.0) < 1e-10
-    assert obs.sigma_ra > 1.0  # cos(dec) factor makes RA sigma larger
+    # Observer should be Sun-centered (center_id = 10) and Equatorial.
+    assert obs.observer.center_id == 10
+    # Sigma should be in arcseconds (default 0.1 arcsec).
+    assert abs(obs.sigma_dec - 0.1) < 1e-10
+    assert obs.sigma_ra > 0.1  # cos(dec) factor makes RA sigma larger
 
 
 def test_mpc_obs_to_observations_spacecraft():
@@ -142,4 +141,4 @@ def test_mpc_obs_to_observations_spacecraft():
 
     assert abs(obs.ra - mpc_obs[0].ra) < 1e-10
     assert abs(obs.dec - mpc_obs[0].dec) < 1e-10
-    assert obs.observer.center_id == 0
+    assert obs.observer.center_id == 10

@@ -110,12 +110,12 @@ def mpc_obs_to_observations(
                 pos=pos_ssb,
                 vel=[0.0, 0.0, 0.0],
                 frame=Frames.Ecliptic,
-                center_id=0,
+                center_id=10,
             ).as_equatorial
         else:
-            # Ground-based: look up from obs code, SSB-centered.
+            # Ground-based: look up from obs code, heliocentric.
             observer = spice.mpc_code_to_ecliptic(
-                obs.obs_code, obs.jd, center=0
+                obs.obs_code, obs.jd, center=10
             ).as_equatorial
 
         observations.append(
