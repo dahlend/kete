@@ -25,9 +25,9 @@ from ._core import (
     OrbitSamples,
     UncertainState,
     fit_orbit,
+    fit_orbit_mcmc,
     initial_orbit_determination,
     lambert,
-    fit_orbit_mcmc,
 )
 
 __all__ = [
