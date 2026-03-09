@@ -306,53 +306,6 @@ pub struct PyOrbitFit(pub OrbitFit);
 
 #[pymethods]
 impl PyOrbitFit {
-    /// Build an ``OrbitFit`` directly from a state, without running
-    /// differential correction.
-    ///
-    /// The covariance is initialised to a diagonal matrix with the
-    /// given ``pos_sigma`` (AU) and ``vel_sigma`` (AU/day) on the
-    /// diagonal.  This is useful for seeding MCMC from an IOD
-    /// candidate when the differential corrector fails or converges
-    /// to an unphysical orbit.
-    ///
-    /// The input state is automatically re-centered to the solar
-    /// system barycenter if needed (the fitting engine works
-    /// internally in SSB-centered Equatorial coordinates).
-    ///
-    /// Parameters
-    /// ----------
-    /// state : State
-    ///     Object state (any center / frame -- will be converted).
-    /// pos_sigma : float, optional
-    ///     1-sigma position uncertainty in AU (default 0.01).
-    /// vel_sigma : float, optional
-    ///     1-sigma velocity uncertainty in AU/day (default 0.0001).
-    #[staticmethod]
-    #[pyo3(signature = (state, pos_sigma=0.01, vel_sigma=0.0001))]
-    fn from_state(state: PyState, pos_sigma: f64, vel_sigma: f64) -> PyResult<Self> {
-        let mut eq_state = state.raw;
-        // Re-center to SSB (the fitting engine expects center_id=0).
-        if eq_state.center_id != 0 {
-            let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-            spk.try_change_center(&mut eq_state, 0)?;
-        }
-        let mut cov = nalgebra::DMatrix::<f64>::zeros(6, 6);
-        for i in 0..3 {
-            cov[(i, i)] = pos_sigma * pos_sigma;
-        }
-        for i in 3..6 {
-            cov[(i, i)] = vel_sigma * vel_sigma;
-        }
-        let uncertain_state = kete_fitting::UncertainState::new(eq_state, cov, None)?;
-        Ok(PyOrbitFit(OrbitFit {
-            uncertain_state,
-            residuals: Vec::new(),
-            observations: Vec::new(),
-            rms: f64::NAN,
-            converged: false,
-        }))
-    }
-
     /// The uncertain orbit state (state + covariance + non-grav model).
     #[getter]
     fn uncertain_state(&self) -> PyUncertainState {
