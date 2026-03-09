@@ -181,13 +181,13 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<fitting::PyObservation>()?;
     m.add_class::<fitting::PyOrbitFit>()?;
     m.add_class::<fitting::PyOrbitSamples>()?;
-    m.add_function(wrap_pyfunction!(fitting::differential_correction_py, m)?)?;
+    m.add_function(wrap_pyfunction!(fitting::fit_orbit_py, m)?)?;
     m.add_function(wrap_pyfunction!(
         fitting::initial_orbit_determination_py,
         m
     )?)?;
     m.add_function(wrap_pyfunction!(fitting::lambert_py, m)?)?;
-    m.add_function(wrap_pyfunction!(fitting::nuts_sample_py, m)?)?;
+    m.add_function(wrap_pyfunction!(fitting::fit_orbit_mcmc_py, m)?)?;
 
     m.add_function(wrap_pyfunction!(kete_core::cache::cache_path, m)?)?;
 

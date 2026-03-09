@@ -85,7 +85,7 @@ print(
 # -----------------------
 # Refine the IOD solution using all 10 observations.
 
-fit = kete.fitting.differential_correction(best, observations)
+fit = kete.fitting.fit_orbit(best, observations)
 print(f"\nFit converged: RMS = {fit.rms:.4e}")
 print(f"Fitted state epoch: JD {fit.state.jd:.6f}")
 

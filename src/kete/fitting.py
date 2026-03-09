@@ -1,17 +1,18 @@
 """
-Orbit fitting and initial orbit determination.
+Orbit fitting and uncertainty estimation from observations.
 
 This module provides tools for determining and refining orbits from
 astronomical observations:
 
-- **Initial Orbit Determination (IOD)** -- statistical ranging to produce
-  candidate orbits from a handful of optical observations.
-- **Differential Correction** -- batch least-squares with
-  Levenberg--Marquardt damping and optional outlier rejection.
-- **NUTS MCMC Sampling** -- No-U-Turn posterior sampling for short-arc
-  orbit characterization where a Gaussian approximation is insufficient.
-- **Lambert Solver** -- single-revolution Keplerian transfer between two
-  position vectors.
+- **Initial Orbit Determination (IOD)** -- find candidate orbits from a
+  small number of observations using statistical ranging.
+- **Orbit Fitting** (:func:`fit_orbit`) -- refine an orbit guess to best
+  match the data, with automatic outlier rejection.  Produces a best-fit
+  state and Gaussian uncertainty estimate (covariance).
+- **MCMC Uncertainty Estimation** (:func:`fit_orbit_mcmc`) -- for short
+  arcs where the Gaussian approximation is unreliable, sample the full
+  range of plausible orbits consistent with the data.
+- **Lambert Solver** -- compute the transfer orbit between two positions.
 """
 
 from __future__ import annotations
@@ -23,10 +24,10 @@ from ._core import (
     OrbitFit,
     OrbitSamples,
     UncertainState,
-    differential_correction,
+    fit_orbit,
     initial_orbit_determination,
     lambert,
-    nuts_sample,
+    fit_orbit_mcmc,
 )
 
 __all__ = [
@@ -34,11 +35,11 @@ __all__ = [
     "OrbitFit",
     "OrbitSamples",
     "UncertainState",
-    "differential_correction",
+    "fit_orbit",
     "initial_orbit_determination",
     "lambert",
     "mpc_obs_to_observations",
-    "nuts_sample",
+    "fit_orbit_mcmc",
 ]
 
 
@@ -85,7 +86,7 @@ def mpc_obs_to_observations(
         lines = [...]  # 80-char MPC observation lines
         mpc_obs = kete.mpc.MPCObservation.from_lines(lines)
         observations = kete.fitting.mpc_obs_to_observations(mpc_obs)
-        fit = kete.fitting.differential_correction(initial_state, observations)
+        fit = kete.fitting.fit_orbit(initial_state, observations)
     """
     from . import spice
     from .vector import Frames, State

@@ -5,16 +5,16 @@ Overview
 --------
 
 When an asteroid is first discovered, we typically have only a handful of
-observations spanning a few nights.  Traditional least-squares orbit fitting
-(differential correction) produces a best-fit orbit and a covariance matrix,
-but it implicitly assumes the posterior is Gaussian.  For short arcs this
+observations spanning a few nights.  Standard orbit fitting
+(:func:`~kete.fitting.fit_orbit`) produces a best-fit orbit and an uncertainty
+estimate, but it assumes the uncertainty is Gaussian.  For short arcs this
 assumption breaks down badly: the family of orbits consistent with the data
 can be multi-modal, banana-shaped, or have long tails toward parabolic and
 hyperbolic solutions.
 
-Markov Chain Monte Carlo (MCMC) sampling makes no Gaussian assumption.  By
-exploring the full likelihood surface, it produces a set of orbit samples
-that faithfully represent the true posterior -- however non-Gaussian it may
+:func:`~kete.fitting.fit_orbit_mcmc` makes no Gaussian assumption.  By
+exploring the full space of possible orbits, it produces a set of orbit samples
+that faithfully represent the true uncertainty -- however non-Gaussian it may
 be.  This is essential for impact probability assessment, where the tails
 of the distribution determine whether an Earth collision is possible.
 
@@ -23,15 +23,15 @@ This tutorial walks through the complete workflow on a synthetic example:
 1. Build a realistic Apollo-type NEO orbit with a close Earth approach.
 2. Generate six astrometric observations over three nights from Palomar.
 3. Recover candidate orbits with initial orbit determination (IOD).
-4. Sample the full posterior with NUTS MCMC.
-5. Propagate the posterior to the close-approach epoch to assess the
+4. Estimate the orbit uncertainty with :func:`~kete.fitting.fit_orbit_mcmc`.
+5. Propagate the sampled orbits to the close-approach epoch to assess the
    miss-distance distribution.
 
 .. note::
 
    This example takes several minutes to run due to the MCMC sampling
-   step.  Each posterior draw requires a full State Transition Matrix
-   (STM) propagation through all observations, which is why MCMC is
+   step.  Each orbit sample requires a full numerical
+   propagation through all observations, which is why MCMC is
    reserved for short-arc cases where the Gaussian approximation is
    inadequate.
 
@@ -161,13 +161,13 @@ to account for the convergence of right ascension lines toward the poles.
 3. Initial Orbit Determination
 -------------------------------
 
-Before we can sample the posterior, we need starting points.  The IOD
+Before we can estimate the uncertainty, we need starting points.  The IOD
 function scans a range of topocentric distances for each observation pair
 and uses Lambert's problem to connect them, returning one or more candidate
 orbits consistent with the data.
 
-These raw IOD states are passed directly to the MCMC sampler as seeds.  No
-prior differential correction is needed -- the sampler will build its own
+These raw IOD states are passed directly to :func:`~kete.fitting.fit_orbit_mcmc`
+as seeds.  No prior orbit fit is needed -- the sampler will build its own
 mass matrix from a single-pass linearization at each seed.
 
 If IOD returns multiple candidates, the sampler runs separate chains from
@@ -190,20 +190,19 @@ each one and pools the results, which naturally captures multi-modality.
       [3] a=-0.700 AU, e=2.807
 
 
-4. NUTS MCMC Sampling
-----------------------
+4. Orbit Uncertainty Estimation
+--------------------------------
 
-The No-U-Turn Sampler (NUTS) is an adaptive variant of Hamiltonian Monte
-Carlo that automatically tunes the trajectory length.  Each step requires
-evaluating the log-posterior and its gradient, which involves propagating
-the State Transition Matrix through all observations -- the dominant cost.
+:func:`~kete.fitting.fit_orbit_mcmc` uses an adaptive MCMC algorithm to
+explore the space of orbits consistent with the observations.  Each step
+requires a full numerical propagation, which is the dominant cost.
 
 Key parameters:
 
-- **num_draws**: Total posterior draws across all chains (after warmup).
-  More draws give smoother histograms but take longer.
-- **num_tune**: Warmup steps per chain for step-size and mass-matrix
-  adaptation.  500 is usually sufficient.
+- **num_draws**: Total orbit samples across all chains (after warmup).
+  More samples give smoother histograms but take longer.
+- **num_tune**: Warmup steps per chain for internal adaptation.
+  500 is usually sufficient.  These are discarded.
 - **student_nu**: Degrees of freedom for the Student-t likelihood.
   ``nu=5`` down-weights outlier observations, making the sampler more
   robust when the initial orbit is poor or the stated uncertainties are
@@ -211,7 +210,7 @@ Key parameters:
 
 .. code-block:: python
 
-    samples = kete.fitting.nuts_sample(
+    samples = kete.fitting.fit_orbit_mcmc(
         seeds=candidates,
         observations=observations,
         num_draws=2000,
@@ -220,13 +219,13 @@ Key parameters:
     )
 
     n_div = sum(samples.divergent)
-    print(f"NUTS complete: {len(samples)} draws, "
+    print(f"MCMC complete: {len(samples)} draws, "
           f"{len(set(samples.chain_id))} chain(s), "
           f"{n_div} divergent ({100*n_div/max(len(samples),1):.1f}%)")
 
 ::
 
-    NUTS complete: 2000 draws, 4 chain(s), 0 divergent (0.0%)
+    MCMC complete: 2000 draws, 4 chain(s), 0 divergent (0.0%)
 
 A small fraction of divergent transitions is normal and those draws are
 still valid posterior samples.  A high divergence rate (>10%) suggests the
@@ -463,25 +462,25 @@ on-sky uncertainty and physical miss distance is a hallmark of short-arc
 NEO problems.
 
 
-When to Use MCMC vs. Differential Correction
+When to Use MCMC vs. Standard Orbit Fitting
 ----------------------------------------------
 
-MCMC sampling is powerful but expensive.  Here are guidelines for choosing
-the right tool:
+MCMC (:func:`~kete.fitting.fit_orbit_mcmc`) is powerful but expensive.
+Here are guidelines for choosing the right tool:
 
 - **Long, well-sampled arcs** (months to years of observations): use
-  :func:`~kete.fitting.differential_correction` alone.  The Gaussian
-  approximation is excellent and the covariance matrix from least squares
+  :func:`~kete.fitting.fit_orbit` alone.  The Gaussian
+  approximation is excellent and the uncertainty from least squares
   is reliable.
 
-- **Short arcs** (a few nights) where the posterior is non-Gaussian: use
-  :func:`~kete.fitting.nuts_sample`.  The cost is justified because the
-  shape of the posterior matters for risk assessment.
+- **Short arcs** (a few nights) where the uncertainty is non-Gaussian: use
+  :func:`~kete.fitting.fit_orbit_mcmc`.  The cost is justified because the
+  shape of the uncertainty matters for risk assessment.
 
-- **Intermediate cases**: run differential correction first.  If the
-  covariance is suspiciously large or the orbit is poorly constrained,
-  follow up with MCMC to check for non-Gaussianity.
+- **Intermediate cases**: run :func:`~kete.fitting.fit_orbit` first.  If the
+  uncertainty is suspiciously large or the orbit is poorly constrained,
+  follow up with MCMC.
 
 The MCMC sampler accepts raw IOD states as seeds, so no preliminary
-differential correction is required -- though providing a converged fit as
+orbit fit is required -- though providing a converged fit as
 a seed can improve sampling efficiency.

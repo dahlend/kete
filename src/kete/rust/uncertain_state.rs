@@ -27,7 +27,7 @@ use pyo3::prelude::*;
 /// - :meth:`from_state` -- from a :class:`~kete.State` with isotropic uncertainties.
 /// - :meth:`from_cometary` -- from cometary orbital elements and an
 ///   element-space covariance (e.g. from JPL Horizons).
-/// - Returned as part of :class:`~kete.fitting.OrbitFit` from differential correction.
+/// - Returned as part of :class:`~kete.fitting.OrbitFit` from orbit fitting.
 #[pyclass(frozen, module = "kete", name = "UncertainState")]
 #[derive(Debug, Clone)]
 pub struct PyUncertainState(pub UncertainState);

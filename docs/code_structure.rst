@@ -75,9 +75,9 @@ written in Rust without reference to Python. This includes:
 
 - **Initial Orbit Determination (IOD)** -- Statistical ranging over observation
   pairs followed by two-body scoring to produce candidate orbits from short arcs.
-- **Differential Correction** -- Batch least-squares with Levenberg--Marquardt
+- **Orbit Fitting** -- Batch least-squares with Levenberg--Marquardt
   damping, progressive arc expansion, and optional chi-squared outlier rejection.
-- **NUTS MCMC Sampling** -- No-U-Turn Sampler for posterior orbit characterization
+- **MCMC Orbit Sampling** -- No-U-Turn Sampler for posterior orbit characterization
   on short arcs where the Gaussian approximation breaks down.
 - **Lambert Solver** -- Universal-variable Stumpff-function solver for single-
   revolution Keplerian transfers.

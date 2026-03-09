@@ -1,8 +1,9 @@
-//! NUTS MCMC sampling for non-Gaussian orbit posteriors.
+//! MCMC orbit uncertainty estimation from observations.
 //!
-//! Provides [`nuts_sample`], which runs one NUTS chain per orbital mode
-//! (seed) and pools the draws into a single [`OrbitSamples`] collection.
-//! Chains are run in parallel via Rayon.
+//! Provides [`fit_orbit_mcmc`], which estimates the range of orbits
+//! consistent with a set of observations by running parallel MCMC chains.
+//! Each candidate orbital state (seed) gets its own chain, and the results
+//! are pooled into a single [`OrbitSamples`] collection.
 //!
 // BSD 3-Clause License
 //
@@ -33,8 +34,8 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use crate::diff_correction::{StmObs, accumulate_normal_equations, stm_sweep};
 use crate::obs::Observation;
+use crate::orbit_fitting::{StmObs, accumulate_normal_equations, stm_sweep};
 use kete_core::constants::GMS;
 use kete_core::frames::Equatorial;
 use kete_core::prelude::{Error, KeteResult, State};
@@ -423,41 +424,44 @@ fn diagonal_heuristic_cholesky(seed: &State<Equatorial>, np: usize) -> DMatrix<f
     l
 }
 
-// nuts_sample -- public entry point
+// fit_orbit_mcmc -- public entry point
 
-/// Run NUTS MCMC sampling over orbital posteriors.
+/// Estimate orbit uncertainty from observations using MCMC.
 ///
-/// One chain per seed is run in parallel.  All seeds must share the same
-/// reference epoch.
+/// Given one or more candidate states (seeds) and a set of observations,
+/// this produces a collection of plausible orbits that are statistically
+/// consistent with the data.  Parallel chains are run automatically.
+///
+/// All seeds must share the same reference epoch.
 ///
 /// A single non-gravitational model (if any) is shared across all chains.
 ///
-/// Chains are automatically spread across available CPU cores.  When there
-/// are fewer seeds than cores, each seed spawns multiple sub-chains (each
-/// with its own RNG seed and tuning phase).  The `chain_id` in the returned
+/// When there are fewer seeds than CPU cores, each seed spawns multiple
+/// independent sub-chains.  The `chain_id` in the returned
 /// [`OrbitSamples`] identifies the seed (orbital mode), not the sub-chain.
 ///
-/// `num_draws` is the **total** number of posterior draws returned across
-/// all seeds.  Each seed receives `num_draws / n_seeds` draws (remainder
-/// goes to the first seeds), which are then split across sub-chains.
+/// `num_draws` is the **total** number of orbit samples returned across
+/// all seeds.  Each seed receives `num_draws / n_seeds` samples (remainder
+/// goes to the first seeds).
 ///
 /// # Arguments
-/// * `seeds` -- State seeds (e.g. from IOD), one per orbital mode.
+/// * `seeds` -- Candidate orbital states (e.g. from IOD), one per mode.
 ///   Seeds at different epochs are automatically propagated to the first
 ///   seed's epoch via two-body.
 /// * `obs` -- Observations (any order; sorted internally).
-/// * `include_asteroids` -- Whether to include extended (asteroid) perturbers.
-/// * `num_draws` -- Total posterior draws across all seeds.
-/// * `num_tune` -- Tuning (warmup) steps per sub-chain (default 500).
+/// * `include_asteroids` -- Whether to include asteroid perturbers.
+/// * `num_draws` -- Total orbit samples across all seeds.
+/// * `num_tune` -- Warmup steps per sub-chain (default 500).  These are
+///   discarded after adaptation.
 /// * `student_nu` -- Student-t degrees of freedom (`f64::INFINITY` for
-///   Gaussian).
+///   Gaussian).  Lower values down-weight outlier observations.
 /// * `non_grav` -- Optional shared non-gravitational model.
-/// * `maxdepth` -- Maximum NUTS tree depth (default 10; depth N means up to
-///   2^N leapfrog steps per draw).
+/// * `maxdepth` -- Maximum sampler tree depth (default 10).  Higher values
+///   allow more thorough exploration at greater cost.
 ///
 /// # Errors
 /// Returns an error if `seeds` is empty or two-body propagation fails.
-pub fn nuts_sample(
+pub fn fit_orbit_mcmc(
     seeds: &[State<Equatorial>],
     obs: &[Observation],
     include_asteroids: bool,

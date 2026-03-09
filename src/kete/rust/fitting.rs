@@ -6,9 +6,7 @@ use kete_core::frames::{Equatorial, Vector};
 use kete_core::prelude::*;
 use kete_core::propagation::NonGravModel;
 use kete_core::spice::LOADED_SPK;
-use kete_fitting::{
-    Observation, OrbitFit, OrbitSamples, differential_correction, lambert, nuts_sample,
-};
+use kete_fitting::{Observation, OrbitFit, OrbitSamples, fit_orbit, fit_orbit_mcmc, lambert};
 use pyo3::{PyResult, pyclass, pyfunction, pymethods};
 
 use crate::nongrav::PyNonGravModel;
@@ -294,7 +292,10 @@ impl PyObservation {
     }
 }
 
-/// Result of orbit determination via batch least squares.
+/// Result of fitting an orbit to observations.
+///
+/// Returned by :func:`fit_orbit`.  Contains the best-fit orbital state,
+/// its uncertainty (covariance), and diagnostic information about the fit.
 #[pyclass(frozen, module = "kete.fitting", name = "OrbitFit")]
 #[derive(Debug, Clone)]
 pub struct PyOrbitFit(pub OrbitFit);
@@ -417,28 +418,27 @@ impl PyOrbitFit {
     }
 }
 
-/// Perform batch least-squares differential correction with optional
-/// chi-squared outlier rejection.
+/// Fit an orbit to observations using iterative least squares.
+///
+/// Given an initial guess and a set of observations, this function refines
+/// the orbital state until it best matches the data, and estimates the
+/// uncertainty of the result via a covariance matrix.  It can also
+/// automatically identify and reject outlier observations.
+///
+/// This is the standard approach for orbit determination when you have
+/// a reasonable initial guess (e.g. from
+/// :func:`initial_orbit_determination`).  It works well for arcs of any
+/// length, but the Gaussian uncertainty estimate is most reliable for
+/// **long, well-sampled arcs**.  For short arcs where the uncertainty
+/// is non-Gaussian, consider :func:`fit_orbit_mcmc` instead.
 ///
 /// For arcs longer than 180 days, progressively wider time windows are
 /// fitted around the reference epoch so that each stage bootstraps from
 /// the previous converged solution.  The final pass fits the full arc
 /// and re-evaluates all observations for outlier rejection (if enabled).
 ///
-/// Outlier rejection is controlled by ``max_reject_passes``.  When zero,
-/// no rejection is performed and all observations are used.
-///
-/// The per-observation chi-squared is
-/// ``sum(residual_k^2 / sigma_k^2)`` over the measurement components
-/// (2 for optical: RA + Dec).  For a threshold of 9.0 this corresponds
-/// to roughly 3-sigma per component.
-///
-/// When ``auto_sigma`` is True, the effective threshold is rescaled each
-/// rejection pass by a robust estimate of the actual residual scatter
-/// (MAD-based).  This is useful when the stated observation uncertainties
-/// are unreliable.
-///
-/// The input state is automatically re-centered to SSB.
+/// The input state is automatically re-centered to the solar system
+/// barycenter internally.
 ///
 /// Parameters
 /// ----------
@@ -456,23 +456,27 @@ impl PyOrbitFit {
 /// tol : float
 ///     Convergence tolerance on the state correction norm. Default is 1e-8.
 /// chi2_threshold : float
-///     Chi-squared threshold for outlier rejection. Default is 9.0.
-///     Only used when ``max_reject_passes > 0``.
+///     Chi-squared threshold for outlier rejection. Default is 9.0
+///     (roughly 3-sigma per component).  Only used when
+///     ``max_reject_passes > 0``.
 /// max_reject_passes : int
-///     Maximum number of batch rejection/re-solve cycles. Default is 3.
+///     Maximum number of outlier-rejection cycles. Set to 0 to disable
+///     rejection entirely. Default is 3.
 /// auto_sigma : bool
-///     If True, rescale the chi-squared threshold each pass using a
-///     robust (MAD-based) estimate of the actual residual scatter.
+///     If True, adaptively rescale the rejection threshold based on the
+///     actual residual scatter rather than the stated uncertainties.
+///     Useful when observation uncertainties are unreliable.
 ///     Default is False.
 ///
 /// Returns
 /// -------
 /// OrbitFit
-///     The converged orbit fit result.
+///     The fitted orbit, including the best-fit state, covariance,
+///     residuals, and convergence diagnostics.
 #[allow(clippy::too_many_arguments)]
 #[pyfunction]
 #[pyo3(
-    name = "differential_correction",
+    name = "fit_orbit",
     signature = (
         initial_state,
         observations,
@@ -485,7 +489,7 @@ impl PyOrbitFit {
         auto_sigma=false,
     )
 )]
-pub fn differential_correction_py(
+pub fn fit_orbit_py(
     initial_state: PyState,
     observations: Vec<PyObservation>,
     include_asteroids: bool,
@@ -506,7 +510,7 @@ pub fn differential_correction_py(
     let obs: Vec<Observation> = observations.into_iter().map(|o| o.0).collect();
     let ng = non_grav.as_ref().map(|m| &m.0);
 
-    let fit = differential_correction(
+    let fit = fit_orbit(
         &raw_state,
         &obs,
         include_asteroids,
@@ -600,7 +604,11 @@ pub fn lambert_py(
     Ok((v1.into(), v2.into()))
 }
 
-/// Posterior orbit samples from NUTS MCMC.
+/// Collection of plausible orbits from MCMC uncertainty estimation.
+///
+/// Returned by :func:`fit_orbit_mcmc`.  Each orbit (draw) is statistically
+/// consistent with the observations; the spread of the collection represents
+/// the uncertainty in the orbit.
 #[pyclass(frozen, module = "kete.fitting", name = "OrbitSamples")]
 #[derive(Debug, Clone)]
 pub struct PyOrbitSamples(pub OrbitSamples);
@@ -619,7 +627,7 @@ impl PyOrbitSamples {
         &self.0.desig
     }
 
-    /// Posterior draws as a list of :class:`~kete.State` objects.
+    /// Sampled orbits as a list of :class:`~kete.State` objects.
     ///
     /// Each state is Sun-centered Ecliptic at the reference epoch.
     ///
@@ -660,7 +668,7 @@ impl PyOrbitSamples {
             .collect()
     }
 
-    /// Raw posterior draws as a list of lists.
+    /// Raw orbit samples as a list of lists.
     ///
     /// Each inner list is ``[x, y, z, vx, vy, vz, ng_params...]``
     /// in the Equatorial frame at the reference epoch.
@@ -677,12 +685,16 @@ impl PyOrbitSamples {
     }
 
     /// Per-draw divergence flag.
+    ///
+    /// A divergent sample indicates the sampler had difficulty exploring
+    /// that region of orbit space.  A small fraction of divergences is
+    /// normal; many divergences suggest the model or data are problematic.
     #[getter]
     fn divergent(&self) -> Vec<bool> {
         self.0.divergent.clone()
     }
 
-    /// Number of posterior draws.
+    /// Number of orbit samples.
     fn __len__(&self) -> usize {
         self.0.draws.len()
     }
@@ -705,30 +717,43 @@ impl PyOrbitSamples {
     }
 }
 
-/// Run NUTS MCMC sampling over orbital posteriors.
+/// Estimate orbit uncertainty from observations using Markov Chain Monte Carlo.
 ///
-/// This is designed for **short-arc observations** where the Gaussian
-/// approximation from differential correction breaks down and the posterior
-/// is multi-modal or highly non-Gaussian.  For well-observed objects with
-/// long arcs, :func:`differential_correction` alone is usually sufficient
-/// and far cheaper -- each NUTS draw requires a full STM propagation, so
-/// MCMC is orders of magnitude more expensive.
+/// Given one or more candidate orbital states (seeds) and a set of
+/// observations, this function produces a collection of plausible orbits
+/// that are statistically consistent with the data.  The spread of
+/// returned orbits represents the **uncertainty** in the orbit
+/// determination -- wider spread means less certainty about the true
+/// orbit.
 ///
-/// Seeds are raw ``State`` objects (e.g. from IOD).  No prior
-/// differential correction is required -- the sampler builds its own
-/// mass matrix from a single-pass linearization at each seed.
+/// This is most useful for **short-arc observations** (a few nights)
+/// where the usual least-squares approach
+/// (:func:`fit_orbit`) underestimates the true
+/// uncertainty.  For well-observed objects with long arcs,
+/// :func:`fit_orbit` alone is usually sufficient and far
+/// cheaper.
 ///
-/// Chains are automatically spread across available CPU cores.  When there
-/// are fewer seeds than cores, each seed spawns multiple sub-chains (each
-/// with its own RNG seed and tuning phase).  The ``chain_id`` in the
-/// returned :class:`~kete.fitting.OrbitSamples` identifies the seed (orbital mode), not
-/// the sub-chain.
+/// Under the hood this uses the No-U-Turn Sampler (NUTS), an adaptive
+/// variant of Hamiltonian Monte Carlo that efficiently explores the
+/// space of possible orbits.  Each draw requires a full numerical
+/// propagation, so this is orders of magnitude more expensive than
+/// least squares -- but the result captures non-Gaussian and multi-modal
+/// uncertainty that least squares cannot represent.
 ///
-/// ``num_draws`` is the **total** number of posterior draws returned across
-/// all seeds.  Each seed receives roughly ``num_draws / len(seeds)`` draws,
-/// which are then split across its sub-chains.
+/// Seeds are raw ``State`` objects (typically from
+/// :func:`initial_orbit_determination`).  No prior orbit fit is
+/// required -- the sampler builds its own internal
+/// mass matrix from a linearization at each seed.
 ///
-/// All seeds must share the same reference epoch.
+/// Sampling is parallelized automatically across available CPU cores.
+/// When there are fewer seeds than cores, each seed spawns multiple
+/// independent sub-chains.  The ``chain_id`` in the returned
+/// :class:`~kete.fitting.OrbitSamples` identifies the seed (orbital
+/// mode), not the sub-chain.
+///
+/// ``num_draws`` is the **total** number of orbit samples returned
+/// across all seeds.  Each seed receives roughly
+/// ``num_draws / len(seeds)`` draws.
 ///
 /// Parameters
 /// ----------
@@ -738,27 +763,29 @@ impl PyOrbitSamples {
 ///     different epochs are automatically propagated to the first seed's epoch.
 ///     The input states are re-centered to SSB Equatorial internally.
 /// observations : list
-///     List of :class:`~kete.fitting.Observation` to evaluate the likelihood against.
+///     List of :class:`~kete.fitting.Observation` to evaluate against.
 /// include_asteroids : bool
 ///     If True, include asteroid masses in the force model. Default is False.
 /// num_draws : int
-///     Total posterior draws across all seeds (after tuning). Default is 1000.
+///     Total orbit samples across all seeds (after tuning). Default is 1000.
 /// num_tune : int
-///     Number of tuning (warmup) steps per sub-chain used to adapt the
-///     step size and mass matrix.  Default is 500.
+///     Number of warmup steps per sub-chain used to adapt internal
+///     sampling parameters.  These draws are discarded.  Default is 500.
 /// student_nu : float
 ///     Student-t degrees of freedom for the likelihood.  Use ``float('inf')``
-///     for Gaussian (default).  Lower values (e.g. 5) down-weight outliers.
+///     for Gaussian (default).  Lower values (e.g. 5) make the sampler
+///     more robust to outlier observations.
 /// non_grav : :class:`~kete.propagation.NonGravModel`, optional
 ///     Shared non-gravitational force model applied to all chains.
 /// maxdepth : int
-///     Maximum NUTS tree depth.  Depth N allows up to 2^N leapfrog steps
-///     per draw.  Default is 10 (1024 steps).
+///     Maximum tree depth for the sampler.  Higher values allow more
+///     thorough exploration at greater computational cost.
+///     Default is 10.
 ///
 /// Returns
 /// -------
 /// OrbitSamples
-///     Posterior samples pooled from all chains.
+///     Collection of plausible orbits sampled from the posterior.
 ///
 /// Raises
 /// ------
@@ -766,11 +793,11 @@ impl PyOrbitSamples {
 ///     If ``seeds`` is empty or two-body epoch propagation fails.
 #[pyfunction]
 #[pyo3(
-    name = "nuts_sample",
+    name = "fit_orbit_mcmc",
     signature = (seeds, observations, include_asteroids=false, num_draws=1000, num_tune=500, student_nu=f64::INFINITY, non_grav=None, maxdepth=10)
 )]
 #[allow(clippy::too_many_arguments)]
-pub fn nuts_sample_py(
+pub fn fit_orbit_mcmc_py(
     seeds: Vec<PyState>,
     observations: Vec<PyObservation>,
     include_asteroids: bool,
@@ -794,7 +821,7 @@ pub fn nuts_sample_py(
     let obs: Vec<Observation> = observations.into_iter().map(|o| o.0).collect();
     let ng: Option<NonGravModel> = non_grav.map(|m| m.0);
 
-    let result = nuts_sample(
+    let result = fit_orbit_mcmc(
         &raw_seeds,
         &obs,
         include_asteroids,

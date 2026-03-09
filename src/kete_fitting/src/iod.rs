@@ -1,7 +1,7 @@
 //! Initial Orbit Determination (IOD).
 //!
 //! Given optical observations, compute an approximate heliocentric state that
-//! can seed the batch least-squares differential corrector.
+//! can seed the batch least-squares orbit fitting or MCMC.
 //!
 //! [`initial_orbit_determination`] performs range-scanning IOD using Lambert's
 //! solver.  It works on any arc length from single-night tracklets (minutes)

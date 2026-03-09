@@ -1,9 +1,4 @@
-//! Batch least-squares differential correction with chained STM propagation.
-//!
-//! The solver accumulates normal equations at the reference epoch by chaining
-//! the state transition matrix forward through the sorted observation sequence.
-//! This avoids STM inversion and gives the same result as a sequential
-//! information filter at the same computational cost.
+//! Batch least-squares orbit fitting using differential correction.
 //!
 // BSD 3-Clause License
 //
@@ -73,8 +68,11 @@ pub struct OrbitFit {
     pub converged: bool,
 }
 
-/// Run arc-expanding batch least-squares differential correction with
-/// optional chi-squared outlier rejection.
+/// Fit an orbit to observations using iterative least squares.
+///
+/// Refines an initial orbital state guess to best match the observations,
+/// and estimates the uncertainty of the result via a covariance matrix.
+/// Can automatically identify and reject outlier observations.
 ///
 /// The input `initial_state` **must** be SSB-centered (`center_id == 0`).
 /// All internal propagation uses SSB coordinates.
@@ -90,34 +88,30 @@ pub struct OrbitFit {
 /// Outlier rejection is controlled by `max_reject_passes`.  When zero,
 /// no rejection is performed and the fit uses all observations.
 ///
-/// When `auto_sigma` is true the effective chi-squared threshold is scaled
-/// per rejection pass by a robust variance estimate (MAD-based) of the
-/// normalized residuals.  This makes the rejection criterion adapt to the
-/// actual scatter in the data rather than relying on the stated sigma
-/// values being correct.
+/// When `auto_sigma` is true the effective rejection threshold is scaled
+/// per pass by a robust estimate (MAD-based) of the actual residual
+/// scatter, so it adapts to the data rather than relying on stated
+/// uncertainties being correct.
 ///
 /// # Arguments
 /// * `initial_state` - Initial guess for the object state at the reference
-///   epoch. The epoch of this state is the reference epoch for all
-///   normal-equation accumulation.
+///   epoch.
 /// * `obs` - Observations (any order; they are sorted internally).
 /// * `include_asteroids` - When true, include asteroid masses in the force model.
 /// * `non_grav` - Optional non-gravitational model.
-/// * `max_iter` - Maximum number of differential-correction iterations
-///   per convergence pass.
+/// * `max_iter` - Maximum iterations per convergence pass.
 /// * `tol` - Convergence tolerance on the state correction norm (AU for
 ///   position, AU/day for velocity).
 /// * `chi2_threshold` - Per-observation chi-squared threshold for outlier
 ///   rejection.  Only used when `max_reject_passes > 0`.
-/// * `max_reject_passes` - Maximum number of batch rejection/re-solve
-///   cycles.  Set to 0 to disable rejection entirely.
-/// * `auto_sigma` - When true, rescale the chi-squared threshold each
-///   pass using a robust (MAD-based) estimate of the actual residual
-///   scatter.
+/// * `max_reject_passes` - Maximum outlier-rejection cycles.  Set to 0 to
+///   disable rejection entirely.
+/// * `auto_sigma` - When true, adaptively rescale the rejection threshold
+///   based on actual residual scatter.
 ///
 /// # Errors
 /// Fails if any internal propagation or solve fails.
-pub fn differential_correction(
+pub fn fit_orbit(
     initial_state: &State<Equatorial>,
     obs: &[Observation],
     include_asteroids: bool,
@@ -1037,7 +1031,7 @@ mod tests {
     }
 
     #[test]
-    fn test_differential_correction_two_body() {
+    fn test_fit_orbit_two_body() {
         // True orbit: circular at 1.5 AU.
         let r = 1.5;
         let v = (GMS / r).sqrt();
@@ -1052,7 +1046,7 @@ mod tests {
         // Perturbed initial state (5% error in position, 3% in velocity).
         let perturbed = make_state([r * 1.05, 0.0, 0.0], [0.0, v * 0.97, 0.0], 2460000.5);
 
-        let fit = differential_correction(
+        let fit = fit_orbit(
             &perturbed,
             &observations,
             false,
@@ -1087,7 +1081,7 @@ mod tests {
     }
 
     #[test]
-    fn test_differential_correction_elliptical() {
+    fn test_fit_orbit_elliptical() {
         // Moderately eccentric orbit: a = 2.0, r_peri = 1.4, e ~ 0.3.
         let a = 2.0;
         let r_peri = 1.4;
@@ -1106,7 +1100,7 @@ mod tests {
             2460000.5,
         );
 
-        let fit = differential_correction(
+        let fit = fit_orbit(
             &perturbed,
             &observations,
             false,
@@ -1144,7 +1138,7 @@ mod tests {
             *ra += 100.0 * sigma;
         }
 
-        let fit = differential_correction(
+        let fit = fit_orbit(
             // Start from true state to ensure convergence.
             &true_state,
             &observations,
@@ -1188,7 +1182,7 @@ mod tests {
         // Start from true state + non-grav model with a2=0 and fit.
         let init_ng = NonGravModel::new_jpl_comet_default(0.0, 0.0, 0.0);
 
-        let fit = differential_correction(
+        let fit = fit_orbit(
             &true_state,
             &observations,
             false,
@@ -1249,7 +1243,7 @@ mod tests {
         // Start from true state with beta=0.
         let init_ng = NonGravModel::new_dust(0.0);
 
-        let fit = differential_correction(
+        let fit = fit_orbit(
             &true_state,
             &observations,
             false,
@@ -1307,7 +1301,7 @@ mod tests {
         // Perturb initial state by 10% position and 5% velocity.
         let perturbed = make_state([r * 1.10, 0.0, 0.0], [0.0, v * 0.95, 0.0], 2460000.5);
 
-        let fit = differential_correction(
+        let fit = fit_orbit(
             &perturbed,
             &observations,
             false,
@@ -1354,7 +1348,7 @@ mod tests {
             *ra += 50.0 * sigma;
         }
 
-        let fit = differential_correction(
+        let fit = fit_orbit(
             &true_state,
             &observations,
             false,

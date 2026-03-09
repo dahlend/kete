@@ -1,6 +1,6 @@
 //! # Orbit Determination and Fitting
 //!
-//! Batch least-squares differential correction with chained STM propagation,
+//! Batch least-squares orbit fitting with chained STM propagation,
 //! initial orbit determination, and observation modeling for Kete.
 //!
 // BSD 3-Clause License
@@ -32,18 +32,16 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-mod diff_correction;
 mod iod;
 mod lambert;
 mod mcmc;
 mod obs;
+mod orbit_fitting;
 mod uncertain_state;
 
-pub use diff_correction::{
-    OrbitFit, StmObs, accumulate_normal_equations, differential_correction, stm_sweep,
-};
 pub use iod::initial_orbit_determination;
 pub use lambert::lambert;
-pub use mcmc::{OrbitSamples, nuts_sample};
+pub use mcmc::{OrbitSamples, fit_orbit_mcmc};
 pub use obs::Observation;
+pub use orbit_fitting::{OrbitFit, StmObs, accumulate_normal_equations, fit_orbit, stm_sweep};
 pub use uncertain_state::UncertainState;
