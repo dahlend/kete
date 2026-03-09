@@ -13,11 +13,12 @@ See the [arXiv paper](http://arxiv.org/abs/2509.04666).
 [![arXiv](https://img.shields.io/badge/arXiv-2509.04666-00ff00.svg)](http://arxiv.org/abs/2509.04666)
 
 The kete tools are intended to enable the simulation of all-sky surveys of minor
-planets. This includes multi-body physics orbital dynamics, thermal and optical modeling
-of the objects, as well as field of view and light delay corrections. These tools in
-conjunction with the Minor Planet Centers (MPC) database of known asteroids can be used
-to not only plan surveys but can also be used to predict what objects are visible for
-existing or past surveys.
+planets. This includes multi-body physics orbital dynamics, orbit determination and
+fitting (IOD, differential correction, and MCMC posterior sampling), thermal and optical
+modeling of the objects, as well as field of view and light delay corrections. These
+tools in conjunction with the Minor Planet Centers (MPC) database of known asteroids can
+be used to not only plan surveys but can also be used to predict what objects are visible
+for existing or past surveys.
 
 The primary goal for kete is to enable a set of tools that can operate on the entire
 MPC catalog at once, without having to do queries on specific objects. It has been

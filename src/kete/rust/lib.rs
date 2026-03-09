@@ -27,9 +27,9 @@ use kete_core::constants::{known_masses, register_custom_mass, register_mass, re
 use pyo3::prelude::*;
 use state::PyState;
 
-pub mod covariance;
 pub mod desigs;
 pub mod elements;
+pub mod fitting;
 pub mod flux;
 pub mod fovs;
 pub mod frame;
@@ -43,6 +43,7 @@ pub mod spice;
 pub mod state;
 pub mod state_transition;
 pub mod time;
+pub mod uncertain_state;
 pub mod utils;
 pub mod vector;
 
@@ -87,7 +88,7 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_class::<horizons::HorizonsProperties>()?;
 
-    m.add_class::<covariance::Covariance>()?;
+    m.add_class::<uncertain_state::PyUncertainState>()?;
 
     m.add_function(wrap_pyfunction!(known_masses, m)?)?;
     m.add_function(wrap_pyfunction!(register_mass, m)?)?;
@@ -176,6 +177,17 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(spice::predict_tle, m)?)?;
 
     m.add_function(wrap_pyfunction!(state_transition::compute_stm_py, m)?)?;
+
+    m.add_class::<fitting::PyObservation>()?;
+    m.add_class::<fitting::PyOrbitFit>()?;
+    m.add_class::<fitting::PyOrbitSamples>()?;
+    m.add_function(wrap_pyfunction!(fitting::fit_orbit_py, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        fitting::initial_orbit_determination_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(fitting::lambert_py, m)?)?;
+    m.add_function(wrap_pyfunction!(fitting::fit_orbit_mcmc_py, m)?)?;
 
     m.add_function(wrap_pyfunction!(kete_core::cache::cache_path, m)?)?;
 

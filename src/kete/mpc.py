@@ -6,13 +6,15 @@ from functools import lru_cache
 
 import numpy as np
 import pandas as pd
+import requests
 
-from . import constants, conversion, deprecation
+from . import constants, conversion, deprecation, spice
 from ._core import _find_obs_code, pack_designation, unpack_designation
 from .cache import download_json
 from .conversion import table_to_states
+from .fitting import Observation
 from .time import Time
-from .vector import Frames, Vector
+from .vector import Frames, State, Vector
 
 __all__ = [
     "unpack_designation",
@@ -20,6 +22,7 @@ __all__ = [
     "fetch_known_designations",
     "fetch_known_orbit_data",
     "fetch_known_comet_orbit_data",
+    "fetch_mpc_observations",
     "find_obs_code",
 ]
 
@@ -354,3 +357,163 @@ class MPCObservation:
     @property
     def sc2obj(self):
         return Vector.from_ra_dec(self.ra, self.dec).as_ecliptic
+
+
+def _parse_sigma(value, default: float) -> float:
+    """Return a finite positive sigma, or *default* if *value* is unusable."""
+    if value is None:
+        return default
+    try:
+        v = float(value)
+    except (ValueError, TypeError):
+        return default
+    if not np.isfinite(v) or v <= 0:
+        return default
+    return v
+
+
+def _build_observer(stn: str, jd: float, rec: dict):
+    """Return an SSB-centered equatorial observer State, or None."""
+    # Ground-station lookup.
+    try:
+        obs = spice.mpc_code_to_ecliptic(stn, jd, center=0).as_equatorial
+        if obs.is_finite:
+            return obs
+    except Exception:
+        pass
+
+    # Fallback: pos1/pos2/pos3 from ADES record (satellite/roving observers).
+    # The record includes 'sys' (coordinate system) and 'ctr' (center body
+    # NAIF ID).  We require ICRF_KM or ICRF_AU; other systems are not yet
+    # supported.
+    pos1, pos2, pos3 = rec.get("pos1"), rec.get("pos2"), rec.get("pos3")
+    if pos1 is None or pos2 is None or pos3 is None:
+        return None
+    try:
+        sys = rec.get("sys", "").upper()
+        ctr = int(float(rec.get("ctr", 399)))
+
+        pos_km = np.array([float(pos1), float(pos2), float(pos3)])
+        if sys == "ICRF_AU":
+            pos_au = pos_km  # already AU despite the variable name
+        elif sys == "ICRF_KM":
+            pos_au = pos_km / constants.AU_KM
+        elif sys == "WGS84":
+            # pos1=lon, pos2=lat, pos3=altitude (degrees, degrees, km).
+            lon, lat, alt = float(pos1), float(pos2), float(pos3)
+            return spice.earth_pos_to_ecliptic(
+                jd, lat, lon, alt, name=stn, center=10
+            ).as_equatorial
+        else:
+            logger.warning(
+                "Unsupported ADES coordinate system '%s' for stn %s", sys, stn
+            )
+            return None
+
+        center_state = spice.get_state(ctr, jd, center=10).as_equatorial
+        ssb_pos = center_state.pos + Vector(list(pos_au), Frames.Equatorial)
+        return State(
+            stn,
+            jd,
+            ssb_pos,
+            center_state.vel,
+            Frames.Equatorial,
+            center_id=center_state.center_id,
+        )
+    except Exception:
+        return None
+
+
+def fetch_mpc_observations(desig: str):
+    """
+    Fetch observations from the MPC API and convert to fitting Observations.
+
+    Queries ``https://data.minorplanetcenter.net/api/get-obs`` for the
+    given object designation and returns optical observations ready for
+    orbit fitting.  Only optical records with valid RA/Dec are included;
+    radar and other types are silently skipped.
+
+    Per-observation uncertainties are taken from the ``precra`` /
+    ``precdec`` fields (coordinate precision in arcseconds) when
+    available.  Otherwise, a default of 0.1 arcseconds is used.
+
+    Parameters
+    ----------
+    desig :
+        Object designation recognised by the MPC (e.g. ``"Apophis"``,
+        ``"101955"``, ``"1999 RQ36"``).
+
+    Returns
+    -------
+    list[Observation]
+        One ``Observation.optical`` per valid optical record.
+
+    Raises
+    ------
+    RuntimeError
+        If the MPC API request fails.
+
+    Examples
+    --------
+    .. testcode::
+        :skipif: True
+
+        import kete
+
+        observations = kete.mpc.fetch_mpc_observations("Apophis")
+    """
+
+    response = requests.get(
+        "https://data.minorplanetcenter.net/api/get-obs",
+        json={"desigs": [desig], "output_format": ["ADES_DF"]},
+        timeout=120,
+    )
+    response.raise_for_status()
+    records = response.json()
+    if not records:
+        return []
+    # The API returns a list with one element per designation; take the
+    # first (and only) entry which is itself a list of observation dicts.
+    records = records[0]
+
+    observations = []
+    for rec in records["ADES_DF"]:
+        if rec.get("Obstype") != "optical":
+            continue
+        ra_str = rec.get("ra")
+        dec_str = rec.get("dec")
+        if ra_str is None or dec_str is None:
+            continue
+        ra_deg = float(ra_str)
+        dec_deg = float(dec_str)
+
+        obstime = rec.get("obstime")
+        if obstime is None:
+            continue
+        jd = Time.from_iso(obstime).jd
+
+        # Per-observation sigma: prefer precra/precdec if present.
+        # Guard against NaN or non-positive values which would poison
+        # downstream weight computations.
+        s_ra = _parse_sigma(rec.get("precra"), 0.1)
+        s_dec = _parse_sigma(rec.get("precdec"), 0.1)
+
+        stn = rec.get("stn", None)
+        if stn is None:
+            continue
+
+        observer = _build_observer(stn, jd, rec)
+        if observer is None:
+            continue
+
+        observations.append(
+            Observation.optical(
+                observer=observer,
+                ra=ra_deg,
+                dec=dec_deg,
+                sigma_ra=s_ra,
+                sigma_dec=s_dec,
+            )
+        )
+
+    return observations

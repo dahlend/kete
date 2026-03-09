@@ -38,16 +38,18 @@ def fetch_fovs(year: int):
 
     This will download and cache all FOV information for the given year from IRSA.
 
-    This can take about 20 minutes per year of survey, each year is 2-3 GB of data.
+    This can take about 20 minutes per year of survey, each year is 2-3 GB of text data.
+    Final saved size is about 600 MB per year of survey, so the cache can grow large if
+    you fetch many years.
 
     Parameters
     ----------
     year :
-        Which year of ZTF, 2018 through 2024.
+        Which year of ZTF, starting from 2018.
     """
     year = int(year)
-    if year not in range(2018, 2025):
-        raise ValueError("Year must only be in the range 2018-2024")
+    if year < 2018:
+        raise ValueError("Year must be 2018 or later")
     cache_dir = cache_path()
     dir_path = os.path.join(cache_dir, "fovs")
     filename = os.path.join(dir_path, f"ztf_fields_{year}.parquet")

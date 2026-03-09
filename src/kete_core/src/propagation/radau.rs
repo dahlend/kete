@@ -127,6 +127,12 @@ where
     state_der_scratch: OVector<f64, D>,
     b_scratch: OVector<f64, D>,
     eval_scratch: OVector<f64, D>,
+
+    /// Number of leading dimensions used for convergence and step-size control.
+    /// Defaults to the full state dimension `D`.  For variational / STM
+    /// propagation set this to 3 (physical accelerations only) so that the
+    /// large STM elements do not artificially shrink step-size.
+    control_dim: usize,
 }
 
 impl<'a, MType, D: Dim> RadauIntegrator<'a, MType, D>
@@ -147,6 +153,7 @@ where
                 "Input vectors must be the same length".into(),
             ))?;
         }
+        let full_dim = state_init.len();
         let mut res = Self {
             func,
             metadata,
@@ -161,6 +168,7 @@ where
             state_scratch: Matrix::zeros_generic(dim, U1),
             state_der_scratch: Matrix::zeros_generic(dim, U1),
             eval_scratch: Matrix::zeros_generic(dim, U1),
+            control_dim: full_dim,
         };
 
         res.cur_state_der_der = (res.func)(
@@ -185,6 +193,7 @@ where
         time_init: Time<TDB>,
         final_time: Time<TDB>,
         metadata: MType,
+        control_dim: Option<usize>,
     ) -> RadauResult<MType, D> {
         let mut integrator = Self::new(
             func,
@@ -203,6 +212,16 @@ where
         }
         let mut next_step_size: f64 =
             0.1_f64.copysign((integrator.final_time - integrator.cur_time).elapsed);
+
+        // Allow callers to control convergence using a subset of dimensions.
+        integrator.control_dim = control_dim.unwrap_or(integrator.control_dim);
+        if integrator.control_dim > integrator.cur_state.len() {
+            return Err(Error::ValueError(format!(
+                "control_dim ({}) exceeds state dimension ({})",
+                integrator.control_dim,
+                integrator.cur_state.len(),
+            )))?;
+        }
 
         let mut step_failures = 0;
         loop {
@@ -340,9 +359,17 @@ where
             let b_diff = (self.cur_b.column(6) - &self.b_scratch).abs();
             let func_eval_max = self.eval_scratch.abs().add_scalar(1e-6);
 
+            // Convergence and step-size control use only the first
+            // `control_dim` components.  For variational propagation this
+            // restricts the norms to the physical accelerations, preventing
+            // large STM elements from artificially shrinking the step.
+            let cd = self.control_dim;
+            let b_diff_ctrl = b_diff.rows(0, cd);
+            let func_ctrl = func_eval_max.rows(0, cd);
+
             // This is using the convergence criterion as defined in
             // https://arxiv.org/pdf/1409.4779.pdf  equation (8)
-            if b_diff.component_div(&func_eval_max).max() < 1e-14 {
+            if b_diff_ctrl.component_div(&func_ctrl).max() < 1e-14 {
                 for idx in 0..self.cur_state.len() {
                     unsafe {
                         self.cur_state[idx] += self.cur_state_der.get_unchecked(idx) * step_size
@@ -362,8 +389,10 @@ where
                     &mut self.metadata,
                     true,
                 )?;
+                let f_max_ctrl = func_ctrl.max();
+                let b6_ctrl = self.cur_b.column(6).rows(0, cd).abs().max();
                 return Ok(step_size
-                    * (EPSILON * func_eval_max.max() / self.cur_b.column(6).abs().max())
+                    * (EPSILON * f_max_ctrl / b6_ctrl)
                         .powf(1.0 / 7.0)
                         .clamp(MIN_RATIO, MIN_RATIO.recip()));
             }
@@ -388,6 +417,7 @@ mod tests {
             0.0.into(),
             1000.0.into(),
             CentralAccelMeta::default(),
+            None,
         )
         .unwrap();
         assert!((pos[0] + 0.916350120888658).abs() < 1e-8);

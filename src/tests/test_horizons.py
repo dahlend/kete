@@ -22,7 +22,6 @@ def ceres_properties():
         g_phase=0.12,
         epoch=2462583.0,
         arc_len=None,
-        covariance=None,
     )
 
 

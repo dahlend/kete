@@ -51,7 +51,7 @@ pub const GMS_SQRT: f64 = 0.01720209894996;
 
 /// Sun J2 Parameter
 ///
-/// This paper below a source, however there are several papers which all put
+/// This paper below is a source, however there are several papers which all put
 /// the Sun's J2 at 2.2e-7.
 ///
 /// "Prospects of Dynamical Determination of General Relativity Parameter β and Solar
@@ -71,7 +71,7 @@ pub const EARTH_J4: f64 = -0.00000161098761;
 
 /// Jupiter J2 Parameter
 ///
-/// "Measurement of Jupiter’s asymmetric gravity field"
+/// "Measurement of Jupiter's asymmetric gravity field"
 /// <https://www.nature.com/articles/nature25776>
 /// Nature 555, 220-220, 2018 March 8
 pub const JUPITER_J2: f64 = 0.014696572;

@@ -56,8 +56,11 @@ pub fn find_obs_code_py(name: &str) -> PyResult<(f64, f64, f64, String, String)>
             "No observatory codes found for the given name.",
         ));
     } else if obs_codes.len() > 1 {
-        // if there is an exact match, return that one
-        if let Some(exact_match) = obs_codes.iter().find(|obs| obs.name == name) {
+        // if there is an exact match on name or code, return that one
+        if let Some(exact_match) = obs_codes
+            .iter()
+            .find(|obs| obs.name == name || obs.code.to_string() == name)
+        {
             return Ok((
                 (exact_match.lat * 1e8).round() / 1e8 + 0.0,
                 (exact_match.lon * 1e8).round() / 1e8 + 0.0,

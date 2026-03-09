@@ -6,6 +6,8 @@ surveys of minor planets. Included here are:
 
    - Orbit propagation code capable of accurately calculating the orbits for many
      thousands of minor planets over decades on a laptop.
+   - Orbit determination and fitting, including initial orbit determination (IOD),
+     batch least-squares differential correction, and MCMC posterior sampling.
    - Thermal modeling, including NEATM (Near Earth Asteroid Thermal Model) and the FRM
      (Fast Rotator Model) for asteroids. Including support for non-spherical asteroids.
    - Optical modeling.

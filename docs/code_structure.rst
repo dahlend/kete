@@ -68,16 +68,33 @@ benefit from orbit computation can be written without having to have Python inst
 It is important to note that if performance is a concern, then removing the Python is an
 important step to get the maximum possible performance.
 
+Kete Fitting
+~~~~~~~~~~~~
+The `kete_fitting` crate contains orbit determination and fitting algorithms, all
+written in Rust without reference to Python. This includes:
+
+- **Initial Orbit Determination (IOD)** -- Statistical ranging over observation
+  pairs followed by two-body scoring to produce candidate orbits from short arcs.
+- **Orbit Fitting** -- Batch least-squares with Levenberg--Marquardt
+  damping, progressive arc expansion, and optional chi-squared outlier rejection.
+- **MCMC Orbit Sampling** -- No-U-Turn Sampler for posterior orbit characterization
+  on short arcs where the Gaussian approximation breaks down.
+- **Lambert Solver** -- Universal-variable Stumpff-function solver for single-
+  revolution Keplerian transfers.
+- **Observation Types** -- Optical (RA/Dec), radar range, and radar range-rate.
+
+Like `kete_core`, this crate can be used from pure Rust without Python.
+
 Core Python Wrapper
 ~~~~~~~~~~~~~~~~~~~
-The Rust library described above then has Python wrappers written over it, allowing
-users to call these compiled tools inside of Python. In order to do this, some
-boiler-plate code is required to glue these independent parts together. This is where
-the `rust` folder inside of kete comes from. Inside of this folder there are rust
-files which are mostly a one-to-one mapping to their respective counterparts inside of
-the `kete_core`. Ideally there should be no 'business' logic contained within these
-wrappers, and they should largely exist to provide convenient mappings from the Python
-concepts to the Rust internal organization.
+The Rust libraries described above then have Python wrappers written over them,
+allowing users to call these compiled tools inside of Python. In order to do this,
+some boiler-plate code is required to glue these independent parts together. This is
+where the `rust` folder inside of kete comes from. Inside of this folder there are
+rust files which are mostly a one-to-one mapping to their respective counterparts
+inside of `kete_core` and `kete_fitting`. Ideally there should be no 'business' logic
+contained within these wrappers, and they should largely exist to provide convenient
+mappings from the Python concepts to the Rust internal organization.
 
 Kete Python
 ~~~~~~~~~~~

@@ -36,6 +36,7 @@ use rayon::prelude::*;
 use crate::constants::C_AU_PER_DAY_INV;
 use crate::frames::{Equatorial, Vector};
 use crate::prelude::*;
+use crate::propagation::light_time_correct;
 
 /// Field of View like objects.
 /// These may contain multiple unique sky patches, so as a result the expected
@@ -113,15 +114,13 @@ pub trait FovLike: Sync + Sized {
         state: &State<Equatorial>,
     ) -> KeteResult<(usize, Contains, State<Equatorial>)> {
         let obs = self.observer();
-        let obs_pos = obs.pos;
 
         // bring state up to observer time.
         let final_state = propagate_two_body(state, obs.epoch)?;
 
         // correct for light delay
-        let dt = -(final_state.pos - obs_pos).norm() * C_AU_PER_DAY_INV;
-        let final_state = propagate_two_body(&final_state, obs.epoch + dt)?;
-        let rel_pos = final_state.pos - obs_pos;
+        let final_state = light_time_correct(&final_state, &obs.pos)?;
+        let rel_pos = final_state.pos - obs.pos;
 
         let (idx, contains) = self.contains(&rel_pos);
         Ok((idx, contains, final_state))
@@ -139,14 +138,12 @@ pub trait FovLike: Sync + Sized {
         include_asteroids: bool,
     ) -> KeteResult<(usize, Contains, State<Equatorial>)> {
         let obs = self.observer();
-        let obs_pos = obs.pos;
 
         let exact_state = propagate_n_body_spk(state.clone(), obs.epoch, include_asteroids, None)?;
 
         // correct for light delay
-        let dt = -(exact_state.pos - obs_pos).norm() * C_AU_PER_DAY_INV;
-        let final_state = propagate_two_body(&exact_state, obs.epoch + dt)?;
-        let rel_pos = final_state.pos - obs_pos;
+        let final_state = light_time_correct(&exact_state, &obs.pos)?;
+        let rel_pos = final_state.pos - obs.pos;
 
         let (idx, contains) = self.contains(&rel_pos);
 

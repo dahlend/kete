@@ -1,6 +1,6 @@
 import pytest
 
-from kete import mpc
+from kete import fitting, mpc
 
 
 @pytest.mark.parametrize(
@@ -93,3 +93,52 @@ def test_MPCObservation():
     assert obs.note2 == "S"
     assert obs.jd == 2455452.157066019
     _ = obs.sc2obj
+
+
+def test_mpc_obs_to_observations_ground():
+    """Ground-based MPC observations convert correctly."""
+
+    # Palomar Mountain (675), note2 = "C" (CCD).
+    # RA = 17h 32m 56.69s, Dec = -65 49 50.3
+    lines = [
+        "01566         C2010 09 12.65630 "
+        "17 32 56.69 -65 49 50.3                L~0Myl675",
+    ]
+    mpc_obs = mpc.MPCObservation.from_lines(lines)
+    assert len(mpc_obs) == 1
+
+    obs_list = fitting.mpc_obs_to_observations(mpc_obs)
+    assert len(obs_list) == 1
+    obs = obs_list[0]
+
+    # RA/Dec should match the input in degrees.
+    assert abs(obs.ra - mpc_obs[0].ra) < 1e-10
+    assert abs(obs.dec - mpc_obs[0].dec) < 1e-10
+
+    # Observer should be Sun-centered (center_id = 10) and Equatorial.
+    assert obs.observer.center_id == 10
+    # Sigma should be in arcseconds (default 0.1 arcsec).
+    assert abs(obs.sigma_dec - 0.1) < 1e-10
+    assert obs.sigma_ra > 0.1  # cos(dec) factor makes RA sigma larger
+
+
+def test_mpc_obs_to_observations_spacecraft():
+    """Spacecraft MPC observations (note2 == S) convert correctly."""
+
+    lines = [
+        "01566         S2010 09 12.65630 "
+        "17 32 56.69 -65 49 50.3                L~0MylC51",
+        "01566         s2010 09 12.65630 "
+        "1 +  238.2318 - 2934.1497 - 6253.4539   ~0MylC51",
+    ]
+    mpc_obs = mpc.MPCObservation.from_lines(lines)
+    assert len(mpc_obs) == 1
+    assert mpc_obs[0].note2 == "S"
+
+    obs_list = fitting.mpc_obs_to_observations(mpc_obs)
+    assert len(obs_list) == 1
+    obs = obs_list[0]
+
+    assert abs(obs.ra - mpc_obs[0].ra) < 1e-10
+    assert abs(obs.dec - mpc_obs[0].dec) < 1e-10
+    assert obs.observer.center_id == 10

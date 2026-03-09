@@ -44,6 +44,7 @@ use nalgebra::{DVector, SMatrix, SVector, Vector3};
 use rayon::prelude::*;
 
 mod acceleration;
+mod jacobian;
 mod kepler;
 mod nongrav;
 mod picard;
@@ -53,13 +54,14 @@ mod state_transition;
 mod util;
 
 // expose the public methods in spk to the outside world.
+pub(crate) use acceleration::spk_accel_cached;
 pub use acceleration::{
     AccelSPKMeta, AccelVecMeta, CentralAccelMeta, accel_grad, central_accel, central_accel_grad,
     spk_accel, spk_accel_first_order, vec_accel,
 };
 pub use kepler::{
     PARABOLIC_ECC_LIMIT, analytic_2_body, compute_eccentric_anomaly, compute_true_anomaly,
-    eccentric_anomaly_from_true, moid, propagate_two_body,
+    eccentric_anomaly_from_true, light_time_correct, moid, propagate_two_body,
 };
 pub use nongrav::NonGravModel;
 pub use picard::{PC15, PC25, PicardIntegrator, PicardStep, dumb_picard_init};
@@ -104,6 +106,7 @@ pub fn propagate_n_body_spk(
             state.epoch,
             jd_final,
             metadata,
+            None,
         )?
     };
 
@@ -364,6 +367,7 @@ pub fn propagate_n_body_vec(
             jd_init,
             jd_final,
             meta,
+            None,
         )?
     };
     let sun_pos = pos.fixed_rows::<3>(0);

@@ -1,5 +1,8 @@
-//! # Fitting
-//! Fitting tools, including root finding.
+//! # Orbit Determination and Fitting
+//!
+//! Batch least-squares orbit fitting with chained STM propagation,
+//! initial orbit determination, and observation modeling for Kete.
+//!
 // BSD 3-Clause License
 //
 // Copyright (c) 2026, Dar Dahlen
@@ -29,29 +32,16 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-mod halley;
-mod nelder_mead;
-mod newton;
+mod iod;
+mod lambert;
+mod mcmc;
+mod obs;
+mod orbit_fitting;
+mod uncertain_state;
 
-pub use self::halley::halley;
-pub use self::nelder_mead::{NelderMeadResult, nelder_mead};
-pub use self::newton::newton_raphson;
-
-/// Error type for fitting operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum ConvergenceError {
-    /// Maximum number of iterations reached without convergence.
-    #[error("Maximum number of iterations reached without convergence")]
-    Iterations,
-
-    /// Non-finite value encountered during evaluation.
-    #[error("Non-finite value encountered during evaluation")]
-    NonFinite,
-
-    /// Zero derivative encountered during evaluation.
-    #[error("Zero derivative encountered during evaluation")]
-    ZeroDerivative,
-}
-
-/// Result type for fitting operations.
-pub type FittingResult<T> = Result<T, ConvergenceError>;
+pub use iod::initial_orbit_determination;
+pub use lambert::lambert;
+pub use mcmc::{OrbitSamples, fit_orbit_mcmc};
+pub use obs::Observation;
+pub use orbit_fitting::{OrbitFit, StmObs, accumulate_normal_equations, fit_orbit, stm_sweep};
+pub use uncertain_state::UncertainState;

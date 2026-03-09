@@ -203,7 +203,7 @@ def kernel_header_comments(filename: str):
 
 
 def mpc_code_to_ecliptic(
-    obs_code: str, jd: float | Time, center: str = "Sun", full_name=False
+    obs_code: str, jd: float | Time, center: str | int = "Sun", full_name=False
 ) -> State:
     """
     Load an MPC Observatory code as an ecliptic state.
@@ -246,7 +246,7 @@ def earth_pos_to_ecliptic(
     geodetic_lon: float,
     height_above_surface: float,
     name: str | None = None,
-    center: str = "Sun",
+    center: str | int = "Sun",
 ) -> State:
     """
     Given a position in the frame of the Earth at a specific time, convert that to
