@@ -771,10 +771,6 @@ impl PyOrbitSamples {
 /// num_tune : int
 ///     Number of warmup steps per sub-chain used to adapt internal
 ///     sampling parameters.  These draws are discarded.  Default is 500.
-/// student_nu : float
-///     Student-t degrees of freedom for the likelihood.  Use ``float('inf')``
-///     for Gaussian (default).  Lower values (e.g. 5) make the sampler
-///     more robust to outlier observations.
 /// non_grav : :class:`~kete.propagation.NonGravModel`, optional
 ///     Shared non-gravitational force model applied to all chains.
 /// maxdepth : int
@@ -794,7 +790,7 @@ impl PyOrbitSamples {
 #[pyfunction]
 #[pyo3(
     name = "fit_orbit_mcmc",
-    signature = (seeds, observations, include_asteroids=false, num_draws=1000, num_tune=500, student_nu=f64::INFINITY, non_grav=None, maxdepth=10)
+    signature = (seeds, observations, include_asteroids=false, num_draws=1000, num_tune=500, non_grav=None, maxdepth=10)
 )]
 #[allow(clippy::too_many_arguments)]
 pub fn fit_orbit_mcmc_py(
@@ -803,7 +799,6 @@ pub fn fit_orbit_mcmc_py(
     include_asteroids: bool,
     num_draws: usize,
     num_tune: usize,
-    student_nu: f64,
     non_grav: Option<PyNonGravModel>,
     maxdepth: u64,
 ) -> PyResult<PyOrbitSamples> {
@@ -827,7 +822,6 @@ pub fn fit_orbit_mcmc_py(
         include_asteroids,
         num_draws,
         num_tune,
-        student_nu,
         ng.as_ref(),
         maxdepth,
     )?;

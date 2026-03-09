@@ -203,10 +203,11 @@ Key parameters:
   More samples give smoother histograms but take longer.
 - **num_tune**: Warmup steps per chain for internal adaptation.
   500 is usually sufficient.  These are discarded.
-- **student_nu**: Degrees of freedom for the Student-t likelihood.
-  ``nu=5`` down-weights outlier observations, making the sampler more
-  robust when the initial orbit is poor or the stated uncertainties are
-  imperfect.  Use ``float('inf')`` for a standard Gaussian likelihood.
+
+The likelihood uses a Student-t distribution (nu=5) internally, which
+automatically down-weights outlier observations.  This makes the sampler
+robust when the initial orbit is poor or the stated uncertainties are
+imperfect.
 
 .. code-block:: python
 
@@ -215,7 +216,6 @@ Key parameters:
         observations=observations,
         num_draws=2000,
         num_tune=500,
-        student_nu=5,
     )
 
     n_div = sum(samples.divergent)

@@ -50,6 +50,22 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
+/// Student-t degrees of freedom for the MCMC likelihood.
+///
+/// `nu = 5` is heavy-tailed enough that 3–5 sigma outlier observations are
+/// automatically down-weighted (their contribution to the log-likelihood
+/// plateaus instead of growing quadratically), yet light-tailed enough that
+/// NUTS still gets a strong gradient signal for efficient adaptation.
+///
+/// * `nu = 3–4`: maximum outlier robustness, but the likelihood surface is
+///   very flat and NUTS mixes slowly with more divergences.
+/// * `nu = 5`: standard "robust default" in Bayesian regression (the
+///   recommendation from the Stan development team and `brms`).
+/// * `nu >= 10`: barely distinguishable from Gaussian — single outliers
+///   can still dominate the posterior.
+/// * `nu = infinity`: pure Gaussian likelihood.
+const STUDENT_NU: f64 = 5.0;
+
 /// Posterior orbit samples from NUTS MCMC.
 #[derive(Debug, Clone)]
 pub struct OrbitSamples {
@@ -204,8 +220,6 @@ struct OrbitalPosterior {
     include_asteroids: bool,
     /// Non-gravitational model (if any).
     non_grav: Option<NonGravModel>,
-    /// Student-t degrees of freedom (`f64::INFINITY` = Gaussian).
-    student_nu: f64,
     /// Parameter dimension: 6 + Np.
     dim: usize,
 }
@@ -244,7 +258,7 @@ impl OrbitalPosterior {
         let d = self.dim;
         let mut grad_x = DVector::<f64>::zeros(d);
         let mut logp = 0.0;
-        let nu = self.student_nu;
+        let nu = STUDENT_NU;
         let gaussian = nu.is_infinite();
 
         for entry in sweep {
@@ -432,6 +446,15 @@ fn diagonal_heuristic_cholesky(seed: &State<Equatorial>, np: usize) -> DMatrix<f
 /// all seeds.  Each seed receives `num_draws / n_seeds` samples (remainder
 /// goes to the first seeds).
 ///
+/// The likelihood uses a Student-t distribution with `nu = 5` degrees of
+/// freedom (hardcoded as [`STUDENT_NU`]).  This is heavy-tailed enough
+/// that 3-5 sigma outliers are automatically down-weighted, yet provides
+/// sufficient gradient signal for efficient NUTS adaptation.  A Gaussian
+/// likelihood (`nu = infinity`) lets a single bad observation drag the
+/// entire posterior off-track, while very low `nu` (3-4) flattens the
+/// likelihood surface and causes slow mixing.  `nu = 5` is the standard
+/// robust default in Bayesian regression.
+///
 /// # Arguments
 /// * `seeds` -- Candidate orbital states (e.g. from IOD), one per mode.
 ///   Seeds at different epochs are automatically propagated to the first
@@ -441,8 +464,6 @@ fn diagonal_heuristic_cholesky(seed: &State<Equatorial>, np: usize) -> DMatrix<f
 /// * `num_draws` -- Total orbit samples across all seeds.
 /// * `num_tune` -- Warmup steps per sub-chain (default 500).  These are
 ///   discarded after adaptation.
-/// * `student_nu` -- Student-t degrees of freedom (`f64::INFINITY` for
-///   Gaussian).  Lower values down-weight outlier observations.
 /// * `non_grav` -- Optional shared non-gravitational model.
 /// * `maxdepth` -- Maximum sampler tree depth (default 10).  Higher values
 ///   allow more thorough exploration at greater cost.
@@ -455,7 +476,6 @@ pub fn fit_orbit_mcmc(
     include_asteroids: bool,
     num_draws: usize,
     num_tune: usize,
-    student_nu: f64,
     non_grav: Option<&NonGravModel>,
     maxdepth: u64,
 ) -> KeteResult<OrbitSamples> {
@@ -530,7 +550,6 @@ pub fn fit_orbit_mcmc(
                 non_grav,
                 draws,
                 num_tune,
-                student_nu,
                 maxdepth,
                 rng_seed,
             );
@@ -569,7 +588,6 @@ fn run_single_chain(
     non_grav: Option<&NonGravModel>,
     num_draws: usize,
     num_tune: usize,
-    student_nu: f64,
     maxdepth: u64,
     chain_idx: u64,
 ) -> KeteResult<(Vec<Vec<f64>>, Vec<bool>)> {
@@ -598,7 +616,6 @@ fn run_single_chain(
         included: vec![true; sorted_obs.len()],
         include_asteroids,
         non_grav: non_grav.cloned(),
-        student_nu,
         dim: d,
     };
 
