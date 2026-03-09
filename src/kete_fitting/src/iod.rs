@@ -561,10 +561,8 @@ fn dedup_states(states: &mut Vec<State<Equatorial>>) {
 ///
 /// Observations that fail two-body propagation or light-time correction are
 /// silently skipped rather than aborting the entire computation.  Returns
-/// `None` only when fewer than [`MIN_OBS`] observations could be scored.
+/// `None` only when fewer than 2 observations could be scored.
 fn observation_residual(state: &State<Equatorial>, obs: &[Observation]) -> Option<f64> {
-    const MIN_OBS: usize = 2;
-
     let mut residuals: Vec<f64> = Vec::with_capacity(obs.len());
 
     for ob in obs {
@@ -588,7 +586,7 @@ fn observation_residual(state: &State<Equatorial>, obs: &[Observation]) -> Optio
         residuals.push(cos_angle.acos().powi(2));
     }
 
-    if residuals.len() < MIN_OBS {
+    if residuals.len() < 2 {
         return None;
     }
 
