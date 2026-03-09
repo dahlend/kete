@@ -446,15 +446,6 @@ fn diagonal_heuristic_cholesky(seed: &State<Equatorial>, np: usize) -> DMatrix<f
 /// all seeds.  Each seed receives `num_draws / n_seeds` samples (remainder
 /// goes to the first seeds).
 ///
-/// The likelihood uses a Student-t distribution with `nu = 5` degrees of
-/// freedom (hardcoded as [`STUDENT_NU`]).  This is heavy-tailed enough
-/// that 3-5 sigma outliers are automatically down-weighted, yet provides
-/// sufficient gradient signal for efficient NUTS adaptation.  A Gaussian
-/// likelihood (`nu = infinity`) lets a single bad observation drag the
-/// entire posterior off-track, while very low `nu` (3-4) flattens the
-/// likelihood surface and causes slow mixing.  `nu = 5` is the standard
-/// robust default in Bayesian regression.
-///
 /// # Arguments
 /// * `seeds` -- Candidate orbital states (e.g. from IOD), one per mode.
 ///   Seeds at different epochs are automatically propagated to the first
