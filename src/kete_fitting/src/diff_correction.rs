@@ -49,14 +49,19 @@ pub struct OrbitFit {
     /// Core uncertain orbit (state + covariance + `non_grav` template).
     pub uncertain_state: UncertainState,
 
-    /// Post-fit residuals for included observations (time-sorted).
+    /// Post-fit residuals for every observation (time-sorted).
     /// Each entry has as many elements as the measurement dimension
-    /// of that observation.
+    /// of that observation.  Excluded observations have `NaN`
+    /// residuals.
     pub residuals: Vec<DVector<f64>>,
 
-    /// Observations that were included in the final fit (time-sorted).
-    /// Rejected outliers are not stored.
+    /// All input observations (time-sorted).
     pub observations: Vec<Observation>,
+
+    /// Per-observation inclusion mask (time-sorted, same length as
+    /// `observations`).  `true` means the observation was used in
+    /// the final fit; `false` means it was rejected as an outlier.
+    pub included: Vec<bool>,
 
     /// Reduced weighted RMS of residuals (included observations only).
     /// Divided by degrees of freedom (`n_measurements` - `n_params`).
@@ -66,49 +71,6 @@ pub struct OrbitFit {
     /// dropped below `tol`). When `false` the fit is the best found
     /// within the iteration limit but may not be fully converged.
     pub converged: bool,
-}
-
-/// Internal result from the convergence loop.
-///
-/// This mirrors the old `OrbitFit` layout so that `solve_with_rejection`
-/// can mutate the `included` mask between re-convergence passes without
-/// exposing it in the public API.
-struct ConvergenceResult {
-    state: State<Equatorial>,
-    covariance: DMatrix<f64>,
-    residuals: Vec<DVector<f64>>,
-    included: Vec<bool>,
-    rms: f64,
-    non_grav: Option<NonGravModel>,
-    converged: bool,
-}
-
-impl ConvergenceResult {
-    /// Convert to the public `OrbitFit`, filtering observations and
-    /// residuals to included-only.
-    fn into_orbit_fit(self, sorted_obs: &[Observation]) -> KeteResult<OrbitFit> {
-        let uncertain_state = UncertainState::new(self.state, self.covariance, self.non_grav)?;
-        let observations: Vec<Observation> = sorted_obs
-            .iter()
-            .zip(self.included.iter())
-            .filter(|&(_, &inc)| inc)
-            .map(|(obs, _)| obs.clone())
-            .collect();
-        let residuals: Vec<DVector<f64>> = self
-            .residuals
-            .iter()
-            .zip(self.included.iter())
-            .filter(|&(_, &inc)| inc)
-            .map(|(r, _)| r.clone())
-            .collect();
-        Ok(OrbitFit {
-            uncertain_state,
-            residuals,
-            observations,
-            rms: self.rms,
-            converged: self.converged,
-        })
-    }
 }
 
 /// Run arc-expanding batch least-squares differential correction with
@@ -225,15 +187,15 @@ pub fn differential_correction(
             max_reject_passes,
             auto_sigma,
         ) {
-            state = result.state;
-            ng = result.non_grav;
+            state = result.uncertain_state.state.clone();
+            ng.clone_from(&result.uncertain_state.non_grav);
         }
         // On error: keep previous state, try the next wider window.
     }
 
     // Final full-arc pass: re-include all observations and reject anew.
     let included = vec![true; sorted.len()];
-    let result = solve_with_rejection(
+    solve_with_rejection(
         &state,
         &sorted,
         &included,
@@ -244,8 +206,7 @@ pub fn differential_correction(
         chi2_threshold,
         max_reject_passes,
         auto_sigma,
-    )?;
-    result.into_orbit_fit(&sorted)
+    )
 }
 
 /// Build a boolean inclusion mask for observations within +/-`dt_days` of
@@ -276,7 +237,7 @@ fn solve_with_rejection(
     chi2_threshold: f64,
     max_reject_passes: usize,
     auto_sigma: bool,
-) -> KeteResult<ConvergenceResult> {
+) -> KeteResult<OrbitFit> {
     let mut fit = iterate_to_convergence(
         initial_state,
         sorted_obs,
@@ -288,7 +249,11 @@ fn solve_with_rejection(
     )?;
 
     // Batch rejection loop: reject all outliers per pass, then re-converge.
-    let np = fit.non_grav.as_ref().map_or(0, NonGravModel::n_free_params);
+    let np = fit
+        .uncertain_state
+        .non_grav
+        .as_ref()
+        .map_or(0, NonGravModel::n_free_params);
     let min_included = (6 + np).max(4);
 
     for _ in 0..max_reject_passes {
@@ -308,7 +273,7 @@ fn solve_with_rejection(
                 if !fit.included[i] {
                     continue;
                 }
-                let w = sorted_obs[i].weights();
+                let w = fit.observations[i].weights();
                 for (r, wi) in res.iter().zip(w.iter()) {
                     abs_norm.push((r * r * wi).sqrt().abs());
                 }
@@ -339,7 +304,7 @@ fn solve_with_rejection(
             .enumerate()
             .filter(|&(i, _)| fit.included[i])
             .map(|(i, res)| {
-                let w = sorted_obs[i].weights();
+                let w = fit.observations[i].weights();
                 let chi2: f64 = res.iter().zip(w.iter()).map(|(r, wi)| r * r * wi).sum();
                 (i, chi2)
             })
@@ -358,11 +323,11 @@ fn solve_with_rejection(
         }
 
         fit = iterate_to_convergence(
-            &fit.state,
+            &fit.uncertain_state.state,
             sorted_obs,
             &fit.included,
             include_asteroids,
-            fit.non_grav.clone(),
+            fit.uncertain_state.non_grav.clone(),
             max_iter,
             tol,
         )?;
@@ -374,7 +339,11 @@ fn solve_with_rejection(
     // sigmas are incorrect (a posteriori variance scaling).
     if auto_sigma {
         let n_included = fit.included.iter().filter(|&&inc| inc).count();
-        let n_params = 6 + fit.non_grav.as_ref().map_or(0, NonGravModel::n_free_params);
+        let n_params = 6 + fit
+            .uncertain_state
+            .non_grav
+            .as_ref()
+            .map_or(0, NonGravModel::n_free_params);
         let n_measurements: usize = fit
             .residuals
             .iter()
@@ -390,7 +359,7 @@ fn solve_with_rejection(
                 .enumerate()
                 .filter(|&(i, _)| fit.included[i])
                 .map(|(i, res)| {
-                    let w = sorted_obs[i].weights();
+                    let w = fit.observations[i].weights();
                     res.iter()
                         .zip(w.iter())
                         .map(|(r, wi)| r * r * wi)
@@ -401,7 +370,7 @@ fn solve_with_rejection(
             // Only inflate, never shrink -- if chi2_reduced < 1 the
             // stated sigmas are already conservative.
             if chi2_reduced > 1.0 {
-                fit.covariance *= chi2_reduced;
+                fit.uncertain_state.cov_matrix *= chi2_reduced;
             }
         }
     }
@@ -454,7 +423,7 @@ fn iterate_to_convergence(
     mut non_grav: Option<NonGravModel>,
     max_iter: usize,
     tol: f64,
-) -> KeteResult<ConvergenceResult> {
+) -> KeteResult<OrbitFit> {
     let mut state_epoch = initial_state.clone();
     // Start with non-zero damping when fitting non-grav parameters.
     // Their information-matrix entries are often orders of magnitude
@@ -546,13 +515,13 @@ fn iterate_to_convergence(
 
                     let n_params = 6 + n_nongrav_params(non_grav.as_ref());
                     let rms = weighted_rms(&residuals, obs, included, n_params);
-                    return Ok(ConvergenceResult {
-                        state: state_epoch,
-                        covariance,
+                    let uncertain_state = UncertainState::new(state_epoch, covariance, non_grav)?;
+                    return Ok(OrbitFit {
+                        uncertain_state,
                         residuals,
+                        observations: obs.to_vec(),
                         included: included.to_vec(),
                         rms,
-                        non_grav,
                         converged: true,
                     });
                 }
@@ -583,19 +552,19 @@ fn iterate_to_convergence(
     ))
 }
 
-/// Build a `ConvergenceResult` with `converged: false` for the given state.
+/// Build an `OrbitFit` with `converged: false` for the given state.
 ///
 /// Propagation may fail for the current state (e.g. the initial guess
 /// cannot reach all observation epochs).  In that case we return a
 /// zeroed covariance and NaN residuals so that the caller still gets a
-/// valid `ConvergenceResult` instead of a hard error.
+/// valid `OrbitFit` instead of a hard error.
 fn make_non_converged_result(
     state: &State<Equatorial>,
     obs: &[Observation],
     included: &[bool],
     include_asteroids: bool,
     non_grav: Option<NonGravModel>,
-) -> ConvergenceResult {
+) -> OrbitFit {
     let n_params = 6 + n_nongrav_params(non_grav.as_ref());
 
     // Try to compute residuals and covariance; fall back to placeholders
@@ -623,13 +592,23 @@ fn make_non_converged_result(
         (DMatrix::zeros(n_params, n_params), nan_res, f64::INFINITY)
     };
 
-    ConvergenceResult {
-        state: state.clone(),
-        covariance,
+    // Construct UncertainState; cannot fail here because we control
+    // the covariance dimensions.
+    let uncertain_state =
+        UncertainState::new(state.clone(), covariance, non_grav).unwrap_or_else(|_| {
+            UncertainState {
+                state: state.clone(),
+                cov_matrix: DMatrix::zeros(n_params, n_params),
+                non_grav: None,
+            }
+        });
+
+    OrbitFit {
+        uncertain_state,
         residuals,
+        observations: obs.to_vec(),
         included: included.to_vec(),
         rms,
-        non_grav,
         converged: false,
     }
 }
@@ -1181,7 +1160,7 @@ mod tests {
 
         // At least one observation should have been rejected.
         let n_total = 10;
-        let n_included = fit.observations.len();
+        let n_included = fit.included.iter().filter(|&&v| v).count();
         let n_rejected = n_total - n_included;
         assert!(
             n_rejected >= 1,
@@ -1390,7 +1369,7 @@ mod tests {
 
         // The corrupted observation should be rejected.
         let n_total = 20;
-        let n_included = fit.observations.len();
+        let n_included = fit.included.iter().filter(|&&v| v).count();
         let n_rejected = n_total - n_included;
         assert!(
             n_rejected >= 1,

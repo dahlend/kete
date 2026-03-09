@@ -330,7 +330,9 @@ impl PyOrbitFit {
         self.0
             .residuals
             .iter()
-            .map(|r| {
+            .zip(self.0.included.iter())
+            .filter(|&(_, &inc)| inc)
+            .map(|(r, _)| {
                 // Optical residuals have 2 elements (RA, Dec) in radians;
                 // radar residuals have 1 element in AU or AU/day.
                 if r.len() == 2 {
@@ -344,14 +346,37 @@ impl PyOrbitFit {
 
     /// Observations included in the final fit (time-sorted).
     ///
-    /// Rejected outliers are not present in this list.
+    /// Rejected outliers are not present in this list.  To see all
+    /// observations (including rejected ones), use
+    /// ``all_observations``.
     #[getter]
     fn observations(&self) -> Vec<PyObservation> {
         self.0
             .observations
             .iter()
+            .zip(self.0.included.iter())
+            .filter(|&(_, &inc)| inc)
+            .map(|(o, _)| PyObservation(o.clone()))
+            .collect()
+    }
+
+    /// All input observations (time-sorted), including rejected outliers.
+    #[getter]
+    fn all_observations(&self) -> Vec<PyObservation> {
+        self.0
+            .observations
+            .iter()
             .map(|o| PyObservation(o.clone()))
             .collect()
+    }
+
+    /// Per-observation inclusion mask (time-sorted).
+    ///
+    /// ``True`` means the observation was used in the final fit;
+    /// ``False`` means it was rejected as an outlier.
+    #[getter]
+    fn included(&self) -> Vec<bool> {
+        self.0.included.clone()
     }
 
     /// Reduced weighted RMS of post-fit residuals.
@@ -379,10 +404,15 @@ impl PyOrbitFit {
 
     /// String representation.
     fn __repr__(&self) -> String {
-        let n_obs = self.0.observations.len();
+        let n_included = self.0.included.iter().filter(|&&v| v).count();
+        let n_total = self.0.observations.len();
         format!(
-            "OrbitFit(rms={:.6e}, observations={}, converged={}, epoch={:.6})",
-            self.0.rms, n_obs, self.0.converged, self.0.uncertain_state.state.epoch.jd,
+            "OrbitFit(rms={:.6e}, observations={}/{}, converged={}, epoch={:.6})",
+            self.0.rms,
+            n_included,
+            n_total,
+            self.0.converged,
+            self.0.uncertain_state.state.epoch.jd,
         )
     }
 }
