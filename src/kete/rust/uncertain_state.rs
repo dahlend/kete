@@ -65,6 +65,11 @@ impl PyUncertainState {
         vel_sigma: f64,
         non_grav: Option<PyNonGravModel>,
     ) -> PyResult<Self> {
+        if pos_sigma <= 0.0 || vel_sigma <= 0.0 {
+            return Err(
+                Error::ValueError("pos_sigma and vel_sigma must be positive".into()).into(),
+            );
+        }
         let mut eq_state = state.raw;
         if eq_state.center_id != 0 {
             let spk = LOADED_SPK.try_read().map_err(Error::from)?;
@@ -111,6 +116,15 @@ impl PyUncertainState {
         non_grav: Option<PyNonGravModel>,
     ) -> PyResult<Self> {
         let n = cov_matrix.len();
+        for (i, row) in cov_matrix.iter().enumerate() {
+            if row.len() != n {
+                return Err(Error::ValueError(format!(
+                    "Covariance matrix row {i} has length {}, expected {n}",
+                    row.len()
+                ))
+                .into());
+            }
+        }
         let mat = DMatrix::from_fn(n, n, |r, c| cov_matrix[r][c]);
         let ng = non_grav.map(|m| m.0);
         let us = UncertainState::from_cometary(&elements.0, &mat, ng)?;

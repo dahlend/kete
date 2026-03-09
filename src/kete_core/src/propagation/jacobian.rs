@@ -470,8 +470,7 @@ mod tests {
         let state = test_state();
         let jd_final = (2451545.0 + 30.0).into(); // 30 days
 
-        let (_final_state, sens) =
-            compute_state_transition(&state, jd_final, false, None).unwrap();
+        let (_final_state, sens) = compute_state_transition(&state, jd_final, false, None).unwrap();
 
         // Build STM via finite differences of Radau propagations
         let eps = 1e-6;
@@ -532,8 +531,7 @@ mod tests {
         let state = test_state();
         let jd_final = (2451545.0 + 30.0).into();
 
-        let (_final_state, sens) =
-            compute_state_transition(&state, jd_final, false, None).unwrap();
+        let (_final_state, sens) = compute_state_transition(&state, jd_final, false, None).unwrap();
 
         // Extract the 6x6 STM
         let stm = sens.fixed_view::<6, 6>(0, 0);
@@ -645,8 +643,7 @@ mod tests {
         let state = test_state();
         let jd_final = (2451545.0 + 90.0).into(); // 90 days
 
-        let (_final_state, sens) =
-            compute_state_transition(&state, jd_final, false, None).unwrap();
+        let (_final_state, sens) = compute_state_transition(&state, jd_final, false, None).unwrap();
 
         // Finite-difference validation of each STM column
         let eps = 1e-6;

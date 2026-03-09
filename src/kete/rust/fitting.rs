@@ -17,6 +17,9 @@ use crate::time::PyTime;
 use crate::uncertain_state::PyUncertainState;
 use crate::vector::PyVector;
 
+/// Radians to arcseconds conversion factor.
+const RAD_TO_ARCSEC: f64 = 180.0 * 3600.0 / std::f64::consts::PI;
+
 /// Astronomical observation for orbit determination.
 ///
 /// Observations can be optical (RA/Dec), radar range, or radar range-rate.
@@ -73,12 +76,15 @@ impl PyObservation {
         sigma_ra: f64,
         sigma_dec: f64,
     ) -> PyResult<Self> {
+        if sigma_ra <= 0.0 || sigma_dec <= 0.0 {
+            return Err(Error::ValueError("sigma_ra and sigma_dec must be positive".into()).into());
+        }
         let mut raw = observer.raw;
         if raw.center_id != 0 {
             let spk = LOADED_SPK.try_read().map_err(Error::from)?;
             spk.try_change_center(&mut raw, 0)?;
         }
-        let arcsec_to_rad = std::f64::consts::PI / (180.0 * 3600.0);
+        let arcsec_to_rad = 1.0 / RAD_TO_ARCSEC;
         Ok(Self(Observation::Optical {
             observer: raw,
             ra: ra.to_radians(),
@@ -103,6 +109,9 @@ impl PyObservation {
     #[staticmethod]
     #[pyo3(signature = (observer, range, sigma_range))]
     fn radar_range(observer: PyState, range: f64, sigma_range: f64) -> PyResult<Self> {
+        if sigma_range <= 0.0 {
+            return Err(Error::ValueError("sigma_range must be positive".into()).into());
+        }
         let mut raw = observer.raw;
         if raw.center_id != 0 {
             let spk = LOADED_SPK.try_read().map_err(Error::from)?;
@@ -130,6 +139,9 @@ impl PyObservation {
     #[staticmethod]
     #[pyo3(signature = (observer, range_rate, sigma_range_rate))]
     fn radar_rate(observer: PyState, range_rate: f64, sigma_range_rate: f64) -> PyResult<Self> {
+        if sigma_range_rate <= 0.0 {
+            return Err(Error::ValueError("sigma_range_rate must be positive".into()).into());
+        }
         let mut raw = observer.raw;
         if raw.center_id != 0 {
             let spk = LOADED_SPK.try_read().map_err(Error::from)?;
@@ -184,9 +196,8 @@ impl PyObservation {
     /// 1-sigma RA uncertainty in arcseconds (optical only, None otherwise).
     #[getter]
     fn sigma_ra(&self) -> Option<f64> {
-        let rad_to_arcsec = 180.0 * 3600.0 / std::f64::consts::PI;
         match &self.0 {
-            Observation::Optical { sigma_ra, .. } => Some(*sigma_ra * rad_to_arcsec),
+            Observation::Optical { sigma_ra, .. } => Some(*sigma_ra * RAD_TO_ARCSEC),
             _ => None,
         }
     }
@@ -194,9 +205,8 @@ impl PyObservation {
     /// 1-sigma Dec uncertainty in arcseconds (optical only, None otherwise).
     #[getter]
     fn sigma_dec(&self) -> Option<f64> {
-        let rad_to_arcsec = 180.0 * 3600.0 / std::f64::consts::PI;
         match &self.0 {
-            Observation::Optical { sigma_dec, .. } => Some(*sigma_dec * rad_to_arcsec),
+            Observation::Optical { sigma_dec, .. } => Some(*sigma_dec * RAD_TO_ARCSEC),
             _ => None,
         }
     }
@@ -242,7 +252,6 @@ impl PyObservation {
     /// String representation.
     fn __repr__(&self) -> String {
         let epoch = self.0.epoch().jd;
-        let rad_to_arcsec = 180.0 * 3600.0 / std::f64::consts::PI;
         match &self.0 {
             Observation::Optical {
                 ra,
@@ -257,8 +266,8 @@ impl PyObservation {
                     epoch,
                     ra.to_degrees(),
                     dec.to_degrees(),
-                    sigma_ra * rad_to_arcsec,
-                    sigma_dec * rad_to_arcsec,
+                    sigma_ra * RAD_TO_ARCSEC,
+                    sigma_dec * RAD_TO_ARCSEC,
                 )
             }
             Observation::RadarRange {
@@ -332,7 +341,6 @@ impl PyOrbitFit {
     /// **arcseconds**.  Radar residuals remain in AU or AU/day.
     #[getter]
     fn residuals(&self) -> Vec<Vec<f64>> {
-        let rad_to_arcsec = 180.0 * 3600.0 / std::f64::consts::PI;
         self.0
             .residuals
             .iter()
@@ -340,7 +348,7 @@ impl PyOrbitFit {
                 // Optical residuals have 2 elements (RA, Dec) in radians;
                 // radar residuals have 1 element in AU or AU/day.
                 if r.len() == 2 {
-                    r.iter().map(|v| v * rad_to_arcsec).collect()
+                    r.iter().map(|v| v * RAD_TO_ARCSEC).collect()
                 } else {
                     r.iter().copied().collect()
                 }
@@ -401,8 +409,8 @@ impl PyOrbitFit {
 /// the previous converged solution.  The final pass fits the full arc
 /// and re-evaluates all observations for outlier rejection (if enabled).
 ///
-/// Outlier rejection is controlled by ``max_reject_passes``.  When zero
-/// (the default), no rejection is performed and all observations are used.
+/// Outlier rejection is controlled by ``max_reject_passes``.  When zero,
+/// no rejection is performed and all observations are used.
 ///
 /// The per-observation chi-squared is
 /// ``sum(residual_k^2 / sigma_k^2)`` over the measurement components
@@ -435,8 +443,7 @@ impl PyOrbitFit {
 ///     Chi-squared threshold for outlier rejection. Default is 9.0.
 ///     Only used when ``max_reject_passes > 0``.
 /// max_reject_passes : int, optional
-///     Maximum number of batch rejection/re-solve cycles. Default is 0
-///     (no rejection).
+///     Maximum number of batch rejection/re-solve cycles. Default is 3.
 /// auto_sigma : bool, optional
 ///     If True, rescale the chi-squared threshold each pass using a
 ///     robust (MAD-based) estimate of the actual residual scatter.
@@ -475,9 +482,8 @@ pub fn differential_correction_py(
 ) -> PyResult<PyOrbitFit> {
     let mut raw_state = initial_state.raw;
 
-    // Re-center to SSB.
-    {
-        let spk = &LOADED_SPK.try_read().map_err(Error::from)?;
+    if raw_state.center_id != 0 {
+        let spk = LOADED_SPK.try_read().map_err(Error::from)?;
         spk.try_change_center(&mut raw_state, 0)?;
     }
 

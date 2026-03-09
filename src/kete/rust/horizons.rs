@@ -109,7 +109,12 @@ impl HorizonsProperties {
         let uncertain_state = match (covariance_params, covariance_matrix) {
             (Some(params), Some(cov_matrix)) => {
                 let cov_epoch = covariance_epoch.or(epoch).unwrap_or(0.0);
-                Some(build_uncertain_state(&desig, cov_epoch, &params, &cov_matrix)?)
+                Some(build_uncertain_state(
+                    &desig,
+                    cov_epoch,
+                    &params,
+                    &cov_matrix,
+                )?)
             }
             _ => None,
         };
@@ -322,6 +327,24 @@ fn build_uncertain_state(
     params: &[(String, f64)],
     cov_matrix: &[Vec<f64>],
 ) -> PyResult<PyUncertainState> {
+    let n_params = params.len();
+    if cov_matrix.len() != n_params {
+        return Err(prelude::Error::ValueError(format!(
+            "Covariance matrix has {} rows but {} parameters",
+            cov_matrix.len(),
+            n_params
+        ))
+        .into());
+    }
+    for (i, row) in cov_matrix.iter().enumerate() {
+        if row.len() != n_params {
+            return Err(prelude::Error::ValueError(format!(
+                "Covariance matrix row {i} has length {}, expected {n_params}",
+                row.len()
+            ))
+            .into());
+        }
+    }
     let lower_names: Vec<String> = params.iter().map(|(k, _)| k.to_lowercase()).collect();
     let get = |key: &str| -> PyResult<f64> {
         params
