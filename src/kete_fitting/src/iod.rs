@@ -1029,7 +1029,7 @@ mod tests {
         let r_true = obj_at.pos.norm();
         // Loosened to 1.0: 2-year N-body truth vs two-body IOD is inherently
         // imprecise.  The tight scoring window further limits which candidates
-        // rank highest.  IOD is a seed — diff correction refines from here.
+        // rank highest.  IOD is a seed -- diff correction refines from here.
         assert!(
             pos_err / r_true < 1.0,
             "NEO long arc: pos error {pos_err:.4} too large relative to r={r_true:.4}"

@@ -685,7 +685,7 @@ mod tests {
 
     #[test]
     fn physical_prior_too_close_penalized() {
-        // r = 0.001 AU — well below PRIOR_R_MIN = 0.01.
+        // r = 0.001 AU -- well below PRIOR_R_MIN = 0.01.
         let mut x = DVector::<f64>::zeros(6);
         x[0] = 0.001;
         x[4] = 0.01;
@@ -696,7 +696,7 @@ mod tests {
 
     #[test]
     fn physical_prior_too_far_penalized() {
-        // r = 5000 AU — well above PRIOR_R_MAX.
+        // r = 5000 AU -- well above PRIOR_R_MAX.
         let mut x = DVector::<f64>::zeros(6);
         x[0] = 5000.0;
         x[4] = 1e-5;

@@ -219,8 +219,8 @@ fn optical_partials_pos(obj: &State<Equatorial>, obs: &State<Equatorial>) -> Mat
     let rho2 = d.norm_squared();
     let xy2 = dx * dx + dy * dy;
 
-    // Guard against the pole singularity (dec ≈ ±90°).
-    // When xy2 → 0 the RA partial is undefined and the Dec partial
+    // Guard against the pole singularity (dec near +/-90 deg).
+    // When xy2 -> 0 the RA partial is undefined and the Dec partial
     // diverges.  Clamp to a small floor so the Jacobian stays finite;
     // the residual itself is still well-defined, and the solver will
     // not be driven by a single near-pole observation.

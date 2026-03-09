@@ -54,10 +54,10 @@ impl PyObservation {
     ///
     /// Parameters
     /// ----------
-    /// observer : State
-    ///     Observer state (any center / frame - will be converted to
-    ///     SSB-centered Equatorial internally). The observation epoch
-    ///     is taken from the observer's epoch.
+    /// observer : :class:`~kete.State`
+    ///     Observer state (any center / frame - will be converted to SSB-centered
+    ///     Equatorial internally). The observation epoch is taken from the observer's
+    ///     epoch.
     /// ra : float
     ///     Right ascension in degrees.
     /// dec : float
@@ -100,7 +100,7 @@ impl PyObservation {
     ///
     /// Parameters
     /// ----------
-    /// observer : State
+    /// observer : :class:`~kete.State`
     ///     Observer state (any center / frame -- will be converted).
     /// range : float
     ///     Measured range in AU.
@@ -130,7 +130,7 @@ impl PyObservation {
     ///
     /// Parameters
     /// ----------
-    /// observer : State
+    /// observer : :class:`~kete.State`
     ///     Observer state (any center / frame -- will be converted).
     /// range_rate : float
     ///     Measured range-rate in AU/day (positive = receding).
@@ -295,20 +295,6 @@ impl PyObservation {
 }
 
 /// Result of orbit determination via batch least squares.
-///
-/// Attributes
-/// ----------
-/// uncertain_state : UncertainState
-///     The best-fit uncertain orbit (state + covariance + non-grav model).
-/// residuals : list[list[float]]
-///     Post-fit residuals for included observations (time-sorted).
-/// observations : list[Observation]
-///     Observations included in the final fit (rejected outliers excluded).
-/// rms : float
-///     Reduced weighted RMS of post-fit residuals (included observations
-///     only), divided by degrees of freedom.
-/// converged : bool
-///     Whether the solver achieved strict convergence.
 #[pyclass(frozen, module = "kete.fitting", name = "OrbitFit")]
 #[derive(Debug, Clone)]
 pub struct PyOrbitFit(pub OrbitFit);
@@ -426,25 +412,25 @@ impl PyOrbitFit {
 ///
 /// Parameters
 /// ----------
-/// initial_state : State
+/// initial_state : :class:`~kete.State`
 ///     Initial guess for the object state (any center / frame).
-/// observations : list[Observation]
-///     Observations to fit.
-/// include_asteroids : bool, optional
+/// observations : list
+///     List of :class:`~kete.fitting.Observation` to fit.
+/// include_asteroids : bool
 ///     If True, include asteroid masses in the force model (slower but more
 ///     accurate for near-Earth objects). Default is False.
-/// non_grav : NonGravModel, optional
-///     Non-gravitational force model, if any.
-/// max_iter : int, optional
+/// non_grav : :class:`~kete.propagation.NonGravModel`, optional
+///     Non-gravitational force model.
+/// max_iter : int
 ///     Maximum number of iterations per convergence pass. Default is 50.
-/// tol : float, optional
+/// tol : float
 ///     Convergence tolerance on the state correction norm. Default is 1e-8.
-/// chi2_threshold : float, optional
+/// chi2_threshold : float
 ///     Chi-squared threshold for outlier rejection. Default is 9.0.
 ///     Only used when ``max_reject_passes > 0``.
-/// max_reject_passes : int, optional
+/// max_reject_passes : int
 ///     Maximum number of batch rejection/re-solve cycles. Default is 3.
-/// auto_sigma : bool, optional
+/// auto_sigma : bool
 ///     If True, rescale the chi-squared threshold each pass using a
 ///     robust (MAD-based) estimate of the actual residual scatter.
 ///     Default is False.
@@ -510,9 +496,9 @@ pub fn differential_correction_py(
 /// ----------
 /// observations : list[Observation]
 ///     At least 2 optical observations.
-/// epoch : float, optional
-///     Reference epoch (JD, TDB) for returned states.  Defaults to the
-///     last observation epoch (for forward prediction).
+/// epoch : float
+///     Reference epoch (JD, TDB) for returned states (optional).  Defaults
+///     to the last observation epoch (for forward prediction).
 ///
 /// Returns
 /// -------
@@ -553,7 +539,7 @@ pub fn initial_orbit_determination_py(
 ///     Heliocentric position at arrival (AU).
 /// dt : float
 ///     Transfer time in days. Must be positive.
-/// prograde : bool, optional
+/// prograde : bool
 ///     If True (default), selects the short-way transfer (transfer angle
 ///     less than 180 degrees for prograde orbits). If False, selects
 ///     the long-way transfer.
@@ -585,18 +571,6 @@ pub fn lambert_py(
 }
 
 /// Posterior orbit samples from NUTS MCMC.
-///
-/// Attributes
-/// ----------
-/// epoch : float
-///     Common reference epoch (JD, TDB) for all draws.
-/// draws : list[list[float]]
-///     Posterior draws, each row is ``[x, y, z, vx, vy, vz, ...]``
-///     at the reference epoch (AU, AU/day, Equatorial SSB).
-/// chain_id : list[int]
-///     Seed index (0-based) that generated each draw.
-/// divergent : list[bool]
-///     True if the draw was a divergent transition.
 #[pyclass(frozen, module = "kete.fitting", name = "OrbitSamples")]
 #[derive(Debug, Clone)]
 pub struct PyOrbitSamples(pub OrbitSamples);
@@ -717,7 +691,7 @@ impl PyOrbitSamples {
 /// Chains are automatically spread across available CPU cores.  When there
 /// are fewer seeds than cores, each seed spawns multiple sub-chains (each
 /// with its own RNG seed and tuning phase).  The ``chain_id`` in the
-/// returned :class:`OrbitSamples` identifies the seed (orbital mode), not
+/// returned :class:`~kete.fitting.OrbitSamples` identifies the seed (orbital mode), not
 /// the sub-chain.
 ///
 /// ``num_draws`` is the **total** number of posterior draws returned across
@@ -728,27 +702,26 @@ impl PyOrbitSamples {
 ///
 /// Parameters
 /// ----------
-/// seeds : list[State]
-///     Candidate states (e.g. from :func:`initial_orbit_determination`),
-///     one per orbital mode.  Seeds at different
-///     epochs are automatically propagated to the first seed's epoch via
-///     two-body.  The input states are re-centered to SSB Equatorial internally.
-/// observations : list[Observation]
-///     Observations to evaluate the likelihood against.
-/// include_asteroids : bool, optional
+/// seeds : list
+///     List of :class:`~kete.State` candidate states (e.g. from
+///     :func:`initial_orbit_determination`), one per orbital mode.  Seeds at
+///     different epochs are automatically propagated to the first seed's epoch.
+///     The input states are re-centered to SSB Equatorial internally.
+/// observations : list
+///     List of :class:`~kete.fitting.Observation` to evaluate the likelihood against.
+/// include_asteroids : bool
 ///     If True, include asteroid masses in the force model. Default is False.
-/// num_draws : int, optional
-///     Total posterior draws across all seeds (after tuning).
-///     Default is 1000.
-/// num_tune : int, optional
+/// num_draws : int
+///     Total posterior draws across all seeds (after tuning). Default is 1000.
+/// num_tune : int
 ///     Number of tuning (warmup) steps per sub-chain used to adapt the
 ///     step size and mass matrix.  Default is 500.
-/// student_nu : float, optional
+/// student_nu : float
 ///     Student-t degrees of freedom for the likelihood.  Use ``float('inf')``
 ///     for Gaussian (default).  Lower values (e.g. 5) down-weight outliers.
-/// non_grav : NonGravModel, optional
+/// non_grav : :class:`~kete.propagation.NonGravModel`, optional
 ///     Shared non-gravitational force model applied to all chains.
-/// maxdepth : int, optional
+/// maxdepth : int
 ///     Maximum NUTS tree depth.  Depth N allows up to 2^N leapfrog steps
 ///     per draw.  Default is 10 (1024 steps).
 ///

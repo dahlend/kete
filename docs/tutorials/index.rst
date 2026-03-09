@@ -12,5 +12,6 @@ These are more in-depth worked examples.
    neatm
    palomar
    kona
+   mcmc_near_miss
    spherex
    wise

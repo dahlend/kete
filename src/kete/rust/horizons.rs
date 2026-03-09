@@ -73,12 +73,12 @@ impl HorizonsProperties {
     /// ----------
     /// desig : str
     ///     MPC designation.
-    /// covariance_params : list[tuple[str, float]], optional
+    /// covariance_params : list
     ///     Parameter name/value pairs for the covariance (e.g.
     ///     ``[("eccentricity", 0.5), ("peri_dist", 1.2), ...]``).
-    /// covariance_matrix : list[list[float]], optional
+    /// covariance_matrix : list
     ///     Covariance matrix matching the parameter ordering.
-    /// covariance_epoch : float, optional
+    /// covariance_epoch : float
     ///     Epoch of the covariance (JD, TDB).
     #[new]
     #[allow(clippy::too_many_arguments)]

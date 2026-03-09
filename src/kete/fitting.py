@@ -58,7 +58,7 @@ def mpc_obs_to_observations(
     Parameters
     ----------
     mpc_obs :
-        List of :class:`~kete.mpc.MPCObservation` objects.
+        List of ``MPCObservation`` objects (see :mod:`kete.mpc`).
     sigma_ra :
         Default 1-sigma RA uncertainty in arcseconds. The cos(dec) factor
         is applied automatically.

@@ -24,10 +24,10 @@ use pyo3::prelude::*;
 ///
 /// Construction
 /// ------------
-/// - :meth:`from_state` -- from a :class:`State` with isotropic uncertainties.
+/// - :meth:`from_state` -- from a :class:`~kete.State` with isotropic uncertainties.
 /// - :meth:`from_cometary` -- from cometary orbital elements and an
 ///   element-space covariance (e.g. from JPL Horizons).
-/// - Returned as part of :class:`OrbitFit` from differential correction.
+/// - Returned as part of :class:`~kete.fitting.OrbitFit` from differential correction.
 #[pyclass(frozen, module = "kete", name = "UncertainState")]
 #[derive(Debug, Clone)]
 pub struct PyUncertainState(pub UncertainState);
@@ -46,17 +46,17 @@ impl PyUncertainState {
     ///
     /// Parameters
     /// ----------
-    /// state : State
+    /// state : :class:`~kete.State`
     ///     Object state (any center / frame -- will be converted to
     ///     SSB-centered Equatorial internally).
-    /// pos_sigma : float, optional
+    /// pos_sigma : float
     ///     1-sigma position uncertainty in AU (default 0.01).
-    /// vel_sigma : float, optional
+    /// vel_sigma : float
     ///     1-sigma velocity uncertainty in AU/day (default 0.0001).
-    /// non_grav : NonGravModel, optional
-    ///     Non-gravitational model template.  If provided, the
-    ///     covariance is extended to (6+Np)x(6+Np) with tiny diagonal
-    ///     entries for the non-grav parameters.
+    /// non_grav : :class:`~kete.propagation.NonGravModel`, optional
+    ///     Non-gravitational model template.  If provided, the covariance is
+    ///     extended to (6+Np)x(6+Np) with tiny diagonal entries for the
+    ///     non-grav parameters.
     #[staticmethod]
     #[pyo3(signature = (state, pos_sigma=0.01, vel_sigma=0.0001, non_grav=None))]
     fn from_state(
@@ -106,7 +106,7 @@ impl PyUncertainState {
     /// cov_matrix : list[list[float]]
     ///     Covariance matrix in element space, (6+Np)x(6+Np).
     ///     Element order: ``[e, q, tp, node, w, i, <nongrav...>]``.
-    /// non_grav : NonGravModel, optional
+    /// non_grav : :class:`~kete.propagation.NonGravModel`, optional
     ///     Non-gravitational model template.
     #[staticmethod]
     #[pyo3(signature = (elements, cov_matrix, non_grav=None))]
@@ -164,7 +164,7 @@ impl PyUncertainState {
         self.0.state.desig.to_string()
     }
 
-    /// Reference epoch as a :class:`Time` (shortcut for ``self.state.epoch``).
+    /// Reference epoch as a :class:`~kete.Time` (shortcut for ``self.state.epoch``).
     #[getter]
     fn epoch(&self) -> PyTime {
         self.0.state.epoch.jd.into()
@@ -183,15 +183,15 @@ impl PyUncertainState {
     /// Draw random samples from the covariance distribution.
     ///
     /// Returns a tuple ``(states, non_gravs)`` where ``states`` is a list
-    /// of :class:`State` objects and ``non_gravs`` is a list of
-    /// :class:`NonGravModel` or ``None``.
+    /// of :class:`~kete.State` objects and ``non_gravs`` is a list of
+    /// :class:`~kete.propagation.NonGravModel` or ``None``.
     ///
     /// Parameters
     /// ----------
     /// n_samples : int
     ///     Number of samples to draw.
-    /// seed : int, optional
-    ///     Random seed for reproducibility.
+    /// seed : int
+    ///     Random seed for reproducibility (optional).
     #[pyo3(signature = (n_samples, seed=None))]
     fn sample(
         &self,
