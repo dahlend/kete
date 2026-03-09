@@ -53,6 +53,10 @@ pub const GMS_SQRT: f64 = 0.01720209894996;
 ///
 /// This paper below is a source, however there are several papers which all put
 /// the Sun's J2 at 2.2e-7.
+///
+/// "Prospects of Dynamical Determination of General Relativity Parameter β and Solar
+/// Quadrupole Moment J2 with Asteroid Radar Astronomy"
+/// The Astrophysical Journal, 845:166 (5pp), 2017 August 20
 pub const SUN_J2: f64 = 2.2e-7;
 
 /// Earth J2 Parameter
