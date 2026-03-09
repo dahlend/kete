@@ -41,6 +41,7 @@ use kete_core::frames::{Equatorial, Vector};
 use kete_core::prelude::{Error, KeteResult, State};
 use kete_core::propagation::{light_time_correct, propagate_two_body};
 use kete_core::time::{TDB, Time};
+use rayon::prelude::*;
 
 use crate::Observation;
 use crate::lambert::lambert;
@@ -54,7 +55,7 @@ use crate::lambert::lambert;
 ///
 /// 1. Select observation pairs with adaptive time baselines.
 /// 2. Coarse 2-D scan over (`log rho_a`, `log rho_b`), the topocentric
-///    distances at each observation.  40x40 grid, log-spaced 0.001-500 AU.
+///    distances at each observation.  100x100 grid, log-spaced 0.00001-500 AU.
 /// 3. Solve Lambert's problem (prograde, falling back to retrograde) for
 ///    each grid point to obtain velocity.
 /// 4. Refine the best seeds with nested local grid search.
@@ -192,7 +193,7 @@ fn propagate_to_common_epoch(
     Ok(())
 }
 
-/// Run the scan + Nelder-Mead refinement for a single ranging pair.
+/// Run the coarse grid scan + nested local grid refinement for a single ranging pair.
 ///
 /// Returns a vector of `(score, state)` candidates, scored against a
 /// local subset of observations near the pair midpoint.
@@ -227,19 +228,22 @@ fn run_ranging_for_pair(
     // 2-D grid scan over (log rho_a, log rho_b).
     // Independent distances for the two observations -- no equal-helio-distance
     // constraint, so eccentric and hyperbolic orbits are naturally sampled.
-    let n_scan: usize = 40;
-    let log_min = 0.001_f64.ln();
+    let n_scan: usize = 100;
+    let log_min = 0.00001_f64.ln();
     let log_max = 1000.0_f64.ln();
 
-    // (score, rho_a, rho_b)
-    let mut scan_scores: Vec<(f64, f64, f64)> = Vec::new();
+    // (score, rho_a, rho_b) — Flatten the 2D grid into a single range and
+    // parallel-iterate so all captures are simple shared references.
+    let mut scan_scores: Vec<(f64, f64, f64)> = (0..n_scan * n_scan)
+        .into_par_iter()
+        .filter_map(|idx| {
+            let ia = idx / n_scan;
+            let ib = idx % n_scan;
 
-    for ia in 0..n_scan {
-        let frac_a = ia as f64 / (n_scan - 1) as f64;
-        let rho_a = (log_min + (log_max - log_min) * frac_a).exp();
-        let r_a = obs_a.pos + los_a * rho_a;
+            let frac_a = ia as f64 / (n_scan - 1) as f64;
+            let rho_a = (log_min + (log_max - log_min) * frac_a).exp();
+            let r_a = obs_a.pos + los_a * rho_a;
 
-        for ib in 0..n_scan {
             let frac_b = ib as f64 / (n_scan - 1) as f64;
             let rho_b = (log_min + (log_max - log_min) * frac_b).exp();
             let r_b = obs_b.pos + los_b * rho_b;
@@ -247,21 +251,18 @@ fn run_ranging_for_pair(
             let Ok((vel, _)) =
                 lambert(&r_a, &r_b, dt, true).or_else(|_| lambert(&r_a, &r_b, dt, false))
             else {
-                continue;
+                return None;
             };
             let state = State::new(kete_core::desigs::Desig::Empty, obs_a.epoch, r_a, vel, 0);
 
             if !is_physically_valid(&state) {
-                continue;
+                return None;
             }
 
-            let Some(score) = observation_residual(&state, &scoring_obs) else {
-                continue;
-            };
-
-            scan_scores.push((score, rho_a, rho_b));
-        }
-    }
+            let score = observation_residual(&state, &scoring_obs)?;
+            Some((score, rho_a, rho_b))
+        })
+        .collect();
 
     if scan_scores.is_empty() {
         return Err(Error::ValueError(
