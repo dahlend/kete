@@ -89,10 +89,6 @@ impl LogpError for PropagationError {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Physical prior (smooth log-barrier penalties)
-// ---------------------------------------------------------------------------
-
 /// Minimum heliocentric distance (AU) before penalty ramps up.
 const PRIOR_R_MIN: f64 = 0.01;
 /// Maximum heliocentric distance (AU) before penalty ramps up.
@@ -190,10 +186,6 @@ fn log_sigmoid_with_grad(z: f64, k: f64) -> (f64, f64) {
 
     (lp, sig_neg_z * k)
 }
-
-// ---------------------------------------------------------------------------
-// OrbitalPosterior -- implements CpuLogpFunc
-// ---------------------------------------------------------------------------
 
 /// Log-posterior density over orbital states, parameterized in a whitened
 /// coordinate system centered on the seed state.
@@ -341,10 +333,6 @@ impl CpuLogpFunc for OrbitalPosterior {
         Ok(x.as_slice().to_vec())
     }
 }
-
-// ---------------------------------------------------------------------------
-// Mass matrix construction
-// ---------------------------------------------------------------------------
 
 /// Build a whitening Cholesky factor from the seed state via a single-pass
 /// linearization.  If the STM sweep or information matrix inversion fails,
@@ -664,10 +652,6 @@ mod tests {
         State::new(Desig::Empty, jd.into(), pos.into(), vel.into(), 0)
     }
 
-    // ---------------------------------------------------------------
-    // physical_prior tests
-    // ---------------------------------------------------------------
-
     #[test]
     fn physical_prior_nominal_orbit_no_penalty() {
         // ~1 AU circular orbit: well inside allowed bounds.
@@ -732,10 +716,6 @@ mod tests {
         assert!(grad.iter().all(|g| g.is_finite()));
     }
 
-    // ---------------------------------------------------------------
-    // cholesky_from_info tests
-    // ---------------------------------------------------------------
-
     #[test]
     fn cholesky_from_info_identity() {
         // info = I_6 => cov = I_6 => L = I_6.
@@ -780,10 +760,6 @@ mod tests {
         let info = DMatrix::<f64>::zeros(6, 6);
         assert!(cholesky_from_info(&info).is_none());
     }
-
-    // ---------------------------------------------------------------
-    // diagonal_heuristic_cholesky tests
-    // ---------------------------------------------------------------
 
     #[test]
     fn diagonal_heuristic_shape_and_values() {
