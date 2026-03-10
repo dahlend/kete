@@ -77,13 +77,13 @@ pub struct OrbitFit {
 /// The input `initial_state` **must** be SSB-centered (`center_id == 0`).
 /// All internal propagation uses SSB coordinates.
 ///
-/// For arcs longer than 180 days, progressively wider time windows are
-/// fitted around the reference epoch so that each stage bootstraps from
-/// the previous converged solution.  The final pass fits the full arc
-/// and re-evaluates all observations for outlier rejection (if enabled).
-///
-/// Short arcs (<= 180 days) skip the expansion and go straight to a
-/// single full-arc fit.
+/// Observations are fitted in progressively wider time windows
+/// centered on the reference epoch: ±30, ±60, ±180, and ±360 days,
+/// followed by a final pass that includes the full arc.  Each stage
+/// bootstraps from the previous converged solution.  Windows that
+/// contain fewer than 4 observations are skipped automatically.
+/// The final pass re-evaluates all observations for outlier rejection
+/// (if enabled).
 ///
 /// Outlier rejection is controlled by `max_reject_passes`.  When zero,
 /// no rejection is performed and the fit uses all observations.
@@ -141,40 +141,35 @@ pub fn fit_orbit(
     }
     let ref_jd = initial_state.epoch.jd;
 
-    // Compute arc span.  The `obs.is_empty()` guard above ensures these
-    // are safe.
-    let jd_first = sorted[0].epoch().jd;
-    let jd_last = sorted[sorted.len() - 1].epoch().jd;
-    let arc_span = jd_last - jd_first;
-
-    // Build adaptive window schedule.
-    // Short arcs: just fit everything. Medium: seed +/-90, then full.
-    // Long (>720 d): seed +/-90, intermediate +/-half_arc, full.
-    let windows: Vec<f64> = if arc_span <= 180.0 {
-        vec![f64::INFINITY]
-    } else if arc_span <= 720.0 {
-        vec![90.0, f64::INFINITY]
-    } else {
-        vec![90.0, arc_span / 2.0, f64::INFINITY]
-    };
+    // Fixed window radii (days) centered on the reference epoch.
+    // Each stage bootstraps from the previous converged solution.
+    // Windows with fewer than 4 observations are skipped automatically.
+    let windows: Vec<f64> = vec![30.0, 60.0, 180.0, 360.0, f64::INFINITY];
 
     let mut state = initial_state.clone();
-    let mut ng = non_grav.cloned();
+    let ng = non_grav.cloned();
+    let mut prev_n_in_window: usize = 0;
 
     // Expansion stages: converge + reject on each window.
+    // Non-grav parameters are frozen during expansion because short arcs
+    // have almost no sensitivity to them; fitting them here would produce
+    // wildly wrong values that poison subsequent stages.  The original
+    // non-grav values are preserved and used in the final full-arc pass.
     for &radius in &windows[..windows.len() - 1] {
         let included = select_obs_within_window(&sorted, ref_jd, radius);
         let n_in_window = included.iter().filter(|&&v| v).count();
-        if n_in_window < 4 {
-            // Too few observations in this window.
+        if n_in_window < 4 || n_in_window == prev_n_in_window {
+            // Too few observations, or this window includes the same
+            // set as the previous one -- skip.
             continue;
         }
+        prev_n_in_window = n_in_window;
         if let Ok(result) = solve_with_rejection(
             &state,
             &sorted,
             &included,
             include_asteroids,
-            ng.clone(),
+            None,
             max_iter,
             tol,
             chi2_threshold,
@@ -182,7 +177,6 @@ pub fn fit_orbit(
             auto_sigma,
         ) {
             state = result.uncertain_state.state.clone();
-            ng.clone_from(&result.uncertain_state.non_grav);
         }
         // On error: keep previous state, try the next wider window.
     }
