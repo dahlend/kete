@@ -294,50 +294,60 @@ impl UncertainState {
 fn cometary_to_cartesian_jacobian(elements: &CometElements) -> KeteResult<DMatrix<f64>> {
     let mut jac = DMatrix::zeros(6, 6);
 
-    // Relative step sizes for each element.
-    let nominal_vals = [
-        elements.eccentricity,
-        elements.peri_dist,
-        elements.peri_time.jd,
-        elements.lon_of_ascending,
-        elements.peri_arg,
-        elements.inclination,
+    // Central differences are optimal at h ~ eps^(1/3) * scale.
+    // Most elements use their own magnitude (floored at 1.0 for near-zero
+    // angles).  peri_time is special: its JD value is ~2.5e6, but orbit
+    // sensitivity is per-day, so we use an absolute step of eps^(1/3) days.
+    let eps3 = f64::EPSILON.cbrt(); // ~6.06e-6
+    let rel = |v: f64| eps3 * v.abs().max(1.0);
+    let steps = [
+        rel(elements.eccentricity),     // eccentricity (dimensionless)
+        rel(elements.peri_dist),        // peri_dist (AU)
+        eps3,                           // peri_time (days, absolute)
+        rel(elements.lon_of_ascending), // lon_of_ascending (rad)
+        rel(elements.peri_arg),         // peri_arg (rad)
+        rel(elements.inclination),      // inclination (rad)
     ];
 
     for col in 0..6 {
-        let h = finite_diff_step(nominal_vals[col]);
+        let h = steps[col];
 
-        let elem_plus = perturb_element(elements, col, h);
-        let elem_minus = perturb_element(elements, col, -h);
+        // For eccentricity near zero, a central difference would perturb
+        // to negative e (which is unphysical).  Fall back to a forward
+        // difference in that case (O(h) instead of O(h^2), but still
+        // adequate for covariance transformation).
+        let forward_only = col == 0 && elements.eccentricity < 2.0 * h;
 
-        let state_plus: State<Equatorial> = elem_plus.try_to_state()?.into_frame();
-        let state_minus: State<Equatorial> = elem_minus.try_to_state()?.into_frame();
+        if forward_only {
+            let elem_plus = perturb_element(elements, col, h);
+            let state_plus: State<Equatorial> = elem_plus.try_to_state()?.into_frame();
+            let state_nom: State<Equatorial> = elements.try_to_state()?.into_frame();
 
-        let inv_2h = 1.0 / (2.0 * h);
-        for row in 0..3 {
-            jac[(row, col)] = (state_plus.pos[row] - state_minus.pos[row]) * inv_2h;
-        }
-        for row in 0..3 {
-            jac[(row + 3, col)] = (state_plus.vel[row] - state_minus.vel[row]) * inv_2h;
+            let inv_h = 1.0 / h;
+            for row in 0..3 {
+                jac[(row, col)] = (state_plus.pos[row] - state_nom.pos[row]) * inv_h;
+            }
+            for row in 0..3 {
+                jac[(row + 3, col)] = (state_plus.vel[row] - state_nom.vel[row]) * inv_h;
+            }
+        } else {
+            let elem_plus = perturb_element(elements, col, h);
+            let elem_minus = perturb_element(elements, col, -h);
+
+            let state_plus: State<Equatorial> = elem_plus.try_to_state()?.into_frame();
+            let state_minus: State<Equatorial> = elem_minus.try_to_state()?.into_frame();
+
+            let inv_2h = 1.0 / (2.0 * h);
+            for row in 0..3 {
+                jac[(row, col)] = (state_plus.pos[row] - state_minus.pos[row]) * inv_2h;
+            }
+            for row in 0..3 {
+                jac[(row + 3, col)] = (state_plus.vel[row] - state_minus.vel[row]) * inv_2h;
+            }
         }
     }
 
     Ok(jac)
-}
-
-/// Choose a finite-difference step size appropriate for the parameter.
-fn finite_diff_step(nominal: f64) -> f64 {
-    // Use a relative step scaled by machine epsilon^(1/3), which is
-    // optimal for central differences.  Floor at 1e-10 for values
-    // near zero.
-    // ~6e-6
-    let eps_third = f64::EPSILON.cbrt();
-    let abs_val = nominal.abs();
-    if abs_val > 1e-10 {
-        eps_third * abs_val
-    } else {
-        eps_third * 1e-10
-    }
 }
 
 /// Return a copy of `elements` with the `col`-th element perturbed by `delta`.
@@ -547,5 +557,113 @@ mod tests {
         assert_eq!(us.cov_matrix.nrows(), 9);
         assert_eq!(us.cov_matrix.ncols(), 9);
         assert!(us.non_grav.is_some());
+    }
+
+    /// Validate the Jacobian by comparing `J * delta_elem` against the
+    /// actual Cartesian-space change for a known perturbation.
+    ///
+    /// Uses a general elliptical orbit (e=0.3, q=1.5 AU, i=20 deg) with
+    /// no special symmetries so every Jacobian column is exercised.
+    #[test]
+    fn test_jacobian_accuracy() {
+        let epoch = Time::new(2460000.5);
+        let elements = CometElements {
+            desig: Desig::Empty,
+            epoch,
+            eccentricity: 0.3,
+            peri_dist: 1.5,
+            peri_time: Time::new(2459900.5), // 100 days before epoch
+            lon_of_ascending: std::f64::consts::FRAC_PI_4, // 45 deg
+            peri_arg: std::f64::consts::FRAC_PI_3, // 60 deg
+            inclination: 20.0_f64.to_radians(),
+        };
+
+        let jac = cometary_to_cartesian_jacobian(&elements).unwrap();
+        let nominal: State<Equatorial> = elements.try_to_state().unwrap().into_frame();
+
+        // Test each column: apply a perturbation ~1e-4, predict the
+        // Cartesian change with J, and compare against the true change.
+        let elem_names = ["e", "q", "tp", "Omega", "omega", "i"];
+        let perturbation = 1e-4;
+
+        for col in 0..6 {
+            let perturbed = perturb_element(&elements, col, perturbation);
+            let state_p: State<Equatorial> = perturbed.try_to_state().unwrap().into_frame();
+
+            for row in 0..6 {
+                let (predicted, actual) = if row < 3 {
+                    (
+                        jac[(row, col)] * perturbation,
+                        state_p.pos[row] - nominal.pos[row],
+                    )
+                } else {
+                    (
+                        jac[(row, col)] * perturbation,
+                        state_p.vel[row - 3] - nominal.vel[row - 3],
+                    )
+                };
+
+                // Allow 1% relative error (O(h^2) from linearity) or
+                // 1e-14 absolute (for rows where the derivative is near
+                // zero and float noise dominates).
+                let err = (predicted - actual).abs();
+                let tol = 0.01 * actual.abs() + 1e-14;
+                assert!(
+                    err < tol,
+                    "Jacobian[{row},{}] (d cart / d {}): \
+                     predicted={predicted:.6e}, actual={actual:.6e}, err={err:.2e}",
+                    col,
+                    elem_names[col]
+                );
+            }
+        }
+    }
+
+    /// Same Jacobian test but for an equatorial orbit (`lon_of_ascending`
+    /// near zero, `peri_arg` near zero) to exercise the step-size floor.
+    #[test]
+    fn test_jacobian_equatorial_orbit() {
+        let epoch = Time::new(2460000.5);
+        let elements = CometElements {
+            desig: Desig::Empty,
+            epoch,
+            eccentricity: 0.05,
+            peri_dist: 1.0,
+            peri_time: Time::new(2459950.5),
+            lon_of_ascending: 1e-6, // nearly zero
+            peri_arg: 1e-6,         // nearly zero
+            inclination: 1e-4,      // nearly equatorial
+        };
+
+        let jac = cometary_to_cartesian_jacobian(&elements).unwrap();
+        let nominal: State<Equatorial> = elements.try_to_state().unwrap().into_frame();
+
+        let perturbation = 1e-4;
+        for col in 0..6 {
+            let perturbed = perturb_element(&elements, col, perturbation);
+            let state_p: State<Equatorial> = perturbed.try_to_state().unwrap().into_frame();
+
+            for row in 0..6 {
+                let (predicted, actual) = if row < 3 {
+                    (
+                        jac[(row, col)] * perturbation,
+                        state_p.pos[row] - nominal.pos[row],
+                    )
+                } else {
+                    (
+                        jac[(row, col)] * perturbation,
+                        state_p.vel[row - 3] - nominal.vel[row - 3],
+                    )
+                };
+
+                let err = (predicted - actual).abs();
+                let tol = 0.01 * actual.abs() + 1e-14;
+                assert!(
+                    err < tol,
+                    "Equatorial Jacobian[{row},{col}]: \
+                     predicted={predicted:.6e}, actual={actual:.6e}, err={err:.2e}"
+                );
+            }
+        }
     }
 }

@@ -43,7 +43,7 @@ def fetch_fovs(year: int):
         Which year of PTF.
     """
     year = int(year)
-    if year < 2009 or year > 2016:
+    if year < 2009 or year >= 2016:
         raise ValueError("PTF Data available from 2009 to 2015.")
 
     cols = [
