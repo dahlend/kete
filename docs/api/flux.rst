@@ -9,6 +9,5 @@ Flux
 shape
 -----
 
-.. automodule:: kete.shape
+.. autoclass:: kete.shape.TriangleEllipsoid
    :members:
-   :inherited-members:

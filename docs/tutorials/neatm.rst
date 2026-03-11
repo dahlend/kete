@@ -52,7 +52,7 @@ contribution of thermal and emitted fluxes.
     # Define the NEATM model parameters for an object
     params = kete.flux.NeatmParams(
         "Ceres",
-        band_wavelength=bands,
+        band_wavelengths=bands,
         band_albedos=[0.1] * len(bands),
         h_mag=3.34,
         diam=939.4,
