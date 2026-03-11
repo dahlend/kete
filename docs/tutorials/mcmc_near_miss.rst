@@ -22,7 +22,7 @@ This tutorial walks through the complete workflow on a synthetic example:
 
 1. Build a realistic Apollo-type NEO orbit with a close Earth approach.
 2. Generate six astrometric observations over three nights from Palomar.
-3. Recover candidate orbits with initial orbit determination (IOD).
+3. Recover candidate orbits with IOD and refine with differential correction.
 4. Estimate the orbit uncertainty with :func:`~kete.fitting.fit_orbit_mcmc`.
 5. Propagate the sampled orbits to the close-approach epoch to assess the
    miss-distance distribution.
@@ -158,20 +158,21 @@ to account for the convergence of right ascension lines toward the poles.
     Generated 6 observations over 49.5 hours
 
 
-3. Initial Orbit Determination
--------------------------------
+3. Initial Orbit Determination and Differential Correction
+------------------------------------------------------------
 
 Before we can estimate the uncertainty, we need starting points.  The IOD
 function scans a range of topocentric distances for each observation pair
 and uses Lambert's problem to connect them, returning one or more candidate
 orbits consistent with the data.
 
-These raw IOD states are passed directly to :func:`~kete.fitting.fit_orbit_mcmc`
-as seeds.  No prior orbit fit is needed -- the sampler will build its own
-mass matrix from a single-pass linearization at each seed.
+Each IOD candidate is then refined with :func:`~kete.fitting.fit_orbit`
+(differential correction).  The converged states are passed to
+:func:`~kete.fitting.fit_orbit_mcmc` along with the observations.
 
-If IOD returns multiple candidates, the sampler runs separate chains from
-each one and pools the results, which naturally captures multi-modality.
+If IOD returns multiple candidates, we fit each one and pass all converged
+states to MCMC.  The sampler runs separate chains from each seed and pools
+the results, which naturally captures multi-modality.
 
 .. code-block:: python
 
@@ -181,6 +182,14 @@ each one and pools the results, which naturally captures multi-modality.
         e = c.elements
         print(f"  [{i}] a={e.semi_major:.3f} AU, e={e.eccentricity:.3f}")
 
+    # Refine each IOD candidate with differential correction.
+    fits = []
+    for c in candidates:
+        fit = kete.fitting.fit_orbit(c, observations)
+        if fit.converged:
+            fits.append(fit)
+    print(f"{len(fits)} converged fit(s)")
+
 ::
 
     IOD returned 5 candidate(s)
@@ -189,6 +198,7 @@ each one and pools the results, which naturally captures multi-modality.
       [2] a=-0.518 AU, e=2.674
       [3] a=-0.724 AU, e=2.250
       [4] a=-0.653 AU, e=2.875
+    2 converged fit(s)
 
 
 4. Orbit Uncertainty Estimation
@@ -197,6 +207,9 @@ each one and pools the results, which naturally captures multi-modality.
 :func:`~kete.fitting.fit_orbit_mcmc` uses an adaptive MCMC algorithm to
 explore the space of orbits consistent with the observations.  Each step
 requires a full numerical propagation, which is the dominant cost.
+
+The sampler builds its own internal mass matrix from a single-pass
+linearization at each seed state.
 
 Key parameters:
 
@@ -207,13 +220,12 @@ Key parameters:
 
 The likelihood uses a Student-t distribution (nu=5) internally, which
 automatically down-weights outlier observations.  This makes the sampler
-robust when the initial orbit is poor or the stated uncertainties are
-imperfect.
+robust when the stated uncertainties are imperfect.
 
 .. code-block:: python
 
     samples = kete.fitting.fit_orbit_mcmc(
-        seeds=candidates,
+        seeds=[fit.state for fit in fits],
         observations=observations,
         num_draws=2000,
         num_tune=500,
@@ -226,7 +238,7 @@ imperfect.
 
 ::
 
-    MCMC complete: 2000 draws, 4 chain(s), 0 divergent (0.0%)
+    MCMC complete: 2000 draws, 2 chain(s), 442 divergent (22.1%)
 
 A small fraction of divergent transitions is normal and those draws are
 still valid posterior samples.  A high divergence rate (>10%) suggests the
@@ -267,7 +279,7 @@ alone cannot capture.
 
 ::
 
-    2000 / 2000 draws are bound orbits with a < 10 AU
+    1000 / 1558 draws are bound orbits with a < 10 AU
 
 .. code-block:: python
 
@@ -356,7 +368,7 @@ from three nights of data, how close could this object come to Earth?"
 
 ::
 
-    Miss distance (km):  5th=1308289, median=1439840, 95th=1637960
+    Miss distance (km):  5th=1327726, median=1428982, 95th=1544370
     True miss distance:  1358975 km
 
 The spread of the miss-distance histogram illustrates how uncertain the
@@ -414,9 +426,9 @@ on the sky is the search region.
 ::
 
     On-sky uncertainty at close approach:
-      RA spread:  4412.0 arcmin
-      Dec spread: 3204.0 arcmin
-      Samples plotted: 2000
+      RA spread:  3437.2 arcmin
+      Dec spread: 2617.3 arcmin
+      Samples plotted: 1000
 
 .. code-block:: python
 
@@ -482,6 +494,7 @@ Here are guidelines for choosing the right tool:
   uncertainty is suspiciously large or the orbit is poorly constrained,
   follow up with MCMC.
 
-The MCMC sampler accepts raw IOD states as seeds, so no preliminary
-orbit fit is required -- though providing a converged fit as
-a seed can improve sampling efficiency.
+The MCMC sampler accepts raw :class:`~kete.State` objects (e.g. from
+:func:`initial_orbit_determination` or :func:`fit_orbit`), so it can be
+used directly with IOD candidates or converged states.  A linearization
+at each seed builds the initial mass matrix internally.

@@ -2,8 +2,11 @@
 //!
 //! Provides [`fit_orbit_mcmc`], which estimates the range of orbits
 //! consistent with a set of observations by running parallel MCMC chains.
-//! Each candidate orbital state (seed) gets its own chain, and the results
-//! are pooled into a single [`OrbitSamples`] collection.
+//! Each converged differential-correction fit gets its own chain, and the
+//! results are pooled into a single [`OrbitSamples`] collection.
+//!
+//! Sampling uses whitened Cartesian coordinates centered on the fit state,
+//! with the DC covariance as the whitening factor.
 //!
 // BSD 3-Clause License
 //
@@ -78,7 +81,7 @@ pub struct OrbitSamples {
     /// Each inner vector is `[x, y, z, vx, vy, vz, ng_params...]` in the
     /// Equatorial frame at `epoch`.
     pub draws: Vec<Vec<f64>>,
-    /// Seed index (0-based) that generated each draw.
+    /// Fit index (0-based) that generated each draw.
     pub chain_id: Vec<usize>,
     /// True if the draw was a divergent transition.
     pub divergent: Vec<bool>,
@@ -105,9 +108,9 @@ impl LogpError for PropagationError {
     }
 }
 
-/// Minimum heliocentric distance (AU) before penalty ramps up.
+/// Minimum barycentric distance (AU) before penalty ramps up.
 const PRIOR_R_MIN: f64 = 0.01;
-/// Maximum heliocentric distance (AU) before penalty ramps up.
+/// Maximum barycentric distance (AU) before penalty ramps up.
 const PRIOR_R_MAX: f64 = 1000.0;
 /// Steepness of the logistic barrier.
 const PRIOR_K: f64 = 100.0;
@@ -116,29 +119,33 @@ const PRIOR_K: f64 = 100.0;
 /// logistic barriers so the gradient is always well-defined.
 ///
 /// Penalties:
-///   - heliocentric distance below `PRIOR_R_MIN` or above `PRIOR_R_MAX`
-///   - speed exceeding local escape speed `v_esc = sqrt(2 * GMS / r)`
+///   - barycentric distance below `PRIOR_R_MIN` or above `PRIOR_R_MAX`
+///   - orbital eccentricity `e >= 1` (unbound / hyperbolic orbits)
 ///
-/// Returns `(log_prior, grad_prior)` where `grad_prior` is a D-vector.
-fn physical_prior(x: &DVector<f64>) -> (f64, DVector<f64>) {
-    let d = x.len();
-    let mut grad = DVector::<f64>::zeros(d);
+/// The eccentricity barrier uses `e²` (via the eccentricity vector) rather
+/// than `e` to avoid a `1/e` singularity at circular orbits.  Because
+/// `e² < 1 ⟺ e < 1`, the barrier `log σ(K·(1 − e²))` enforces bound
+/// orbits while remaining smooth everywhere.
+///
+/// Returns `(log_prior, grad_prior)` where `grad_prior` has 6 elements
+/// `[d/dx, d/dy, d/dz, d/dvx, d/dvy, d/dvz]`.
+fn physical_prior(pos: &[f64; 3], vel: &[f64; 3]) -> (f64, [f64; 6]) {
+    let mut grad = [0.0; 6];
     let mut lp = 0.0;
 
-    let px = x[0];
-    let py = x[1];
-    let pz = x[2];
-    let vx = x[3];
-    let vy = x[4];
-    let vz = x[5];
+    let px = pos[0];
+    let py = pos[1];
+    let pz = pos[2];
+    let vx = vel[0];
+    let vy = vel[1];
+    let vz = vel[2];
 
     let r2 = px * px + py * py + pz * pz;
     let r = r2.sqrt();
     let v2 = vx * vx + vy * vy + vz * vz;
-    let v = v2.sqrt();
 
     if r < 1e-15 {
-        return (-1e10, grad);
+        return (-1e10, [0.0; 6]);
     }
 
     // r_min barrier: log(sigmoid(K * (r - r_min)))
@@ -150,39 +157,74 @@ fn physical_prior(x: &DVector<f64>) -> (f64, DVector<f64>) {
     let z_max = PRIOR_K * (PRIOR_R_MAX - r);
     let (lp_max, dlp_dz_max) = log_sigmoid_with_grad(z_max, PRIOR_K);
     lp += lp_max;
-    // dz_max/dr = -K
     let dlp_dr_max = -dlp_dz_max;
 
-    // escape speed barrier: log(sigmoid(K * (v_esc - v)))
-    let v_esc = (2.0 * GMS / r).sqrt();
-    let z_esc = PRIOR_K * (v_esc - v);
-    let (lp_esc, dlp_dz_esc) = log_sigmoid_with_grad(z_esc, PRIOR_K);
-    lp += lp_esc;
-
-    let dv_esc_dr = -GMS / (r2 * v_esc);
-    let dlp_dr_esc = dlp_dz_esc * dv_esc_dr;
-
-    let dlp_dr = dlp_dr_min + dlp_dr_max + dlp_dr_esc;
+    // Distance gradient (position only).
+    let dlp_dr = dlp_dr_min + dlp_dr_max;
     let inv_r = 1.0 / r;
-    grad[0] += dlp_dr * px * inv_r;
-    grad[1] += dlp_dr * py * inv_r;
-    grad[2] += dlp_dr * pz * inv_r;
+    grad[0] = dlp_dr * px * inv_r;
+    grad[1] = dlp_dr * py * inv_r;
+    grad[2] = dlp_dr * pz * inv_r;
 
-    if v > 1e-15 {
-        let dlp_dv = -dlp_dz_esc;
-        let inv_v = 1.0 / v;
-        grad[3] += dlp_dv * vx * inv_v;
-        grad[4] += dlp_dv * vy * inv_v;
-        grad[5] += dlp_dv * vz * inv_v;
+    // Eccentricity barrier: log(sigmoid(K * (1 - e²)))
+    //
+    // The eccentricity vector for a Keplerian orbit about the Sun:
+    //   e_vec = ((v² − μ/r)·pos − (pos·vel)·vel) / μ
+    //
+    // Using e² = |e_vec|² avoids a 1/e singularity at e = 0.
+    let mu = GMS;
+    let inv_mu = 1.0 / mu;
+    let a_coeff = v2 - mu / r;
+    let rdotv = px * vx + py * vy + pz * vz;
+
+    let ex = (a_coeff * px - rdotv * vx) * inv_mu;
+    let ey = (a_coeff * py - rdotv * vy) * inv_mu;
+    let ez = (a_coeff * pz - rdotv * vz) * inv_mu;
+    let e_sq = ex * ex + ey * ey + ez * ez;
+
+    let z_ecc = PRIOR_K * (1.0 - e_sq);
+    let (lp_ecc, dlp_df_ecc) = log_sigmoid_with_grad(z_ecc, PRIOR_K);
+    lp += lp_ecc;
+
+    // Gradient of e² w.r.t. the 6 state variables.
+    //
+    // d(e_vec_i)/d(r_j) = r_i·r_j/r³ + (a_coeff/μ)·δ_ij − v_i·v_j/μ
+    // d(e_vec_i)/d(v_j) = (2·v_j·r_i − r_j·v_i − (r·v)·δ_ij) / μ
+    // d(e²)/d(·) = 2 · Σ_i e_vec_i · d(e_vec_i)/d(·)
+    //
+    // dlp/d(state) = dlp/d(1−e²) · d(1−e²)/d(state) = −dlp_df_ecc · d(e²)/d(state)
+    let e_vec = [ex, ey, ez];
+    let pos_arr = [px, py, pz];
+    let vel_arr = [vx, vy, vz];
+    let inv_r3 = 1.0 / (r * r2);
+    let a_over_mu = a_coeff * inv_mu;
+
+    for j in 0..3 {
+        let mut de_sq_dr = 0.0;
+        let mut de_sq_dv = 0.0;
+        for i in 0..3 {
+            let kron = if i == j { 1.0 } else { 0.0 };
+
+            let de_dr = pos_arr[i] * pos_arr[j] * inv_r3 + a_over_mu * kron
+                - vel_arr[i] * vel_arr[j] * inv_mu;
+            de_sq_dr += e_vec[i] * de_dr;
+
+            let de_dv =
+                (2.0 * vel_arr[j] * pos_arr[i] - pos_arr[j] * vel_arr[i] - rdotv * kron) * inv_mu;
+            de_sq_dv += e_vec[i] * de_dv;
+        }
+        grad[j] += -dlp_df_ecc * 2.0 * de_sq_dr;
+        grad[3 + j] += -dlp_df_ecc * 2.0 * de_sq_dv;
     }
 
     (lp, grad)
 }
 
-/// Compute `log(sigmoid(z))` and `sigmoid(-z) * k`.
+/// Compute `log(sigmoid(z))` and `d(log sigmoid(z))/d(x)` for `z = k·x`.
 ///
-/// Returns `(lp, d(lp)/d(outer))` where the caller supplies `df/d(outer)`
-/// separately.
+/// Returns `(lp, dlp_dx)` where `dlp_dx = σ(−z) · k`.  When the caller
+/// has `z = k · f(x)`, multiply the second return by `df/dx` to get the
+/// total derivative.
 fn log_sigmoid_with_grad(z: f64, k: f64) -> (f64, f64) {
     let lp = if z > 20.0 {
         0.0
@@ -203,60 +245,71 @@ fn log_sigmoid_with_grad(z: f64, k: f64) -> (f64, f64) {
     (lp, sig_neg_z * k)
 }
 
-/// Log-posterior density over orbital states, parameterized in a whitened
-/// coordinate system centered on the seed state.
+// ---------------------------------------------------------------------------
+
+/// Log-posterior density over orbital states, parameterized in whitened
+/// Cartesian coordinates centered on the seed state.
 struct OrbitalPosterior {
     /// Seed state at the reference epoch.
     seed_state: State<Equatorial>,
-    /// Lower Cholesky factor of the mass matrix, D x D.
-    chol_l: DMatrix<f64>,
-    /// Seed state vector (position ++ velocity ++ non-grav params), D-vector.
+    /// Whitening factor (sqrt-covariance), D × D.
+    whiten_l: DMatrix<f64>,
+    /// Seed vector `[x, y, z, vx, vy, vz, ng_params...]`, D-vector.
     seed_vec: DVector<f64>,
     /// Observations (time-sorted, shared across chains).
     obs: Arc<[Observation]>,
-    /// Inclusion mask (all true).
+    /// Inclusion mask for observations (from DC outlier rejection).
     included: Vec<bool>,
     /// Whether to include extended (asteroid) perturbers.
     include_asteroids: bool,
     /// Non-gravitational model (if any).
     non_grav: Option<NonGravModel>,
-    /// Parameter dimension: 6 + Np.
-    dim: usize,
 }
 
 impl OrbitalPosterior {
-    /// Transform whitened coordinates back to physical state vector.
-    fn xi_to_x(&self, xi: &[f64]) -> DVector<f64> {
+    /// Transform whitened coordinates back to Cartesian + non-grav vector.
+    fn xi_to_cart(&self, xi: &[f64]) -> DVector<f64> {
         let xi_vec = DVector::from_column_slice(xi);
-        &self.seed_vec + &self.chol_l * &xi_vec
+        &self.seed_vec + &self.whiten_l * &xi_vec
     }
 
-    /// Transform whitened coordinates to a State + optional `NonGravModel`.
-    fn xi_to_state(&self, xi: &[f64]) -> (State<Equatorial>, Option<NonGravModel>) {
-        let x = self.xi_to_x(xi);
+    /// Build a `State` (and optional `NonGravModel`) from the full
+    /// Cartesian parameter vector.
+    fn vec_to_state(
+        &self,
+        cart_full: &DVector<f64>,
+    ) -> (State<Equatorial>, Option<NonGravModel>, [f64; 3], [f64; 3]) {
+        let pos: [f64; 3] = cart_full.as_slice()[..3].try_into().unwrap();
+        let vel: [f64; 3] = cart_full.as_slice()[3..6].try_into().unwrap();
 
         let mut state = self.seed_state.clone();
-        state.pos = [x[0], x[1], x[2]].into();
-        state.vel = [x[3], x[4], x[5]].into();
+        state.pos = pos.into();
+        state.vel = vel.into();
 
         let ng = self.non_grav.as_ref().map(|model| {
             let mut m = model.clone();
             let np = m.n_free_params();
             let mut params = vec![0.0; np];
             for k in 0..np {
-                params[k] = x[6 + k];
+                params[k] = cart_full[6 + k];
             }
             m.set_free_params(&params);
             m
         });
 
-        (state, ng)
+        (state, ng, pos, vel)
     }
 
     /// Compute logp and gradient from an STM sweep result.
-    fn logp_from_sweep(&self, sweep: &[StmObs], xi: &[f64], grad_xi: &mut [f64]) -> f64 {
-        let d = self.dim;
-        let mut grad_x = DVector::<f64>::zeros(d);
+    fn logp_from_sweep(
+        &self,
+        sweep: &[StmObs],
+        pos: &[f64; 3],
+        vel: &[f64; 3],
+        grad_xi: &mut [f64],
+    ) -> f64 {
+        let d = self.seed_vec.len();
+        let mut grad_cart = DVector::<f64>::zeros(d);
         let mut logp = 0.0;
         let nu = STUDENT_NU;
         let gaussian = nu.is_infinite();
@@ -273,27 +326,28 @@ impl OrbitalPosterior {
                     logp += -0.5 * r * r / sigma2;
                     let dl_dx_factor = r / sigma2;
                     for j in 0..d {
-                        grad_x[j] += h_epoch[(k, j)] * dl_dx_factor;
+                        grad_cart[j] += h_epoch[(k, j)] * dl_dx_factor;
                     }
                 } else {
                     let s = r * r / (nu * sigma2);
                     logp += -0.5 * (nu + 1.0) * (1.0 + s).ln();
                     let dl_dx_factor = (nu + 1.0) * r / (nu * sigma2 + r * r);
                     for j in 0..d {
-                        grad_x[j] += h_epoch[(k, j)] * dl_dx_factor;
+                        grad_cart[j] += h_epoch[(k, j)] * dl_dx_factor;
                     }
                 }
             }
         }
 
-        // Add physical prior.
-        let x = self.xi_to_x(xi);
-        let (lp_prior, grad_prior) = physical_prior(&x);
+        // Physical prior (operates on Cartesian state).
+        let (lp_prior, grad_prior) = physical_prior(pos, vel);
         logp += lp_prior;
-        grad_x += &grad_prior;
+        for i in 0..6 {
+            grad_cart[i] += grad_prior[i];
+        }
 
-        // Transform gradient: grad_xi = L^T * grad_x
-        let g = self.chol_l.transpose() * &grad_x;
+        // Transform to whitened coordinates: grad_xi = L^T * grad_cart.
+        let g = self.whiten_l.transpose() * &grad_cart;
         for j in 0..d {
             grad_xi[j] = g[j];
         }
@@ -305,7 +359,7 @@ impl OrbitalPosterior {
 impl nuts_rs::HasDims for OrbitalPosterior {
     fn dim_sizes(&self) -> HashMap<String, u64> {
         let mut m = HashMap::new();
-        let _ = m.insert("dim".to_string(), self.dim as u64);
+        let _ = m.insert("dim".to_string(), self.seed_vec.len() as u64);
         m
     }
 }
@@ -316,11 +370,24 @@ impl CpuLogpFunc for OrbitalPosterior {
     type ExpandedVector = Vec<f64>;
 
     fn dim(&self) -> usize {
-        self.dim
+        self.seed_vec.len()
     }
 
     fn logp(&mut self, position: &[f64], gradient: &mut [f64]) -> Result<f64, Self::LogpError> {
-        let (trial_state, trial_ng) = self.xi_to_state(position);
+        let cart_full = self.xi_to_cart(position);
+        let (trial_state, trial_ng, pos, vel) = self.vec_to_state(&cart_full);
+
+        // Hard wall: reject unbound (hyperbolic) proposals.
+        // Two-body energy: E = v²/2 − μ/r.  Bound ⟺ E < 0 ⟺ v² < 2μ/r.
+        let r2 = pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2];
+        let v2 = vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2];
+        let r = r2.sqrt();
+        if r < 1e-15 || v2 >= 2.0 * GMS / r {
+            return Err(PropagationError {
+                msg: "unbound orbit".into(),
+                recoverable: true,
+            });
+        }
 
         let sweep = stm_sweep(
             &trial_state,
@@ -334,7 +401,7 @@ impl CpuLogpFunc for OrbitalPosterior {
             recoverable: true,
         })?;
 
-        let lp = self.logp_from_sweep(&sweep, position, gradient);
+        let lp = self.logp_from_sweep(&sweep, &pos, &vel, gradient);
         Ok(lp)
     }
 
@@ -343,8 +410,8 @@ impl CpuLogpFunc for OrbitalPosterior {
         _rng: &mut R,
         array: &[f64],
     ) -> Result<Self::ExpandedVector, CpuMathError> {
-        let x = self.xi_to_x(array);
-        Ok(x.as_slice().to_vec())
+        let cart_full = self.xi_to_cart(array);
+        Ok(cart_full.as_slice().to_vec())
     }
 }
 
@@ -360,16 +427,14 @@ fn build_cholesky(
     let np = non_grav.map_or(0, NonGravModel::n_free_params);
     let included = vec![true; obs.len()];
 
-    // Try single-pass linearization.
     if let Ok((info_mat, _, _)) =
         accumulate_normal_equations(seed, obs, &included, include_asteroids, non_grav)
-        && let Some(chol) = cholesky_from_info(&info_mat)
+        && let Some(chol) = sqrt_cov_from_info(&info_mat)
     {
         return chol;
     }
 
-    // Fallback: diagonal heuristic.
-    diagonal_heuristic_cholesky(seed, np)
+    diagonal_heuristic_whiten_cart(seed, np)
 }
 
 /// Compute a whitening factor directly from the information matrix.
@@ -380,7 +445,7 @@ fn build_cholesky(
 /// are raised to that threshold to cap the condition number.
 ///
 /// Returns `None` if the matrix is fully degenerate.
-fn cholesky_from_info(info: &DMatrix<f64>) -> Option<DMatrix<f64>> {
+fn sqrt_cov_from_info(info: &DMatrix<f64>) -> Option<DMatrix<f64>> {
     let eigen = info.clone().symmetric_eigen();
     let max_eig = eigen.eigenvalues.iter().copied().fold(0.0_f64, f64::max);
     if max_eig < 1e-30 {
@@ -396,13 +461,14 @@ fn cholesky_from_info(info: &DMatrix<f64>) -> Option<DMatrix<f64>> {
     Some(&eigen.eigenvectors * DMatrix::from_diagonal(&scale))
 }
 
-/// Diagonal heuristic: 1% of heliocentric distance for position,
-/// 1% of orbital speed for velocity.
-fn diagonal_heuristic_cholesky(seed: &State<Equatorial>, np: usize) -> DMatrix<f64> {
+/// Diagonal heuristic in Cartesian space.
+///
+/// Position uncertainties are set to 1% of the current heliocentric
+/// distance, velocity uncertainties to 1% of the current speed.
+fn diagonal_heuristic_whiten_cart(seed: &State<Equatorial>, np: usize) -> DMatrix<f64> {
     let d = 6 + np;
     let pos: [f64; 3] = seed.pos.into();
     let vel: [f64; 3] = seed.vel.into();
-
     let r = (pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2])
         .sqrt()
         .max(0.1);
@@ -410,15 +476,12 @@ fn diagonal_heuristic_cholesky(seed: &State<Equatorial>, np: usize) -> DMatrix<f
         .sqrt()
         .max(1e-4);
 
-    let pos_sigma = 0.01 * r;
-    let vel_sigma = 0.01 * v;
-
     let mut l = DMatrix::<f64>::zeros(d, d);
     for i in 0..3 {
-        l[(i, i)] = pos_sigma;
+        l[(i, i)] = 0.01 * r;
     }
     for i in 3..6 {
-        l[(i, i)] = vel_sigma;
+        l[(i, i)] = 0.01 * v;
     }
     for i in 6..d {
         l[(i, i)] = 1e-10;
@@ -439,8 +502,9 @@ fn diagonal_heuristic_cholesky(seed: &State<Equatorial>, np: usize) -> DMatrix<f
 /// A single non-gravitational model (if any) is shared across all chains.
 ///
 /// When there are fewer seeds than CPU cores, each seed spawns multiple
-/// independent sub-chains.  The `chain_id` in the returned
-/// [`OrbitSamples`] identifies the seed (orbital mode), not the sub-chain.
+/// independent sub-chains with dispersed starting points.  The `chain_id`
+/// in the returned [`OrbitSamples`] identifies the seed (orbital mode),
+/// not the sub-chain.
 ///
 /// `num_draws` is the **total** number of orbit samples returned across
 /// all seeds.  Each seed receives `num_draws / n_seeds` samples (remainder
@@ -458,6 +522,9 @@ fn diagonal_heuristic_cholesky(seed: &State<Equatorial>, np: usize) -> DMatrix<f
 /// * `non_grav` -- Optional shared non-gravitational model.
 /// * `maxdepth` -- Maximum sampler tree depth (default 10).  Higher values
 ///   allow more thorough exploration at greater cost.
+/// * `target_accept` -- Target acceptance probability for step-size
+///   adaptation (default 0.8).  Lowering this (e.g. 0.6) makes the sampler
+///   take larger steps, which helps in poorly constrained situations.
 ///
 /// # Errors
 /// Returns an error if `seeds` is empty or two-body propagation fails.
@@ -469,6 +536,7 @@ pub fn fit_orbit_mcmc(
     num_tune: usize,
     non_grav: Option<&NonGravModel>,
     maxdepth: u64,
+    target_accept: f64,
 ) -> KeteResult<OrbitSamples> {
     if seeds.is_empty() {
         return Err(Error::ValueError("No seeds provided".into()));
@@ -542,6 +610,7 @@ pub fn fit_orbit_mcmc(
                 draws,
                 num_tune,
                 maxdepth,
+                target_accept,
                 rng_seed,
             );
             (seed_idx, result)
@@ -573,25 +642,29 @@ pub fn fit_orbit_mcmc(
 /// Run a single NUTS chain for one seed.
 fn run_single_chain(
     seed: &State<Equatorial>,
-    chol_l: &DMatrix<f64>,
+    whiten_l: &DMatrix<f64>,
     sorted_obs: &Arc<[Observation]>,
     include_asteroids: bool,
     non_grav: Option<&NonGravModel>,
     num_draws: usize,
     num_tune: usize,
     maxdepth: u64,
+    target_accept: f64,
     chain_idx: u64,
 ) -> KeteResult<(Vec<Vec<f64>>, Vec<bool>)> {
     let np = non_grav.map_or(0, NonGravModel::n_free_params);
     let d = 6 + np;
 
+    // Seed vector in Cartesian coordinates.
     let pos: [f64; 3] = seed.pos.into();
     let vel: [f64; 3] = seed.vel.into();
     let mut seed_vec = DVector::<f64>::zeros(d);
-    for i in 0..3 {
-        seed_vec[i] = pos[i];
-        seed_vec[3 + i] = vel[i];
-    }
+    seed_vec[0] = pos[0];
+    seed_vec[1] = pos[1];
+    seed_vec[2] = pos[2];
+    seed_vec[3] = vel[0];
+    seed_vec[4] = vel[1];
+    seed_vec[5] = vel[2];
     if let Some(ng) = non_grav {
         let params = ng.get_free_params();
         for k in 0..np {
@@ -599,18 +672,32 @@ fn run_single_chain(
         }
     }
 
+    // If the seed orbit is hyperbolic, project velocity to make it
+    // marginally bound and fall back to the diagonal heuristic.
+    let r = (pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]).sqrt();
+    let v = (vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2]).sqrt();
+    let v_esc = (2.0 * GMS / r.max(1e-15)).sqrt();
+    let whiten_l = if v >= v_esc {
+        let scale = 0.95 * v_esc / v;
+        seed_vec[3] *= scale;
+        seed_vec[4] *= scale;
+        seed_vec[5] *= scale;
+        diagonal_heuristic_whiten_cart(seed, np)
+    } else {
+        whiten_l.clone()
+    };
+
     let posterior = OrbitalPosterior {
         seed_state: seed.clone(),
-        chol_l: chol_l.clone(),
+        whiten_l: whiten_l.clone(),
         seed_vec: seed_vec.clone(),
         obs: Arc::clone(sorted_obs),
         included: vec![true; sorted_obs.len()],
         include_asteroids,
         non_grav: non_grav.cloned(),
-        dim: d,
     };
 
-    let settings = DiagGradNutsSettings {
+    let mut settings = DiagGradNutsSettings {
         num_tune: num_tune as u64,
         num_draws: num_draws as u64,
         maxdepth,
@@ -618,12 +705,22 @@ fn run_single_chain(
         num_chains: 1,
         ..DiagGradNutsSettings::default()
     };
+    settings.adapt_options.step_size_settings.target_accept = target_accept;
 
     let math = CpuMath::new(posterior);
     let mut rng = rand::rngs::SmallRng::seed_from_u64(chain_idx);
     let mut sampler = settings.new_chain(chain_idx, math, &mut rng);
 
-    let init = vec![0.0_f64; d];
+    // Initialize at a random draw from the whitening distribution
+    // (standard normal in xi-space ≈ covariance sample in Cartesian).
+    // This disperses sub-chains across the prior, improving exploration
+    // of elongated or multi-modal posteriors.
+    let init: Vec<f64> = {
+        use rand::distr::Uniform;
+        use rand::prelude::Distribution;
+        let uniform = Uniform::new(-1.0, 1.0).unwrap();
+        (0..d).map(|_| uniform.sample(&mut rng)).collect()
+    };
     sampler
         .set_position(&init)
         .map_err(|e| Error::ValueError(format!("NUTS init failed: {e}")))?;
@@ -641,10 +738,10 @@ fn run_single_chain(
             continue;
         }
 
-        let xi = position.as_ref();
-        let xi_vec = DVector::from_column_slice(xi);
-        let x = &seed_vec + chol_l * &xi_vec;
-        draws.push(x.as_slice().to_vec());
+        // Convert from whitened xi-coordinates back to Cartesian.
+        let xi = DVector::from_column_slice(position.as_ref());
+        let cart = &seed_vec + &whiten_l * &xi;
+        draws.push(cart.as_slice().to_vec());
         divergent.push(progress.diverging);
     }
 
@@ -654,23 +751,16 @@ fn run_single_chain(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kete_core::desigs::Desig;
-
-    fn make_state(pos: [f64; 3], vel: [f64; 3], jd: f64) -> State<Equatorial> {
-        State::new(Desig::Empty, jd.into(), pos.into(), vel.into(), 0)
-    }
 
     #[test]
     fn physical_prior_nominal_orbit_no_penalty() {
-        // ~1 AU circular orbit: well inside allowed bounds.
-        let mut x = DVector::<f64>::zeros(6);
-        // 1 AU along x
-        x[0] = 1.0;
+        // ~1 AU circular orbit: well inside allowed bounds, e ≈ 0.03.
+        let pos = [1.0, 0.0, 0.0];
         // ~circular speed at 1 AU (AU/day)
-        x[4] = 0.017;
-        let (lp, grad) = physical_prior(&x);
-        // logp should be modest (escape-speed barrier contributes a small term
-        // even for a valid orbit because v < v_esc but not by a large margin).
+        let vel = [0.0, 0.017, 0.0];
+        let (lp, grad) = physical_prior(&pos, &vel);
+        // logp should be modest (eccentricity barrier contributes a small term
+        // even for a valid orbit because e > 0 but not near 1).
         assert!(lp > -1.0, "logp = {lp}, expected > -1 for nominal orbit");
         // gradient should be finite.
         assert!(
@@ -682,10 +772,9 @@ mod tests {
     #[test]
     fn physical_prior_too_close_penalized() {
         // r = 0.001 AU -- well below PRIOR_R_MIN = 0.01.
-        let mut x = DVector::<f64>::zeros(6);
-        x[0] = 0.001;
-        x[4] = 0.01;
-        let (lp, grad) = physical_prior(&x);
+        let pos = [0.001, 0.0, 0.0];
+        let vel = [0.0, 0.01, 0.0];
+        let (lp, grad) = physical_prior(&pos, &vel);
         assert!(lp < -1.0, "logp = {lp}, expected penalty for r << r_min");
         assert!(grad[0].is_finite(), "gradient must be finite");
     }
@@ -693,10 +782,9 @@ mod tests {
     #[test]
     fn physical_prior_too_far_penalized() {
         // r = 5000 AU -- well above PRIOR_R_MAX.
-        let mut x = DVector::<f64>::zeros(6);
-        x[0] = 5000.0;
-        x[4] = 1e-5;
-        let (lp, grad) = physical_prior(&x);
+        let pos = [5000.0, 0.0, 0.0];
+        let vel = [0.0, 1e-5, 0.0];
+        let (lp, grad) = physical_prior(&pos, &vel);
         assert!(
             lp < -10.0,
             "logp = {lp}, expected large penalty for r >> r_max"
@@ -705,30 +793,30 @@ mod tests {
     }
 
     #[test]
-    fn physical_prior_escape_speed_penalized() {
-        // r = 1 AU, v_esc ~ 0.024 AU/day. Set v = 0.1 AU/day (>>v_esc).
-        let mut x = DVector::<f64>::zeros(6);
-        x[0] = 1.0;
-        x[4] = 0.1;
-        let (lp, grad) = physical_prior(&x);
-        assert!(lp < -5.0, "logp = {lp}, expected penalty for v >> v_esc");
+    fn physical_prior_hyperbolic_penalized() {
+        // r = 1 AU, v = 0.1 AU/day (>> v_esc ≈ 0.024). Eccentricity >> 1.
+        let pos = [1.0, 0.0, 0.0];
+        let vel = [0.0, 0.1, 0.0];
+        let (lp, grad) = physical_prior(&pos, &vel);
+        assert!(lp < -5.0, "logp = {lp}, expected penalty for e >> 1");
         assert!(grad[4].is_finite(), "velocity gradient must be finite");
     }
 
     #[test]
     fn physical_prior_zero_radius() {
-        let x = DVector::<f64>::zeros(6);
-        let (lp, grad) = physical_prior(&x);
+        let pos = [0.0, 0.0, 0.0];
+        let vel = [0.0, 0.0, 0.0];
+        let (lp, grad) = physical_prior(&pos, &vel);
         assert!(lp < -1e9, "logp = {lp}, expected huge penalty for r=0");
         // gradient should be finite (we return early with zeros).
         assert!(grad.iter().all(|g| g.is_finite()));
     }
 
     #[test]
-    fn cholesky_from_info_identity() {
+    fn sqrt_cov_from_info_identity() {
         // info = I_6 => cov = I_6 => L = I_6.
         let info = DMatrix::<f64>::identity(6, 6);
-        let l = cholesky_from_info(&info).expect("should not be None");
+        let l = sqrt_cov_from_info(&info).expect("should not be None");
         // L * L^T should be close to I (the covariance).
         let cov = &l * l.transpose();
         for i in 0..6 {
@@ -744,12 +832,12 @@ mod tests {
     }
 
     #[test]
-    fn cholesky_from_info_scaled() {
+    fn sqrt_cov_from_info_scaled() {
         // info = diag(4, 100, 1, 1, 1, 1) => cov = diag(1/4, 1/100, 1, ...).
         let mut info = DMatrix::<f64>::identity(6, 6);
         info[(0, 0)] = 4.0;
         info[(1, 1)] = 100.0;
-        let l = cholesky_from_info(&info).expect("should not be None");
+        let l = sqrt_cov_from_info(&info).expect("should not be None");
         let cov = &l * l.transpose();
         assert!(
             (cov[(0, 0)] - 0.25).abs() < 1e-12,
@@ -764,35 +852,166 @@ mod tests {
     }
 
     #[test]
-    fn cholesky_from_info_degenerate_returns_none() {
+    fn sqrt_cov_from_info_degenerate_returns_none() {
         let info = DMatrix::<f64>::zeros(6, 6);
-        assert!(cholesky_from_info(&info).is_none());
+        assert!(sqrt_cov_from_info(&info).is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // Integration test: full logp gradient via whitened Cartesian
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn logp_gradient_matches_finite_difference() {
+        use kete_core::desigs::Desig;
+
+        // Construct a minimal OrbitalPosterior with zero observations.
+        // logp = physical_prior only (no likelihood term).
+        let seed_pos = [1.5, 0.3, -0.1];
+        let seed_vel = [0.002, -0.014, 0.001];
+        let seed_state: State<Equatorial> = State::new(
+            Desig::Empty,
+            2460000.5.into(),
+            seed_pos.into(),
+            seed_vel.into(),
+            0,
+        );
+
+        let d = 6;
+        let mut seed_vec = DVector::<f64>::zeros(d);
+        seed_vec[0] = seed_pos[0];
+        seed_vec[1] = seed_pos[1];
+        seed_vec[2] = seed_pos[2];
+        seed_vec[3] = seed_vel[0];
+        seed_vec[4] = seed_vel[1];
+        seed_vec[5] = seed_vel[2];
+
+        // Identity whitening: xi == Cartesian deviations.
+        let whiten_l = DMatrix::<f64>::identity(d, d);
+        let obs: Arc<[Observation]> = Vec::new().into();
+
+        let mut posterior = OrbitalPosterior {
+            seed_state,
+            whiten_l,
+            seed_vec,
+            obs: Arc::clone(&obs),
+            included: vec![],
+            include_asteroids: false,
+            non_grav: None,
+        };
+
+        // Evaluate at a small offset from the seed.
+        let xi = [0.001, -0.0005, 0.002, 0.0001, -0.0001, 0.0003];
+        let mut grad = [0.0_f64; 6];
+        let lp = posterior
+            .logp(&xi, &mut grad)
+            .expect("logp should succeed with no observations");
+
+        assert!(lp.is_finite(), "logp = {lp}");
+        assert!(grad.iter().all(|g| g.is_finite()), "gradient not finite");
+
+        // Finite-difference check on each component.
+        let eps = 1e-6;
+        for i in 0..6 {
+            let mut xi_p = xi;
+            let mut xi_m = xi;
+            xi_p[i] += eps;
+            xi_m[i] -= eps;
+
+            let mut g_dummy = [0.0_f64; 6];
+            let lp_p = posterior.logp(&xi_p, &mut g_dummy).unwrap();
+            let lp_m = posterior.logp(&xi_m, &mut g_dummy).unwrap();
+            let fd = (lp_p - lp_m) / (2.0 * eps);
+
+            assert!(
+                (grad[i] - fd).abs() < 1e-4,
+                "grad[{i}]: analytic={} fd={} diff={}",
+                grad[i],
+                fd,
+                (grad[i] - fd).abs()
+            );
+        }
     }
 
     #[test]
-    fn diagonal_heuristic_shape_and_values() {
-        let seed = make_state([2.0, 0.0, 0.0], [0.0, 0.01, 0.0], 2451545.0);
-        let l = diagonal_heuristic_cholesky(&seed, 0);
-        assert_eq!(l.nrows(), 6);
-        assert_eq!(l.ncols(), 6);
-        // Position sigma: 0.01 * r = 0.01 * 2.0 = 0.02
-        assert!((l[(0, 0)] - 0.02).abs() < 1e-14);
-        assert!((l[(1, 1)] - 0.02).abs() < 1e-14);
-        assert!((l[(2, 2)] - 0.02).abs() < 1e-14);
-        // Velocity sigma: 0.01 * v = 0.01 * 0.01 = 0.0001
-        assert!((l[(3, 3)] - 0.0001).abs() < 1e-14);
-        // Off-diagonals zero.
-        assert!((l[(0, 1)]).abs() < 1e-30);
-    }
+    fn logp_gradient_nontrivial_whitening() {
+        use kete_core::desigs::Desig;
 
-    #[test]
-    fn diagonal_heuristic_with_nongrav_params() {
-        let seed = make_state([1.0, 0.0, 0.0], [0.0, 0.017, 0.0], 2451545.0);
-        let l = diagonal_heuristic_cholesky(&seed, 3);
-        assert_eq!(l.nrows(), 9);
-        assert_eq!(l.ncols(), 9);
-        for i in 6..9 {
-            assert!((l[(i, i)] - 1e-10).abs() < 1e-25);
+        // Same as above but with a realistic, correlated whitening matrix.
+        let seed_pos = [1.5, 0.3, -0.1];
+        let seed_vel = [0.002, -0.014, 0.001];
+        let seed_state: State<Equatorial> = State::new(
+            Desig::Empty,
+            2460000.5.into(),
+            seed_pos.into(),
+            seed_vel.into(),
+            0,
+        );
+
+        let d = 6;
+        let mut seed_vec = DVector::<f64>::zeros(d);
+        seed_vec[0] = seed_pos[0];
+        seed_vec[1] = seed_pos[1];
+        seed_vec[2] = seed_pos[2];
+        seed_vec[3] = seed_vel[0];
+        seed_vec[4] = seed_vel[1];
+        seed_vec[5] = seed_vel[2];
+
+        // Build a whitening matrix from a synthetic information matrix.
+        // The info matrix is the inverse of the covariance.
+        let mut info = DMatrix::<f64>::zeros(d, d);
+        info[(0, 0)] = 1e4;
+        info[(1, 1)] = 5e3;
+        info[(2, 2)] = 1e4;
+        info[(3, 3)] = 1e8;
+        info[(4, 4)] = 5e7;
+        info[(5, 5)] = 1e8;
+        // Off-diagonal coupling.
+        info[(0, 3)] = 5e5;
+        info[(3, 0)] = 5e5;
+        info[(1, 4)] = -3e5;
+        info[(4, 1)] = -3e5;
+
+        let whiten_l = sqrt_cov_from_info(&info).expect("info matrix should be valid");
+        let obs: Arc<[Observation]> = Vec::new().into();
+
+        let mut posterior = OrbitalPosterior {
+            seed_state,
+            whiten_l,
+            seed_vec,
+            obs: Arc::clone(&obs),
+            included: vec![],
+            include_asteroids: false,
+            non_grav: None,
+        };
+
+        // Evaluate at a moderate offset in whitened space.
+        let xi = [0.5, -0.3, 0.1, 0.2, -0.7, 0.4];
+        let mut grad = [0.0_f64; 6];
+        let lp = posterior.logp(&xi, &mut grad).expect("logp should succeed");
+
+        assert!(lp.is_finite(), "logp = {lp}");
+        assert!(grad.iter().all(|g| g.is_finite()), "gradient not finite");
+
+        let eps = 1e-6;
+        for i in 0..6 {
+            let mut xi_p = xi;
+            let mut xi_m = xi;
+            xi_p[i] += eps;
+            xi_m[i] -= eps;
+
+            let mut g_dummy = [0.0_f64; 6];
+            let lp_p = posterior.logp(&xi_p, &mut g_dummy).unwrap();
+            let lp_m = posterior.logp(&xi_m, &mut g_dummy).unwrap();
+            let fd = (lp_p - lp_m) / (2.0 * eps);
+
+            assert!(
+                (grad[i] - fd).abs() < 1e-3,
+                "grad[{i}]: analytic={} fd={} diff={}",
+                grad[i],
+                fd,
+                (grad[i] - fd).abs()
+            );
         }
     }
 }

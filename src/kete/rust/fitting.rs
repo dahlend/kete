@@ -721,8 +721,8 @@ impl PyOrbitSamples {
 ///
 /// Given one or more candidate orbital states (seeds) and a set of
 /// observations, this function produces a collection of plausible orbits
-/// that are statistically consistent with the data.  The spread of
-/// returned orbits represents the **uncertainty** in the orbit
+/// that are statistically consistent with the data.  The spread
+/// of returned orbits represents the **uncertainty** in the orbit
 /// determination -- wider spread means less certainty about the true
 /// orbit.
 ///
@@ -777,6 +777,11 @@ impl PyOrbitSamples {
 ///     Maximum tree depth for the sampler.  Higher values allow more
 ///     thorough exploration at greater computational cost.
 ///     Default is 10.
+/// target_accept : float
+///     Target acceptance probability for step-size adaptation during
+///     warmup.  Lowering this (e.g. 0.6) makes the sampler take larger
+///     leapfrog steps, which helps in poorly constrained situations.
+///     Default is 0.8.
 ///
 /// Returns
 /// -------
@@ -790,7 +795,7 @@ impl PyOrbitSamples {
 #[pyfunction]
 #[pyo3(
     name = "fit_orbit_mcmc",
-    signature = (seeds, observations, include_asteroids=false, num_draws=1000, num_tune=500, non_grav=None, maxdepth=10)
+    signature = (seeds, observations, include_asteroids=false, num_draws=1000, num_tune=500, non_grav=None, maxdepth=10, target_accept=0.8)
 )]
 #[allow(clippy::too_many_arguments)]
 pub fn fit_orbit_mcmc_py(
@@ -801,6 +806,7 @@ pub fn fit_orbit_mcmc_py(
     num_tune: usize,
     non_grav: Option<PyNonGravModel>,
     maxdepth: u64,
+    target_accept: f64,
 ) -> PyResult<PyOrbitSamples> {
     let spk = LOADED_SPK.try_read().map_err(Error::from)?;
     let raw_seeds: Vec<State<Equatorial>> = seeds
@@ -824,6 +830,7 @@ pub fn fit_orbit_mcmc_py(
         num_tune,
         ng.as_ref(),
         maxdepth,
+        target_accept,
     )?;
     Ok(PyOrbitSamples(result))
 }
