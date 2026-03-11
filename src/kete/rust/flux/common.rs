@@ -5,10 +5,10 @@ use itertools::Itertools;
 use kete_core::constants::{
     C_V, w1_color_correction, w2_color_correction, w3_color_correction, w4_color_correction,
 };
-use kete_flux::*;
 use kete_core::prelude::Error;
+use kete_flux::*;
 use nalgebra::UnitVector3;
-use pyo3::{PyResult, pyfunction};
+use pyo3::{PyResult, pyclass, pyfunction, pymethods};
 
 /// Calculate the visible flux at the observer assuming a convex faceted object made up
 /// of a collection of lambertian surfaces.
@@ -432,4 +432,104 @@ pub fn fib_lattice_vecs_py(n_facets: u32) -> Vec<[f64; 3]> {
         .iter()
         .map(|f| f.normal.into_inner().into())
         .collect()
+}
+
+/// A triangle-faceted ellipsoid shape, used for visualization of thermal models.
+///
+/// This generates a nearly-uniform triangulation of an ellipsoid using the algorithm
+/// from https://arxiv.org/abs/1502.04816.
+///
+/// Examples
+/// --------
+///
+/// .. plot::
+///     :context: close-figs
+///
+///         >>> import kete
+///         >>> import matplotlib.pyplot as plt
+///         >>> from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+///         >>> geom = kete.shape.TriangleEllipsoid(6)
+///         >>> # Plot the results
+///         >>> plt.figure(dpi=150, figsize=(4, 4))
+///         >>> plt.subplot(111, projection="3d")
+///         >>> polygons = Poly3DCollection(geom.facets, edgecolor="black", lw=0.2)
+///         >>> plt.gca().add_collection3d(polygons)
+///         >>> plt.xlim(-1.1, 1.1)
+///         >>> plt.ylim(-1.1, 1.1)
+///         >>> plt.gca().set_zlim(-1.1, 1.1)
+///
+/// Parameters
+/// ----------
+/// n_div :
+///     Number of divisions from pole to equator. Total facet count is ``8 * n_div^2``.
+///     Must be at least 1.
+/// x_scale :
+///     Scale factor along the x-axis.
+/// y_scale :
+///     Scale factor along the y-axis.
+/// z_scale :
+///     Scale factor along the z-axis.
+#[pyclass(module = "kete._core", name = "TriangleEllipsoid", frozen)]
+#[derive(Clone, Debug)]
+pub struct PyTriangleShape {
+    shape: TriangleShape,
+}
+
+#[pymethods]
+impl PyTriangleShape {
+    /// Create a new TriangleEllipsoid.
+    #[new]
+    #[pyo3(signature = (n_div=6, x_scale=1.0, y_scale=1.0, z_scale=1.0))]
+    pub fn new(n_div: u32, x_scale: f64, y_scale: f64, z_scale: f64) -> PyResult<Self> {
+        if n_div == 0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "n_div must be at least 1",
+            ));
+        }
+        Ok(Self {
+            shape: TriangleShape::new_ellipsoid(n_div, x_scale, y_scale, z_scale),
+        })
+    }
+
+    /// Unit normal vectors of each facet, shape ``(n, 3)``.
+    #[getter]
+    pub fn normals(&self) -> Vec<[f64; 3]> {
+        self.shape
+            .facets
+            .iter()
+            .map(|f| f.normal.into_inner().into())
+            .collect()
+    }
+
+    /// Area of each facet (normalized so total area is 1), shape ``(n,)``.
+    #[getter]
+    pub fn areas(&self) -> Vec<f64> {
+        self.shape.facets.iter().map(|f| f.area).collect()
+    }
+
+    /// Triangle vertices of each facet, shape ``(n, 3, 3)``.
+    #[getter]
+    pub fn facets(&self) -> Vec<[[f64; 3]; 3]> {
+        self.shape
+            .facets
+            .iter()
+            .map(|f| {
+                [
+                    f.vertices[0].into(),
+                    f.vertices[1].into(),
+                    f.vertices[2].into(),
+                ]
+            })
+            .collect()
+    }
+
+    /// Number of facets.
+    pub fn __len__(&self) -> usize {
+        self.shape.len()
+    }
+
+    /// String representation.
+    pub fn __repr__(&self) -> String {
+        format!("TriangleEllipsoid({} facets)", self.shape.len())
+    }
 }

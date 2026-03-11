@@ -85,6 +85,7 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<flux::PyNeatmParams>()?;
     m.add_class::<flux::PyFrmParams>()?;
     m.add_class::<flux::PyModelResults>()?;
+    m.add_class::<flux::PyTriangleShape>()?;
 
     m.add_class::<horizons::HorizonsProperties>()?;
 

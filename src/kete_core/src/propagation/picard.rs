@@ -438,6 +438,10 @@ fn chebyshev_eval<const R: usize, const C: usize>(x: f64, coef: &[[f64; R]; C]) 
     let mut next_t;
 
     let x2: f64 = 2.0 * x;
+    #[allow(
+        clippy::needless_range_loop,
+        reason = "idy indexes into the inner dimension of coef[idx][idy]"
+    )]
     for idy in 2..R {
         next_t = x2 * last_t - second_t;
         for idx in 0..C {

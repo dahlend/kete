@@ -55,5 +55,5 @@ pub use self::neatm::{NeatmParams, neatm_facet_temperature};
 pub use self::reflected::{
     HGParams, cometary_dust_phase_curve_correction, hg_phase_curve_correction,
 };
-pub use self::shapes::{ConvexShape, DEFAULT_SHAPE, Facet};
+pub use self::shapes::{ConvexShape, DEFAULT_SHAPE, Facet, TriangleFacet, TriangleShape};
 pub use self::sun::{solar_flux, solar_flux_black_body};
