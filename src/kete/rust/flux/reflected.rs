@@ -1,8 +1,8 @@
 use crate::{frame::PyFrames, vector::VectorLike};
 use kete_core::constants;
-use kete_core::flux::HGParams;
-use kete_core::flux::cometary_dust_phase_curve_correction;
-use kete_core::flux::hg_phase_curve_correction;
+use kete_flux::HGParams;
+use kete_flux::cometary_dust_phase_curve_correction;
+use kete_flux::hg_phase_curve_correction;
 use pyo3::PyResult;
 use pyo3::pyfunction;
 

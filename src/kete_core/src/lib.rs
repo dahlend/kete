@@ -81,7 +81,6 @@ pub mod constants;
 pub mod desigs;
 pub mod elements;
 pub mod errors;
-pub mod flux;
 pub mod fov;
 pub mod frames;
 pub mod io;
@@ -97,10 +96,6 @@ pub mod prelude {
     pub use crate::desigs::Desig;
     pub use crate::elements::CometElements;
     pub use crate::errors::{Error, KeteResult};
-    pub use crate::flux::{
-        CometMKParams, FrmParams, HGParams, NeatmParams, black_body_flux, frm_facet_temperature,
-        lambertian_flux, neatm_facet_temperature,
-    };
     pub use crate::frames::{Ecliptic, Equatorial, FK4, Galactic, NonInertialFrame};
     pub use crate::propagation::{
         NonGravModel, propagate_n_body_spk, propagate_two_body, propagation_n_body_spk_par,

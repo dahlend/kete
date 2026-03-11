@@ -3,7 +3,7 @@
 #![allow(clippy::missing_assert_message, reason = "Unnecessary for benchmarks")]
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use kete_core::flux::{BandInfo, FrmParams, HGParams, NeatmParams};
+use kete_flux::{BandInfo, FrmParams, HGParams, NeatmParams};
 use pprof::criterion::{Output, PProfProfiler};
 use std::hint::black_box;
 

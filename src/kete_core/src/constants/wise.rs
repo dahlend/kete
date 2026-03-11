@@ -29,8 +29,6 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use crate::flux::ColorCorrFn;
-
 /// WISE cryo effective wavelengths for W1, W2, W3, W4 for stellar sources
 pub const WISE_BANDS: [f64; 4] = [3352.6, 4602.8, 11560.8, 22088.3];
 
@@ -110,7 +108,7 @@ pub fn w4_color_correction(temp: f64) -> f64 {
 }
 
 /// The combined color corrections for WISE.
-pub const WISE_CC: [ColorCorrFn; 4] = [
+pub const WISE_CC: [fn(f64) -> f64; 4] = [
     w1_color_correction,
     w2_color_correction,
     w3_color_correction,

@@ -1,9 +1,9 @@
 [package]
-name = "kete_core"
+name = "kete_flux"
 readme = "README.md"
 keywords = ["physics", "simulation", "astronomy", "asteroid", "comet"]
 categories = ["Aerospace", "Science", "Simulation"]
-description = "Kete - Simulator of telescope surveys of the Solar System."
+description = "Thermal and reflected-light flux models for small solar system bodies"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,31 +11,15 @@ license.workspace = true
 repository.workspace = true
 
 [lib]
-name = "kete_core"
+name = "kete_flux"
 
 [lints]
 workspace = true
 
 [dependencies]
-argmin = "^0.10.0"
-argmin-math = "^0.4.0"
-chrono = "^0.4.38"
-crossbeam = "^0.8.4"
-directories = "^6.0"
-itertools = "^0.14.0"
-kete_stats = {version = "*", path = "../kete_stats"}
-nalgebra = {version = "^0.33.0", features = ["rayon"]}
-nom = "8.0.0"
-polars = {version = "0.48.1", optional=true, features=["parquet", "polars-io"]}
-pathfinding = "^4.10.0"
-pyo3 = { version =  "^0.25.0", features = ["abi3-py39"], optional=true}
-rayon = "^1.10.0"
+kete_core = {version = "*", path = "../kete_core"}
+nalgebra = {version = "^0.33.0"}
 serde = { version = "^1.0.203", features = ["derive"] }
-sgp4 = "^2.2.0"
-
-# bincode is pinned to ensure backward compatibility with saved files, all updates to
-# this version need to be validated that they are forward compatible.
-bincode = {version = "2.0.1", features=["derive", "serde"]}
 
 [dev-dependencies]
 criterion = { version = "^0.5.1", features = ["html_reports"] }
@@ -50,9 +34,5 @@ pprof = { version = "0.14", features = ["flamegraph", "criterion"] }
 pprof = { version = "0.14", features = ["flamegraph", "criterion", "frame-pointer"] }
 
 [[bench]]
-name = "propagation"
-harness = false
-
-[[bench]]
-name = "spice"
+name = "thermal"
 harness = false

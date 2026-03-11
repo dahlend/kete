@@ -2,7 +2,7 @@
 
 use rayon::prelude::*;
 
-use kete_core::flux::{BandInfo, HGParams};
+use kete_flux::{BandInfo, HGParams};
 use pyo3::prelude::*;
 
 use crate::{frame::PyFrames, vector::VectorLike};
@@ -25,10 +25,10 @@ use crate::{frame::PyFrames, vector::VectorLike};
 ///     Magnitudes in the different bands if zero mags were available.
 #[pyclass(frozen, module = "kete.flux", name = "ModelResults")]
 #[derive(Clone, Debug)]
-pub struct PyModelResults(pub kete_core::flux::ModelResults);
+pub struct PyModelResults(pub kete_flux::ModelResults);
 
-impl From<kete_core::flux::ModelResults> for PyModelResults {
-    fn from(value: kete_core::flux::ModelResults) -> Self {
+impl From<kete_flux::ModelResults> for PyModelResults {
+    fn from(value: kete_flux::ModelResults) -> Self {
         Self(value)
     }
 }
@@ -47,7 +47,7 @@ impl PyModelResults {
         magnitudes: Option<Vec<f64>>,
     ) -> Self {
         let magnitudes = magnitudes.unwrap_or(vec![f64::NAN; fluxes.len()]);
-        kete_core::flux::ModelResults {
+        kete_flux::ModelResults {
             fluxes,
             magnitudes,
             thermal_fluxes,
@@ -149,10 +149,10 @@ impl PyModelResults {
 ///     Optional - If zero mags are provided then magnitudes may be computed.
 #[pyclass(frozen, module = "kete.flux", name = "NeatmParams")]
 #[derive(Clone, Debug)]
-pub struct PyNeatmParams(pub kete_core::flux::NeatmParams);
+pub struct PyNeatmParams(pub kete_flux::NeatmParams);
 
-impl From<kete_core::flux::NeatmParams> for PyNeatmParams {
-    fn from(value: kete_core::flux::NeatmParams) -> Self {
+impl From<kete_flux::NeatmParams> for PyNeatmParams {
+    fn from(value: kete_flux::NeatmParams) -> Self {
         Self(value)
     }
 }
@@ -187,7 +187,7 @@ impl PyNeatmParams {
             .map(|(wavelength, z_mag)| BandInfo::new(*wavelength, 1.0, z_mag, None))
             .collect();
 
-        Ok(kete_core::flux::NeatmParams {
+        Ok(kete_flux::NeatmParams {
             obs_bands,
             beaming,
             band_albedos,
@@ -246,7 +246,7 @@ impl PyNeatmParams {
             ))?,
         };
         Ok(
-            kete_core::flux::NeatmParams::new_wise(band_albedos, beaming, hg_params, emissivity)
+            kete_flux::NeatmParams::new_wise(band_albedos, beaming, hg_params, emissivity)
                 .into(),
         )
     }
@@ -300,7 +300,7 @@ impl PyNeatmParams {
             ))?,
         };
         Ok(
-            kete_core::flux::NeatmParams::new_neos(band_albedos, beaming, hg_params, emissivity)
+            kete_flux::NeatmParams::new_neos(band_albedos, beaming, hg_params, emissivity)
                 .into(),
         )
     }
@@ -456,10 +456,10 @@ impl PyNeatmParams {
 ///     Optional - If zero mags are provided then magnitudes may be computed.
 #[pyclass(frozen, module = "kete.flux", name = "FrmParams")]
 #[derive(Clone, Debug)]
-pub struct PyFrmParams(pub kete_core::flux::FrmParams);
+pub struct PyFrmParams(pub kete_flux::FrmParams);
 
-impl From<kete_core::flux::FrmParams> for PyFrmParams {
-    fn from(value: kete_core::flux::FrmParams) -> Self {
+impl From<kete_flux::FrmParams> for PyFrmParams {
+    fn from(value: kete_flux::FrmParams) -> Self {
         Self(value)
     }
 }
@@ -493,7 +493,7 @@ impl PyFrmParams {
             .map(|(wavelength, z_mag)| BandInfo::new(*wavelength, 1.0, z_mag, None))
             .collect();
 
-        Ok(kete_core::flux::FrmParams {
+        Ok(kete_flux::FrmParams {
             obs_bands,
             band_albedos,
             hg_params,
@@ -547,7 +547,7 @@ impl PyFrmParams {
                 "4 Albedos must be provided, one for each WISE band.".into(),
             ))?,
         };
-        Ok(kete_core::flux::FrmParams::new_wise(band_albedos, hg_params, emissivity).into())
+        Ok(kete_flux::FrmParams::new_wise(band_albedos, hg_params, emissivity).into())
     }
 
     /// Create a new FrmParams with NEOS bands and zero magnitudes.
@@ -595,7 +595,7 @@ impl PyFrmParams {
                 "4 Albedos must be provided, one for each WISE band.".into(),
             ))?,
         };
-        Ok(kete_core::flux::FrmParams::new_neos(band_albedos, hg_params, emissivity).into())
+        Ok(kete_flux::FrmParams::new_neos(band_albedos, hg_params, emissivity).into())
     }
 
     /// Evaluate the thermal model at the provided observer and object positions.

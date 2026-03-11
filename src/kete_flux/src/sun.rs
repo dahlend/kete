@@ -34,10 +34,9 @@
 
 use std::f64::consts::PI;
 
-use crate::{
-    constants::{AU_KM, C_M_PER_S, SUN_DIAMETER, SUN_TEMP},
-    prelude::black_body_flux,
-};
+use kete_core::constants::{AU_KM, C_M_PER_S, SUN_DIAMETER, SUN_TEMP};
+
+use crate::black_body_flux;
 
 /// Return the Solar flux at the provide wavelength using the 2000 ASTM Reference Spectrum.
 ///

@@ -5,7 +5,7 @@ use itertools::Itertools;
 use kete_core::constants::{
     C_V, w1_color_correction, w2_color_correction, w3_color_correction, w4_color_correction,
 };
-use kete_core::flux::*;
+use kete_flux::*;
 use kete_core::prelude::Error;
 use nalgebra::UnitVector3;
 use pyo3::{PyResult, pyfunction};

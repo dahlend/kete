@@ -28,7 +28,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 //! Basic Shape Models
-use crate::constants::GOLDEN_RATIO;
+use kete_core::constants::GOLDEN_RATIO;
 use nalgebra::{Unit, UnitVector3, Vector3};
 use std::f64::consts::TAU;
 

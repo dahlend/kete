@@ -30,7 +30,7 @@
 use nalgebra::UnitVector3;
 use std::f64::consts::PI;
 
-use crate::constants::{
+use kete_core::constants::{
     AU_KM, NEOS_BANDS, NEOS_SUN_CORRECTION, NEOS_ZERO_MAG, SOLAR_FLUX, STEFAN_BOLTZMANN,
     WISE_BANDS_300K, WISE_CC, WISE_SUN_CORRECTION, WISE_ZERO_MAG_300K,
 };
@@ -235,8 +235,8 @@ pub fn lambertian_flux(
 /// This is a helper function for [`lambertian_flux`], see that function for
 /// more description.
 ///
-/// This is broken out into its own function because of [`crate::flux::FrmParams`] and
-/// [`crate::flux::NeatmParams`] running over the same geometry for different
+/// This is broken out into its own function because of [`crate::FrmParams`] and
+/// [`crate::NeatmParams`] running over the same geometry for different
 /// wavelengths.
 /// This allows this to be computed once per geometry, but then multiple wavelengths
 /// be multiplied against it. This resulted in a 50% speedup in FRM and NEATM overall.
@@ -314,8 +314,8 @@ pub fn flux_to_mag(flux: f64, mag_zero_flux: f64) -> f64 {
 #[cfg(test)]
 mod tests {
 
-    use crate::constants::{C_M_PER_S, SOLAR_FLUX, STEFAN_BOLTZMANN};
-    use crate::flux::*;
+    use crate::*;
+    use kete_core::constants::{C_M_PER_S, SOLAR_FLUX, STEFAN_BOLTZMANN};
     use std::f64::consts::E;
 
     #[test]

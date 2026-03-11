@@ -28,11 +28,9 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use super::sun::solar_flux_black_body;
-use crate::{
-    constants::{AU_KM, C_V},
-    prelude::{Error, KeteResult},
-};
+use crate::sun::solar_flux_black_body;
+use kete_core::constants::{AU_KM, C_V};
+use kete_core::errors::{Error, KeteResult};
 
 use nalgebra::Vector3;
 use serde::{Deserialize, Serialize};
@@ -79,7 +77,6 @@ pub fn hg_phase_curve_correction(g_param: f64, phase: f64) -> f64 {
 /// * `phase_angle` - Phase angle in radians.
 ///
 #[must_use]
-#[cfg_attr(feature = "pyo3", pyo3::pyfunction)]
 pub fn cometary_dust_phase_curve_correction(phase_angle: f64) -> f64 {
     const K: f64 = 0.80;
     const G_F: f64 = 0.944;

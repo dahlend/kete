@@ -27,12 +27,11 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use super::{
-    BandInfo, DEFAULT_SHAPE, HGParams,
-    common::{ModelResults, black_body_flux, lambertian_vis_scale_factor, sub_solar_temperature},
-    flux_to_mag,
+use crate::{
+    BandInfo, DEFAULT_SHAPE, HGParams, ModelResults, black_body_flux,
+    lambertian_vis_scale_factor, sub_solar_temperature, flux_to_mag,
 };
-use crate::constants::V_MAG_ZERO;
+use kete_core::constants::V_MAG_ZERO;
 
 use nalgebra::{UnitVector3, Vector3};
 
@@ -218,7 +217,7 @@ impl NeatmParams {
 #[cfg(test)]
 mod tests {
 
-    use crate::flux::*;
+    use crate::*;
     use nalgebra::UnitVector3;
     use std::f64::consts::PI;
 
