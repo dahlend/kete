@@ -14,7 +14,7 @@ use crate::maybe_vec::{MaybeVec, maybe_vec_to_pyobj};
 ///     Right Ascension in decimal degrees.
 #[pyfunction]
 #[pyo3(name = "ra_degrees_to_hms")]
-pub fn ra_degrees_to_hms_py(py: Python<'_>, ra: MaybeVec<f64>) -> PyResult<PyObject> {
+pub fn ra_degrees_to_hms_py(py: Python<'_>, ra: MaybeVec<f64>) -> PyResult<Py<PyAny>> {
     let (ra, was_vec): (Vec<_>, bool) = ra.into();
     let ra = ra
         .into_iter()
@@ -36,7 +36,7 @@ pub fn ra_degrees_to_hms_py(py: Python<'_>, ra: MaybeVec<f64>) -> PyResult<PyObj
 ///     Declination in decimal degrees.
 #[pyfunction]
 #[pyo3(name = "dec_degrees_to_dms")]
-pub fn dec_degrees_to_dms_py(py: Python<'_>, dec: MaybeVec<f64>) -> PyResult<PyObject> {
+pub fn dec_degrees_to_dms_py(py: Python<'_>, dec: MaybeVec<f64>) -> PyResult<Py<PyAny>> {
     let (dec, was_vec): (Vec<_>, bool) = dec.into();
 
     if dec.iter().any(|&d| d.abs() > 90.0) {
@@ -67,7 +67,7 @@ pub fn dec_degrees_to_dms_py(py: Python<'_>, dec: MaybeVec<f64>) -> PyResult<PyO
 ///     Declination in degrees-arcminutes-arcseconds.
 #[pyfunction]
 #[pyo3(name = "dec_dms_to_degrees")]
-pub fn dec_dms_to_degrees_py(py: Python<'_>, dec: MaybeVec<String>) -> PyResult<PyObject> {
+pub fn dec_dms_to_degrees_py(py: Python<'_>, dec: MaybeVec<String>) -> PyResult<Py<PyAny>> {
     let (dec, was_vec): (Vec<_>, bool) = dec.into();
     let mut results = Vec::with_capacity(dec.len());
 
@@ -98,7 +98,7 @@ pub fn dec_dms_to_degrees_py(py: Python<'_>, dec: MaybeVec<String>) -> PyResult<
 ///     Right ascension in hours-minutes-seconds.
 #[pyfunction]
 #[pyo3(name = "ra_hms_to_degrees")]
-pub fn ra_hms_to_degrees_py(py: Python<'_>, ra: MaybeVec<String>) -> PyResult<PyObject> {
+pub fn ra_hms_to_degrees_py(py: Python<'_>, ra: MaybeVec<String>) -> PyResult<Py<PyAny>> {
     let (ra, was_vec): (Vec<_>, bool) = ra.into();
     let mut results = Vec::with_capacity(ra.len());
 

@@ -15,7 +15,7 @@ use crate::{state::PyState, time::PyTime};
 /// Coordinate frames are defined to be equivalent to the J2000 frames used by the
 /// JPL Horizons system and SPICE.
 ///
-#[pyclass(frozen, eq, eq_int, name = "Frames", module = "kete")]
+#[pyclass(frozen, eq, eq_int, name = "Frames", module = "kete", from_py_object)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PyFrames {
     /// Ecliptic Frame

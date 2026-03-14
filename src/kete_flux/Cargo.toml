@@ -18,8 +18,12 @@ workspace = true
 
 [dependencies]
 kete_core = {version = "*", path = "../kete_core"}
-nalgebra = {version = "^0.33.0"}
-serde = { version = "^1.0.203", features = ["derive"] }
+kete_stats = {version = "*", path = "../kete_stats"}
+nalgebra = {version = "^0.34.1"}
+nuts-rs = {version = "0.17"}
+rand = {version = "^0.10.0"}
+rayon = "^1.10.0"
+serde = { version = "^1.0.228", features = ["derive"] }
 
 [dev-dependencies]
 criterion = { version = "^0.5.1", features = ["html_reports"] }
@@ -27,11 +31,11 @@ criterion = { version = "^0.5.1", features = ["html_reports"] }
 # pprof is used for flame graphs, this is failing on windows currently so only
 # linux and mac are supported here.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-pprof = { version = "0.14", features = ["flamegraph", "criterion"] }
+pprof = { version = "0.14.1", features = ["flamegraph", "criterion"] }
 
 # macos needs the frame-pointer flag, however this doesn't function on linux
 [target.'cfg(target_os = "macos")'.dev-dependencies]
-pprof = { version = "0.14", features = ["flamegraph", "criterion", "frame-pointer"] }
+pprof = { version = "0.14.1", features = ["flamegraph", "criterion", "frame-pointer"] }
 
 [[bench]]
 name = "thermal"

@@ -28,7 +28,7 @@ use crate::{state::PyState, time::PyTime};
 ///     The JD time of perihelion.
 /// lon_of_ascending:
 ///     The longitude of ascending node, in degrees.
-#[pyclass(module = "kete", frozen, name = "CometElements")]
+#[pyclass(module = "kete", frozen, name = "CometElements", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyCometElements(pub elements::CometElements);
 

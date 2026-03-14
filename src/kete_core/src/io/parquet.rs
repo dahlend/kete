@@ -31,6 +31,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use itertools::Itertools;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::fs::File;
 
 use crate::errors::{Error, KeteResult};
@@ -111,7 +112,7 @@ pub fn write_states_parquet(
 
     // The updated column is only saved in the file if it is provided.
     let mut df = match last_updated {
-        None => DataFrame::new(vec![desigs, jd, x, y, z, vx, vy, vz, center]),
+        None => DataFrame::new(states.len(), vec![desigs, jd, x, y, z, vx, vy, vz, center]),
         Some(updated) => {
             // If a vec of updates is provided, we will save the updated column as well
             if updated.len() != states.len() {
@@ -123,7 +124,10 @@ pub fn write_states_parquet(
             let updated: Vec<Option<f64>> = updated.into_iter().map(|t| Some(t.jd)).collect();
             let updated = Column::new("updated".into(), updated);
 
-            DataFrame::new(vec![desigs, jd, x, y, z, vx, vy, vz, center, updated])
+            DataFrame::new(
+                states.len(),
+                vec![desigs, jd, x, y, z, vx, vy, vz, center, updated],
+            )
         }
     }
     .map_err(|_| Error::ValueError("Failed to construct dataframe".into()))?;
@@ -165,7 +169,7 @@ pub fn read_states_parquet(
     let mut dataframe = reader.finish().map_err(|_| {
         Error::IOError("Failed to read contents of file as a parquet table.".into())
     })?;
-    let dataframe = dataframe.as_single_chunk_par();
+    let dataframe = dataframe.rechunk_mut_par();
 
     // create all the iterators, these are all type dependant, so they get special cased
     let mut desig_iter = dataframe
@@ -184,11 +188,13 @@ pub fn read_states_parquet(
 
     // the remaining columns are all floats, so here we make a vector of iterators of
     // floats
-    let mut state_iters = dataframe
-        .columns(["jd", "x", "y", "z", "vx", "vy", "vz"])
-        .map_err(|_| Error::IOError("File doesn't contain the correct columns".into()))?
-        .iter()
-        .map(|s| {
+    let state_cols = dataframe
+        .select(["jd", "x", "y", "z", "vx", "vy", "vz"])
+        .map_err(|_| Error::IOError("File doesn't contain the correct columns".into()))?;
+    let mut state_iters = state_cols
+        .columns()
+        .par_iter()
+        .map(|s: &Column| {
             s.f64()
                 .map_err(|_| Error::ValueError("state information is not all floats.".into()))
                 .map(ChunkedArray::<Float64Type>::into_no_null_iter)
@@ -263,7 +269,7 @@ pub fn read_update_times_parquet(filename: &str) -> KeteResult<Vec<Option<Time<T
             Error::IOError("Failed to read contents of file as a parquet table.".into())
         })?;
 
-    let dataframe = dataframe.as_single_chunk_par();
+    let dataframe = dataframe.rechunk_mut_par();
 
     // Fail on incorrect format, but None for missing data.
     let updated_times = match dataframe.column("updated") {

@@ -506,6 +506,12 @@ def fetch_mpc_observations(desig: str):
         if observer is None:
             continue
 
+        band = rec.get("fltr") or "V"
+        try:
+            mag = float(rec.get("mag"))
+        except (TypeError, ValueError):
+            mag = float("nan")
+
         observations.append(
             Observation.optical(
                 observer=observer,
@@ -513,6 +519,8 @@ def fetch_mpc_observations(desig: str):
                 dec=dec_deg,
                 sigma_ra=s_ra,
                 sigma_dec=s_dec,
+                band=band,
+                mag=mag,
             )
         )
 

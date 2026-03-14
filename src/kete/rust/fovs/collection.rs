@@ -31,7 +31,7 @@ impl FOVListLike {
 }
 
 /// A list of FOVs, which can be saved and loaded.
-#[pyclass(module = "kete", sequence)]
+#[pyclass(module = "kete", sequence, from_py_object)]
 #[derive(Debug, Clone)]
 pub struct FOVList(pub Vec<AllowedFOV>);
 

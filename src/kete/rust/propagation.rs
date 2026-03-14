@@ -7,7 +7,7 @@ use kete_core::{
     spice::{self, LOADED_SPK},
     state::State,
 };
-use pyo3::{PyObject, PyResult, Python, pyfunction};
+use pyo3::{Py, PyAny, PyResult, Python, pyfunction};
 use rayon::prelude::*;
 
 use crate::{
@@ -34,7 +34,7 @@ pub fn moid_py(
     py: Python<'_>,
     state_a: MaybeVec<PyState>,
     state_b: Option<PyState>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let (states, was_vec): (Vec<_>, bool) = state_a.into();
     if states.is_empty() {
         Err(Error::ValueError(
@@ -103,7 +103,7 @@ pub fn propagation_n_body_spk_py(
     non_gravs: Option<MaybeVec<Option<PyNonGravModel>>>,
     suppress_errors: bool,
     suppress_impact_errors: bool,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let (states, was_vec): (Vec<_>, bool) = states.into();
     let non_gravs: Option<Vec<Option<PyNonGravModel>>> = non_gravs.map(|x| x.into());
     let non_gravs = non_gravs.unwrap_or(vec![None; states.len()]);
@@ -296,7 +296,7 @@ pub fn picard(
     non_gravs: Option<MaybeVec<Option<PyNonGravModel>>>,
     suppress_errors: bool,
     suppress_impact_errors: bool,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let (states, was_vec): (Vec<_>, bool) = states.into();
     let non_gravs: Option<Vec<Option<PyNonGravModel>>> = non_gravs.map(|x| x.into());
     let non_gravs = non_gravs.unwrap_or(vec![None; states.len()]);

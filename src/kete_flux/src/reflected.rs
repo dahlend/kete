@@ -228,6 +228,12 @@ impl HGParams {
         self.vis_albedo
     }
 
+    /// Relationship constant between H, D, and pV in km.
+    #[must_use]
+    pub fn c_hg(&self) -> f64 {
+        self.c_hg
+    }
+
     /// Try to fill in the parameters as much as possible.
     /// If there is internal data inconsistency, return an error.
     ///

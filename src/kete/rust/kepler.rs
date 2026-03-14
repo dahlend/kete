@@ -3,7 +3,7 @@ use itertools::Itertools;
 use kete_core::frames::{Ecliptic, Equatorial, Vector};
 use kete_core::state::State;
 use kete_core::{constants, propagation};
-use pyo3::{PyErr, PyObject, Python, exceptions};
+use pyo3::{Py, PyAny, PyErr, Python, exceptions};
 use pyo3::{PyResult, pyfunction};
 use rayon::prelude::*;
 
@@ -73,7 +73,7 @@ pub fn propagation_kepler_py(
     states: MaybeVec<PyState>,
     epoch: PyTime,
     observer_pos: Option<PyVector>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let (states, was_vec): (Vec<_>, bool) = states.into();
     let epoch = epoch.into();
     let states = states

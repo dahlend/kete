@@ -25,7 +25,7 @@ use pyo3::prelude::*;
 /// frame :
 ///     The frame of reference defining the coordinate frame of the vector, defaults
 ///     to ecliptic.
-#[pyclass(sequence, frozen, module = "kete", name = "Vector")]
+#[pyclass(sequence, frozen, module = "kete", name = "Vector", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyVector {
     /// X/Y/Z numbers of the vector

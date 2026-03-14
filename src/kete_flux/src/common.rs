@@ -32,7 +32,7 @@ use std::f64::consts::PI;
 
 use kete_core::constants::{
     AU_KM, NEOS_BANDS, NEOS_SUN_CORRECTION, NEOS_ZERO_MAG, SOLAR_FLUX, STEFAN_BOLTZMANN,
-    WISE_BANDS_300K, WISE_CC, WISE_SUN_CORRECTION, WISE_ZERO_MAG_300K,
+    V_MAG_ZERO, WISE_BANDS_300K, WISE_CC, WISE_SUN_CORRECTION, WISE_ZERO_MAG_300K,
 };
 
 /// A function which computes the color correction on a single facet for NEATM and FRM.
@@ -76,6 +76,12 @@ impl BandInfo {
             zero_mag,
             color_correction,
         }
+    }
+
+    #[must_use]
+    /// New [`BandInfo`] for the Johnson V band (551 nm).
+    pub fn new_v() -> Self {
+        Self::new(551.0, 1.0, V_MAG_ZERO, None)
     }
 
     #[must_use]

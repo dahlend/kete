@@ -97,8 +97,8 @@ pub fn solar_flux_black_body(dist: f64, wavelength: f64) -> f64 {
     let solar_flux = black_body_flux(SUN_TEMP, wavelength);
 
     // solar flux at the radius of where the object is, this treats the sun as a flat
-    // disk facing the object. This is an approximation which breaks down when the object
-    // gets within a few solar radii.
+    // disk facing the object. This is an approximation which breaks down when the
+    // object gets within a few solar radii.
     // Jy / steradian per unit freq
     PI * solar_flux * (SUN_R_AU / dist).powi(2)
 }

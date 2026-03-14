@@ -343,7 +343,8 @@ where
             grav_params.add_acceleration(&mut accel_working, &rel_pos, &rel_vel);
 
             // If the center is the sun, add non-gravitational forces
-            if (grav_params.naif_id == 10) & (idx > n_massive)
+            if (grav_params.naif_id == 10)
+                && (idx > n_massive)
                 && let Some(non_grav) = &meta.non_gravs[idx - n_massive]
             {
                 non_grav.add_acceleration(&mut accel_working, &rel_pos, &rel_vel);

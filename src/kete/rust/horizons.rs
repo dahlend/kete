@@ -12,7 +12,7 @@ use pyo3::prelude::*;
 
 /// Horizons object properties
 /// Physical, orbital, and observational properties of a solar system object as recorded in JPL Horizons.
-#[pyclass(frozen, module = "kete")]
+#[pyclass(frozen, module = "kete", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct HorizonsProperties {
     /// The MPC designation of the object.

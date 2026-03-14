@@ -1,16 +1,6 @@
-//! # Flux
-//! Flux calculations including thermal and reflected light models.
-//!
-//! There are a few flux calculation models contained here:
-//! [`HGParams`] - Flux calculations of an object using the HG system.
-//! [`NeatmParams`] - The NEATM thermal model to compute black body flux.
-//! [`FrmParams`] - The FRM thermal model to compute black body flux.
-//!
-//
 // BSD 3-Clause License
 //
 // Copyright (c) 2026, Dar Dahlen
-// Copyright (c) 2025, California Institute of Technology
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:
@@ -37,24 +27,16 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-mod comets;
-mod common;
-pub mod fitting;
-mod frm;
-mod neatm;
-mod reflected;
-mod shapes;
-mod sun;
+//! Model fitting: MCMC posterior sampling, and parallel batch fitting.
+//!
+//! Supports NEATM, FRM (thermal), and HG (reflected-light) models.
 
-pub use self::comets::CometMKParams;
-pub use self::common::{
-    BandInfo, ColorCorrFn, ModelResults, black_body_flux, flux_to_mag, lambertian_flux,
-    lambertian_vis_scale_factor, mag_to_flux, sub_solar_temperature,
-};
-pub use self::frm::{FrmParams, frm_facet_temperature};
-pub use self::neatm::{NeatmParams, neatm_facet_temperature};
-pub use self::reflected::{
-    HGParams, cometary_dust_phase_curve_correction, hg_phase_curve_correction,
-};
-pub use self::shapes::{ConvexShape, DEFAULT_SHAPE, Facet, TriangleFacet, TriangleShape};
-pub use self::sun::{solar_flux, solar_flux_black_body};
+mod mcmc;
+mod types;
+
+#[cfg(test)]
+mod tests;
+
+// Re-export the public API.
+pub use mcmc::{FitResult, FitTask, fit_batch, fit_mcmc};
+pub use types::{FluxObs, Model, Priors, logistic_barrier};

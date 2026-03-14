@@ -17,20 +17,20 @@ name = "kete_core"
 workspace = true
 
 [dependencies]
-argmin = "^0.10.0"
-argmin-math = "^0.4.0"
+argmin = "^0.11.0"
+argmin-math = "^0.5.1"
 chrono = "^0.4.38"
 crossbeam = "^0.8.4"
 directories = "^6.0"
 itertools = "^0.14.0"
 kete_stats = {version = "*", path = "../kete_stats"}
-nalgebra = {version = "^0.33.0", features = ["rayon"]}
+nalgebra = {version = "^0.34.1", features = ["rayon"]}
 nom = "8.0.0"
-polars = {version = "0.48.1", optional=true, features=["parquet", "polars-io"]}
+polars = {version = "0.53.0", optional=true, features=["parquet", "polars-io"]}
 pathfinding = "^4.10.0"
-pyo3 = { version =  "^0.25.0", features = ["abi3-py39"], optional=true}
+pyo3 = { version =  "^0.28.2", features = ["abi3-py39"], optional=true}
 rayon = "^1.10.0"
-serde = { version = "^1.0.203", features = ["derive"] }
+serde = { version = "^1.0.228", features = ["derive"] }
 sgp4 = "^2.2.0"
 
 # bincode is pinned to ensure backward compatibility with saved files, all updates to
@@ -43,11 +43,11 @@ criterion = { version = "^0.5.1", features = ["html_reports"] }
 # pprof is used for flame graphs, this is failing on windows currently so only
 # linux and mac are supported here.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-pprof = { version = "0.14", features = ["flamegraph", "criterion"] }
+pprof = { version = "0.14.1", features = ["flamegraph", "criterion"] }
 
 # macos needs the frame-pointer flag, however this doesn't function on linux
 [target.'cfg(target_os = "macos")'.dev-dependencies]
-pprof = { version = "0.14", features = ["flamegraph", "criterion", "frame-pointer"] }
+pprof = { version = "0.14.1", features = ["flamegraph", "criterion", "frame-pointer"] }
 
 [[bench]]
 name = "propagation"

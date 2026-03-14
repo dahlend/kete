@@ -86,6 +86,10 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<flux::PyFrmParams>()?;
     m.add_class::<flux::PyModelResults>()?;
     m.add_class::<flux::PyTriangleShape>()?;
+    m.add_class::<flux::PyFluxObs>()?;
+    m.add_class::<flux::PyPriors>()?;
+    m.add_class::<flux::PySampleStats>()?;
+    m.add_class::<flux::PyFitResult>()?;
 
     m.add_class::<horizons::HorizonsProperties>()?;
 
@@ -140,6 +144,8 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
         flux::comet_dust_phase_curve_correction_py,
         m
     )?)?;
+    m.add_function(wrap_pyfunction!(flux::fit_model_py, m)?)?;
+    m.add_function(wrap_pyfunction!(flux::fit_model_batch_py, m)?)?;
 
     m.add_function(wrap_pyfunction!(spice::spk_load_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::spk_loaded_objects_py, m)?)?;

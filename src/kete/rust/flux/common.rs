@@ -469,7 +469,12 @@ pub fn fib_lattice_vecs_py(n_facets: u32) -> Vec<[f64; 3]> {
 ///     Scale factor along the y-axis.
 /// z_scale :
 ///     Scale factor along the z-axis.
-#[pyclass(module = "kete._core", name = "TriangleEllipsoid", frozen)]
+#[pyclass(
+    module = "kete._core",
+    name = "TriangleEllipsoid",
+    frozen,
+    from_py_object
+)]
 #[derive(Clone, Debug)]
 pub struct PyTriangleShape {
     shape: TriangleShape,

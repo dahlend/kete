@@ -6,7 +6,7 @@ use std::fmt::Debug;
 
 use pyo3::IntoPyObjectExt;
 use pyo3::types::PyList;
-use pyo3::{FromPyObject, IntoPyObject, PyObject, PyResult, Python};
+use pyo3::{FromPyObject, IntoPyObject, Py, PyAny, PyResult, Python};
 
 /// Polymorphic support for a single value or a vector of values.
 ///
@@ -37,7 +37,7 @@ pub fn maybe_vec_to_pyobj<'py, T: IntoPyObject<'py>>(
     py: Python<'py>,
     value: Vec<T>,
     was_vec: bool,
-) -> PyResult<PyObject>
+) -> PyResult<Py<PyAny>>
 where
     <T as IntoPyObject<'py>>::Output: IntoPyObject<'py>,
 {

@@ -11,7 +11,7 @@ use crate::{state::PyState, vector::PyVector};
 /// Field of view of a WISE CMOS chip.
 /// Since all WISE CMOS see the same patch of sky, there is no differentiation
 /// of the individual wavelength bands.
-#[pyclass(module = "kete", frozen, name = "WiseCmos")]
+#[pyclass(module = "kete", frozen, name = "WiseCmos", from_py_object)]
 #[derive(Clone, Debug)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct PyWiseCmos(pub fov::WiseCmos);
@@ -42,7 +42,7 @@ pub struct PyWiseCmos(pub fov::WiseCmos);
 ///     Which chip of the target band this represents.
 /// band :
 ///     Band, can be either 1 or 2 to represent NC1/NC2.
-#[pyclass(module = "kete", frozen, name = "NeosCmos")]
+#[pyclass(module = "kete", frozen, name = "NeosCmos", from_py_object)]
 #[derive(Clone, Debug)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct PyNeosCmos(pub fov::NeosCmos);
@@ -144,46 +144,52 @@ pub struct PyNeosCmos(pub fov::NeosCmos);
 ///     Exposure number indicating where we are in the survey.
 /// band :
 ///     Band, can be either 1 or 2 to represent NC1/NC2.
-#[pyclass(module = "kete", frozen, name = "NeosVisit")]
+#[pyclass(module = "kete", frozen, name = "NeosVisit", from_py_object)]
 #[derive(Clone, Debug)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct PyNeosVisit(pub fov::NeosVisit);
 
 /// Field of view of a Single ZTF chips/quad combination.
-#[pyclass(module = "kete", frozen, name = "ZtfCcdQuad")]
+#[pyclass(module = "kete", frozen, name = "ZtfCcdQuad", from_py_object)]
 #[derive(Clone, Debug)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct PyZtfCcdQuad(pub fov::ZtfCcdQuad);
 
 /// Field of view of all 64 ZTF chips/quad combinations.
 /// This is a meta collection of individual ZTF CCD Quad FOVs.
-#[pyclass(module = "kete", frozen, name = "ZtfField", sequence)]
+#[pyclass(module = "kete", frozen, name = "ZtfField", sequence, from_py_object)]
 #[derive(Clone, Debug)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct PyZtfField(pub fov::ZtfField);
 
 /// Field of view of all PTF ccds.
 /// This is a meta collection of individual PTF CCD Quad FOVs.
-#[pyclass(module = "kete", frozen, name = "PtfField", sequence)]
+#[pyclass(module = "kete", frozen, name = "PtfField", sequence, from_py_object)]
 #[derive(Clone, Debug)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct PyPtfField(pub fov::PtfField);
 
 /// Field of view of a Single PTF ccd.
-#[pyclass(module = "kete", frozen, name = "PtfCcd")]
+#[pyclass(module = "kete", frozen, name = "PtfCcd", from_py_object)]
 #[derive(Clone, Debug)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct PyPtfCcd(pub fov::PtfCcd);
 
 /// Field of view of multiple Spherex CMOS at one time.
 /// This is a meta collection of individual Spherex CMOS FOVs.
-#[pyclass(module = "kete", frozen, name = "SpherexField", sequence)]
+#[pyclass(
+    module = "kete",
+    frozen,
+    name = "SpherexField",
+    sequence,
+    from_py_object
+)]
 #[derive(Clone, Debug)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct PySpherexField(pub fov::SpherexField);
 
 /// Field of view of a Single Spherex cmos.
-#[pyclass(module = "kete", frozen, name = "SpherexCmos")]
+#[pyclass(module = "kete", frozen, name = "SpherexCmos", from_py_object)]
 #[derive(Clone, Debug)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct PySpherexCmos(pub fov::SpherexCmos);
@@ -206,7 +212,7 @@ pub struct PySpherexCmos(pub fov::SpherexCmos);
 ///     The longitudinal width of the rectangle in degrees.
 /// lat_width:
 ///     The latitudinal width of the rectangle in degrees.
-#[pyclass(module = "kete", frozen, name = "RectangleFOV")]
+#[pyclass(module = "kete", frozen, name = "RectangleFOV", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyGenericRectangle(pub fov::GenericRectangle);
 
@@ -222,7 +228,7 @@ pub struct PyGenericRectangle(pub fov::GenericRectangle);
 ///     The radius of the cone in degrees, from the center to the edge of the cone.
 /// observer :
 ///     The state of the observer.
-#[pyclass(module = "kete", frozen, name = "ConeFOV")]
+#[pyclass(module = "kete", frozen, name = "ConeFOV", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyGenericCone(pub fov::GenericCone);
 
@@ -234,7 +240,7 @@ pub struct PyGenericCone(pub fov::GenericCone);
 /// ----------
 /// observer :
 ///     State of the omniscient observer.
-#[pyclass(module = "kete", frozen, name = "OmniDirectionalFOV")]
+#[pyclass(module = "kete", frozen, name = "OmniDirectionalFOV", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyOmniDirectional(pub fov::OmniDirectional);
 

@@ -1,7 +1,7 @@
 """
 Thermal and Reflected light modeling tools.
 
-This includes computations such as NEATM, FRM, and reflection models.
+This includes computations such as NEATM, FRM, HG, and reflection models.
 
 Modeling is broken into catagories of complexity, ranging from pure black body
 calculations, through to telescope specific models. Picking the appropriate model can
@@ -28,12 +28,18 @@ recommended not to use these directly in most cases:
 """
 
 from ._core import (
+    FitResult,
     FrmParams,
     ModelResults,
     NeatmParams,
+    FluxObs,
+    Priors,
+    SampleStats,
     black_body_flux,
     comet_apparent_mags,
     comet_dust_phase_curve_correction,
+    fit_model,
+    fit_model_batch,
     frm_facet_temps,
     frm_flux,
     hg_apparent_flux,
@@ -49,6 +55,9 @@ from ._core import (
 __all__ = [
     "comet_apparent_mags",
     "comet_dust_phase_curve_correction",
+    "fit_model",
+    "fit_model_batch",
+    "FitResult",
     "frm_facet_temps",
     "frm_flux",
     "FrmParams",
@@ -60,6 +69,9 @@ __all__ = [
     "neatm_facet_temps",
     "neatm_flux",
     "NeatmParams",
+    "FluxObs",
+    "Priors",
+    "SampleStats",
     "solar_flux",
     "sub_solar_temperature",
     "black_body_flux",

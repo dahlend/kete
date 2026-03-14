@@ -23,7 +23,7 @@ use crate::{frame::PyFrames, vector::VectorLike};
 ///     Expected flux in the V-band using the HG model.
 /// magnitudes :
 ///     Magnitudes in the different bands if zero mags were available.
-#[pyclass(frozen, module = "kete.flux", name = "ModelResults")]
+#[pyclass(frozen, module = "kete.flux", name = "ModelResults", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyModelResults(pub kete_flux::ModelResults);
 
@@ -147,7 +147,7 @@ impl PyModelResults {
 ///     Emissivity of the object, defaults to `0.9`.
 /// zero_mags:
 ///     Optional - If zero mags are provided then magnitudes may be computed.
-#[pyclass(frozen, module = "kete.flux", name = "NeatmParams")]
+#[pyclass(frozen, module = "kete.flux", name = "NeatmParams", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyNeatmParams(pub kete_flux::NeatmParams);
 
@@ -245,10 +245,7 @@ impl PyNeatmParams {
                 "4 Albedos must be provided, one for each WISE band.".into(),
             ))?,
         };
-        Ok(
-            kete_flux::NeatmParams::new_wise(band_albedos, beaming, hg_params, emissivity)
-                .into(),
-        )
+        Ok(kete_flux::NeatmParams::new_wise(band_albedos, beaming, hg_params, emissivity).into())
     }
 
     /// Create a new NeatmParams with NEOS bands and zero magnitudes.
@@ -299,10 +296,7 @@ impl PyNeatmParams {
                 "4 Albedos must be provided, one for each WISE band.".into(),
             ))?,
         };
-        Ok(
-            kete_flux::NeatmParams::new_neos(band_albedos, beaming, hg_params, emissivity)
-                .into(),
-        )
+        Ok(kete_flux::NeatmParams::new_neos(band_albedos, beaming, hg_params, emissivity).into())
     }
 
     /// Evaluate the thermal model at the provided observer and object positions.
@@ -454,7 +448,7 @@ impl PyNeatmParams {
 ///     Emissivity of the object, defaults to `0.9`.
 /// zero_mags:
 ///     Optional - If zero mags are provided then magnitudes may be computed.
-#[pyclass(frozen, module = "kete.flux", name = "FrmParams")]
+#[pyclass(frozen, module = "kete.flux", name = "FrmParams", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyFrmParams(pub kete_flux::FrmParams);
 
