@@ -31,10 +31,8 @@
 //! plus parallel batch fitting.
 
 use super::types::{
-    Model, FluxObs, Priors, evaluate_forward_model,
-    log_posterior, pv_from_diameter,
+    FluxObs, FluxPriors, Model, evaluate_forward_model, log_posterior, pv_from_diameter,
 };
-use crate::HGParams;
 use kete_stats::fitting::{NelderMeadResult, nelder_mead};
 use nalgebra::{DMatrix, DVector};
 use nuts_rs::rand::SeedableRng;
@@ -48,15 +46,14 @@ use std::collections::HashMap;
 fn build_neg_log_posterior(
     model: Model,
     obs: &[FluxObs],
-    hg: &HGParams,
+    c_hg: f64,
     emissivity: f64,
-    priors: &Priors,
+    priors: &FluxPriors,
 ) -> impl Fn(&[f64]) -> f64 {
     let obs = obs.to_vec();
-    let hg = hg.clone();
     let priors = priors.clone();
     move |x: &[f64]| -> f64 {
-        let lp = log_posterior(model, x, &obs, &hg, emissivity, &priors);
+        let lp = log_posterior(model, x, &obs, c_hg, emissivity, &priors);
         if lp.is_finite() { -lp } else { f64::MAX }
     }
 }
@@ -71,49 +68,51 @@ struct NelderMeadSeed {
 fn nelder_mead_seed(
     model: Model,
     obs: &[FluxObs],
-    hg: &HGParams,
+    c_hg: f64,
     emissivity: f64,
-    priors: &Priors,
+    priors: &FluxPriors,
 ) -> Option<NelderMeadSeed> {
-    let objective = build_neg_log_posterior(model, obs, hg, emissivity, priors);
+    let objective = build_neg_log_posterior(model, obs, c_hg, emissivity, priors);
 
     let ln1 = 0.0_f64;
 
+    // Derive seed values for H, G from priors.
+    let h0 = priors.h_mag.center();
+    let g0 = priors.g_param.center();
+
     let (starts, scale): (Vec<Vec<f64>>, Vec<f64>) = match model {
         Model::Neatm => {
-            let d0 = hg.diam().unwrap_or(5.0).ln();
-            let mid_d = 0.5 * (priors.ln_diam_bounds.0 + priors.ln_diam_bounds.1);
-            let mid_eta = 0.5 * (priors.ln_beaming_bounds.0 + priors.ln_beaming_bounds.1);
+            // [ln_D, ln_beaming, H, G, ln_f_sigma, ln_R_IR]
+            let mid_d = priors.ln_diam.center();
+            let mid_beaming = priors.ln_beaming.center();
             (
                 vec![
-                    vec![d0, ln1, 1.5_f64.ln(), ln1],
-                    vec![mid_d, mid_eta, ln1, ln1],
-                    vec![1.0_f64.ln(), 1.5_f64.ln(), ln1, ln1],
-                    vec![20.0_f64.ln(), 0.8_f64.ln(), ln1, ln1],
-                    vec![50.0_f64.ln(), ln1, 2.0_f64.ln(), ln1],
+                    vec![mid_d, ln1, h0, g0, 1.5_f64.ln(), ln1],
+                    vec![mid_d, mid_beaming, h0, g0, ln1, ln1],
+                    vec![1.0_f64.ln(), 1.5_f64.ln(), h0, g0, ln1, ln1],
+                    vec![20.0_f64.ln(), 0.8_f64.ln(), h0, g0, ln1, ln1],
+                    vec![50.0_f64.ln(), ln1, h0, g0, 2.0_f64.ln(), ln1],
                 ],
-                vec![0.5, 0.3, 0.2, 0.2],
+                vec![0.5, 0.3, 1.0, 0.05, 0.2, 0.2],
             )
         }
         Model::Frm => {
-            let d0 = hg.diam().unwrap_or(5.0).ln();
-            let mid_d = 0.5 * (priors.ln_diam_bounds.0 + priors.ln_diam_bounds.1);
+            // [ln_D, H, G, ln_f_sigma, ln_R_IR]
+            let mid_d = priors.ln_diam.center();
             (
                 vec![
-                    vec![d0, 1.5_f64.ln(), ln1],
-                    vec![mid_d, ln1, ln1],
-                    vec![1.0_f64.ln(), ln1, ln1],
-                    vec![20.0_f64.ln(), ln1, ln1],
-                    vec![50.0_f64.ln(), 2.0_f64.ln(), ln1],
+                    vec![mid_d, h0, g0, 1.5_f64.ln(), ln1],
+                    vec![mid_d, h0, g0, ln1, ln1],
+                    vec![1.0_f64.ln(), h0, g0, ln1, ln1],
+                    vec![20.0_f64.ln(), h0, g0, ln1, ln1],
+                    vec![50.0_f64.ln(), h0, g0, 2.0_f64.ln(), ln1],
                 ],
-                vec![0.5, 0.2, 0.2],
+                vec![0.5, 1.0, 0.05, 0.2, 0.2],
             )
         }
         Model::Hg => {
-            let h0 = hg.h_mag;
-            let g0 = hg.g_param;
-            let mid_h = 0.5 * (priors.h_mag_bounds.0 + priors.h_mag_bounds.1);
-            let mid_g = 0.5 * (priors.g_param_bounds.0 + priors.g_param_bounds.1);
+            let mid_h = priors.h_mag.center();
+            let mid_g = priors.g_param.center();
             (
                 vec![
                     vec![h0, g0, ln1],
@@ -149,28 +148,35 @@ const FINITE_DIFF_STEP: f64 = 1e-5;
 pub struct FitResult {
     /// Which model was fit.
     /// Determines the draw column layout:
-    /// NEATM: `[D, pV, eta, f_sigma, R_IR]`,
-    /// FRM:   `[D, pV, f_sigma, R_IR]`,
-    /// HG:    `[H, f_sigma]`.
+    /// NEATM: `[D, pV, beaming, H, G, R_IR, f_sigma]`,
+    /// FRM:   `[D, pV, H, G, R_IR, f_sigma]`,
+    /// HG:    `[H, G, f_sigma]`.
     pub model: Model,
+
     /// Raw posterior draws.  Column layout depends on `model`.
     pub draws: Vec<Vec<f64>>,
+
     /// Whether each draw was divergent.
     pub divergent: Vec<bool>,
+
     /// Total number of divergent transitions.
     pub n_divergent: usize,
 
-    /// chi^2 at the MAP point using **inflated** uncertainties:
-    /// `sum ((obs - model) / (f_sigma * sigma_i))^2`.  A value near `nobs`
-    /// indicates the inflated sigma absorbs the scatter; compare with
-    /// `nobs` rather than trusting the absolute magnitude.
-    pub chi2_best: f64,
+    /// Reduced chi-squared at the MAP point using **inflated** uncertainties:
+    /// `(1 / dof) * sum ((obs - model) / (f_sigma * sigma_i))^2` where
+    /// `dof = nobs - nparams`.  A value near 1.0 indicates the model
+    /// explains the data at the level of measurement noise.
+    pub reduced_chi2: f64,
+
     /// Number of non-upper-limit observations.
     pub nobs: usize,
+
     /// Model fluxes at the MAP point, one per observation.
     pub best_fit_fluxes: Vec<f64>,
-    /// Standardised residuals at the MAP point: `(obs - model) / (f_sigma * sigma_i)`.
+
+    /// Standardized residuals at the MAP point: `(obs - model) / (f_sigma * sigma_i)`.
     pub best_fit_residuals: Vec<f64>,
+
     /// Reflected-light fraction at the MAP point, one per observation.
     pub best_fit_reflected_frac: Vec<f64>,
 }
@@ -198,14 +204,13 @@ impl std::error::Error for RecoverableError {}
 /// recovered via `x = seed + L * xi`.
 struct Posterior {
     obs: Vec<FluxObs>,
-    hg: HGParams,
+    c_hg: f64,
     emissivity: f64,
-    priors: Priors,
-    /// Centre of the whitening transform (best NM point in log-space).
+    priors: FluxPriors,
+    /// Center of the whitening transform (best NM point in log-space).
     seed_vec: DVector<f64>,
     /// Cholesky-like factor: `x = seed + L * xi`.
     whiten_l: DMatrix<f64>,
-    /// True for NEATM (dim=4), false for FRM (dim=3) / HG (dim=2).
     model: Model,
 }
 
@@ -223,7 +228,7 @@ impl Posterior {
             self.model,
             x,
             &self.obs,
-            &self.hg,
+            self.c_hg,
             self.emissivity,
             &self.priors,
         )
@@ -316,7 +321,7 @@ fn run_chain(
     let mut rng = rand::rngs::SmallRng::seed_from_u64(chain_seed);
     let mut sampler = settings.new_chain(chain_seed, math, &mut rng);
 
-    // Initialise at a dispersed point in xi-space.
+    // Initialize at a dispersed point in xi-space.
     let init: Vec<f64> = {
         use rand::distr::Uniform;
         use rand::prelude::Distribution;
@@ -365,7 +370,8 @@ fn hessian_whitening_scales(
         return fallback.to_vec();
     }
 
-    let eps = 1e-4; // step for Hessian FD (larger than gradient FD_EPS)
+    // step for Hessian FD (larger than gradient FD_EPS)
+    let eps = 1e-4;
     let mut scales = Vec::with_capacity(d);
     let mut buf = map_point.to_vec();
 
@@ -393,26 +399,29 @@ fn hessian_whitening_scales(
 ///
 /// Internally runs multi-start Nelder-Mead to find the MAP, builds a
 /// whitened posterior, and runs `num_chains` independent NUTS chains.
+///
+/// `c_hg` is the H-D-pV conversion factor. `emissivity` is a fixed
+/// thermal emissivity (not fitted).
 #[must_use]
 pub fn fit_mcmc(
     model: Model,
     obs: &[FluxObs],
-    hg: &HGParams,
+    c_hg: f64,
     emissivity: f64,
-    priors: &Priors,
+    priors: &FluxPriors,
     num_chains: usize,
     num_tune: usize,
     num_draws: usize,
 ) -> Option<FitResult> {
     // 1. Multi-start NM seed.
-    let nm = nelder_mead_seed(model, obs, hg, emissivity, priors)?;
+    let nm = nelder_mead_seed(model, obs, c_hg, emissivity, priors)?;
     let seed = nm.params;
 
     let seed_vec = DVector::from_column_slice(&seed);
 
     // MAP diagnostics at the NM seed.
-    let (chi2_best, nobs, best_fit_fluxes, best_fit_residuals, best_fit_reflected_frac) =
-        if let Some(fwd) = evaluate_forward_model(model, &seed, obs, hg, emissivity) {
+    let (reduced_chi2, nobs, best_fit_fluxes, best_fit_residuals, best_fit_reflected_frac) =
+        if let Some(fwd) = evaluate_forward_model(model, &seed, obs, c_hg, emissivity) {
             let mut chi2 = 0.0;
             let mut n = 0_usize;
             let mut residuals = Vec::with_capacity(obs.len());
@@ -429,7 +438,9 @@ pub fn fit_mcmc(
                     n += 1;
                 }
             }
-            (chi2, n, fwd.model_fluxes, residuals, fwd.reflected_frac)
+            let dof = n.saturating_sub(model.dim());
+            let reduced = if dof > 0 { chi2 / dof as f64 } else { f64::NAN };
+            (reduced, n, fwd.model_fluxes, residuals, fwd.reflected_frac)
         } else {
             (f64::NAN, 0, vec![], vec![], vec![])
         };
@@ -439,7 +450,7 @@ pub fn fit_mcmc(
     let fallback: Vec<f64> = std::iter::once(0.3)
         .chain(std::iter::repeat_n(0.15, d - 1))
         .collect();
-    let objective = build_neg_log_posterior(model, obs, hg, emissivity, priors);
+    let objective = build_neg_log_posterior(model, obs, c_hg, emissivity, priors);
     let scales = hessian_whitening_scales(&objective, &seed, &fallback);
     let whiten_l = DMatrix::from_diagonal(&DVector::from_column_slice(&scales));
 
@@ -450,7 +461,7 @@ pub fn fit_mcmc(
         .filter_map(|chain_idx| {
             let posterior = Posterior {
                 obs: obs.to_vec(),
-                hg: hg.clone(),
+                c_hg,
                 emissivity,
                 priors: priors.clone(),
                 seed_vec: seed_vec.clone(),
@@ -476,13 +487,16 @@ pub fn fit_mcmc(
                             // HG draws: [H, G, f_sigma]
                             vec![x[0], x[1], x[2].exp()]
                         } else {
-                            // Thermal draws: [D, pV, (eta), f_sigma, R_IR]
-                            let diam = x[0].exp();
-                            let pv = pv_from_diameter(diam, hg);
-                            let mut row = vec![diam, pv];
-                            for j in 1..x.len() {
-                                row.push(x[j].exp());
+                            // Thermal draws via ThermalParams.
+                            // NEATM: [D, pV, beaming, H, G, R_IR, f_sigma]
+                            // FRM:   [D, pV, H, G, R_IR, f_sigma]
+                            let tp = model.unpack_thermal_params(x.as_slice(), emissivity);
+                            let pv = pv_from_diameter(tp.diam, tp.h_mag, c_hg);
+                            let mut row = vec![tp.diam, pv];
+                            if model.is_neatm() {
+                                row.push(tp.beaming);
                             }
+                            row.extend_from_slice(&[tp.h_mag, tp.g_param, tp.r_ir, tp.f_sigma]);
                             row
                         }
                     })
@@ -510,7 +524,7 @@ pub fn fit_mcmc(
         draws: all_draws,
         divergent: all_divergent,
         n_divergent,
-        chi2_best,
+        reduced_chi2,
         nobs,
         best_fit_fluxes,
         best_fit_residuals,
@@ -525,12 +539,12 @@ pub struct FitTask {
     pub model: Model,
     /// Observations for this object.
     pub obs: Vec<FluxObs>,
-    /// HG reflected-light parameters.
-    pub hg: HGParams,
-    /// Surface emissivity.
+    /// Relationship constant for D-H-pV conversion (km).
+    pub c_hg: f64,
+    /// Fixed thermal emissivity (not fitted).
     pub emissivity: f64,
-    /// Prior/bound configuration.
-    pub priors: Priors,
+    /// Prior/bound configuration (includes H, G priors).
+    pub priors: FluxPriors,
     /// Number of MCMC chains.
     pub num_chains: usize,
     /// Number of tuning (warmup) draws per chain.
@@ -551,7 +565,7 @@ pub fn fit_batch(tasks: &[FitTask]) -> Vec<Option<FitResult>> {
             fit_mcmc(
                 t.model,
                 &t.obs,
-                &t.hg,
+                t.c_hg,
                 t.emissivity,
                 &t.priors,
                 t.num_chains,

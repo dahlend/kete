@@ -29,13 +29,13 @@
 
 //! Core types and helper functions shared across the fitting submodules.
 
-use crate::{BandInfo, FrmParams, HGParams, ModelResults, NeatmParams};
+use crate::{BandInfo, ModelResults, albedo_from_h_mag_diam, frm_total_flux, neatm_total_flux};
 use nalgebra::Vector3;
 
 /// Which model to fit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Model {
-    /// Near-Earth Asteroid Thermal Model -- beaming eta is a free parameter.
+    /// Near-Earth Asteroid Thermal Model -- beaming is a free parameter.
     Neatm,
     /// Fast Rotating Model -- beaming fixed at pi.
     Frm,
@@ -46,14 +46,15 @@ pub enum Model {
 impl Model {
     /// Number of free parameters.
     ///
-    /// NEATM: `[ln_D, ln_eta, ln_f_sigma, ln_R_IR]` -> 4.
-    /// FRM:   `[ln_D, ln_f_sigma, ln_R_IR]`          -> 3.
-    /// HG:    `[H, G, ln_f_sigma]`                    -> 3.
+    /// NEATM: `[ln_D, ln_beaming, H, G, ln_f_sigma, ln_R_IR]` -> 6.
+    /// FRM:   `[ln_D, H, G, ln_f_sigma, ln_R_IR]`          -> 5.
+    /// HG:    `[H, G, ln_f_sigma]`                          -> 3.
     #[must_use]
     pub fn dim(self) -> usize {
         match self {
-            Self::Neatm => 4,
-            Self::Frm | Self::Hg => 3,
+            Self::Neatm => 6,
+            Self::Frm => 5,
+            Self::Hg => 3,
         }
     }
 
@@ -69,66 +70,89 @@ impl Model {
         matches!(self, Self::Hg)
     }
 
-    /// Indices into the log-parameter vector for `f_sigma` and `R_IR`.
+    /// Extract physical parameters from the log-space vector.
     ///
     /// Only valid for thermal models (NEATM / FRM).
-    pub(crate) fn nuisance_param_indices(self) -> (usize, usize) {
-        match self {
-            Self::Neatm => (2, 3),
-            Self::Frm => (1, 2),
-            Self::Hg => unreachable!("Hg has no R_IR parameter"),
-        }
-    }
-
-    /// Extract physical parameters from a log-space vector.
-    ///
-    /// Returns `(diam, eta, f_sigma, r_ir)`.  For FRM, `eta` is pi.
-    /// Only valid for thermal models (NEATM / FRM).
-    pub(crate) fn unpack_thermal_params(self, x: &[f64]) -> (f64, f64, f64, f64) {
+    /// Emissivity is not in the vector -- it must be supplied separately.
+    pub(crate) fn unpack_thermal_params(self, x: &[f64], emissivity: f64) -> ThermalParams {
         debug_assert!(!self.is_hg(), "unpack is not valid for Hg");
         let diam = x[0].exp();
-        let (fi, ri) = self.nuisance_param_indices();
-        let f_sigma = x[fi].exp();
-        let r_ir = x[ri].exp();
-        let eta = if self.is_neatm() {
-            x[1].exp()
-        } else {
-            std::f64::consts::PI
-        };
-        (diam, eta, f_sigma, r_ir)
+        match self {
+            Self::Neatm => ThermalParams {
+                diam,
+                beaming: x[1].exp(),
+                h_mag: x[2],
+                g_param: x[3],
+                emissivity,
+                f_sigma: x[4].exp(),
+                r_ir: x[5].exp(),
+            },
+            Self::Frm => ThermalParams {
+                diam,
+                beaming: std::f64::consts::PI,
+                h_mag: x[1],
+                g_param: x[2],
+                emissivity,
+                f_sigma: x[3].exp(),
+                r_ir: x[4].exp(),
+            },
+            Self::Hg => unreachable!(),
+        }
     }
+}
 
+/// Physical parameters extracted from the log-space parameter vector.
+///
+/// Used for thermal models (NEATM / FRM).
+pub(crate) struct ThermalParams {
+    pub diam: f64,
+    pub beaming: f64,
+    pub h_mag: f64,
+    pub g_param: f64,
+    pub emissivity: f64,
+    pub f_sigma: f64,
+    pub r_ir: f64,
+}
+
+impl Model {
     /// Compute apparent total fluxes for the given geometry.
     pub(crate) fn compute_fluxes(
         self,
-        bands: Vec<BandInfo>,
-        band_albedos: Vec<f64>,
-        eta: f64,
-        hg: &HGParams,
+        bands: &[BandInfo],
+        band_albedos: &[f64],
+        beaming: f64,
+        g_param: f64,
+        h_mag: f64,
+        vis_albedo: f64,
+        diam: f64,
         emissivity: f64,
         sun2obj: &Vector3<f64>,
         sun2obs: &Vector3<f64>,
-    ) -> Option<ModelResults> {
+    ) -> ModelResults {
         match self {
-            Self::Neatm => {
-                let params = NeatmParams {
-                    obs_bands: bands,
-                    band_albedos,
-                    beaming: eta,
-                    hg_params: hg.clone(),
-                    emissivity,
-                };
-                params.apparent_total_flux(sun2obj, sun2obs)
-            }
-            Self::Frm => {
-                let params = FrmParams {
-                    obs_bands: bands,
-                    band_albedos,
-                    hg_params: hg.clone(),
-                    emissivity,
-                };
-                params.apparent_total_flux(sun2obj, sun2obs)
-            }
+            Self::Neatm => neatm_total_flux(
+                bands,
+                band_albedos,
+                diam,
+                vis_albedo,
+                g_param,
+                h_mag,
+                beaming,
+                emissivity,
+                sun2obj,
+                sun2obs,
+            ),
+            Self::Frm => frm_total_flux(
+                bands,
+                band_albedos,
+                diam,
+                vis_albedo,
+                g_param,
+                h_mag,
+                emissivity,
+                sun2obj,
+                sun2obs,
+            ),
             Self::Hg => unreachable!("Hg uses its own forward-model path"),
         }
     }
@@ -151,55 +175,96 @@ pub struct FluxObs {
     pub sun2obs: Vector3<f64>,
 }
 
-/// Prior configuration for model fitting.
+/// Configuration for a single fitted parameter's prior.
 ///
-/// Thermal models (NEATM/FRM) use `ln_diam_bounds`, beaming, and `R_IR` priors.
-/// The HG model uses `h_mag_prior` and `h_mag_bounds`.
-/// In all cases `f_sigma` has a sensible fixed prior handled internally.
+/// Each parameter has:
+/// - `bounds`: `(lo, hi)` logistic-barrier hard bounds.
+/// - `gaussian`: Optional `(mean, sigma)` Gaussian centering prior.
+///
+/// When `gaussian` is `Some((mean, sigma))`, the posterior is pulled toward
+/// `mean`.  When `gaussian` is `None`, only the hard bounds apply
+/// (flat/uniform prior within the bounded region).
+///
+/// To effectively fix a parameter to a value, set tight bounds around it
+/// (e.g., `bounds = (val - 0.001, val + 0.001)`) -- the logistic barrier
+/// will constrain samples to that narrow range.
 #[derive(Debug, Clone)]
-pub struct Priors {
-    /// (lo, hi) logistic-barrier bounds for ln D (km).  Used by NEATM/FRM.
-    pub ln_diam_bounds: (f64, f64),
-    /// Optional Gaussian prior (mean, sigma) on ln(eta) (beaming).
-    /// `None` means no Gaussian centering -- only hard bounds apply.
-    pub ln_beaming_prior: Option<(f64, f64)>,
-    /// (lo, hi) logistic-barrier bounds for ln(eta).  Used by NEATM.
-    pub ln_beaming_bounds: (f64, f64),
-    /// Optional Gaussian prior (mean, sigma) on `ln(R_IR)`.
-    /// `None` means no Gaussian centering -- only hard bounds apply.
-    /// Used by NEATM/FRM.
-    pub ln_r_ir_prior: Option<(f64, f64)>,
-    /// (lo, hi) logistic-barrier bounds for `ln(R_IR)`.  Used by NEATM/FRM.
-    pub ln_r_ir_bounds: (f64, f64),
-    /// Optional Gaussian prior (mean, sigma) on H magnitude.  Used by HG.
-    pub h_mag_prior: Option<(f64, f64)>,
-    /// (lo, hi) logistic-barrier bounds for H magnitude.  Used by HG.
-    pub h_mag_bounds: (f64, f64),
-    /// Optional Gaussian prior (mean, sigma) on G parameter.  Used by HG.
-    /// `None` means no Gaussian centering -- only hard bounds apply.
-    pub g_param_prior: Option<(f64, f64)>,
-    /// (lo, hi) logistic-barrier bounds for G parameter.  Used by HG.
-    pub g_param_bounds: (f64, f64),
+pub struct ParamPrior {
+    /// (lo, hi) logistic-barrier bounds.
+    pub bounds: (f64, f64),
+    /// Optional Gaussian centering prior (mean, sigma).
+    /// `None` means flat prior within bounds.
+    pub gaussian: Option<(f64, f64)>,
 }
 
-impl Default for Priors {
+impl ParamPrior {
+    /// Create a prior with only hard bounds (flat/uniform within the range).
+    #[must_use]
+    pub fn bounds_only(lo: f64, hi: f64) -> Self {
+        Self {
+            bounds: (lo, hi),
+            gaussian: None,
+        }
+    }
+
+    /// Create a prior with hard bounds and a Gaussian center.
+    #[must_use]
+    pub fn with_gaussian(lo: f64, hi: f64, mean: f64, sigma: f64) -> Self {
+        Self {
+            bounds: (lo, hi),
+            gaussian: Some((mean, sigma)),
+        }
+    }
+
+    /// Evaluate the log-prior contribution for this parameter.
+    pub(super) fn log_prob(&self, x: f64) -> f64 {
+        let mut lp = logistic_barrier(x, self.bounds.0, self.bounds.1, BARRIER_K);
+        if let Some((mean, sigma)) = self.gaussian {
+            lp += gaussian_log_prior(x, mean, sigma);
+        }
+        lp
+    }
+
+    /// Midpoint of the bounds, or the Gaussian mean if set.
+    pub(crate) fn center(&self) -> f64 {
+        self.gaussian
+            .map_or(0.5 * (self.bounds.0 + self.bounds.1), |(m, _)| m)
+    }
+}
+
+/// Prior configuration for model fitting.
+///
+/// Each fitted parameter is configured via a [`ParamPrior`] with hard bounds
+/// and an optional Gaussian center.  The nuisance parameter `f_sigma` has
+/// a sensible fixed prior handled internally.
+#[derive(Debug, Clone)]
+pub struct FluxPriors {
+    /// Prior on ln(D) (diameter in km).  Used by NEATM/FRM.
+    pub ln_diam: ParamPrior,
+    /// Prior on ln(beaming).  Used by NEATM.
+    pub ln_beaming: ParamPrior,
+    /// Prior on `ln(R_IR)` (IR-to-visible albedo ratio).  Used by NEATM/FRM.
+    pub ln_r_ir: ParamPrior,
+    /// Prior on H magnitude.
+    pub h_mag: ParamPrior,
+    /// Prior on G parameter.
+    pub g_param: ParamPrior,
+}
+
+impl Default for FluxPriors {
     /// Sensible defaults:
-    /// - D in [0.001, 1000] km
-    /// - eta in [0.5, 3.0], Gaussian (ln 1.0, 0.3)
+    /// - D in [0.001, 1000] km (bounds only)
+    /// - beaming in [0.5, 3.0], Gaussian (ln 1.0, 0.3)
     /// - `R_IR` in [0.5, 2.0], Gaussian (ln 1.6, 0.3)
-    /// - H in [-5, 35]
-    /// - G in [-0.3, 0.7], Gaussian (0.2, 0.2)
+    /// - H in [-5, 35] (bounds only)
+    /// - G in [-0.3, 0.7], Gaussian (0.2, 0.01)
     fn default() -> Self {
         Self {
-            ln_diam_bounds: (0.001_f64.ln(), 1000.0_f64.ln()),
-            ln_beaming_prior: Some((1.0_f64.ln(), 0.3)),
-            ln_beaming_bounds: (0.5_f64.ln(), 3.0_f64.ln()),
-            ln_r_ir_prior: Some((1.6_f64.ln(), 0.3)),
-            ln_r_ir_bounds: (0.5_f64.ln(), 2.0_f64.ln()),
-            h_mag_prior: None,
-            h_mag_bounds: (-5.0, 35.0),
-            g_param_prior: Some((0.2, 0.2)),
-            g_param_bounds: (-0.3, 0.7),
+            ln_diam: ParamPrior::bounds_only(0.001_f64.ln(), 1000.0_f64.ln()),
+            ln_beaming: ParamPrior::with_gaussian(0.5_f64.ln(), 3.0_f64.ln(), 1.0_f64.ln(), 0.3),
+            ln_r_ir: ParamPrior::with_gaussian(0.5_f64.ln(), 2.0_f64.ln(), 1.6_f64.ln(), 0.3),
+            h_mag: ParamPrior::bounds_only(-5.0, 35.0),
+            g_param: ParamPrior::with_gaussian(-0.3, 0.7, 0.2, 0.01),
         }
     }
 }
@@ -236,13 +301,12 @@ pub(super) fn gaussian_log_prior(x: f64, mean: f64, sigma: f64) -> f64 {
     -0.5 * z * z
 }
 
-/// Given a diameter D (km) and the [`HGParams`] (which hold H and `c_hg`),
+/// Given a diameter D (km), H magnitude, and `c_hg` constant,
 /// compute the visual geometric albedo pV.
 ///
 /// pV = (`c_hg` / D)^2 * 10^(-2H/5)
-pub(super) fn pv_from_diameter(diam_km: f64, hg: &HGParams) -> f64 {
-    let ratio = hg.c_hg() / diam_km;
-    ratio * ratio * 10_f64.powf(-0.4 * hg.h_mag)
+pub(super) fn pv_from_diameter(diam_km: f64, h_mag: f64, c_hg: f64) -> f64 {
+    albedo_from_h_mag_diam(h_mag, diam_km, c_hg)
 }
 
 /// Result of evaluating the forward model at a parameter point.
@@ -266,29 +330,19 @@ pub(super) fn evaluate_forward_model(
     model: Model,
     x: &[f64],
     obs: &[FluxObs],
-    hg: &HGParams,
+    c_hg: f64,
     emissivity: f64,
 ) -> Option<ForwardModelResult> {
     if model.is_hg() {
-        return evaluate_hg_forward_model(x, obs, hg);
+        return evaluate_hg_forward_model(x, obs, c_hg);
     }
 
-    let (diam, eta, f_sigma, r_ir) = model.unpack_thermal_params(x);
+    let tp = model.unpack_thermal_params(x, emissivity);
 
-    let pv = pv_from_diameter(diam, hg);
+    let pv = pv_from_diameter(tp.diam, tp.h_mag, c_hg);
     if !pv.is_finite() || pv <= 0.0 || pv > 2.0 {
         return None;
     }
-
-    let hg_model = HGParams::try_new(
-        hg.desig.clone(),
-        hg.g_param,
-        Some(hg.h_mag),
-        Some(hg.c_hg()),
-        Some(pv),
-        Some(diam),
-    )
-    .unwrap_or_else(|_| hg.clone());
 
     let n = obs.len();
     let mut model_fluxes = vec![0.0; n];
@@ -313,16 +367,19 @@ pub(super) fn evaluate_forward_model(
             }
         }
         let bands: Vec<BandInfo> = indices.iter().map(|&i| obs[i].band.clone()).collect();
-        let band_albedos: Vec<f64> = bands.iter().map(|_| r_ir * pv).collect();
+        let band_albedos: Vec<f64> = bands.iter().map(|_| tp.r_ir * pv).collect();
         let result = model.compute_fluxes(
-            bands,
-            band_albedos,
-            eta,
-            &hg_model,
-            emissivity,
+            &bands,
+            &band_albedos,
+            tp.beaming,
+            tp.g_param,
+            tp.h_mag,
+            pv,
+            tp.diam,
+            tp.emissivity,
             &obs[anchor].sun2obj,
             &obs[anchor].sun2obs,
-        )?;
+        );
         let rf = result.reflected_fraction();
         for (local, &obs_idx) in indices.iter().enumerate() {
             model_fluxes[obs_idx] = result.fluxes[local];
@@ -333,44 +390,32 @@ pub(super) fn evaluate_forward_model(
     Some(ForwardModelResult {
         model_fluxes,
         reflected_frac,
-        f_sigma,
+        f_sigma: tp.f_sigma,
     })
 }
 
 /// HG reflected-light-only forward model.
 ///
 /// Parameters: `x = [H, G, ln_f_sigma]`.
-/// Computes reflected flux via `HGParams::apparent_flux` per observation.
-fn evaluate_hg_forward_model(
-    x: &[f64],
-    obs: &[FluxObs],
-    hg: &HGParams,
-) -> Option<ForwardModelResult> {
+/// Computes reflected flux via `hg_apparent_flux` per observation.
+fn evaluate_hg_forward_model(x: &[f64], obs: &[FluxObs], c_hg: f64) -> Option<ForwardModelResult> {
     let h = x[0];
     let g = x[1];
     let f_sigma = x[2].exp();
 
-    // Build HGParams with the fitted H and G.  Choose D so that pV = 1;
+    // Choose D so that pV = 1;
     // the product D^2 * pV = c_hg^2 * 10^(-2H/5) is determined by H alone.
-    let diam = hg.c_hg() * 10_f64.powf(-h / 5.0);
+    let diam = c_hg * 10_f64.powf(-h / 5.0);
     if !diam.is_finite() || diam <= 0.0 {
         return None;
     }
-    let hg_model = HGParams::try_new(
-        hg.desig.clone(),
-        g,
-        Some(h),
-        Some(hg.c_hg()),
-        Some(1.0),
-        Some(diam),
-    )
-    .ok()?;
 
     let n = obs.len();
     let mut model_fluxes = Vec::with_capacity(n);
     for ob in obs {
-        let flux = hg_model.apparent_flux(&ob.sun2obj, &ob.sun2obs, ob.band.wavelength, 1.0)?
-            * ob.band.solar_correction;
+        let flux =
+            crate::hg_apparent_flux(g, diam, &ob.sun2obj, &ob.sun2obs, ob.band.wavelength, 1.0)
+                * ob.band.solar_correction;
         model_fluxes.push(flux);
     }
 
@@ -395,10 +440,10 @@ pub(super) fn log_likelihood(
     model: Model,
     x: &[f64],
     obs: &[FluxObs],
-    hg: &HGParams,
+    c_hg: f64,
     emissivity: f64,
 ) -> f64 {
-    let Some(fwd) = evaluate_forward_model(model, x, obs, hg, emissivity) else {
+    let Some(fwd) = evaluate_forward_model(model, x, obs, c_hg, emissivity) else {
         return f64::NEG_INFINITY;
     };
 
@@ -428,31 +473,14 @@ pub(super) fn log_likelihood(
 
 /// Evaluate the log-prior at log-parameter vector `x`.
 ///
-/// For thermal models: diameter, beaming, and `R_IR` priors plus a hardcoded
-/// nuisance prior for `f_sigma`.
-/// For HG: H-magnitude prior plus hardcoded `f_sigma` prior.
-pub(super) fn log_prior(model: Model, x: &[f64], priors: &Priors) -> f64 {
+/// All models share H, G, and `f_sigma` priors.  Thermal models add
+/// diameter, beaming, emissivity, and `R_IR` priors.
+pub(super) fn log_prior(model: Model, x: &[f64], priors: &FluxPriors) -> f64 {
     let mut lp = 0.0;
 
     if model.is_hg() {
-        // H magnitude bounds + optional Gaussian.
-        let h = x[0];
-        lp += logistic_barrier(h, priors.h_mag_bounds.0, priors.h_mag_bounds.1, BARRIER_K);
-        if let Some((mean, sigma)) = priors.h_mag_prior {
-            lp += gaussian_log_prior(h, mean, sigma);
-        }
-
-        // G parameter bounds + optional Gaussian.
-        let g = x[1];
-        lp += logistic_barrier(
-            g,
-            priors.g_param_bounds.0,
-            priors.g_param_bounds.1,
-            BARRIER_K,
-        );
-        if let Some((mean, sigma)) = priors.g_param_prior {
-            lp += gaussian_log_prior(g, mean, sigma);
-        }
+        lp += priors.h_mag.log_prob(x[0]);
+        lp += priors.g_param.log_prob(x[1]);
 
         // f_sigma at index 2.
         lp += gaussian_log_prior(x[2], 1.5_f64.ln(), 0.3);
@@ -461,44 +489,34 @@ pub(super) fn log_prior(model: Model, x: &[f64], priors: &Priors) -> f64 {
         return lp;
     }
 
-    let (fi, ri) = model.nuisance_param_indices();
+    // ----- Thermal (NEATM / FRM) -----
+    // Indices: NEATM [ln_D, ln_beaming, H, G, ln_fs, ln_rir]
+    //          FRM   [ln_D, H, G, ln_fs, ln_rir]
+    let h_idx: usize = if model.is_neatm() { 2 } else { 1 };
+    let g_idx = h_idx + 1;
+    let f_idx = g_idx + 1;
+    let r_idx = f_idx + 1;
 
-    // Diameter bounds.
-    lp += logistic_barrier(
-        x[0],
-        priors.ln_diam_bounds.0,
-        priors.ln_diam_bounds.1,
-        BARRIER_K,
-    );
+    // Diameter.
+    lp += priors.ln_diam.log_prob(x[0]);
 
-    // Beaming (NEATM only): bounds + optional Gaussian.
+    // Beaming (NEATM only).
     if model.is_neatm() {
-        let ln_eta = x[1];
-        lp += logistic_barrier(
-            ln_eta,
-            priors.ln_beaming_bounds.0,
-            priors.ln_beaming_bounds.1,
-            BARRIER_K,
-        );
-        if let Some((mean, sigma)) = priors.ln_beaming_prior {
-            lp += gaussian_log_prior(ln_eta, mean, sigma);
-        }
+        lp += priors.ln_beaming.log_prob(x[1]);
     }
+
+    // H magnitude.
+    lp += priors.h_mag.log_prob(x[h_idx]);
+
+    // G parameter.
+    lp += priors.g_param.log_prob(x[g_idx]);
 
     // f_sigma: Gaussian(ln 1.5, 0.3) + bounds [ln 0.5, ln 5.0].
-    lp += gaussian_log_prior(x[fi], 1.5_f64.ln(), 0.3);
-    lp += logistic_barrier(x[fi], 0.5_f64.ln(), 5.0_f64.ln(), BARRIER_K);
+    lp += gaussian_log_prior(x[f_idx], 1.5_f64.ln(), 0.3);
+    lp += logistic_barrier(x[f_idx], 0.5_f64.ln(), 5.0_f64.ln(), BARRIER_K);
 
-    // R_IR: configurable Gaussian + bounds.
-    lp += logistic_barrier(
-        x[ri],
-        priors.ln_r_ir_bounds.0,
-        priors.ln_r_ir_bounds.1,
-        BARRIER_K,
-    );
-    if let Some((mean, sigma)) = priors.ln_r_ir_prior {
-        lp += gaussian_log_prior(x[ri], mean, sigma);
-    }
+    // R_IR.
+    lp += priors.ln_r_ir.log_prob(x[r_idx]);
 
     lp
 }
@@ -511,11 +529,11 @@ pub(super) fn log_posterior(
     model: Model,
     x: &[f64],
     obs: &[FluxObs],
-    hg: &HGParams,
+    c_hg: f64,
     emissivity: f64,
-    priors: &Priors,
+    priors: &FluxPriors,
 ) -> f64 {
-    let ll = log_likelihood(model, x, obs, hg, emissivity);
+    let ll = log_likelihood(model, x, obs, c_hg, emissivity);
     if !ll.is_finite() {
         return f64::NEG_INFINITY;
     }

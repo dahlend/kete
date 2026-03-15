@@ -5,8 +5,8 @@
 
 use crate::frame::PyFrames;
 use crate::vector::VectorLike;
-use kete_flux::fitting::{self, FitResult, FitTask, FluxObs, Model, Priors};
-use kete_flux::{BandInfo, HGParams};
+use kete_flux::BandInfo;
+use kete_flux::fitting::{self, FitResult, FitTask, FluxObs, FluxPriors, Model, ParamPrior};
 use pyo3::prelude::*;
 
 /// Accept either a WISE band name ("W1"-"W4") or a wavelength in nm.
@@ -127,6 +127,46 @@ impl PyFluxObs {
 }
 
 /// Prior configuration for model fitting.
+/// Configuration for a single parameter's prior.
+///
+/// Parameters
+/// ----------
+/// bounds :
+///     ``(lo, hi)`` logistic-barrier hard bounds.
+/// gaussian :
+///     Optional ``(mean, sigma)`` Gaussian centering prior.
+///     ``None`` means flat (uniform) within the bounds.
+#[pyclass(frozen, module = "kete.flux", name = "ParamPrior", from_py_object)]
+#[derive(Clone, Debug)]
+pub struct PyParamPrior(pub ParamPrior);
+
+#[pymethods]
+impl PyParamPrior {
+    #[new]
+    #[pyo3(signature = (bounds, gaussian=None))]
+    fn new(bounds: (f64, f64), gaussian: Option<(f64, f64)>) -> Self {
+        Self(match gaussian {
+            Some((mean, sigma)) => ParamPrior::with_gaussian(bounds.0, bounds.1, mean, sigma),
+            None => ParamPrior::bounds_only(bounds.0, bounds.1),
+        })
+    }
+
+    #[getter]
+    fn bounds(&self) -> (f64, f64) {
+        self.0.bounds
+    }
+
+    #[getter]
+    fn gaussian(&self) -> Option<(f64, f64)> {
+        self.0.gaussian
+    }
+
+    fn __repr__(&self) -> String {
+        format!("{:?}", self.0)
+    }
+}
+
+/// Prior configuration for all fitted parameters.
 ///
 /// Only the scientifically meaningful knobs are exposed.  The nuisance
 /// parameter ``f_sigma`` has a sensible fixed prior handled internally.
@@ -134,102 +174,56 @@ impl PyFluxObs {
 /// If not provided, sensible defaults are used:
 ///
 /// - D in [0.001, 1000] km
-/// - eta in [0.5, 3.0], Gaussian prior at ln(1.0) with sigma=0.3
+/// - beaming in [0.5, 3.0], Gaussian prior at ln(1.0) with sigma=0.3
 /// - R_IR in [0.5, 2.0], Gaussian prior at ln(1.6) with sigma=0.3
 /// - H in [-5, 35]
-/// - G in [-0.12, 0.7], Gaussian prior at 0.15 with sigma=0.1
+/// - G in [-0.3, 0.7], Gaussian prior at 0.2 with sigma=0.2
+///
+/// Each prior is a :class:`ParamPrior` specifying ``bounds`` (logistic
+/// barrier) and an optional ``gaussian`` centering prior ``(mean, sigma)``.
+/// To effectively fix a parameter, set tight bounds around the desired
+/// value (e.g., ``bounds=(val - 1e-3, val + 1e-3)``).
 ///
 /// Parameters
 /// ----------
-/// ln_diam_bounds :
-///     (lo, hi) logistic-barrier bounds for ln(D) in km.
-/// ln_beaming_prior :
-///     Optional (mean, sigma) Gaussian prior on ln(eta).
-/// ln_beaming_bounds :
-///     (lo, hi) logistic-barrier bounds for ln(eta).
-/// disable_beaming_prior :
-///     If ``True``, remove the Gaussian centering prior on ln(eta),
-///     leaving only the hard bounds.  Default ``False``.
-/// ln_r_ir_prior :
-///     Optional (mean, sigma) Gaussian prior on ln(R_IR).
-/// ln_r_ir_bounds :
-///     (lo, hi) logistic-barrier bounds for ln(R_IR).
-/// disable_r_ir_prior :
-///     If ``True``, remove the Gaussian centering prior on ln(R_IR),
-///     leaving only the hard bounds.  Default ``False``.
-/// h_mag_prior :
-///     Optional (mean, sigma) Gaussian prior on H magnitude (HG model).
-/// h_mag_bounds :
-///     (lo, hi) logistic-barrier bounds for H magnitude (HG model).
-/// g_param_prior :
-///     Optional (mean, sigma) Gaussian prior on G parameter (HG model).
-/// g_param_bounds :
-///     (lo, hi) logistic-barrier bounds for G parameter (HG model).
-/// disable_g_param_prior :
-///     If ``True``, remove the Gaussian centering prior on G,
-///     leaving only the hard bounds.  Default ``False``.
-#[pyclass(frozen, module = "kete.flux", name = "Priors", from_py_object)]
+/// ln_diam :
+///     :class:`ParamPrior` for ln(D) in km.
+/// ln_beaming :
+///     :class:`ParamPrior` for ln(beaming).
+/// ln_r_ir :
+///     :class:`ParamPrior` for ln(R_IR).
+/// h_mag :
+///     :class:`ParamPrior` for H magnitude.
+/// g_param :
+///     :class:`ParamPrior` for G parameter.
+#[pyclass(frozen, module = "kete.flux", name = "FluxPriors", from_py_object)]
 #[derive(Clone, Debug)]
-pub struct PyPriors(pub Priors);
+pub struct PyFluxPriors(pub FluxPriors);
 
 #[pymethods]
-impl PyPriors {
+impl PyFluxPriors {
     #[new]
-    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
-        ln_diam_bounds=None,
-        ln_beaming_prior=None,
-        ln_beaming_bounds=None,
-        disable_beaming_prior=false,
-        ln_r_ir_prior=None,
-        ln_r_ir_bounds=None,
-        disable_r_ir_prior=false,
-        h_mag_prior=None,
-        h_mag_bounds=None,
-        g_param_prior=None,
-        g_param_bounds=None,
-        disable_g_param_prior=false,
+        ln_diam=None,
+        ln_beaming=None,
+        ln_r_ir=None,
+        h_mag=None,
+        g_param=None,
     ))]
     fn new(
-        ln_diam_bounds: Option<(f64, f64)>,
-        ln_beaming_prior: Option<(f64, f64)>,
-        ln_beaming_bounds: Option<(f64, f64)>,
-        disable_beaming_prior: bool,
-        ln_r_ir_prior: Option<(f64, f64)>,
-        ln_r_ir_bounds: Option<(f64, f64)>,
-        disable_r_ir_prior: bool,
-        h_mag_prior: Option<(f64, f64)>,
-        h_mag_bounds: Option<(f64, f64)>,
-        g_param_prior: Option<(f64, f64)>,
-        g_param_bounds: Option<(f64, f64)>,
-        disable_g_param_prior: bool,
+        ln_diam: Option<PyParamPrior>,
+        ln_beaming: Option<PyParamPrior>,
+        ln_r_ir: Option<PyParamPrior>,
+        h_mag: Option<PyParamPrior>,
+        g_param: Option<PyParamPrior>,
     ) -> Self {
-        let d = Priors::default();
-        let beaming = if disable_beaming_prior {
-            None
-        } else {
-            ln_beaming_prior.or(d.ln_beaming_prior)
-        };
-        let r_ir = if disable_r_ir_prior {
-            None
-        } else {
-            ln_r_ir_prior.or(d.ln_r_ir_prior)
-        };
-        let g = if disable_g_param_prior {
-            None
-        } else {
-            g_param_prior.or(d.g_param_prior)
-        };
-        Self(Priors {
-            ln_diam_bounds: ln_diam_bounds.unwrap_or(d.ln_diam_bounds),
-            ln_beaming_prior: beaming,
-            ln_beaming_bounds: ln_beaming_bounds.unwrap_or(d.ln_beaming_bounds),
-            ln_r_ir_prior: r_ir,
-            ln_r_ir_bounds: ln_r_ir_bounds.unwrap_or(d.ln_r_ir_bounds),
-            h_mag_prior,
-            h_mag_bounds: h_mag_bounds.unwrap_or(d.h_mag_bounds),
-            g_param_prior: g,
-            g_param_bounds: g_param_bounds.unwrap_or(d.g_param_bounds),
+        let d = FluxPriors::default();
+        Self(FluxPriors {
+            ln_diam: ln_diam.map_or(d.ln_diam, |p| p.0),
+            ln_beaming: ln_beaming.map_or(d.ln_beaming, |p| p.0),
+            ln_r_ir: ln_r_ir.map_or(d.ln_r_ir, |p| p.0),
+            h_mag: h_mag.map_or(d.h_mag, |p| p.0),
+            g_param: g_param.map_or(d.g_param, |p| p.0),
         })
     }
 
@@ -307,9 +301,11 @@ fn stats_from_column(draws: &[Vec<f64>], col: usize) -> PySampleStats {
 /// vis_albedo :
 ///     Posterior statistics for visual geometric albedo.  ``None`` for HG model.
 /// beaming :
-///     Posterior statistics for beaming eta (NEATM only; ``None`` for FRM/HG).
+///     Posterior statistics for beaming (NEATM only; ``None`` for FRM/HG).
 /// h_mag :
-///     Posterior statistics for H magnitude (HG only; ``None`` for thermal models).
+///     Posterior statistics for H magnitude.
+/// g_param :
+///     Posterior statistics for G parameter.
 /// f_sigma :
 ///     Posterior statistics for uncertainty inflation factor.
 /// ir_albedo_ratio :
@@ -318,16 +314,17 @@ fn stats_from_column(draws: &[Vec<f64>], col: usize) -> PySampleStats {
 ///     Model name string (``"Neatm"``, ``"Frm"``, or ``"Hg"``).
 /// draws :
 ///     Raw MCMC draws as a list of vectors (each row =
-///     ``[D, pV, eta, f_sigma, R_IR]`` for NEATM,
-///     ``[D, pV, f_sigma, R_IR]`` for FRM, or
-///     ``[H, f_sigma]`` for HG).
+///     ``[D, pV, beaming, H, G, R_IR, f_sigma]`` for NEATM,
+///     ``[D, pV, H, G, R_IR, f_sigma]`` for FRM, or
+///     ``[H, G, f_sigma]`` for HG).
 /// divergent :
 ///     Per-draw divergence flags.
 /// n_divergent :
 ///     Total number of divergent transitions.
 /// chi2_best :
-///     chi^2 at the MAP point using inflated uncertainties
-///     ``sum ((obs - model) / (f_sigma * sigma))^2`` (for diagnostics).
+///     Reduced chi-squared at the MAP point using inflated uncertainties
+///     ``(1/dof) * sum ((obs - model) / (f_sigma * sigma))^2`` where
+///     ``dof = nobs - nparams``.  A value near 1.0 indicates a good fit.
 /// nobs :
 ///     Number of non-upper-limit observations.
 /// best_fit_fluxes :
@@ -352,7 +349,7 @@ impl PyFitResult {
     fn vis_albedo(&self) -> Option<PySampleStats> {
         (!self.0.model.is_hg()).then(|| stats_from_column(&self.0.draws, 1))
     }
-    /// Posterior statistics for beaming eta (NEATM only).  ``None`` for FRM/HG.
+    /// Posterior statistics for beaming (NEATM only).  ``None`` for FRM/HG.
     #[getter]
     fn beaming(&self) -> Option<PySampleStats> {
         self.0
@@ -360,28 +357,33 @@ impl PyFitResult {
             .is_neatm()
             .then(|| stats_from_column(&self.0.draws, 2))
     }
-    /// Posterior statistics for H magnitude (HG only).  ``None`` for thermal models.
+    /// Posterior statistics for H magnitude.
     #[getter]
-    fn h_mag(&self) -> Option<PySampleStats> {
-        self.0
-            .model
-            .is_hg()
-            .then(|| stats_from_column(&self.0.draws, 0))
+    fn h_mag(&self) -> PySampleStats {
+        let col = match self.0.model {
+            Model::Neatm => 3,
+            Model::Frm => 2,
+            Model::Hg => 0,
+        };
+        stats_from_column(&self.0.draws, col)
     }
-    /// Posterior statistics for G parameter (HG only).  ``None`` for thermal models.
+    /// Posterior statistics for G parameter.
     #[getter]
-    fn g_param(&self) -> Option<PySampleStats> {
-        self.0
-            .model
-            .is_hg()
-            .then(|| stats_from_column(&self.0.draws, 1))
+    fn g_param(&self) -> PySampleStats {
+        let col = match self.0.model {
+            Model::Neatm => 4,
+            Model::Frm => 3,
+            Model::Hg => 1,
+        };
+        stats_from_column(&self.0.draws, col)
     }
     /// Posterior statistics for uncertainty inflation factor.
     #[getter]
     fn f_sigma(&self) -> PySampleStats {
         let col = match self.0.model {
-            Model::Neatm => 3,
-            Model::Frm | Model::Hg => 2,
+            Model::Neatm => 6,
+            Model::Frm => 5,
+            Model::Hg => 2,
         };
         stats_from_column(&self.0.draws, col)
     }
@@ -391,7 +393,7 @@ impl PyFitResult {
         if self.0.model.is_hg() {
             return None;
         }
-        let col = if self.0.model.is_neatm() { 4 } else { 3 };
+        let col = if self.0.model.is_neatm() { 5 } else { 4 };
         Some(stats_from_column(&self.0.draws, col))
     }
     #[getter]
@@ -410,10 +412,19 @@ impl PyFitResult {
                 "diameter",
                 "vis_albedo",
                 "beaming",
-                "f_sigma",
+                "h_mag",
+                "g_param",
                 "ir_albedo_ratio",
+                "f_sigma",
             ],
-            Model::Frm => vec!["diameter", "vis_albedo", "f_sigma", "ir_albedo_ratio"],
+            Model::Frm => vec![
+                "diameter",
+                "vis_albedo",
+                "h_mag",
+                "g_param",
+                "ir_albedo_ratio",
+                "f_sigma",
+            ],
             Model::Hg => vec!["h_mag", "g_param", "f_sigma"],
         }
     }
@@ -427,7 +438,7 @@ impl PyFitResult {
     }
     #[getter]
     fn chi2_best(&self) -> f64 {
-        self.0.chi2_best
+        self.0.reduced_chi2
     }
     #[getter]
     fn nobs(&self) -> usize {
@@ -488,6 +499,11 @@ fn parse_model(model: &str) -> PyResult<Model> {
 
 /// Fit a model to observations using NUTS MCMC.
 ///
+/// H magnitude and G parameter are fitted as free parameters.
+/// If ``h_mag`` or ``g_param`` are supplied, they set the center of the
+/// corresponding Gaussian prior (keeping its width from ``priors``).
+/// ``emissivity`` is a fixed thermal property (not fitted).
+///
 /// Parameters
 /// ----------
 /// model :
@@ -495,13 +511,13 @@ fn parse_model(model: &str) -> PyResult<Model> {
 /// obs :
 ///     List of :class:`FluxObs` observations.
 /// h_mag :
-///     Absolute H magnitude (HG system).
+///     Optional H magnitude -- sets the center of the H prior.
 /// g_param :
-///     Phase slope parameter G (default 0.15).
+///     Optional G parameter -- sets the center of the G prior.
 /// emissivity :
-///     Surface emissivity (default 0.9).
+///     Fixed thermal emissivity (default 0.9, not fitted).
 /// priors :
-///     Prior configuration (:class:`Priors`, default if ``None``).
+///     Prior configuration (:class:`FluxPriors`, default if ``None``).
 /// num_chains :
 ///     Number of MCMC chains (default 4).
 /// num_tune :
@@ -510,47 +526,45 @@ fn parse_model(model: &str) -> PyResult<Model> {
 ///     Posterior draws per chain (default 500).
 /// c_hg :
 ///     HG relationship constant (default 1329.0).
-/// diameter :
-///     Known diameter in km (alternative to ``h_mag``).
-/// vis_albedo :
-///     Known visible geometric albedo.
 ///
 /// Returns
 /// -------
 /// FitResult or None
 ///     MCMC posterior results, or ``None`` if the fit fails.
 #[pyfunction]
-#[pyo3(name = "fit_model", signature = (model, obs, h_mag=None, g_param=0.15,
+#[pyo3(name = "fit_model", signature = (model, obs, h_mag=None, g_param=None,
     emissivity=0.9, priors=None, num_chains=4, num_tune=200, num_draws=500,
-    c_hg=None, diameter=None, vis_albedo=None))]
+    c_hg=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn fit_model_py(
     model: &str,
     obs: Vec<PyFluxObs>,
     h_mag: Option<f64>,
-    g_param: f64,
+    g_param: Option<f64>,
     emissivity: f64,
-    priors: Option<PyPriors>,
+    priors: Option<PyFluxPriors>,
     num_chains: usize,
     num_tune: usize,
     num_draws: usize,
     c_hg: Option<f64>,
-    diameter: Option<f64>,
-    vis_albedo: Option<f64>,
 ) -> PyResult<Option<PyFitResult>> {
     let tm = parse_model(model)?;
-    let priors = priors.map_or_else(Priors::default, |p| p.0);
-    // For HG fitting, H is a fitted parameter so it need not be provided.
-    // Use the midpoint of the prior bounds as a Nelder-Mead seed.
-    let hg = if tm.is_hg() && h_mag.is_none() && vis_albedo.is_none() && diameter.is_none() {
-        let seed_h = 0.5 * (priors.h_mag_bounds.0 + priors.h_mag_bounds.1);
-        HGParams::new("".into(), g_param, seed_h, c_hg)
-    } else {
-        HGParams::try_new("".into(), g_param, h_mag, c_hg, vis_albedo, diameter)?
-    };
+    let mut priors = priors.map_or_else(FluxPriors::default, |p| p.0);
+    let c_hg_val = c_hg.unwrap_or(kete_core::constants::C_V);
+
+    // Override prior centers from convenience arguments.
+    if let Some(h) = h_mag {
+        let sigma = priors.h_mag.gaussian.map_or(0.01, |(_, s)| s);
+        priors.h_mag.gaussian = Some((h, sigma));
+    }
+    if let Some(g) = g_param {
+        let sigma = priors.g_param.gaussian.map_or(0.01, |(_, s)| s);
+        priors.g_param.gaussian = Some((g, sigma));
+    }
+
     let raw_obs = extract_obs(&obs);
     Ok(fitting::fit_mcmc(
-        tm, &raw_obs, &hg, emissivity, &priors, num_chains, num_tune, num_draws,
+        tm, &raw_obs, c_hg_val, emissivity, &priors, num_chains, num_tune, num_draws,
     )
     .map(PyFitResult))
 }
@@ -560,6 +574,11 @@ pub fn fit_model_py(
 /// Each element of the input lists corresponds to one object.
 /// Returns a list of ``FitResult`` or ``None`` per object.
 ///
+/// ``h_mags`` and ``g_params`` are optional per-object prior-center
+/// overrides (same semantics as the scalar arguments in :func:`fit_model`).
+/// ``emissivities`` are fixed per-object thermal emissivity values
+/// (not fitted).
+///
 /// Parameters
 /// ----------
 /// model :
@@ -567,11 +586,11 @@ pub fn fit_model_py(
 /// obs_list :
 ///     List of observation lists; one list of :class:`FluxObs` per object.
 /// h_mags :
-///     Absolute H magnitude per object.
+///     Optional H magnitude per object (sets H prior center).
 /// g_params :
-///     Phase slope G per object.
+///     Optional G parameter per object (sets G prior center).
 /// emissivities :
-///     Emissivity per object.
+///     Optional emissivity per object (default 0.9, not fitted).
 /// priors :
 ///     Common prior configuration (applies to all objects).
 /// num_chains :
@@ -582,36 +601,36 @@ pub fn fit_model_py(
 ///     Posterior draws per chain (default 500).
 /// c_hgs :
 ///     Optional list of ``c_hg`` per object.
-/// diameters :
-///     Optional list of known diameters (km) per object.
-/// vis_albedos :
-///     Optional list of known visible albedos per object.
 ///
 /// Returns
 /// -------
 /// list
 ///     One ``FitResult`` or ``None`` per object.
 #[pyfunction]
-#[pyo3(name = "fit_model_batch", signature = (model, obs_list, h_mags, g_params,
-    emissivities, priors=None, num_chains=4, num_tune=200, num_draws=500,
-    c_hgs=None, diameters=None, vis_albedos=None))]
+#[pyo3(name = "fit_model_batch", signature = (model, obs_list, h_mags=None,
+    g_params=None, emissivities=None, priors=None, num_chains=4, num_tune=200,
+    num_draws=500, c_hgs=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn fit_model_batch_py(
     model: &str,
     obs_list: Vec<Vec<PyFluxObs>>,
-    h_mags: Vec<Option<f64>>,
-    g_params: Vec<f64>,
-    emissivities: Vec<f64>,
-    priors: Option<PyPriors>,
+    h_mags: Option<Vec<Option<f64>>>,
+    g_params: Option<Vec<Option<f64>>>,
+    emissivities: Option<Vec<Option<f64>>>,
+    priors: Option<PyFluxPriors>,
     num_chains: usize,
     num_tune: usize,
     num_draws: usize,
     c_hgs: Option<Vec<Option<f64>>>,
-    diameters: Option<Vec<Option<f64>>>,
-    vis_albedos: Option<Vec<Option<f64>>>,
 ) -> PyResult<Vec<Option<PyFitResult>>> {
     let tm = parse_model(model)?;
     let n = obs_list.len();
+    let base_priors = priors.map_or_else(FluxPriors::default, |p| p.0);
+    let h_mags = h_mags.unwrap_or_else(|| vec![None; n]);
+    let g_params = g_params.unwrap_or_else(|| vec![None; n]);
+    let emissivities = emissivities.unwrap_or_else(|| vec![None; n]);
+    let c_hgs = c_hgs.unwrap_or_else(|| vec![None; n]);
+
     if h_mags.len() != n || g_params.len() != n || emissivities.len() != n {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "obs_list ({n}), h_mags ({}), g_params ({}), and emissivities ({}) must all have the same length",
@@ -620,36 +639,29 @@ pub fn fit_model_batch_py(
             emissivities.len(),
         )));
     }
-    let priors = priors.map_or_else(Priors::default, |p| p.0);
-    let c_hgs = c_hgs.unwrap_or_else(|| vec![None; n]);
-    let diameters = diameters.unwrap_or_else(|| vec![None; n]);
-    let vis_albedos = vis_albedos.unwrap_or_else(|| vec![None; n]);
 
     let mut tasks = Vec::with_capacity(n);
     for (i, py_obs) in obs_list.into_iter().enumerate() {
-        let hg = if tm.is_hg()
-            && h_mags[i].is_none()
-            && vis_albedos[i].is_none()
-            && diameters[i].is_none()
-        {
-            let seed_h = 0.5 * (priors.h_mag_bounds.0 + priors.h_mag_bounds.1);
-            HGParams::new("".into(), g_params[i], seed_h, c_hgs[i])
-        } else {
-            HGParams::try_new(
-                "".into(),
-                g_params[i],
-                h_mags[i],
-                c_hgs[i],
-                vis_albedos[i],
-                diameters[i],
-            )?
-        };
+        let mut p = base_priors.clone();
+        let c_hg_val = c_hgs[i].unwrap_or(kete_core::constants::C_V);
+
+        if let Some(h) = h_mags[i] {
+            let sigma = p.h_mag.gaussian.map_or(1.0, |(_, s)| s);
+            p.h_mag.gaussian = Some((h, sigma));
+        }
+        if let Some(g) = g_params[i] {
+            let sigma = p.g_param.gaussian.map_or(0.2, |(_, s)| s);
+            p.g_param.gaussian = Some((g, sigma));
+        }
+
+        let emissivity_val = emissivities[i].unwrap_or(0.9);
+
         tasks.push(FitTask {
             model: tm,
             obs: extract_obs(&py_obs),
-            hg,
-            emissivity: emissivities[i],
-            priors: priors.clone(),
+            c_hg: c_hg_val,
+            emissivity: emissivity_val,
+            priors: p,
             num_chains,
             num_tune,
             num_draws,

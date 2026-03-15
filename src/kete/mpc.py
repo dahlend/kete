@@ -395,7 +395,8 @@ def _build_observer(stn: str, jd: float, rec: dict):
 
         pos_km = np.array([float(pos1), float(pos2), float(pos3)])
         if sys == "ICRF_AU":
-            pos_au = pos_km  # already AU despite the variable name
+            # already AU despite the variable name
+            pos_au = pos_km
         elif sys == "ICRF_KM":
             pos_au = pos_km / constants.AU_KM
         elif sys == "WGS84":
@@ -440,7 +441,7 @@ def fetch_mpc_observations(desig: str):
     Parameters
     ----------
     desig :
-        Object designation recognised by the MPC (e.g. ``"Apophis"``,
+        Object designation recognized by the MPC (e.g. ``"Apophis"``,
         ``"101955"``, ``"1999 RQ36"``).
 
     Returns

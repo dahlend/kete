@@ -37,7 +37,7 @@ impl PyUncertainState {
     /// Build an ``UncertainState`` from a state with isotropic diagonal
     /// uncertainties.
     ///
-    /// The covariance is initialised to a diagonal matrix with the
+    /// The covariance is initialized to a diagonal matrix with the
     /// given ``pos_sigma`` (AU) and ``vel_sigma`` (AU/day) on the
     /// diagonal.  Useful for seeding MCMC from an IOD candidate.
     ///

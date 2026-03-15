@@ -298,15 +298,22 @@ fn cometary_to_cartesian_jacobian(elements: &CometElements) -> KeteResult<DMatri
     // Most elements use their own magnitude (floored at 1.0 for near-zero
     // angles).  peri_time is special: its JD value is ~2.5e6, but orbit
     // sensitivity is per-day, so we use an absolute step of eps^(1/3) days.
-    let eps3 = f64::EPSILON.cbrt(); // ~6.06e-6
+    // ~6.06e-6
+    let eps3 = f64::EPSILON.cbrt();
     let rel = |v: f64| eps3 * v.abs().max(1.0);
     let steps = [
-        rel(elements.eccentricity),     // eccentricity (dimensionless)
-        rel(elements.peri_dist),        // peri_dist (AU)
-        eps3,                           // peri_time (days, absolute)
-        rel(elements.lon_of_ascending), // lon_of_ascending (rad)
-        rel(elements.peri_arg),         // peri_arg (rad)
-        rel(elements.inclination),      // inclination (rad)
+        // eccentricity (dimensionless)
+        rel(elements.eccentricity),
+        // peri_dist (AU)
+        rel(elements.peri_dist),
+        // peri_time (days, absolute)
+        eps3,
+        // lon_of_ascending (rad)
+        rel(elements.lon_of_ascending),
+        // peri_arg (rad)
+        rel(elements.peri_arg),
+        // inclination (rad)
+        rel(elements.inclination),
     ];
 
     for col in 0..6 {
@@ -572,9 +579,12 @@ mod tests {
             epoch,
             eccentricity: 0.3,
             peri_dist: 1.5,
-            peri_time: Time::new(2459900.5), // 100 days before epoch
-            lon_of_ascending: std::f64::consts::FRAC_PI_4, // 45 deg
-            peri_arg: std::f64::consts::FRAC_PI_3, // 60 deg
+            // 100 days before epoch
+            peri_time: Time::new(2459900.5),
+            // 45 deg
+            lon_of_ascending: std::f64::consts::FRAC_PI_4,
+            // 60 deg
+            peri_arg: std::f64::consts::FRAC_PI_3,
             inclination: 20.0_f64.to_radians(),
         };
 
@@ -630,9 +640,12 @@ mod tests {
             eccentricity: 0.05,
             peri_dist: 1.0,
             peri_time: Time::new(2459950.5),
-            lon_of_ascending: 1e-6, // nearly zero
-            peri_arg: 1e-6,         // nearly zero
-            inclination: 1e-4,      // nearly equatorial
+            // nearly zero
+            lon_of_ascending: 1e-6,
+            // nearly zero
+            peri_arg: 1e-6,
+            // nearly equatorial
+            inclination: 1e-4,
         };
 
         let jac = cometary_to_cartesian_jacobian(&elements).unwrap();

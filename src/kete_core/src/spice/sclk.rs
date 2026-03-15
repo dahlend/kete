@@ -427,7 +427,8 @@ impl TryFrom<Vec<SclkToken>> for Sclk {
                             "SCLK clock type must be 1, found {dtype}.",
                         )));
                     }
-                } // Data type is always 1
+                }
+                // Data type is always 1
                 SclkToken::NFields01(id, n) => {
                     if n_fields.is_some() {
                         return Err(Error::ValueError("Multiple SCLK N_FIELDS found.".into()));

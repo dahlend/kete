@@ -43,8 +43,10 @@ jd_start = kete.Time.j2000().jd
 state = kete.spice.get_state("Ceres", jd_start)
 
 # 1-sigma uncertainties
-sigma_pos_au = 10 / 1.496e8  # 10 km in AU
-sigma_vel_auday = 1 / 1.731e6  # 1 m/s in AU/day
+# 10 km in AU
+sigma_pos_au = 10 / 1.496e8
+# 1 m/s in AU/day
+sigma_vel_auday = 1 / 1.731e6
 
 cov0 = np.diag([sigma_pos_au**2] * 3 + [sigma_vel_auday**2] * 3)
 
@@ -99,7 +101,8 @@ print(f"Final state: {final_state}")
 # d(final state)/d(A1, A2, A3).
 
 ng_model = kete.propagation.NonGravModel.new_comet(
-    a1=1e-9,  # AU/day^2 (typical weak cometary force)
+    # AU/day^2 (typical weak cometary force)
+    a1=1e-9,
     a2=3e-10,
     a3=0.0,
 )

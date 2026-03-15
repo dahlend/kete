@@ -39,4 +39,4 @@ mod tests;
 
 // Re-export the public API.
 pub use mcmc::{FitResult, FitTask, fit_batch, fit_mcmc};
-pub use types::{FluxObs, Model, Priors, logistic_barrier};
+pub use types::{FluxObs, FluxPriors, Model, ParamPrior, logistic_barrier};

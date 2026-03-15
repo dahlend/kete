@@ -6,7 +6,9 @@ use kete_core::frames::{Equatorial, Vector};
 use kete_core::prelude::*;
 use kete_core::propagation::NonGravModel;
 use kete_core::spice::LOADED_SPK;
-use kete_fitting::{Observation, OrbitFit, OrbitSamples, fit_orbit, fit_orbit_mcmc, lambert};
+use kete_fitting::{
+    AstrometricObservation, OrbitFit, OrbitSamples, fit_orbit, fit_orbit_mcmc, lambert,
+};
 use pyo3::{PyResult, pyclass, pyfunction, pymethods};
 
 use crate::nongrav::PyNonGravModel;
@@ -32,7 +34,7 @@ const RAD_TO_ARCSEC: f64 = 180.0 * 3600.0 / std::f64::consts::PI;
 #[derive(Debug, Clone)]
 pub struct PyObservation {
     /// The core observation data (astrometry / radar).
-    pub obs: Observation,
+    pub obs: AstrometricObservation,
     /// Photometric filter name (e.g. "V", "W1").  Metadata only.
     pub band: String,
     /// Apparent magnitude.  NaN when unavailable.  Metadata only.
@@ -96,13 +98,17 @@ impl PyObservation {
             spk.try_change_center(&mut raw, 0)?;
         }
         let arcsec_to_rad = 1.0 / RAD_TO_ARCSEC;
-        Ok(Self { obs: Observation::Optical {
-            observer: raw,
-            ra: ra.to_radians(),
-            dec: dec.to_radians(),
-            sigma_ra: sigma_ra * arcsec_to_rad,
-            sigma_dec: sigma_dec * arcsec_to_rad,
-        }, band, mag })
+        Ok(Self {
+            obs: AstrometricObservation::Optical {
+                observer: raw,
+                ra: ra.to_radians(),
+                dec: dec.to_radians(),
+                sigma_ra: sigma_ra * arcsec_to_rad,
+                sigma_dec: sigma_dec * arcsec_to_rad,
+            },
+            band,
+            mag,
+        })
     }
 
     /// Create a radar range observation.
@@ -128,11 +134,15 @@ impl PyObservation {
             let spk = LOADED_SPK.try_read().map_err(Error::from)?;
             spk.try_change_center(&mut raw, 0)?;
         }
-        Ok(Self { obs: Observation::RadarRange {
-            observer: raw,
-            range,
-            sigma_range,
-        }, band: String::new(), mag: f64::NAN })
+        Ok(Self {
+            obs: AstrometricObservation::RadarRange {
+                observer: raw,
+                range,
+                sigma_range,
+            },
+            band: String::new(),
+            mag: f64::NAN,
+        })
     }
 
     /// Create a radar range-rate (Doppler) observation.
@@ -158,11 +168,15 @@ impl PyObservation {
             let spk = LOADED_SPK.try_read().map_err(Error::from)?;
             spk.try_change_center(&mut raw, 0)?;
         }
-        Ok(Self { obs: Observation::RadarRate {
-            observer: raw,
-            range_rate,
-            sigma_range_rate,
-        }, band: String::new(), mag: f64::NAN })
+        Ok(Self {
+            obs: AstrometricObservation::RadarRate {
+                observer: raw,
+                range_rate,
+                sigma_range_rate,
+            },
+            band: String::new(),
+            mag: f64::NAN,
+        })
     }
 
     /// The observation epoch (from the observer state).
@@ -175,9 +189,9 @@ impl PyObservation {
     #[getter]
     fn observer(&self) -> PyResult<PyState> {
         let mut st = match &self.obs {
-            Observation::Optical { observer, .. }
-            | Observation::RadarRange { observer, .. }
-            | Observation::RadarRate { observer, .. } => observer.clone(),
+            AstrometricObservation::Optical { observer, .. }
+            | AstrometricObservation::RadarRange { observer, .. }
+            | AstrometricObservation::RadarRate { observer, .. } => observer.clone(),
         };
         if st.center_id != 10 {
             let spk = LOADED_SPK.try_read().map_err(Error::from)?;
@@ -190,7 +204,7 @@ impl PyObservation {
     #[getter]
     fn ra(&self) -> Option<f64> {
         match &self.obs {
-            Observation::Optical { ra, .. } => Some(ra.to_degrees()),
+            AstrometricObservation::Optical { ra, .. } => Some(ra.to_degrees()),
             _ => None,
         }
     }
@@ -199,7 +213,7 @@ impl PyObservation {
     #[getter]
     fn dec(&self) -> Option<f64> {
         match &self.obs {
-            Observation::Optical { dec, .. } => Some(dec.to_degrees()),
+            AstrometricObservation::Optical { dec, .. } => Some(dec.to_degrees()),
             _ => None,
         }
     }
@@ -208,7 +222,7 @@ impl PyObservation {
     #[getter]
     fn sigma_ra(&self) -> Option<f64> {
         match &self.obs {
-            Observation::Optical { sigma_ra, .. } => Some(*sigma_ra * RAD_TO_ARCSEC),
+            AstrometricObservation::Optical { sigma_ra, .. } => Some(*sigma_ra * RAD_TO_ARCSEC),
             _ => None,
         }
     }
@@ -217,7 +231,7 @@ impl PyObservation {
     #[getter]
     fn sigma_dec(&self) -> Option<f64> {
         match &self.obs {
-            Observation::Optical { sigma_dec, .. } => Some(*sigma_dec * RAD_TO_ARCSEC),
+            AstrometricObservation::Optical { sigma_dec, .. } => Some(*sigma_dec * RAD_TO_ARCSEC),
             _ => None,
         }
     }
@@ -226,7 +240,7 @@ impl PyObservation {
     #[getter]
     fn range(&self) -> Option<f64> {
         match &self.obs {
-            Observation::RadarRange { range, .. } => Some(*range),
+            AstrometricObservation::RadarRange { range, .. } => Some(*range),
             _ => None,
         }
     }
@@ -235,7 +249,7 @@ impl PyObservation {
     #[getter]
     fn sigma_range(&self) -> Option<f64> {
         match &self.obs {
-            Observation::RadarRange { sigma_range, .. } => Some(*sigma_range),
+            AstrometricObservation::RadarRange { sigma_range, .. } => Some(*sigma_range),
             _ => None,
         }
     }
@@ -244,7 +258,7 @@ impl PyObservation {
     #[getter]
     fn range_rate(&self) -> Option<f64> {
         match &self.obs {
-            Observation::RadarRate { range_rate, .. } => Some(*range_rate),
+            AstrometricObservation::RadarRate { range_rate, .. } => Some(*range_rate),
             _ => None,
         }
     }
@@ -253,7 +267,7 @@ impl PyObservation {
     #[getter]
     fn sigma_range_rate(&self) -> Option<f64> {
         match &self.obs {
-            Observation::RadarRate {
+            AstrometricObservation::RadarRate {
                 sigma_range_rate, ..
             } => Some(*sigma_range_rate),
             _ => None,
@@ -276,7 +290,7 @@ impl PyObservation {
     fn __repr__(&self) -> String {
         let epoch = self.obs.epoch().jd;
         match &self.obs {
-            Observation::Optical {
+            AstrometricObservation::Optical {
                 ra,
                 dec,
                 sigma_ra,
@@ -295,7 +309,7 @@ impl PyObservation {
                     self.mag,
                 )
             }
-            Observation::RadarRange {
+            AstrometricObservation::RadarRange {
                 range, sigma_range, ..
             } => {
                 format!(
@@ -304,7 +318,7 @@ impl PyObservation {
                     epoch, range, sigma_range
                 )
             }
-            Observation::RadarRate {
+            AstrometricObservation::RadarRate {
                 range_rate,
                 sigma_range_rate,
                 ..
@@ -384,7 +398,11 @@ impl PyOrbitFit {
             .iter()
             .zip(self.0.included.iter())
             .filter(|&(_, &inc)| inc)
-            .map(|(o, _)| PyObservation { obs: o.clone(), band: String::new(), mag: f64::NAN })
+            .map(|(o, _)| PyObservation {
+                obs: o.clone(),
+                band: String::new(),
+                mag: f64::NAN,
+            })
             .collect()
     }
 
@@ -394,7 +412,11 @@ impl PyOrbitFit {
         self.0
             .observations
             .iter()
-            .map(|o| PyObservation { obs: o.clone(), band: String::new(), mag: f64::NAN })
+            .map(|o| PyObservation {
+                obs: o.clone(),
+                band: String::new(),
+                mag: f64::NAN,
+            })
             .collect()
     }
 
@@ -534,7 +556,7 @@ pub fn fit_orbit_py(
         spk.try_change_center(&mut raw_state, 0)?;
     }
 
-    let obs: Vec<Observation> = observations.into_iter().map(|o| o.obs).collect();
+    let obs: Vec<AstrometricObservation> = observations.into_iter().map(|o| o.obs).collect();
     let ng = non_grav.as_ref().map(|m| &m.0);
 
     let fit = fit_orbit(
@@ -571,7 +593,7 @@ pub fn initial_orbit_determination_py(
     observations: Vec<PyObservation>,
     epoch: Option<f64>,
 ) -> PyResult<Vec<PyState>> {
-    let obs: Vec<Observation> = observations.into_iter().map(|o| o.obs).collect();
+    let obs: Vec<AstrometricObservation> = observations.into_iter().map(|o| o.obs).collect();
     let epoch_tdb = epoch.map(Time::new);
     let states = kete_fitting::initial_orbit_determination(&obs, epoch_tdb)?;
     let spk = LOADED_SPK.try_read().map_err(Error::from)?;
@@ -846,7 +868,7 @@ pub fn fit_orbit_mcmc_py(
             Ok(st)
         })
         .collect::<KeteResult<Vec<_>>>()?;
-    let obs: Vec<Observation> = observations.into_iter().map(|o| o.obs).collect();
+    let obs: Vec<AstrometricObservation> = observations.into_iter().map(|o| o.obs).collect();
     let ng: Option<NonGravModel> = non_grav.map(|m| m.0);
 
     let result = fit_orbit_mcmc(

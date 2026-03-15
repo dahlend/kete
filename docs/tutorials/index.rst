@@ -10,6 +10,7 @@ These are more in-depth worked examples.
    background
    propagation
    neatm
+   neatm_fitting
    palomar
    kona
    mcmc_near_miss

@@ -445,7 +445,8 @@ mod tests {
     fn test_time_near_leap_second() {
         for offset in -1000..1000 {
             let offset = f64::from(offset) / 10.0;
-            let mjd = 41683.0 + offset / 86400.0; // TIME IN TAI
+            // TIME IN TAI
+            let mjd = 41683.0 + offset / 86400.0;
             let t = Time::<TAI>::from_mjd(mjd);
             let t = t.tdb();
             let t = t.tai();
@@ -457,7 +458,8 @@ mod tests {
         // Perform round trip conversions in the seconds around a leap second.
         for offset in -1000..1000 {
             let offset = f64::from(offset) / 10.0;
-            let mjd = 41683.0 + offset / 86400.0; // TIME IN TAI
+            // TIME IN TAI
+            let mjd = 41683.0 + offset / 86400.0;
             let t = Time::<UTC>::from_mjd(mjd);
             let t = t.tai();
             let t = t.utc();

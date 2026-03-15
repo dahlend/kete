@@ -2,9 +2,9 @@
 //! Flux calculations including thermal and reflected light models.
 //!
 //! There are a few flux calculation models contained here:
-//! [`HGParams`] - Flux calculations of an object using the HG system.
-//! [`NeatmParams`] - The NEATM thermal model to compute black body flux.
-//! [`FrmParams`] - The FRM thermal model to compute black body flux.
+//! - HG system: [`hg_apparent_mag`], [`hg_apparent_flux`], [`hg_phase_curve_correction`]
+//! - NEATM thermal model: [`neatm_thermal_flux`], [`neatm_total_flux`]
+//! - FRM thermal model: [`frm_thermal_flux`], [`frm_total_flux`]
 //!
 //
 // BSD 3-Clause License
@@ -51,10 +51,12 @@ pub use self::common::{
     BandInfo, ColorCorrFn, ModelResults, black_body_flux, flux_to_mag, lambertian_flux,
     lambertian_vis_scale_factor, mag_to_flux, sub_solar_temperature,
 };
-pub use self::frm::{FrmParams, frm_facet_temperature};
-pub use self::neatm::{NeatmParams, neatm_facet_temperature};
+pub use self::frm::{frm_facet_temperature, frm_thermal_flux, frm_total_flux};
+pub use self::neatm::{neatm_facet_temperature, neatm_thermal_flux, neatm_total_flux};
 pub use self::reflected::{
-    HGParams, cometary_dust_phase_curve_correction, hg_phase_curve_correction,
+    albedo_from_h_mag_diam, cometary_dust_phase_curve_correction, diam_from_h_mag_albedo,
+    h_mag_from_diam_albedo, hg_apparent_flux, hg_apparent_mag, hg_phase_curve_correction,
+    resolve_hg_params,
 };
 pub use self::shapes::{ConvexShape, DEFAULT_SHAPE, Facet, TriangleFacet, TriangleShape};
 pub use self::sun::{solar_flux, solar_flux_black_body};

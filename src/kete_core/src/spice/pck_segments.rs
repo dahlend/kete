@@ -182,7 +182,8 @@ impl PckSegmentType2 {
             time,
             [ra, dec, w],
             [
-                ra_der / t_step * 86400.0, // convert to radians per day
+                // convert to radians per day
+                ra_der / t_step * 86400.0,
                 dec_der / t_step * 86400.0,
                 w_der / t_step * 86400.0,
             ],

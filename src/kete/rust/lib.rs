@@ -87,7 +87,8 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<flux::PyModelResults>()?;
     m.add_class::<flux::PyTriangleShape>()?;
     m.add_class::<flux::PyFluxObs>()?;
-    m.add_class::<flux::PyPriors>()?;
+    m.add_class::<flux::PyParamPrior>()?;
+    m.add_class::<flux::PyFluxPriors>()?;
     m.add_class::<flux::PySampleStats>()?;
     m.add_class::<flux::PyFitResult>()?;
 

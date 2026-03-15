@@ -28,8 +28,8 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use crate::{
-    BandInfo, DEFAULT_SHAPE, HGParams, ModelResults, black_body_flux,
-    lambertian_vis_scale_factor, sub_solar_temperature, flux_to_mag,
+    BandInfo, DEFAULT_SHAPE, ModelResults, black_body_flux, flux_to_mag, hg_apparent_flux,
+    hg_apparent_mag, lambertian_vis_scale_factor, sub_solar_temperature,
 };
 use kete_core::constants::V_MAG_ZERO;
 
@@ -62,150 +62,125 @@ pub fn frm_facet_temperature(
     0.0
 }
 
-///  FRM input
-#[derive(Debug, Clone)]
-pub struct FrmParams {
-    /// Wavelength band information of the observer.
-    pub obs_bands: Vec<BandInfo>,
+/// Compute the FRM thermal flux for each band.
+///
+/// # Arguments
+///
+/// * `obs_bands` - Wavelength band information of the observer.
+/// * `diameter` - Diameter of the object in km.
+/// * `vis_albedo` - Visible geometric albedo of the object.
+/// * `g_param` - The G parameter in the HG system.
+/// * `emissivity` - Emissivity of the object.
+/// * `sun2obj` - Position of the object with respect to the Sun in AU.
+/// * `sun2obs` - Position of the observer with respect to the Sun in AU.
+#[must_use]
+pub fn frm_thermal_flux(
+    obs_bands: &[BandInfo],
+    diameter: f64,
+    vis_albedo: f64,
+    g_param: f64,
+    emissivity: f64,
+    sun2obj: &Vector3<f64>,
+    sun2obs: &Vector3<f64>,
+) -> Vec<f64> {
+    let obj2sun = -sun2obj;
+    let obs2obj = sun2obj - sun2obs;
+    let obs2obj_r = obs2obj.norm();
+    let geom = &DEFAULT_SHAPE;
 
-    /// Albedo of the object for each band.
-    pub band_albedos: Vec<f64>,
+    let ss_temp = sub_solar_temperature(obj2sun.norm(), vis_albedo, g_param, PI, emissivity);
 
-    /// HG parameters defining the HG reflected light model.
-    pub hg_params: HGParams,
+    let bands: Vec<_> = obs_bands.iter().map(|x| x.wavelength).collect();
+    let color_correction: Vec<_> = obs_bands.iter().map(|x| x.color_correction).collect();
+    let obj2sun = UnitVector3::new_normalize(obj2sun);
+    let obs2obj = UnitVector3::new_normalize(obs2obj);
 
-    /// Emissivity of the object.
-    pub emissivity: f64,
+    let mut fluxes = vec![0.0; obs_bands.len()];
+    for facet in &geom.facets {
+        let temp = frm_facet_temperature(&facet.normal, ss_temp, &obj2sun);
+        let obs_flux_scaling = lambertian_vis_scale_factor(
+            &facet.normal,
+            &obs2obj,
+            &obs2obj_r,
+            &diameter,
+            &emissivity,
+        );
+        if temp == 0.0 || obs_flux_scaling == 0.0 {
+            continue;
+        }
+        for (idx, (wavelength, flux)) in bands.iter().zip(&mut fluxes).enumerate() {
+            let mut facet_flux = black_body_flux(temp, *wavelength);
+            if let Some(func) = color_correction[idx] {
+                facet_flux *= func(temp);
+            }
+            facet_flux *= facet.area;
+
+            *flux += obs_flux_scaling * facet_flux;
+        }
+    }
+    fluxes
 }
 
-impl FrmParams {
-    /// Create new [`FrmParams`] with WISE band and zero mags
-    #[must_use]
-    pub fn new_wise(albedos: [f64; 4], hg_params: HGParams, emissivity: f64) -> Self {
-        Self {
-            obs_bands: BandInfo::new_wise().to_vec(),
-            band_albedos: albedos.to_vec(),
-            hg_params,
-            emissivity,
-        }
+/// Compute FRM thermal + reflected flux and magnitudes for each band.
+///
+/// # Arguments
+///
+/// * `obs_bands` - Wavelength band information of the observer.
+/// * `band_albedos` - Albedo of the object for each band.
+/// * `diameter` - Diameter of the object in km.
+/// * `vis_albedo` - Visible geometric albedo of the object.
+/// * `g_param` - The G parameter in the HG system.
+/// * `h_mag` - The H parameter of the object in the HG system.
+/// * `emissivity` - Emissivity of the object.
+/// * `sun2obj` - Position of the object with respect to the Sun in AU.
+/// * `sun2obs` - Position of the observer with respect to the Sun in AU.
+#[must_use]
+pub fn frm_total_flux(
+    obs_bands: &[BandInfo],
+    band_albedos: &[f64],
+    diameter: f64,
+    vis_albedo: f64,
+    g_param: f64,
+    h_mag: f64,
+    emissivity: f64,
+    sun2obj: &Vector3<f64>,
+    sun2obs: &Vector3<f64>,
+) -> ModelResults {
+    let thermal_fluxes = frm_thermal_flux(
+        obs_bands, diameter, vis_albedo, g_param, emissivity, sun2obj, sun2obs,
+    );
+
+    let mut hg_fluxes = Vec::with_capacity(thermal_fluxes.len());
+    let mut fluxes = Vec::with_capacity(thermal_fluxes.len());
+    for ((band, t_flux), albedo) in obs_bands.iter().zip(&thermal_fluxes).zip(band_albedos) {
+        let refl = hg_apparent_flux(
+            g_param,
+            diameter,
+            sun2obj,
+            sun2obs,
+            band.wavelength,
+            *albedo,
+        ) * band.solar_correction;
+        hg_fluxes.push(refl);
+        fluxes.push(*t_flux + refl);
     }
 
-    /// Create new [`FrmParams`] with NEOS band and zero mags
-    #[must_use]
-    pub fn new_neos(albedos: [f64; 2], hg_params: HGParams, emissivity: f64) -> Self {
-        Self {
-            obs_bands: BandInfo::new_neos().to_vec(),
-            band_albedos: albedos.to_vec(),
-            hg_params,
-            emissivity,
-        }
-    }
+    let v_band_magnitude = hg_apparent_mag(g_param, h_mag, sun2obj, sun2obs);
+    let v_band_flux = flux_to_mag(v_band_magnitude, V_MAG_ZERO);
 
-    /// Compute the Flux visible from an object using the FRM model.
-    ///
-    /// # Arguments
-    ///
-    /// * `sun2obj` - Position of the object with respect to the Sun in AU.
-    /// * `sun2obs` - Position of the Observer with respect to the Sun in AU.
-    #[must_use]
-    pub fn apparent_thermal_flux(
-        &self,
-        sun2obj: &Vector3<f64>,
-        sun2obs: &Vector3<f64>,
-    ) -> Option<Vec<f64>> {
-        let obj2sun = -sun2obj;
-        let obs2obj = sun2obj - sun2obs;
-        let obs2obj_r = obs2obj.norm();
-        let geom = &DEFAULT_SHAPE;
+    let magnitudes: Vec<_> = obs_bands
+        .iter()
+        .zip(&fluxes)
+        .map(|(band_info, flux)| flux_to_mag(*flux, band_info.zero_mag))
+        .collect();
 
-        let diameter = self.hg_params.diam()?;
-        let ss_temp = sub_solar_temperature(
-            obj2sun.norm(),
-            self.hg_params.vis_albedo()?,
-            self.hg_params.g_param,
-            PI,
-            self.emissivity,
-        );
-
-        let bands: Vec<_> = self.obs_bands.iter().map(|x| x.wavelength).collect();
-        let color_correction: Vec<_> = self.obs_bands.iter().map(|x| x.color_correction).collect();
-        let obj2sun = UnitVector3::new_normalize(obj2sun);
-        let obs2obj = UnitVector3::new_normalize(obs2obj);
-
-        let mut fluxes = vec![0.0; self.obs_bands.len()];
-        for facet in &geom.facets {
-            let temp = frm_facet_temperature(&facet.normal, ss_temp, &obj2sun);
-            let obs_flux_scaling = lambertian_vis_scale_factor(
-                &facet.normal,
-                &obs2obj,
-                &obs2obj_r,
-                &diameter,
-                &self.emissivity,
-            );
-            if temp == 0.0 || obs_flux_scaling == 0.0 {
-                continue;
-            }
-            for (idx, (wavelength, flux)) in bands.iter().zip(&mut fluxes).enumerate() {
-                let mut facet_flux = black_body_flux(temp, *wavelength);
-                if let Some(func) = color_correction[idx] {
-                    facet_flux *= func(temp);
-                }
-                facet_flux *= facet.area;
-
-                *flux += obs_flux_scaling * facet_flux;
-            }
-        }
-        Some(fluxes)
-    }
-
-    /// Compute FRM with an reflected reflection model added on.
-    ///
-    /// # Arguments
-    ///
-    /// * `sun2obj` - Position of the object with respect to the Sun in AU.
-    /// * `sun2obs` - Position of the Observer with respect to the Sun in AU.
-    #[must_use]
-    pub fn apparent_total_flux(
-        &self,
-        sun2obj: &Vector3<f64>,
-        sun2obs: &Vector3<f64>,
-    ) -> Option<ModelResults> {
-        let thermal_fluxes = self.apparent_thermal_flux(sun2obj, sun2obs)?;
-
-        let mut hg_fluxes = Vec::with_capacity(thermal_fluxes.len());
-        let mut fluxes = Vec::with_capacity(thermal_fluxes.len());
-        for ((band, t_flux), albedo) in self
-            .obs_bands
-            .iter()
-            .zip(&thermal_fluxes)
-            .zip(&self.band_albedos)
-        {
-            let refl = self
-                .hg_params
-                .apparent_flux(sun2obj, sun2obs, band.wavelength, *albedo)?
-                * band.solar_correction;
-            hg_fluxes.push(refl);
-            fluxes.push(*t_flux + refl);
-        }
-
-        let v_band_magnitude = self.hg_params.apparent_mag(sun2obj, sun2obs);
-        let v_band_flux = flux_to_mag(v_band_magnitude, V_MAG_ZERO);
-
-        let magnitudes: Vec<_> = self
-            .obs_bands
-            .iter()
-            .zip(&fluxes)
-            .map(|(band_info, flux)| flux_to_mag(*flux, band_info.zero_mag))
-            .collect();
-
-        Some(ModelResults {
-            fluxes,
-            magnitudes,
-            thermal_fluxes,
-            hg_fluxes,
-            v_band_magnitude,
-            v_band_flux,
-        })
+    ModelResults {
+        fluxes,
+        magnitudes,
+        thermal_fluxes,
+        hg_fluxes,
+        v_band_magnitude,
+        v_band_flux,
     }
 }
 

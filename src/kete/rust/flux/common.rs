@@ -3,7 +3,7 @@ use core::f64;
 use crate::{frame::PyFrames, vector::VectorLike};
 use itertools::Itertools;
 use kete_core::constants::{
-    C_V, w1_color_correction, w2_color_correction, w3_color_correction, w4_color_correction,
+    w1_color_correction, w2_color_correction, w3_color_correction, w4_color_correction,
 };
 use kete_core::prelude::Error;
 use kete_flux::*;
@@ -237,29 +237,22 @@ pub fn neatm_thermal_py(
     let sun2obj = sun2obj.into_vector(PyFrames::Ecliptic).into();
     let sun2obs = sun2obs.into_vector(PyFrames::Ecliptic).into();
 
-    let hg_params = HGParams::try_new(
-        "".into(),
+    let band = BandInfo::new(wavelength, 1.0, f64::NAN, None);
+    let result = neatm_thermal_flux(
+        &[band],
+        diameter,
+        v_albedo,
         g_param,
-        None,
-        Some(C_V),
-        Some(v_albedo),
-        Some(diameter),
-    )?;
-    let params = NeatmParams {
-        obs_bands: vec![BandInfo::new(wavelength, 1.0, f64::NAN, None)],
-        band_albedos: vec![0.0],
-        hg_params,
-        emissivity,
         beaming,
-    };
-    params
-        .apparent_thermal_flux(&sun2obj, &sun2obs)
-        .and_then(|fluxes| fluxes.first().copied())
-        .ok_or_else(|| {
-            pyo3::exceptions::PyValueError::new_err(
-                "Failed to compute thermal flux. Check input parameters.",
-            )
-        })
+        emissivity,
+        &sun2obj,
+        &sun2obs,
+    );
+    result.first().copied().ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(
+            "Failed to compute thermal flux. Check input parameters.",
+        )
+    })
 }
 
 /// Calculate the flux from an object using the FRM thermal model in Jansky.
@@ -306,29 +299,22 @@ pub fn frm_thermal_py(
 ) -> PyResult<f64> {
     let sun2obj = sun2obj.into_vector(PyFrames::Ecliptic).into();
     let sun2obs = sun2obs.into_vector(PyFrames::Ecliptic).into();
-    let hg_params = HGParams::try_new(
-        "".into(),
-        g_param,
-        None,
-        Some(C_V),
-        Some(v_albedo),
-        Some(diameter),
-    )?;
 
-    let params = FrmParams {
-        obs_bands: vec![BandInfo::new(wavelength, 1.0, f64::NAN, None)],
-        band_albedos: vec![0.0],
-        hg_params,
+    let band = BandInfo::new(wavelength, 1.0, f64::NAN, None);
+    let result = frm_thermal_flux(
+        &[band],
+        diameter,
+        v_albedo,
+        g_param,
         emissivity,
-    };
-    params
-        .apparent_thermal_flux(&sun2obj, &sun2obs)
-        .and_then(|fluxes| fluxes.first().copied())
-        .ok_or_else(|| {
-            pyo3::exceptions::PyValueError::new_err(
-                "Failed to compute thermal flux. Check input parameters.",
-            )
-        })
+        &sun2obj,
+        &sun2obs,
+    );
+    result.first().copied().ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(
+            "Failed to compute thermal flux. Check input parameters.",
+        )
+    })
 }
 
 /// Given the M1/K1 and M2/K2 values, compute the apparent Comet visible magnitudes.

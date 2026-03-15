@@ -83,7 +83,8 @@ record the geocentric distance at 6-hour intervals:
 
     jd_start = epoch.jd
     jd_end = epoch.jd + 120
-    step = 0.25  # 6-hour steps
+    # 6-hour steps
+    step = 0.25
     jds = np.arange(jd_start, jd_end, step)
 
     distances = []
@@ -121,9 +122,12 @@ to account for the convergence of right ascension lines toward the poles.
 
     obs_night_start = epoch.jd
     obs_times = np.concatenate([
-        obs_night_start + np.array([0.0, 1.5 / 24]),      # night 1
-        obs_night_start + 1 + np.array([0.0, 1.5 / 24]),  # night 2
-        obs_night_start + 2 + np.array([0.0, 1.5 / 24]),  # night 3
+        # night 1
+        obs_night_start + np.array([0.0, 1.5 / 24]),
+        # night 2
+        obs_night_start + 1 + np.array([0.0, 1.5 / 24]),
+        # night 3
+        obs_night_start + 2 + np.array([0.0, 1.5 / 24]),
     ])
 
     fovs = []
@@ -138,7 +142,8 @@ to account for the convergence of right ascension lines toward the poles.
         observer = vis.fov.observer.as_equatorial.change_center(0)
         ra, dec, _, _ = vis.ra_dec_with_rates[0]
 
-        sigma = 0.3  # arcsec
+        # arcsec
+        sigma = 0.3
         obs = kete.fitting.Observation.optical(
             observer=observer,
             ra=ra + np.random.normal(0, sigma / 3600)

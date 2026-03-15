@@ -28,12 +28,14 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use crate::{
-    BandInfo, DEFAULT_SHAPE, HGParams, ModelResults, black_body_flux,
-    lambertian_vis_scale_factor, sub_solar_temperature, flux_to_mag,
+    BandInfo, ModelResults, black_body_flux, flux_to_mag, hg_apparent_flux, hg_apparent_mag,
+    sub_solar_temperature,
 };
-use kete_core::constants::V_MAG_ZERO;
+use kete_core::constants::{AU_KM, V_MAG_ZERO};
 
 use nalgebra::{UnitVector3, Vector3};
+use std::f64::consts::PI;
+use std::sync::LazyLock;
 
 /// Using the NEATM thermal model, calculate the temperature of each facet given the
 /// direction of the sun, the subsolar temperature and the facet normal vectors.
@@ -57,160 +59,204 @@ pub fn neatm_facet_temperature(
     0.0
 }
 
-/// NEATM input
-#[derive(Clone, Debug)]
-pub struct NeatmParams {
-    /// Wavelength band information of the observer.
-    pub obs_bands: Vec<BandInfo>,
+/// Number of Gauss-Legendre quadrature points for the 1D thermal integral.
+const GL_ORDER: usize = 64;
 
-    /// Albedo of the object for each band.
-    pub band_albedos: Vec<f64>,
+/// Precomputed Gauss-Legendre nodes and weights on [0, 1].
+static GL_POINTS: LazyLock<Box<[(f64, f64)]>> = LazyLock::new(|| gauss_legendre_unit(GL_ORDER));
 
-    /// Beaming parameter.
-    pub beaming: f64,
-
-    /// HG parameters defining the HG reflected light model.
-    pub hg_params: HGParams,
-
-    /// Emissivity of the object.
-    pub emissivity: f64,
+/// Evaluate Legendre polynomial `P_n(x)` and its derivative `P_n'(x)`.
+fn legendre_pd(n: usize, x: f64) -> (f64, f64) {
+    if n == 0 {
+        return (1.0, 0.0);
+    }
+    let mut p0 = 1.0;
+    let mut p1 = x;
+    for k in 1..n {
+        let kf = k as f64;
+        let p2 = ((2.0 * kf + 1.0) * x * p1 - kf * p0) / (kf + 1.0);
+        p0 = p1;
+        p1 = p2;
+    }
+    let nf = n as f64;
+    let dp = nf * (x * p1 - p0) / (x * x - 1.0);
+    (p1, dp)
 }
 
-impl NeatmParams {
-    /// Create new [`NeatmParams`] with WISE band and zero mags
-    #[must_use]
-    pub fn new_wise(albedos: [f64; 4], beaming: f64, hg_params: HGParams, emissivity: f64) -> Self {
-        Self {
-            obs_bands: BandInfo::new_wise().to_vec(),
-            band_albedos: albedos.to_vec(),
-            hg_params,
-            emissivity,
-            beaming,
-        }
-    }
-
-    /// Create new [`NeatmParams`] with NEOS band and zero mags
-    #[must_use]
-    pub fn new_neos(albedos: [f64; 2], beaming: f64, hg_params: HGParams, emissivity: f64) -> Self {
-        Self {
-            obs_bands: BandInfo::new_neos().to_vec(),
-            beaming,
-            band_albedos: albedos.to_vec(),
-            hg_params,
-            emissivity,
-        }
-    }
-
-    /// Compute the Flux visible from an object using the NEATM model.
-    ///
-    /// # Arguments
-    ///
-    /// * `sun2obj` - Position of the object with respect to the Sun in AU.
-    /// * `sun2obs` - Position of the Observer with respect to the Sun in AU.
-    /// * `color_correction` - Optional function which defines the color correction. If
-    ///   this is provided, the function must accept a list of temperatures in kelvin
-    ///   and return a scaling factor for how much the flux gets scaled by for that
-    ///   specified temp.
-    #[must_use]
-    pub fn apparent_thermal_flux(
-        &self,
-        sun2obj: &Vector3<f64>,
-        sun2obs: &Vector3<f64>,
-    ) -> Option<Vec<f64>> {
-        let obj2sun = -sun2obj;
-        let obs2obj = sun2obj - sun2obs;
-        let obs2obj_r = obs2obj.norm();
-        let geom = &DEFAULT_SHAPE;
-        let hg_params = &self.hg_params;
-
-        let diameter = hg_params.diam()?;
-        let ss_temp = sub_solar_temperature(
-            obj2sun.norm(),
-            self.hg_params.vis_albedo()?,
-            self.hg_params.g_param,
-            self.beaming,
-            self.emissivity,
-        );
-
-        let bands: Vec<_> = self.obs_bands.iter().map(|x| x.wavelength).collect();
-        let color_correction: Vec<_> = self.obs_bands.iter().map(|x| x.color_correction).collect();
-        let obj2sun = UnitVector3::new_normalize(obj2sun);
-        let obs2obj = UnitVector3::new_normalize(obs2obj);
-
-        let mut fluxes = vec![0.0; self.obs_bands.len()];
-        for facet in &geom.facets {
-            let temp = neatm_facet_temperature(&facet.normal, &obj2sun, &ss_temp);
-            let obs_flux_scaling = lambertian_vis_scale_factor(
-                &facet.normal,
-                &obs2obj,
-                &obs2obj_r,
-                &diameter,
-                &self.emissivity,
-            );
-            if temp == 0.0 || obs_flux_scaling == 0.0 {
-                continue;
-            }
-            for (idx, (wavelength, flux)) in bands.iter().zip(&mut fluxes).enumerate() {
-                let mut facet_flux = black_body_flux(temp, *wavelength);
-                if let Some(func) = color_correction[idx] {
-                    facet_flux *= func(temp);
-                }
-                facet_flux *= facet.area;
-
-                *flux += obs_flux_scaling * facet_flux;
+/// Compute n-point Gauss-Legendre nodes and weights on [0, 1].
+fn gauss_legendre_unit(n: usize) -> Box<[(f64, f64)]> {
+    let mut result = Vec::with_capacity(n);
+    for i in 0..n {
+        let theta = PI * (4 * i + 3) as f64 / (4 * n + 2) as f64;
+        let mut x = theta.cos();
+        for _ in 0..100 {
+            let (p, dp) = legendre_pd(n, x);
+            let dx = p / dp;
+            x -= dx;
+            if dx.abs() < 1e-15 {
+                break;
             }
         }
-        Some(fluxes)
+        let (_, dp) = legendre_pd(n, x);
+        let w = 2.0 / ((1.0 - x * x) * dp * dp);
+        result.push((f64::midpoint(x, 1.0), w / 2.0));
     }
+    result.into_boxed_slice()
+}
 
-    /// Compute NEATM with an reflected reflection model added on.
-    ///
-    /// # Arguments
-    ///
-    /// * `sun2obj` - Position of the object with respect to the Sun in AU.
-    /// * `sun2obs` - Position of the Observer with respect to the Sun in AU.
-    #[must_use]
-    pub fn apparent_total_flux(
-        &self,
-        sun2obj: &Vector3<f64>,
-        sun2obs: &Vector3<f64>,
-    ) -> Option<ModelResults> {
-        let thermal_fluxes = self.apparent_thermal_flux(sun2obj, sun2obs)?;
+/// Azimuthal visibility integral: the integral of max(cos(alpha), 0) over
+/// phi in [0, 2*pi] for a ring at cos(theta) = u, given the phase angle
+/// between the sub-solar and sub-observer directions.
+///
+/// `cos(alpha) = a + b*cos(phi)` where `a = u*cos_phase`, `b = sqrt(1-u^2)*sin_phase`.
+#[inline(always)]
+fn azimuthal_visibility(u: f64, cos_phase: f64, sin_phase: f64) -> f64 {
+    let a = u * cos_phase;
+    let b = (1.0 - u * u).max(0.0).sqrt() * sin_phase;
+    if a >= b {
+        2.0 * PI * a
+    } else if a + b <= 0.0 {
+        0.0
+    } else {
+        let ratio = (-a / b).clamp(-1.0, 1.0);
+        2.0 * a * ratio.acos() + 2.0 * b * (1.0 - ratio * ratio).max(0.0).sqrt()
+    }
+}
 
-        let mut hg_fluxes = Vec::with_capacity(thermal_fluxes.len());
-        let mut fluxes = Vec::with_capacity(thermal_fluxes.len());
-        for ((band, t_flux), albedo) in self
-            .obs_bands
-            .iter()
-            .zip(&thermal_fluxes)
-            .zip(&self.band_albedos)
-        {
-            let refl = self
-                .hg_params
-                .apparent_flux(sun2obj, sun2obs, band.wavelength, *albedo)?
-                * band.solar_correction;
-            hg_fluxes.push(refl);
-            fluxes.push(*t_flux + refl);
+/// Compute the NEATM thermal flux for each band.
+///
+/// The NEATM temperature distribution is azimuthally symmetric about the
+/// sub-solar direction, so the 2D surface integral reduces to a 1D
+/// Gauss-Legendre quadrature over cos(theta) after analytically integrating
+/// out the azimuthal angle.
+///
+/// # Arguments
+///
+/// * `obs_bands` - Wavelength band information of the observer.
+/// * `diameter` - Diameter of the object in km.
+/// * `vis_albedo` - Visible geometric albedo of the object.
+/// * `g_param` - The G parameter in the HG system.
+/// * `beaming` - Beaming parameter.
+/// * `emissivity` - Emissivity of the object.
+/// * `sun2obj` - Position of the object with respect to the Sun in AU.
+/// * `sun2obs` - Position of the observer with respect to the Sun in AU.
+#[must_use]
+pub fn neatm_thermal_flux(
+    obs_bands: &[BandInfo],
+    diameter: f64,
+    vis_albedo: f64,
+    g_param: f64,
+    beaming: f64,
+    emissivity: f64,
+    sun2obj: &Vector3<f64>,
+    sun2obs: &Vector3<f64>,
+) -> Vec<f64> {
+    let obj2sun = -sun2obj;
+    let obs2obj = sun2obj - sun2obs;
+    let obs2obj_r = obs2obj.norm();
+
+    let ss_temp = sub_solar_temperature(obj2sun.norm(), vis_albedo, g_param, beaming, emissivity);
+
+    let obj2sun_hat = UnitVector3::new_normalize(obj2sun);
+    let obj2obs_hat = UnitVector3::new_normalize(-obs2obj);
+    let cos_phase = obj2sun_hat.dot(&obj2obs_hat).clamp(-1.0, 1.0);
+    let sin_phase = (1.0 - cos_phase * cos_phase).max(0.0).sqrt();
+
+    let geo_scale = emissivity / 4.0 * (diameter / (obs2obj_r * AU_KM)).powi(2);
+
+    let bands: Vec<_> = obs_bands.iter().map(|x| x.wavelength).collect();
+    let color_correction: Vec<_> = obs_bands.iter().map(|x| x.color_correction).collect();
+
+    let mut fluxes = vec![0.0; obs_bands.len()];
+    for &(cos_theta, weight) in GL_POINTS.iter() {
+        let temp = ss_temp * cos_theta.sqrt().sqrt();
+        if temp < 30.0 {
+            continue;
         }
 
-        let v_band_magnitude = self.hg_params.apparent_mag(sun2obj, sun2obs);
-        let v_band_flux = flux_to_mag(v_band_magnitude, V_MAG_ZERO);
+        let vis = azimuthal_visibility(cos_theta, cos_phase, sin_phase);
+        if vis <= 0.0 {
+            continue;
+        }
 
-        let magnitudes: Vec<_> = self
-            .obs_bands
-            .iter()
-            .zip(&fluxes)
-            .map(|(band_info, flux)| flux_to_mag(*flux, band_info.zero_mag))
-            .collect();
+        let scaled_weight = weight * vis;
+        for (idx, (wavelength, flux)) in bands.iter().zip(&mut fluxes).enumerate() {
+            let mut bb = black_body_flux(temp, *wavelength);
+            if let Some(func) = color_correction[idx] {
+                bb *= func(temp);
+            }
+            *flux += scaled_weight * bb;
+        }
+    }
 
-        Some(ModelResults {
-            fluxes,
-            magnitudes,
-            thermal_fluxes,
-            hg_fluxes,
-            v_band_magnitude,
-            v_band_flux,
-        })
+    for flux in &mut fluxes {
+        *flux *= geo_scale;
+    }
+    fluxes
+}
+
+/// Compute NEATM thermal + reflected flux and magnitudes for each band.
+///
+/// # Arguments
+///
+/// * `obs_bands` - Wavelength band information of the observer.
+/// * `band_albedos` - Albedo of the object for each band.
+/// * `diameter` - Diameter of the object in km.
+/// * `vis_albedo` - Visible geometric albedo of the object.
+/// * `g_param` - The G parameter in the HG system.
+/// * `h_mag` - The H parameter of the object in the HG system.
+/// * `beaming` - Beaming parameter.
+/// * `emissivity` - Emissivity of the object.
+/// * `sun2obj` - Position of the object with respect to the Sun in AU.
+/// * `sun2obs` - Position of the observer with respect to the Sun in AU.
+#[must_use]
+pub fn neatm_total_flux(
+    obs_bands: &[BandInfo],
+    band_albedos: &[f64],
+    diameter: f64,
+    vis_albedo: f64,
+    g_param: f64,
+    h_mag: f64,
+    beaming: f64,
+    emissivity: f64,
+    sun2obj: &Vector3<f64>,
+    sun2obs: &Vector3<f64>,
+) -> ModelResults {
+    let thermal_fluxes = neatm_thermal_flux(
+        obs_bands, diameter, vis_albedo, g_param, beaming, emissivity, sun2obj, sun2obs,
+    );
+
+    let mut hg_fluxes = Vec::with_capacity(thermal_fluxes.len());
+    let mut fluxes = Vec::with_capacity(thermal_fluxes.len());
+    for ((band, t_flux), albedo) in obs_bands.iter().zip(&thermal_fluxes).zip(band_albedos) {
+        let refl = hg_apparent_flux(
+            g_param,
+            diameter,
+            sun2obj,
+            sun2obs,
+            band.wavelength,
+            *albedo,
+        ) * band.solar_correction;
+        hg_fluxes.push(refl);
+        fluxes.push(*t_flux + refl);
+    }
+
+    let v_band_magnitude = hg_apparent_mag(g_param, h_mag, sun2obj, sun2obs);
+    let v_band_flux = flux_to_mag(v_band_magnitude, V_MAG_ZERO);
+
+    let magnitudes: Vec<_> = obs_bands
+        .iter()
+        .zip(&fluxes)
+        .map(|(band_info, flux)| flux_to_mag(*flux, band_info.zero_mag))
+        .collect();
+
+    ModelResults {
+        fluxes,
+        magnitudes,
+        thermal_fluxes,
+        hg_fluxes,
+        v_band_magnitude,
+        v_band_flux,
     }
 }
 

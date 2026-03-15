@@ -37,7 +37,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use crate::obs::Observation;
+use crate::obs::AstrometricObservation;
 use crate::orbit_fitting::{StmObs, accumulate_normal_equations, stm_sweep};
 use kete_core::constants::GMS;
 use kete_core::frames::Equatorial;
@@ -55,16 +55,16 @@ use std::sync::Arc;
 
 /// Student-t degrees of freedom for the MCMC likelihood.
 ///
-/// `nu = 5` is heavy-tailed enough that 3–5 sigma outlier observations are
+/// `nu = 5` is heavy-tailed enough that 3-5 sigma outlier observations are
 /// automatically down-weighted (their contribution to the log-likelihood
 /// plateaus instead of growing quadratically), yet light-tailed enough that
 /// NUTS still gets a strong gradient signal for efficient adaptation.
 ///
-/// * `nu = 3–4`: maximum outlier robustness, but the likelihood surface is
+/// * `nu = 3-4`: maximum outlier robustness, but the likelihood surface is
 ///   very flat and NUTS mixes slowly with more divergences.
 /// * `nu = 5`: standard "robust default" in Bayesian regression (the
 ///   recommendation from the Stan development team and `brms`).
-/// * `nu >= 10`: barely distinguishable from Gaussian — single outliers
+/// * `nu >= 10`: barely distinguishable from Gaussian -- single outliers
 ///   can still dominate the posterior.
 /// * `nu = infinity`: pure Gaussian likelihood.
 const STUDENT_NU: f64 = 5.0;
@@ -122,9 +122,9 @@ const PRIOR_K: f64 = 100.0;
 ///   - barycentric distance below `PRIOR_R_MIN` or above `PRIOR_R_MAX`
 ///   - orbital eccentricity `e >= 1` (unbound / hyperbolic orbits)
 ///
-/// The eccentricity barrier uses `e²` (via the eccentricity vector) rather
+/// The eccentricity barrier uses `e^2` (via the eccentricity vector) rather
 /// than `e` to avoid a `1/e` singularity at circular orbits.  Because
-/// `e² < 1 ⟺ e < 1`, the barrier `log σ(K·(1 − e²))` enforces bound
+/// `e^2 < 1 <=> e < 1`, the barrier `log sigma(K*(1 - e^2))` enforces bound
 /// orbits while remaining smooth everywhere.
 ///
 /// Returns `(log_prior, grad_prior)` where `grad_prior` has 6 elements
@@ -166,12 +166,12 @@ fn physical_prior(pos: &[f64; 3], vel: &[f64; 3]) -> (f64, [f64; 6]) {
     grad[1] = dlp_dr * py * inv_r;
     grad[2] = dlp_dr * pz * inv_r;
 
-    // Eccentricity barrier: log(sigmoid(K * (1 - e²)))
+    // Eccentricity barrier: log(sigmoid(K * (1 - e^2)))
     //
     // The eccentricity vector for a Keplerian orbit about the Sun:
-    //   e_vec = ((v² − μ/r)·pos − (pos·vel)·vel) / μ
+    //   e_vec = ((v^2 - mu/r)*pos - (pos*vel)*vel) / mu
     //
-    // Using e² = |e_vec|² avoids a 1/e singularity at e = 0.
+    // Using e^2 = |e_vec|^2 avoids a 1/e singularity at e = 0.
     let mu = GMS;
     let inv_mu = 1.0 / mu;
     let a_coeff = v2 - mu / r;
@@ -186,13 +186,13 @@ fn physical_prior(pos: &[f64; 3], vel: &[f64; 3]) -> (f64, [f64; 6]) {
     let (lp_ecc, dlp_df_ecc) = log_sigmoid_with_grad(z_ecc, PRIOR_K);
     lp += lp_ecc;
 
-    // Gradient of e² w.r.t. the 6 state variables.
+    // Gradient of e^2 w.r.t. the 6 state variables.
     //
-    // d(e_vec_i)/d(r_j) = r_i·r_j/r³ + (a_coeff/μ)·δ_ij − v_i·v_j/μ
-    // d(e_vec_i)/d(v_j) = (2·v_j·r_i − r_j·v_i − (r·v)·δ_ij) / μ
-    // d(e²)/d(·) = 2 · Σ_i e_vec_i · d(e_vec_i)/d(·)
+    // d(e_vec_i)/d(r_j) = r_i*r_j/r^3 + (a_coeff/mu)*delta_ij - v_i*v_j/mu
+    // d(e_vec_i)/d(v_j) = (2*v_j*r_i - r_j*v_i - (r*v)*delta_ij) / mu
+    // d(e^2)/d(.) = 2 * Sum_i e_vec_i * d(e_vec_i)/d(.)
     //
-    // dlp/d(state) = dlp/d(1−e²) · d(1−e²)/d(state) = −dlp_df_ecc · d(e²)/d(state)
+    // dlp/d(state) = dlp/d(1-e^2) * d(1-e^2)/d(state) = -dlp_df_ecc * d(e^2)/d(state)
     let e_vec = [ex, ey, ez];
     let pos_arr = [px, py, pz];
     let vel_arr = [vx, vy, vz];
@@ -220,10 +220,10 @@ fn physical_prior(pos: &[f64; 3], vel: &[f64; 3]) -> (f64, [f64; 6]) {
     (lp, grad)
 }
 
-/// Compute `log(sigmoid(z))` and `d(log sigmoid(z))/d(x)` for `z = k·x`.
+/// Compute `log(sigmoid(z))` and `d(log sigmoid(z))/d(x)` for `z = k*x`.
 ///
-/// Returns `(lp, dlp_dx)` where `dlp_dx = σ(−z) · k`.  When the caller
-/// has `z = k · f(x)`, multiply the second return by `df/dx` to get the
+/// Returns `(lp, dlp_dx)` where `dlp_dx = sigma(-z) * k`.  When the caller
+/// has `z = k * f(x)`, multiply the second return by `df/dx` to get the
 /// total derivative.
 fn log_sigmoid_with_grad(z: f64, k: f64) -> (f64, f64) {
     let lp = if z > 20.0 {
@@ -252,12 +252,12 @@ fn log_sigmoid_with_grad(z: f64, k: f64) -> (f64, f64) {
 struct OrbitalPosterior {
     /// Seed state at the reference epoch.
     seed_state: State<Equatorial>,
-    /// Whitening factor (sqrt-covariance), D × D.
+    /// Whitening factor (sqrt-covariance), D x D.
     whiten_l: DMatrix<f64>,
     /// Seed vector `[x, y, z, vx, vy, vz, ng_params...]`, D-vector.
     seed_vec: DVector<f64>,
     /// Observations (time-sorted, shared across chains).
-    obs: Arc<[Observation]>,
+    obs: Arc<[AstrometricObservation]>,
     /// Inclusion mask for observations (from DC outlier rejection).
     included: Vec<bool>,
     /// Whether to include extended (asteroid) perturbers.
@@ -378,7 +378,7 @@ impl CpuLogpFunc for OrbitalPosterior {
         let (trial_state, trial_ng, pos, vel) = self.vec_to_state(&cart_full);
 
         // Hard wall: reject unbound (hyperbolic) proposals.
-        // Two-body energy: E = v²/2 − μ/r.  Bound ⟺ E < 0 ⟺ v² < 2μ/r.
+        // Two-body energy: E = v^2/2 - mu/r.  Bound <=> E < 0 <=> v^2 < 2*mu/r.
         let r2 = pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2];
         let v2 = vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2];
         let r = r2.sqrt();
@@ -420,7 +420,7 @@ impl CpuLogpFunc for OrbitalPosterior {
 /// fall back to a diagonal heuristic.
 fn build_cholesky(
     seed: &State<Equatorial>,
-    obs: &[Observation],
+    obs: &[AstrometricObservation],
     include_asteroids: bool,
     non_grav: Option<&NonGravModel>,
 ) -> DMatrix<f64> {
@@ -530,7 +530,7 @@ fn diagonal_heuristic_whiten_cart(seed: &State<Equatorial>, np: usize) -> DMatri
 /// Returns an error if `seeds` is empty or two-body propagation fails.
 pub fn fit_orbit_mcmc(
     seeds: &[State<Equatorial>],
-    obs: &[Observation],
+    obs: &[AstrometricObservation],
     include_asteroids: bool,
     num_draws: usize,
     num_tune: usize,
@@ -563,7 +563,7 @@ pub fn fit_orbit_mcmc(
             .partial_cmp(&b.epoch().jd)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    let sorted_obs: Arc<[Observation]> = sorted_obs.into();
+    let sorted_obs: Arc<[AstrometricObservation]> = sorted_obs.into();
 
     // Distribute num_draws across seeds, then sub-chains across cores.
     let n_cores = std::thread::available_parallelism()
@@ -643,7 +643,7 @@ pub fn fit_orbit_mcmc(
 fn run_single_chain(
     seed: &State<Equatorial>,
     whiten_l: &DMatrix<f64>,
-    sorted_obs: &Arc<[Observation]>,
+    sorted_obs: &Arc<[AstrometricObservation]>,
     include_asteroids: bool,
     non_grav: Option<&NonGravModel>,
     num_draws: usize,
@@ -712,7 +712,7 @@ fn run_single_chain(
     let mut sampler = settings.new_chain(chain_idx, math, &mut rng);
 
     // Initialize at a random draw from the whitening distribution
-    // (standard normal in xi-space ≈ covariance sample in Cartesian).
+    // (standard normal in xi-space ~= covariance sample in Cartesian).
     // This disperses sub-chains across the prior, improving exploration
     // of elongated or multi-modal posteriors.
     let init: Vec<f64> = {
@@ -754,7 +754,7 @@ mod tests {
 
     #[test]
     fn physical_prior_nominal_orbit_no_penalty() {
-        // ~1 AU circular orbit: well inside allowed bounds, e ≈ 0.03.
+        // ~1 AU circular orbit: well inside allowed bounds, e ~= 0.03.
         let pos = [1.0, 0.0, 0.0];
         // ~circular speed at 1 AU (AU/day)
         let vel = [0.0, 0.017, 0.0];
@@ -794,7 +794,7 @@ mod tests {
 
     #[test]
     fn physical_prior_hyperbolic_penalized() {
-        // r = 1 AU, v = 0.1 AU/day (>> v_esc ≈ 0.024). Eccentricity >> 1.
+        // r = 1 AU, v = 0.1 AU/day (>> v_esc ~= 0.024). Eccentricity >> 1.
         let pos = [1.0, 0.0, 0.0];
         let vel = [0.0, 0.1, 0.0];
         let (lp, grad) = physical_prior(&pos, &vel);
@@ -888,7 +888,7 @@ mod tests {
 
         // Identity whitening: xi == Cartesian deviations.
         let whiten_l = DMatrix::<f64>::identity(d, d);
-        let obs: Arc<[Observation]> = Vec::new().into();
+        let obs: Arc<[AstrometricObservation]> = Vec::new().into();
 
         let mut posterior = OrbitalPosterior {
             seed_state,
@@ -973,7 +973,7 @@ mod tests {
         info[(4, 1)] = -3e5;
 
         let whiten_l = sqrt_cov_from_info(&info).expect("info matrix should be valid");
-        let obs: Arc<[Observation]> = Vec::new().into();
+        let obs: Arc<[AstrometricObservation]> = Vec::new().into();
 
         let mut posterior = OrbitalPosterior {
             seed_state,

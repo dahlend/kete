@@ -43,7 +43,7 @@ use kete_core::propagation::{light_time_correct, propagate_two_body};
 use kete_core::time::{TDB, Time};
 use rayon::prelude::*;
 
-use crate::Observation;
+use crate::AstrometricObservation;
 use crate::lambert::lambert;
 
 /// Unified IOD: a robust approach to initial orbit determination.
@@ -74,7 +74,7 @@ use crate::lambert::lambert;
 /// - No valid candidates found.
 /// - Non-optical observations passed.
 pub fn initial_orbit_determination(
-    obs: &[Observation],
+    obs: &[AstrometricObservation],
     epoch: Option<Time<TDB>>,
 ) -> KeteResult<Vec<State<Equatorial>>> {
     if obs.len() < 2 {
@@ -107,7 +107,7 @@ pub fn initial_orbit_determination(
 /// and nested refinement for each, then rescores all candidates,
 /// deduplicates, and returns states at `ref_epoch`.
 fn scanning_iod_core(
-    sorted_obs: &[Observation],
+    sorted_obs: &[AstrometricObservation],
     ref_epoch: Time<TDB>,
 ) -> KeteResult<Vec<State<Equatorial>>> {
     let pairs = select_ranging_pairs(sorted_obs);
@@ -136,7 +136,7 @@ fn scanning_iod_core(
     // so that scoring reflects fit quality where the user actually cares
     // (typically the last observation for forward prediction).
     let rescore_indices = select_scoring_cluster(sorted_obs, ref_epoch.jd);
-    let rescore_obs: Vec<Observation> = rescore_indices
+    let rescore_obs: Vec<AstrometricObservation> = rescore_indices
         .iter()
         .map(|&i| sorted_obs[i].clone())
         .collect();
@@ -198,7 +198,7 @@ fn propagate_to_common_epoch(
 /// Returns a vector of `(score, state)` candidates, scored against a
 /// local subset of observations near the pair midpoint.
 fn run_ranging_for_pair(
-    sorted_obs: &[Observation],
+    sorted_obs: &[AstrometricObservation],
     i_a: usize,
     i_b: usize,
 ) -> KeteResult<Vec<(f64, State<Equatorial>)>> {
@@ -220,7 +220,7 @@ fn run_ranging_for_pair(
     // and dense enough to average out observation noise.
     let ref_jd = f64::midpoint(obs_a.epoch.jd, obs_b.epoch.jd);
     let scoring_indices = select_scoring_cluster(sorted_obs, ref_jd);
-    let scoring_obs: Vec<Observation> = scoring_indices
+    let scoring_obs: Vec<AstrometricObservation> = scoring_indices
         .iter()
         .map(|&i| sorted_obs[i].clone())
         .collect();
@@ -232,7 +232,7 @@ fn run_ranging_for_pair(
     let log_min = 0.00001_f64.ln();
     let log_max = 1000.0_f64.ln();
 
-    // (score, rho_a, rho_b) — Flatten the 2D grid into a single range and
+    // (score, rho_a, rho_b) -- Flatten the 2D grid into a single range and
     // parallel-iterate so all captures are simple shared references.
     let mut scan_scores: Vec<(f64, f64, f64)> = (0..n_scan * n_scan)
         .into_par_iter()
@@ -385,7 +385,7 @@ fn run_ranging_for_pair(
 ///
 /// For short arcs (single-night), the target baselines won't match and
 /// the first-last pair provides the only pair.
-fn select_ranging_pairs(sorted_obs: &[Observation]) -> Vec<(usize, usize)> {
+fn select_ranging_pairs(sorted_obs: &[AstrometricObservation]) -> Vec<(usize, usize)> {
     let n = sorted_obs.len();
     if n < 2 {
         return vec![];
@@ -417,7 +417,10 @@ fn select_ranging_pairs(sorted_obs: &[Observation]) -> Vec<(usize, usize)> {
 /// brackets the target, then check both sides.  O(n) time.
 ///
 /// Returns `None` if no pair with `dt > 0` exists.
-fn best_pair_near_baseline(sorted_obs: &[Observation], target_days: f64) -> Option<(usize, usize)> {
+fn best_pair_near_baseline(
+    sorted_obs: &[AstrometricObservation],
+    target_days: f64,
+) -> Option<(usize, usize)> {
     let n = sorted_obs.len();
     let mut best: Option<(usize, usize)> = None;
     let mut best_dist = f64::MAX;
@@ -458,7 +461,7 @@ fn best_pair_near_baseline(sorted_obs: &[Observation], target_days: f64) -> Opti
 /// Uses a 3-day window around `ref_jd`, capped at 10 observations
 /// (whichever limit is reached first).  Always returns at least 2
 /// observations (falling back to the 2 nearest if the window is empty).
-fn select_scoring_cluster(sorted_obs: &[Observation], ref_jd: f64) -> Vec<usize> {
+fn select_scoring_cluster(sorted_obs: &[AstrometricObservation], ref_jd: f64) -> Vec<usize> {
     let mut indices: Vec<usize> = sorted_obs
         .iter()
         .enumerate()
@@ -562,7 +565,7 @@ fn dedup_states(states: &mut Vec<State<Equatorial>>) {
 /// Observations that fail two-body propagation or light-time correction are
 /// silently skipped rather than aborting the entire computation.  Returns
 /// `None` only when fewer than 2 observations could be scored.
-fn observation_residual(state: &State<Equatorial>, obs: &[Observation]) -> Option<f64> {
+fn observation_residual(state: &State<Equatorial>, obs: &[AstrometricObservation]) -> Option<f64> {
     let mut residuals: Vec<f64> = Vec::with_capacity(obs.len());
 
     for ob in obs {
@@ -640,7 +643,7 @@ mod tests {
         epochs: &[f64],
         noise_arcsec: f64,
         seed: u64,
-    ) -> Vec<Observation> {
+    ) -> Vec<AstrometricObservation> {
         let r_earth = 1.0;
         let v_earth = (GMS / r_earth).sqrt();
         let obl = 23.44_f64.to_radians();
@@ -665,7 +668,7 @@ mod tests {
                 let ra_noisy = ra + rng.gaussian() * noise_rad / dec.cos().max(0.1);
                 let dec_noisy = dec + rng.gaussian() * noise_rad;
                 let sigma = if noise_rad > 0.0 { noise_rad } else { 1e-6 };
-                Observation::Optical {
+                AstrometricObservation::Optical {
                     observer,
                     ra: ra_noisy,
                     dec: dec_noisy,
@@ -980,7 +983,7 @@ mod tests {
         let noise_rad = noise_arcsec * std::f64::consts::PI / (180.0 * 3600.0);
         let mut rng = Rng::new(77777);
 
-        let observations: Vec<Observation> = epochs
+        let observations: Vec<AstrometricObservation> = epochs
             .iter()
             .map(|&jd| {
                 let obj_at = propagate_n_body_spk(obj.clone(), Time::<TDB>::new(jd), false, None)
@@ -998,7 +1001,7 @@ mod tests {
                 let ra_noisy = ra + rng.gaussian() * noise_rad / dec.cos().max(0.1);
                 let dec_noisy = dec + rng.gaussian() * noise_rad;
 
-                Observation::Optical {
+                AstrometricObservation::Optical {
                     observer,
                     ra: ra_noisy,
                     dec: dec_noisy,

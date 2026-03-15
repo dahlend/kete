@@ -1,8 +1,8 @@
 use crate::{frame::PyFrames, vector::VectorLike};
 use kete_core::constants;
-use kete_flux::HGParams;
 use kete_flux::cometary_dust_phase_curve_correction;
 use kete_flux::hg_phase_curve_correction;
+use kete_flux::{hg_apparent_flux, hg_apparent_mag, resolve_hg_params};
 use pyo3::PyResult;
 use pyo3::pyfunction;
 
@@ -107,21 +107,16 @@ pub fn hg_apparent_flux_py(
     let c_hg = c_hg.unwrap_or(constants::C_V);
     let sun2obj = sun2obj.into_vector(PyFrames::Equatorial).into();
     let sun2obs = sun2obs.into_vector(PyFrames::Equatorial).into();
-    let params = HGParams::try_new(
-        "".into(),
-        g_param,
-        h_mag,
-        Some(c_hg),
-        Some(v_albedo),
-        diameter,
-    )?;
-    params
-        .apparent_flux(&sun2obj, &sun2obs, wavelength, v_albedo)
-        .ok_or_else(|| {
-            pyo3::exceptions::PyValueError::new_err(
-                "Failed to compute apparent flux. Ensure h_mag or diameter is provided.",
-            )
-        })
+    let (_h_mag, _vis_albedo, diam, _c_hg) =
+        resolve_hg_params(h_mag, Some(v_albedo), diameter, Some(c_hg))?;
+    let diam = diam.ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(
+            "Failed to compute apparent flux. Ensure h_mag or diameter is provided.",
+        )
+    })?;
+    Ok(hg_apparent_flux(
+        g_param, diam, &sun2obj, &sun2obs, wavelength, v_albedo,
+    ))
 }
 
 /// Compute the apparent magnitude of an object using the absolute magnitude H, G, and
@@ -159,6 +154,5 @@ pub fn hg_apparent_mag_py(
 ) -> f64 {
     let sun2obj = sun2obj.into_vector(PyFrames::Equatorial).into();
     let sun2obs = sun2obs.into_vector(PyFrames::Equatorial).into();
-    let params = HGParams::new("".into(), g_param, h_mag, None);
-    params.apparent_mag(&sun2obj, &sun2obs)
+    hg_apparent_mag(g_param, h_mag, &sun2obj, &sun2obs)
 }

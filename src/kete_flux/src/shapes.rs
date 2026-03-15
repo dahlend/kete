@@ -234,7 +234,8 @@ impl TriangleShape {
                 count += 1;
                 matrix[i][j] = count;
                 if j == 0 {
-                    matrix[i][4 * i] = count; // wrap-around
+                    // wrap-around
+                    matrix[i][4 * i] = count;
                 }
             }
         }
@@ -248,7 +249,8 @@ impl TriangleShape {
                 }
             }
         }
-        matrix[2 * n][0] = count + 1; // south pole
+        // south pole
+        matrix[2 * n][0] = count + 1;
 
         // Generate triangle facets by connecting adjacent rings.
         let expected = 8 * n * n;
@@ -346,7 +348,8 @@ mod tests {
     #[test]
     fn test_triangle_shape_sphere() {
         let shape = TriangleShape::new_ellipsoid(6, 1.0, 1.0, 1.0);
-        assert_eq!(shape.len(), 8 * 36); // 8 * n_div^2
+        // 8 * n_div^2
+        assert_eq!(shape.len(), 8 * 36);
 
         let total_area: f64 = shape.facets.iter().map(|f| f.area).sum();
         assert!((total_area - 1.0).abs() < 1e-10);
@@ -361,7 +364,8 @@ mod tests {
     #[test]
     fn test_triangle_shape_ellipsoid() {
         let shape = TriangleShape::new_ellipsoid(4, 2.0, 1.0, 0.5);
-        assert_eq!(shape.len(), 8 * 16); // 8 * 4^2
+        // 8 * 4^2
+        assert_eq!(shape.len(), 8 * 16);
 
         let total_area: f64 = shape.facets.iter().map(|f| f.area).sum();
         assert!((total_area - 1.0).abs() < 1e-10);

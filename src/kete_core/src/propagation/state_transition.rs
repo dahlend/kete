@@ -123,7 +123,8 @@ pub fn compute_state_transition(
         jd,
         [pos_f[0], pos_f[1], pos_f[2]].into(),
         [vel_f[0], vel_f[1], vel_f[2]].into(),
-        0, // SSB-centered
+        // SSB-centered
+        0,
     );
 
     // Build the 6x(6+N) sensitivity matrix
@@ -145,8 +146,10 @@ pub fn compute_state_transition(
     for k in 0..np {
         let base = 21 + k * 3;
         for i in 0..3 {
-            sens[(i, 6 + k)] = pos_f[base + i]; // dr_f/dp_k
-            sens[(3 + i, 6 + k)] = vel_f[base + i]; // dv_f/dp_k
+            // dr_f/dp_k
+            sens[(i, 6 + k)] = pos_f[base + i];
+            // dv_f/dp_k
+            sens[(3 + i, 6 + k)] = vel_f[base + i];
         }
     }
 

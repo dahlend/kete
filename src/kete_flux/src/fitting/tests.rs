@@ -27,56 +27,84 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use super::*;
 use super::types::log_likelihood;
-use crate::{BandInfo, FrmParams, HGParams, NeatmParams};
+use super::*;
+use crate::{BandInfo, frm_total_flux, neatm_total_flux, resolve_hg_params};
 use nalgebra::Vector3;
+
+/// Resolved HG parameters for testing.
+struct TestHg {
+    g_param: f64,
+    h_mag: f64,
+    vis_albedo: f64,
+    diam: f64,
+    c_hg: f64,
+}
+
+impl TestHg {
+    fn new(g_param: f64, h_mag: Option<f64>, vis_albedo: Option<f64>, diam: Option<f64>) -> Self {
+        let (h_mag, vis_albedo, diam, c_hg) =
+            resolve_hg_params(h_mag, vis_albedo, diam, None).unwrap();
+        Self {
+            g_param,
+            h_mag,
+            vis_albedo: vis_albedo.unwrap(),
+            diam: diam.unwrap(),
+            c_hg,
+        }
+    }
+}
 
 /// Build a negative-log-likelihood closure for a model.
 fn make_neg_log_likelihood(
     model: Model,
     obs: &[FluxObs],
-    hg: &HGParams,
+    c_hg: f64,
     emissivity: f64,
 ) -> impl Fn(&[f64]) -> f64 {
     let obs = obs.to_vec();
-    let hg = hg.clone();
     move |x: &[f64]| -> f64 {
-        let ll = log_likelihood(model, x, &obs, &hg, emissivity);
+        let ll = log_likelihood(model, x, &obs, c_hg, emissivity);
         if ll.is_finite() { -ll } else { f64::MAX }
     }
 }
 
 /// Build a synthetic observation set: a 10 km asteroid at 2 AU, H=18, G=0.15.
-fn synthetic_neatm_obs() -> (Vec<FluxObs>, HGParams) {
-    let hg = HGParams::try_new("test".into(), 0.15, Some(18.0), None, None, Some(10.0)).unwrap();
+fn synthetic_neatm_obs() -> (Vec<FluxObs>, TestHg) {
+    let hg = TestHg::new(0.15, Some(18.0), None, Some(10.0));
 
     let sun2obj = Vector3::new(2.0, 0.0, 0.0);
-    let sun2obs = Vector3::new(0.0, 0.0, 0.0); // observer at Sun for simplicity
+    // observer at Sun for simplicity
+    let sun2obs = Vector3::new(0.0, 0.0, 0.0);
 
     let bands = BandInfo::new_wise();
-    let pv = hg.vis_albedo().unwrap();
+    let pv = hg.vis_albedo;
     let beaming = 1.2;
     let r_ir = 1.0;
     let emissivity = 0.9;
 
     // Generate "observed" fluxes from the forward model
     let band_albedos: Vec<f64> = bands.iter().map(|_| r_ir * pv).collect();
-    let params = NeatmParams {
-        obs_bands: bands.to_vec(),
-        band_albedos,
+    let result = neatm_total_flux(
+        &bands,
+        &band_albedos,
+        hg.diam,
+        pv,
+        hg.g_param,
+        hg.h_mag,
         beaming,
-        hg_params: hg.clone(),
         emissivity,
-    };
-    let result = params.apparent_total_flux(&sun2obj, &sun2obs).unwrap();
+        &sun2obj,
+        &sun2obs,
+    );
 
     let obs: Vec<FluxObs> = bands
         .iter()
         .zip(&result.fluxes)
         .map(|(band, &flux)| FluxObs {
             flux,
-            sigma: flux * 0.05, // 5% uncertainty
+            // 5% uncertainty
+            sigma: flux * 0.05,
             band: band.clone(),
             is_upper_limit: false,
             sun2obj,
@@ -105,18 +133,18 @@ fn test_logistic_barrier_boundary() {
 #[test]
 fn test_neatm_nll_at_truth() {
     let (obs, hg) = synthetic_neatm_obs();
-    let neg_log_lik = make_neg_log_likelihood(Model::Neatm, &obs, &hg, 0.9);
+    let neg_log_lik = make_neg_log_likelihood(Model::Neatm, &obs, hg.c_hg, 0.9);
 
-    // Truth: D=10, eta=1.2, f_sigma=1.0, R_IR=1.0
-    let truth = [10.0_f64.ln(), 1.2_f64.ln(), 1.0_f64.ln(), 1.0_f64.ln()];
+    // Truth: [ln_D, ln_beaming, H, G, ln_f_sigma, ln_R_IR]
+    let truth = [10.0_f64.ln(), 1.2_f64.ln(), 18.0, 0.15, 0.0, 0.0];
     let neg_log_lik_at_truth = neg_log_lik(&truth);
 
-    // At truth the residual terms are zero, but the normalization
-    // sum ln(f_sigma * sigma_i) = sum ln(sigma_i) remains.  Just verify it's finite
-    // and smaller than at a wrong point.
-    assert!(neg_log_lik_at_truth.is_finite(), "NLL at truth should be finite");
+    assert!(
+        neg_log_lik_at_truth.is_finite(),
+        "NLL at truth should be finite"
+    );
 
-    let wrong = [20.0_f64.ln(), 1.2_f64.ln(), 1.0_f64.ln(), 1.0_f64.ln()];
+    let wrong = [20.0_f64.ln(), 1.2_f64.ln(), 18.0, 0.15, 0.0, 0.0];
     let neg_log_lik_wrong = neg_log_lik(&wrong);
     assert!(
         neg_log_lik_at_truth < neg_log_lik_wrong,
@@ -127,11 +155,10 @@ fn test_neatm_nll_at_truth() {
 #[test]
 fn test_neatm_nll_away_from_truth() {
     let (obs, hg) = synthetic_neatm_obs();
-    let neg_log_lik = make_neg_log_likelihood(Model::Neatm, &obs, &hg, 0.9);
+    let neg_log_lik = make_neg_log_likelihood(Model::Neatm, &obs, hg.c_hg, 0.9);
 
-    let truth = [10.0_f64.ln(), 1.2_f64.ln(), 1.0_f64.ln(), 1.0_f64.ln()];
-    // Wrong diameter
-    let wrong = [20.0_f64.ln(), 1.2_f64.ln(), 1.0_f64.ln(), 1.0_f64.ln()];
+    let truth = [10.0_f64.ln(), 1.2_f64.ln(), 18.0, 0.15, 0.0, 0.0];
+    let wrong = [20.0_f64.ln(), 1.2_f64.ln(), 18.0, 0.15, 0.0, 0.0];
     let neg_log_lik_wrong = neg_log_lik(&wrong);
     let neg_log_lik_truth = neg_log_lik(&truth);
     assert!(
@@ -143,14 +170,19 @@ fn test_neatm_nll_away_from_truth() {
 #[test]
 fn test_neatm_fit_recovery() {
     let (obs, hg) = synthetic_neatm_obs();
-    let priors = Priors::default();
+    let priors = FluxPriors {
+        h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
+        ..FluxPriors::default()
+    };
 
-    let res = fit_mcmc(Model::Neatm, &obs, &hg, 0.9, &priors, 1, 50, 50)
+    let res = fit_mcmc(Model::Neatm, &obs, hg.c_hg, 0.9, &priors, 1, 50, 50)
         .expect("MCMC should produce a result");
 
     let d_median = {
         let vals: Vec<f64> = res.draws.iter().map(|r| r[0]).collect();
-        kete_stats::prelude::SortedData::try_from(vals).unwrap().median()
+        kete_stats::prelude::SortedData::try_from(vals)
+            .unwrap()
+            .median()
     };
     assert!(
         (d_median - 10.0).abs() / 10.0 < 0.3,
@@ -161,22 +193,26 @@ fn test_neatm_fit_recovery() {
 #[test]
 fn test_frm_nll_at_truth() {
     // Build FRM observations similarly
-    let hg = HGParams::try_new("test".into(), 0.15, Some(18.0), None, None, Some(10.0)).unwrap();
+    let hg = TestHg::new(0.15, Some(18.0), None, Some(10.0));
 
     let sun2obj = Vector3::new(2.0, 0.0, 0.0);
     let sun2obs = Vector3::new(0.0, 0.0, 0.0);
     let bands = BandInfo::new_wise();
-    let pv = hg.vis_albedo().unwrap();
+    let pv = hg.vis_albedo;
     let r_ir = 1.0;
 
     let band_albedos: Vec<f64> = bands.iter().map(|_| r_ir * pv).collect();
-    let params = FrmParams {
-        obs_bands: bands.to_vec(),
-        band_albedos,
-        hg_params: hg.clone(),
-        emissivity: 0.9,
-    };
-    let result = params.apparent_total_flux(&sun2obj, &sun2obs).unwrap();
+    let result = frm_total_flux(
+        &bands,
+        &band_albedos,
+        hg.diam,
+        pv,
+        hg.g_param,
+        hg.h_mag,
+        0.9,
+        &sun2obj,
+        &sun2obs,
+    );
 
     let obs: Vec<FluxObs> = bands
         .iter()
@@ -191,8 +227,9 @@ fn test_frm_nll_at_truth() {
         })
         .collect();
 
-    let neg_log_lik = make_neg_log_likelihood(Model::Frm, &obs, &hg, 0.9);
-    let truth = [10.0_f64.ln(), 1.0_f64.ln(), 1.0_f64.ln()];
+    let neg_log_lik = make_neg_log_likelihood(Model::Frm, &obs, hg.c_hg, 0.9);
+    // Truth: [ln_D, H, G, ln_f_sigma, ln_R_IR]
+    let truth = [10.0_f64.ln(), 18.0, 0.15, 0.0, 0.0];
     let neg_log_lik_val = neg_log_lik(&truth);
     assert!(
         neg_log_lik_val.is_finite(),
@@ -200,7 +237,7 @@ fn test_frm_nll_at_truth() {
     );
 
     // NLL at truth should be less than at a wrong diameter
-    let wrong = [20.0_f64.ln(), 1.0_f64.ln(), 1.0_f64.ln()];
+    let wrong = [20.0_f64.ln(), 18.0, 0.15, 0.0, 0.0];
     let neg_log_lik_wrong = neg_log_lik(&wrong);
     assert!(
         neg_log_lik_val < neg_log_lik_wrong,
@@ -221,11 +258,11 @@ fn test_upper_limit_penalty() {
         })
         .collect();
 
-    let neg_log_lik = make_neg_log_likelihood(Model::Neatm, &ul_obs, &hg, 0.9);
+    let neg_log_lik = make_neg_log_likelihood(Model::Neatm, &ul_obs, hg.c_hg, 0.9);
 
     // At truth, model == threshold -> NLL should be 0
     // (upper limits don't include the ln(sigma) term)
-    let truth = [10.0_f64.ln(), 1.2_f64.ln(), 1.0_f64.ln(), 1.0_f64.ln()];
+    let truth = [10.0_f64.ln(), 1.2_f64.ln(), 18.0, 0.15, 0.0, 0.0];
     let neg_log_lik_at_truth = neg_log_lik(&truth);
     assert!(
         neg_log_lik_at_truth < 1e-6,
@@ -233,7 +270,7 @@ fn test_upper_limit_penalty() {
     );
 
     // Larger diameter -> more flux -> exceeds threshold -> penalty
-    let bigger = [20.0_f64.ln(), 1.2_f64.ln(), 1.0_f64.ln(), 1.0_f64.ln()];
+    let bigger = [20.0_f64.ln(), 1.2_f64.ln(), 18.0, 0.15, 0.0, 0.0];
     let neg_log_lik_bigger = neg_log_lik(&bigger);
     assert!(
         neg_log_lik_bigger > neg_log_lik_at_truth,
@@ -243,21 +280,25 @@ fn test_upper_limit_penalty() {
 
 #[test]
 fn test_frm_fit_recovery() {
-    let hg = HGParams::try_new("test".into(), 0.15, Some(18.0), None, None, Some(10.0)).unwrap();
+    let hg = TestHg::new(0.15, Some(18.0), None, Some(10.0));
     let sun2obj = Vector3::new(2.0, 0.0, 0.0);
     let sun2obs = Vector3::new(0.0, 0.0, 0.0);
     let bands = BandInfo::new_wise();
-    let pv = hg.vis_albedo().unwrap();
+    let pv = hg.vis_albedo;
     let r_ir = 1.0;
 
     let band_albedos: Vec<f64> = bands.iter().map(|_| r_ir * pv).collect();
-    let params = FrmParams {
-        obs_bands: bands.to_vec(),
-        band_albedos,
-        hg_params: hg.clone(),
-        emissivity: 0.9,
-    };
-    let result = params.apparent_total_flux(&sun2obj, &sun2obs).unwrap();
+    let result = frm_total_flux(
+        &bands,
+        &band_albedos,
+        hg.diam,
+        pv,
+        hg.g_param,
+        hg.h_mag,
+        0.9,
+        &sun2obj,
+        &sun2obs,
+    );
 
     let obs: Vec<FluxObs> = bands
         .iter()
@@ -272,13 +313,18 @@ fn test_frm_fit_recovery() {
         })
         .collect();
 
-    let priors = Priors::default();
-    let res = fit_mcmc(Model::Frm, &obs, &hg, 0.9, &priors, 1, 50, 50)
+    let priors = FluxPriors {
+        h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
+        ..FluxPriors::default()
+    };
+    let res = fit_mcmc(Model::Frm, &obs, hg.c_hg, 0.9, &priors, 1, 50, 50)
         .expect("MCMC should produce a result");
 
     let d_median = {
         let vals: Vec<f64> = res.draws.iter().map(|r| r[0]).collect();
-        kete_stats::prelude::SortedData::try_from(vals).unwrap().median()
+        kete_stats::prelude::SortedData::try_from(vals)
+            .unwrap()
+            .median()
     };
     assert!(
         (d_median - 10.0).abs() / 10.0 < 0.3,
@@ -290,19 +336,24 @@ fn test_frm_fit_recovery() {
 #[test]
 fn test_neatm_mcmc_smoke() {
     let (obs, hg) = synthetic_neatm_obs();
-    let priors = Priors::default();
+    let priors = FluxPriors {
+        h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
+        ..FluxPriors::default()
+    };
     let n_obs = obs.len();
 
-    let result = fit_mcmc(Model::Neatm, &obs, &hg, 0.9, &priors, 1, 50, 50);
+    let result = fit_mcmc(Model::Neatm, &obs, hg.c_hg, 0.9, &priors, 1, 50, 50);
     assert!(result.is_some(), "MCMC should produce a result");
     let res = result.unwrap();
     assert!(!res.draws.is_empty(), "Should have draws");
-    // Each NEATM draw: [D, pV, eta, f_sigma, R_IR] -> length 5
-    assert_eq!(res.draws[0].len(), 5, "NEATM draws should have 5 columns");
+    // Each NEATM draw: [D, pV, beaming, H, G, R_IR, f_sigma] -> length 7
+    assert_eq!(res.draws[0].len(), 7, "NEATM draws should have 7 columns");
     // Diameter median should be in a reasonable range.
     let d_median = {
         let vals: Vec<f64> = res.draws.iter().map(|r| r[0]).collect();
-        kete_stats::prelude::SortedData::try_from(vals).unwrap().median()
+        kete_stats::prelude::SortedData::try_from(vals)
+            .unwrap()
+            .median()
     };
     assert!(
         d_median > 1.0 && d_median < 100.0,
@@ -314,25 +365,32 @@ fn test_neatm_mcmc_smoke() {
     assert_eq!(res.best_fit_fluxes.len(), n_obs);
     assert_eq!(res.best_fit_residuals.len(), n_obs);
     assert_eq!(res.best_fit_reflected_frac.len(), n_obs);
-    assert!(res.chi2_best.is_finite(), "chi2_best should be finite");
+    assert!(
+        res.reduced_chi2.is_finite() || n_obs <= Model::Neatm.dim(),
+        "reduced_chi2 should be finite when nobs > nparams",
+    );
 }
 
 #[test]
 fn test_frm_mcmc_smoke() {
-    let hg = HGParams::try_new("test".into(), 0.15, Some(18.0), None, None, Some(10.0)).unwrap();
+    let hg = TestHg::new(0.15, Some(18.0), None, Some(10.0));
     let sun2obj = Vector3::new(2.0, 0.0, 0.0);
     let sun2obs = Vector3::new(0.0, 0.0, 0.0);
     let bands = BandInfo::new_wise();
-    let pv = hg.vis_albedo().unwrap();
+    let pv = hg.vis_albedo;
 
     let band_albedos: Vec<f64> = bands.iter().map(|_| pv).collect();
-    let params = FrmParams {
-        obs_bands: bands.to_vec(),
-        band_albedos,
-        hg_params: hg.clone(),
-        emissivity: 0.9,
-    };
-    let result = params.apparent_total_flux(&sun2obj, &sun2obs).unwrap();
+    let result = frm_total_flux(
+        &bands,
+        &band_albedos,
+        hg.diam,
+        pv,
+        hg.g_param,
+        hg.h_mag,
+        0.9,
+        &sun2obj,
+        &sun2obs,
+    );
 
     let obs: Vec<FluxObs> = bands
         .iter()
@@ -347,31 +405,44 @@ fn test_frm_mcmc_smoke() {
         })
         .collect();
 
-    let priors = Priors::default();
+    let priors = FluxPriors {
+        h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
+        ..FluxPriors::default()
+    };
     let n_obs = obs.len();
-    let result = fit_mcmc(Model::Frm, &obs, &hg, 0.9, &priors, 1, 50, 50);
+    let result = fit_mcmc(Model::Frm, &obs, hg.c_hg, 0.9, &priors, 1, 50, 50);
     assert!(result.is_some(), "FRM MCMC should produce a result");
     let res = result.unwrap();
-    assert_eq!(res.draws[0].len(), 4, "FRM draws should have 4 columns");
-    assert!(!res.model.is_neatm(), "FRM result should have is_neatm=false");
+    // FRM draws: [D, pV, H, G, R_IR, f_sigma] -> 6 columns
+    assert_eq!(res.draws[0].len(), 6, "FRM draws should have 6 columns");
+    assert!(
+        !res.model.is_neatm(),
+        "FRM result should have is_neatm=false"
+    );
 
     // MAP diagnostic fields
     assert_eq!(res.nobs, n_obs, "nobs should match observation count");
     assert_eq!(res.best_fit_fluxes.len(), n_obs);
     assert_eq!(res.best_fit_residuals.len(), n_obs);
     assert_eq!(res.best_fit_reflected_frac.len(), n_obs);
-    assert!(res.chi2_best.is_finite(), "chi2_best should be finite");
+    assert!(
+        res.reduced_chi2.is_finite() || n_obs <= Model::Frm.dim(),
+        "reduced_chi2 should be finite when nobs > nparams",
+    );
 }
 
 #[test]
 fn test_neatm_batch() {
     let (obs, hg) = synthetic_neatm_obs();
-    let priors = Priors::default();
+    let priors = FluxPriors {
+        h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
+        ..FluxPriors::default()
+    };
     let tasks = vec![
         FitTask {
             model: Model::Neatm,
             obs: obs.clone(),
-            hg: hg.clone(),
+            c_hg: hg.c_hg,
             emissivity: 0.9,
             priors: priors.clone(),
             num_chains: 1,
@@ -381,7 +452,7 @@ fn test_neatm_batch() {
         FitTask {
             model: Model::Neatm,
             obs,
-            hg,
+            c_hg: hg.c_hg,
             emissivity: 0.9,
             priors,
             num_chains: 1,
@@ -398,20 +469,24 @@ fn test_neatm_batch() {
 
 #[test]
 fn test_frm_batch() {
-    let hg = HGParams::try_new("test".into(), 0.15, Some(18.0), None, None, Some(10.0)).unwrap();
+    let hg = TestHg::new(0.15, Some(18.0), None, Some(10.0));
     let sun2obj = Vector3::new(2.0, 0.0, 0.0);
     let sun2obs = Vector3::new(0.0, 0.0, 0.0);
     let bands = BandInfo::new_wise();
-    let pv = hg.vis_albedo().unwrap();
+    let pv = hg.vis_albedo;
     let r_ir = 1.0;
     let band_albedos: Vec<f64> = bands.iter().map(|_| r_ir * pv).collect();
-    let params = FrmParams {
-        obs_bands: bands.to_vec(),
-        band_albedos,
-        hg_params: hg.clone(),
-        emissivity: 0.9,
-    };
-    let result = params.apparent_total_flux(&sun2obj, &sun2obs).unwrap();
+    let result = frm_total_flux(
+        &bands,
+        &band_albedos,
+        hg.diam,
+        pv,
+        hg.g_param,
+        hg.h_mag,
+        0.9,
+        &sun2obj,
+        &sun2obs,
+    );
     let obs: Vec<FluxObs> = bands
         .iter()
         .zip(&result.fluxes)
@@ -424,11 +499,14 @@ fn test_frm_batch() {
             sun2obs,
         })
         .collect();
-    let priors = Priors::default();
+    let priors = FluxPriors {
+        h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
+        ..FluxPriors::default()
+    };
     let tasks = vec![FitTask {
         model: Model::Frm,
         obs,
-        hg,
+        c_hg: hg.c_hg,
         emissivity: 0.9,
         priors,
         num_chains: 1,
@@ -443,15 +521,19 @@ fn test_frm_batch() {
 #[test]
 fn test_coupling_consistency_neatm() {
     let (obs, hg) = synthetic_neatm_obs();
-    let priors = Priors::default();
-    let res = fit_mcmc(Model::Neatm, &obs, &hg, 0.9, &priors, 1, 50, 50).unwrap();
+    let priors = FluxPriors {
+        h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
+        ..FluxPriors::default()
+    };
+    let res = fit_mcmc(Model::Neatm, &obs, hg.c_hg, 0.9, &priors, 1, 50, 50).unwrap();
 
     // Every draw must satisfy D = c_hg / sqrt(pV) * 10^(-H/5).
-    let c_hg = hg.c_hg();
-    let h = hg.h_mag;
+    // H is now per-draw at index 3.
+    let c_hg = hg.c_hg;
     for (i, draw) in res.draws.iter().enumerate() {
         let d = draw[0];
         let pv = draw[1];
+        let h = draw[3];
         let expected_d = c_hg / pv.sqrt() * 10_f64.powf(-h / 5.0);
         let rel = (d - expected_d).abs() / expected_d;
         assert!(
@@ -463,19 +545,23 @@ fn test_coupling_consistency_neatm() {
 
 #[test]
 fn test_coupling_consistency_frm() {
-    let hg = HGParams::try_new("test".into(), 0.15, Some(18.0), None, None, Some(10.0)).unwrap();
+    let hg = TestHg::new(0.15, Some(18.0), None, Some(10.0));
     let sun2obj = Vector3::new(2.0, 0.0, 0.0);
     let sun2obs = Vector3::new(0.0, 0.0, 0.0);
     let bands = BandInfo::new_wise();
-    let pv = hg.vis_albedo().unwrap();
+    let pv = hg.vis_albedo;
     let band_albedos: Vec<f64> = bands.iter().map(|_| pv).collect();
-    let params = FrmParams {
-        obs_bands: bands.to_vec(),
-        band_albedos,
-        hg_params: hg.clone(),
-        emissivity: 0.9,
-    };
-    let result = params.apparent_total_flux(&sun2obj, &sun2obs).unwrap();
+    let result = frm_total_flux(
+        &bands,
+        &band_albedos,
+        hg.diam,
+        pv,
+        hg.g_param,
+        hg.h_mag,
+        0.9,
+        &sun2obj,
+        &sun2obs,
+    );
     let obs: Vec<FluxObs> = bands
         .iter()
         .zip(&result.fluxes)
@@ -489,14 +575,18 @@ fn test_coupling_consistency_frm() {
         })
         .collect();
 
-    let priors = Priors::default();
-    let res = fit_mcmc(Model::Frm, &obs, &hg, 0.9, &priors, 1, 50, 50).unwrap();
+    let priors = FluxPriors {
+        h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
+        ..FluxPriors::default()
+    };
+    let res = fit_mcmc(Model::Frm, &obs, hg.c_hg, 0.9, &priors, 1, 50, 50).unwrap();
 
-    let c_hg = hg.c_hg();
-    let h = hg.h_mag;
+    // H is now per-draw at index 2.
+    let c_hg = hg.c_hg;
     for (i, draw) in res.draws.iter().enumerate() {
         let d = draw[0];
         let pv_draw = draw[1];
+        let h = draw[2];
         let expected_d = c_hg / pv_draw.sqrt() * 10_f64.powf(-h / 5.0);
         let rel = (d - expected_d).abs() / expected_d;
         assert!(
@@ -508,23 +598,27 @@ fn test_coupling_consistency_frm() {
 
 #[test]
 fn test_neatm_w3_w4_only() {
-    let hg = HGParams::try_new("test".into(), 0.15, Some(18.0), None, None, Some(10.0)).unwrap();
+    let hg = TestHg::new(0.15, Some(18.0), None, Some(10.0));
     let sun2obj = Vector3::new(2.0, 0.0, 0.0);
     let sun2obs = Vector3::new(0.0, 0.0, 0.0);
     let bands = BandInfo::new_wise();
-    let pv = hg.vis_albedo().unwrap();
+    let pv = hg.vis_albedo;
 
     // Generate truth from NEATM with W3 + W4 only.
     let w3w4: Vec<BandInfo> = vec![bands[2].clone(), bands[3].clone()];
     let band_albedos: Vec<f64> = w3w4.iter().map(|_| pv).collect();
-    let params = NeatmParams {
-        obs_bands: w3w4.clone(),
-        band_albedos,
-        beaming: 1.0,
-        hg_params: hg.clone(),
-        emissivity: 0.9,
-    };
-    let result = params.apparent_total_flux(&sun2obj, &sun2obs).unwrap();
+    let result = neatm_total_flux(
+        &w3w4,
+        &band_albedos,
+        hg.diam,
+        pv,
+        hg.g_param,
+        hg.h_mag,
+        1.0,
+        0.9,
+        &sun2obj,
+        &sun2obs,
+    );
 
     let obs: Vec<FluxObs> = w3w4
         .iter()
@@ -539,13 +633,18 @@ fn test_neatm_w3_w4_only() {
         })
         .collect();
 
-    let priors = Priors::default();
-    let res = fit_mcmc(Model::Neatm, &obs, &hg, 0.9, &priors, 1, 50, 50)
+    let priors = FluxPriors {
+        h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
+        ..FluxPriors::default()
+    };
+    let res = fit_mcmc(Model::Neatm, &obs, hg.c_hg, 0.9, &priors, 1, 50, 50)
         .expect("W3+W4 MCMC should produce a result");
 
     let d_median = {
         let vals: Vec<f64> = res.draws.iter().map(|r| r[0]).collect();
-        kete_stats::prelude::SortedData::try_from(vals).unwrap().median()
+        kete_stats::prelude::SortedData::try_from(vals)
+            .unwrap()
+            .median()
     };
     assert!(
         (d_median - 10.0).abs() / 10.0 < 0.3,
@@ -567,41 +666,70 @@ fn test_all_upper_limits_no_panic() {
 
     // All-upper-limit input: MCMC may or may not converge.
     // The key contract is no panic.
-    let priors = Priors::default();
-    let _ = fit_mcmc(Model::Neatm, &ul_obs, &hg, 0.9, &priors, 1, 50, 50);
+    let priors = FluxPriors {
+        h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
+        ..FluxPriors::default()
+    };
+    let _ = fit_mcmc(Model::Neatm, &ul_obs, hg.c_hg, 0.9, &priors, 1, 50, 50);
 }
 
 #[test]
 fn test_mcmc_draw_column_counts() {
     let (obs, hg) = synthetic_neatm_obs();
-    let priors = Priors::default();
+    let priors = FluxPriors {
+        h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
+        ..FluxPriors::default()
+    };
 
-    // NEATM: 5 columns [D, pV, eta, f_sigma, R_IR], all positive.
-    let neatm_res = fit_mcmc(Model::Neatm, &obs, &hg, 0.9, &priors, 1, 50, 50).unwrap();
+    // NEATM: 7 columns [D, pV, beaming, H, G, R_IR, f_sigma].
+    let neatm_res = fit_mcmc(Model::Neatm, &obs, hg.c_hg, 0.9, &priors, 1, 50, 50).unwrap();
     for (i, d) in neatm_res.draws.iter().enumerate() {
-        assert_eq!(d.len(), 5, "NEATM draw {i} should have 5 columns");
-        for (j, &v) in d.iter().enumerate() {
-            assert!(v > 0.0 && v.is_finite(), "NEATM draw {i} col {j} = {v}");
+        assert_eq!(d.len(), 7, "NEATM draw {i} should have 7 columns");
+        // D, pV, beaming, R_IR, f_sigma must be positive.
+        for &col in &[0, 1, 2, 5, 6] {
+            assert!(
+                d[col] > 0.0 && d[col].is_finite(),
+                "NEATM draw {i} col {col} = {}",
+                d[col]
+            );
         }
+        // H and G must be finite (can be <= 0).
+        assert!(d[3].is_finite(), "NEATM draw {i} H = {} not finite", d[3]);
+        assert!(d[4].is_finite(), "NEATM draw {i} G = {} not finite", d[4]);
     }
 
-    // FRM: 4 columns [D, pV, f_sigma, R_IR], all positive.
-    let frm_res = fit_mcmc(Model::Frm, &obs, &hg, 0.9, &priors, 1, 50, 50).unwrap();
+    // FRM: 7 columns [D, pV, H, G, emissivity, R_IR, f_sigma].
+    let frm_res = fit_mcmc(Model::Frm, &obs, hg.c_hg, 0.9, &priors, 1, 50, 50).unwrap();
     for (i, d) in frm_res.draws.iter().enumerate() {
-        assert_eq!(d.len(), 4, "FRM draw {i} should have 4 columns");
-        for (j, &v) in d.iter().enumerate() {
-            assert!(v > 0.0 && v.is_finite(), "FRM draw {i} col {j} = {v}");
+        assert_eq!(d.len(), 6, "FRM draw {i} should have 6 columns");
+        // D, pV, R_IR, f_sigma must be positive.
+        for &col in &[0, 1, 4, 5] {
+            assert!(
+                d[col] > 0.0 && d[col].is_finite(),
+                "FRM draw {i} col {col} = {}",
+                d[col]
+            );
         }
+        assert!(d[2].is_finite(), "FRM draw {i} H = {} not finite", d[2]);
+        assert!(d[3].is_finite(), "FRM draw {i} G = {} not finite", d[3]);
     }
 
     // HG: 3 columns [H, G, f_sigma].  H can be any real number, G bounded, f_sigma > 0.
     let (hg_obs, hg_hg) = synthetic_hg_obs();
-    let hg_res = fit_mcmc(Model::Hg, &hg_obs, &hg_hg, 0.9, &priors, 1, 50, 50).unwrap();
+    let hg_priors = FluxPriors {
+        h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg_hg.h_mag, 1.0),
+        ..FluxPriors::default()
+    };
+    let hg_res = fit_mcmc(Model::Hg, &hg_obs, hg_hg.c_hg, 0.9, &hg_priors, 1, 50, 50).unwrap();
     for (i, d) in hg_res.draws.iter().enumerate() {
         assert_eq!(d.len(), 3, "HG draw {i} should have 3 columns");
         assert!(d[0].is_finite(), "HG draw {i} H = {} not finite", d[0]);
         assert!(d[1].is_finite(), "HG draw {i} G = {} not finite", d[1]);
-        assert!(d[2] > 0.0 && d[2].is_finite(), "HG draw {i} f_sigma = {}", d[2]);
+        assert!(
+            d[2] > 0.0 && d[2].is_finite(),
+            "HG draw {i} f_sigma = {}",
+            d[2]
+        );
     }
 }
 
@@ -613,8 +741,8 @@ fn test_mcmc_draw_column_counts() {
 ///
 /// An H=18, G=0.15 asteroid observed in V band at two phase angles.
 /// The observer is offset from the Sun so that the phase angle is non-zero.
-fn synthetic_hg_obs() -> (Vec<FluxObs>, HGParams) {
-    let hg = HGParams::try_new("test".into(), 0.15, Some(18.0), None, None, Some(10.0)).unwrap();
+fn synthetic_hg_obs() -> (Vec<FluxObs>, TestHg) {
+    let hg = TestHg::new(0.15, Some(18.0), None, Some(10.0));
     let v_band = BandInfo::new_v();
 
     // Geometry 1: opposition-like (small phase angle).
@@ -625,13 +753,15 @@ fn synthetic_hg_obs() -> (Vec<FluxObs>, HGParams) {
     let sun2obj_2 = Vector3::new(1.5, 1.0, 0.0);
     let sun2obs_2 = Vector3::new(-1.0, 0.0, 0.0);
 
-    let pv = hg.vis_albedo().unwrap();
+    let pv = hg.vis_albedo;
     let mut obs = Vec::new();
-    for (&s2o, &s2obs) in [sun2obj_1, sun2obj_2].iter().zip([sun2obs_1, sun2obs_2].iter()) {
-        let flux = hg
-            .apparent_flux(&s2o, &s2obs, v_band.wavelength, pv)
-            .unwrap()
-            * v_band.solar_correction;
+    for (&s2o, &s2obs) in [sun2obj_1, sun2obj_2]
+        .iter()
+        .zip([sun2obs_1, sun2obs_2].iter())
+    {
+        let flux =
+            crate::hg_apparent_flux(hg.g_param, hg.diam, &s2o, &s2obs, v_band.wavelength, pv)
+                * v_band.solar_correction;
         obs.push(FluxObs {
             flux,
             sigma: flux * 0.05,
@@ -648,12 +778,16 @@ fn synthetic_hg_obs() -> (Vec<FluxObs>, HGParams) {
 #[test]
 fn test_hg_nll_at_truth() {
     let (obs, hg) = synthetic_hg_obs();
-    let neg_log_lik = make_neg_log_likelihood(Model::Hg, &obs, &hg, 0.9);
+    let neg_log_lik = make_neg_log_likelihood(Model::Hg, &obs, hg.c_hg, 0.9);
 
     // Truth: H=18, G=0.15, f_sigma=1.0.
-    let truth = [18.0, 0.15, 0.0_f64]; // [H, G, ln(1.0)]
+    // [H, G, ln(1.0)]
+    let truth = [18.0, 0.15, 0.0_f64];
     let neg_log_lik_at_truth = neg_log_lik(&truth);
-    assert!(neg_log_lik_at_truth.is_finite(), "HG NLL at truth should be finite");
+    assert!(
+        neg_log_lik_at_truth.is_finite(),
+        "HG NLL at truth should be finite"
+    );
 
     // Wrong H.
     let wrong = [15.0, 0.15, 0.0];
@@ -675,15 +809,20 @@ fn test_hg_nll_at_truth() {
 #[test]
 fn test_hg_fit_recovery() {
     let (obs, hg) = synthetic_hg_obs();
-    let priors = Priors::default();
+    let priors = FluxPriors {
+        h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
+        ..FluxPriors::default()
+    };
 
-    let res = fit_mcmc(Model::Hg, &obs, &hg, 0.9, &priors, 1, 100, 100)
+    let res = fit_mcmc(Model::Hg, &obs, hg.c_hg, 0.9, &priors, 1, 100, 100)
         .expect("HG MCMC should produce a result");
 
     // H should recover near 18.0.
     let h_median = {
         let vals: Vec<f64> = res.draws.iter().map(|r| r[0]).collect();
-        kete_stats::prelude::SortedData::try_from(vals).unwrap().median()
+        kete_stats::prelude::SortedData::try_from(vals)
+            .unwrap()
+            .median()
     };
     assert!(
         (h_median - 18.0).abs() < 1.0,
@@ -694,10 +833,13 @@ fn test_hg_fit_recovery() {
 #[test]
 fn test_hg_mcmc_smoke() {
     let (obs, hg) = synthetic_hg_obs();
-    let priors = Priors::default();
+    let priors = FluxPriors {
+        h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
+        ..FluxPriors::default()
+    };
     let n_obs = obs.len();
 
-    let res = fit_mcmc(Model::Hg, &obs, &hg, 0.9, &priors, 1, 50, 50)
+    let res = fit_mcmc(Model::Hg, &obs, hg.c_hg, 0.9, &priors, 1, 50, 50)
         .expect("HG MCMC should produce a result");
 
     assert!(!res.draws.is_empty(), "Should have draws");
@@ -709,7 +851,10 @@ fn test_hg_mcmc_smoke() {
     assert_eq!(res.best_fit_fluxes.len(), n_obs);
     assert_eq!(res.best_fit_residuals.len(), n_obs);
     assert_eq!(res.best_fit_reflected_frac.len(), n_obs);
-    assert!(res.chi2_best.is_finite(), "chi2_best should be finite");
+    assert!(
+        res.reduced_chi2.is_finite() || n_obs <= Model::Hg.dim(),
+        "reduced_chi2 should be finite when nobs > nparams",
+    );
 
     // For HG, reflected_frac should be 1.0 everywhere.
     for (i, &frac) in res.best_fit_reflected_frac.iter().enumerate() {
@@ -723,12 +868,15 @@ fn test_hg_mcmc_smoke() {
 #[test]
 fn test_hg_batch() {
     let (obs, hg) = synthetic_hg_obs();
-    let priors = Priors::default();
+    let priors = FluxPriors {
+        h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
+        ..FluxPriors::default()
+    };
     let tasks = vec![
         FitTask {
             model: Model::Hg,
             obs: obs.clone(),
-            hg: hg.clone(),
+            c_hg: hg.c_hg,
             emissivity: 0.9,
             priors: priors.clone(),
             num_chains: 1,
@@ -738,7 +886,7 @@ fn test_hg_batch() {
         FitTask {
             model: Model::Hg,
             obs,
-            hg,
+            c_hg: hg.c_hg,
             emissivity: 0.9,
             priors,
             num_chains: 1,
@@ -760,8 +908,8 @@ fn test_hg_batch() {
 
 #[test]
 fn test_multi_geometry_neatm() {
-    let hg = HGParams::try_new("test".into(), 0.15, Some(18.0), None, None, Some(10.0)).unwrap();
-    let pv = hg.vis_albedo().unwrap();
+    let hg = TestHg::new(0.15, Some(18.0), None, Some(10.0));
+    let pv = hg.vis_albedo;
     let beaming = 1.2;
     let r_ir = 1.0;
     let emissivity = 0.9;
@@ -776,14 +924,18 @@ fn test_multi_geometry_neatm() {
     let mut obs = Vec::new();
     for (sun2obj, sun2obs) in &geoms {
         let band_albedos: Vec<f64> = bands.iter().map(|_| r_ir * pv).collect();
-        let params = NeatmParams {
-            obs_bands: bands.to_vec(),
-            band_albedos,
+        let result = neatm_total_flux(
+            &bands,
+            &band_albedos,
+            hg.diam,
+            pv,
+            hg.g_param,
+            hg.h_mag,
             beaming,
-            hg_params: hg.clone(),
             emissivity,
-        };
-        let result = params.apparent_total_flux(sun2obj, sun2obs).unwrap();
+            sun2obj,
+            sun2obs,
+        );
         for (band, &flux) in bands.iter().zip(&result.fluxes) {
             obs.push(FluxObs {
                 flux,
@@ -799,13 +951,18 @@ fn test_multi_geometry_neatm() {
     // Should have 8 observations (4 bands x 2 geometries).
     assert_eq!(obs.len(), 8);
 
-    let priors = Priors::default();
-    let res = fit_mcmc(Model::Neatm, &obs, &hg, emissivity, &priors, 1, 50, 50)
+    let priors = FluxPriors {
+        h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
+        ..FluxPriors::default()
+    };
+    let res = fit_mcmc(Model::Neatm, &obs, hg.c_hg, 0.9, &priors, 1, 50, 50)
         .expect("Multi-geometry NEATM MCMC should produce a result");
 
     let d_median = {
         let vals: Vec<f64> = res.draws.iter().map(|r| r[0]).collect();
-        kete_stats::prelude::SortedData::try_from(vals).unwrap().median()
+        kete_stats::prelude::SortedData::try_from(vals)
+            .unwrap()
+            .median()
     };
     assert!(
         (d_median - 10.0).abs() / 10.0 < 0.3,
@@ -822,8 +979,11 @@ fn test_multi_geometry_neatm() {
 #[test]
 fn test_pv_draws_reasonable() {
     let (obs, hg) = synthetic_neatm_obs();
-    let priors = Priors::default();
-    let res = fit_mcmc(Model::Neatm, &obs, &hg, 0.9, &priors, 1, 50, 50).unwrap();
+    let priors = FluxPriors {
+        h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
+        ..FluxPriors::default()
+    };
+    let res = fit_mcmc(Model::Neatm, &obs, hg.c_hg, 0.9, &priors, 1, 50, 50).unwrap();
 
     for (i, draw) in res.draws.iter().enumerate() {
         let pv = draw[1];
