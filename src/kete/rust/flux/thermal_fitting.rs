@@ -484,11 +484,21 @@ impl PyFitResult {
         }
         let d = stats_from_column(&self.0.draws, 0);
         let pv = stats_from_column(&self.0.draws, 1);
+        let (beaming, h_col) = if self.0.model.is_neatm() {
+            (Some(stats_from_column(&self.0.draws, 2)), 3)
+        } else {
+            (None, 2)
+        };
+        let h = stats_from_column(&self.0.draws, h_col);
+        let g = stats_from_column(&self.0.draws, h_col + 1);
+        let rir = stats_from_column(&self.0.draws, h_col + 2);
+
+        let beaming_str = beaming
+            .map(|b| format!("\n  beaming={b},"))
+            .unwrap_or_default();
         format!(
-            "FitResult(model={:?}, D={}, pV={}, n_draws={}, n_div={})",
+            "FitResult(model={:?},\n  D={d},\n  pV={pv},{beaming_str}\n  H={h},\n  G={g},\n  R_IR={rir},\n  n_draws={}, n_div={})",
             self.0.model,
-            d,
-            pv,
             self.0.draws.len(),
             self.0.n_divergent,
         )
