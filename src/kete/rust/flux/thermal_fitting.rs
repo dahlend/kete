@@ -173,11 +173,19 @@ impl PyParamPrior {
 ///
 /// If not provided, sensible defaults are used:
 ///
-/// - D in [0.001, 1000] km
-/// - beaming in [0.5, 3.0], Gaussian prior at ln(1.0) with sigma=0.3
-/// - R_IR in [0.5, 2.0], Gaussian prior at ln(1.6) with sigma=0.3
-/// - H in [-5, 35]
-/// - G in [-0.3, 0.7], Gaussian prior at 0.2 with sigma=0.2
+/// .. code-block:: python
+///
+///     kete.flux.FluxPriors(
+///         ln_diam   = kete.flux.ParamPrior(bounds=(np.ln(0.001), np.ln(1000))),
+///         ln_beaming= kete.flux.ParamPrior(bounds=(np.ln(0.5), np.ln(3.0)),
+///                                          gaussian=(np.ln(1.0), 0.3)),
+///         ln_r_ir   = kete.flux.ParamPrior(bounds=(np.ln(0.5), np.ln(2.0)),
+///                                          gaussian=(np.ln(1.6), 0.3)),
+///         h_mag     = kete.flux.ParamPrior(bounds=(-5.0, 35.0)),
+///         g_param   = kete.flux.ParamPrior(bounds=(-0.3, 0.7),
+///                                          gaussian=(0.2, 0.01)),
+///         pv        = kete.flux.ParamPrior(bounds=(0.0, 1.0)),
+///     )
 ///
 /// Each prior is a :class:`ParamPrior` specifying ``bounds`` (logistic
 /// barrier) and an optional ``gaussian`` centering prior ``(mean, sigma)``.
@@ -196,6 +204,8 @@ impl PyParamPrior {
 ///     :class:`ParamPrior` for H magnitude.
 /// g_param :
 ///     :class:`ParamPrior` for G parameter.
+/// pv :
+///     :class:`ParamPrior` for geometric albedo pV (linear scale).
 #[pyclass(frozen, module = "kete.flux", name = "FluxPriors", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyFluxPriors(pub FluxPriors);
@@ -209,6 +219,7 @@ impl PyFluxPriors {
         ln_r_ir=None,
         h_mag=None,
         g_param=None,
+        pv=None,
     ))]
     fn new(
         ln_diam: Option<PyParamPrior>,
@@ -216,6 +227,7 @@ impl PyFluxPriors {
         ln_r_ir: Option<PyParamPrior>,
         h_mag: Option<PyParamPrior>,
         g_param: Option<PyParamPrior>,
+        pv: Option<PyParamPrior>,
     ) -> Self {
         let d = FluxPriors::default();
         Self(FluxPriors {
@@ -224,6 +236,7 @@ impl PyFluxPriors {
             ln_r_ir: ln_r_ir.map_or(d.ln_r_ir, |p| p.0),
             h_mag: h_mag.map_or(d.h_mag, |p| p.0),
             g_param: g_param.map_or(d.g_param, |p| p.0),
+            pv: pv.map_or(d.pv, |p| p.0),
         })
     }
 

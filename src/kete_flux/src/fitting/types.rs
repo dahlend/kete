@@ -249,6 +249,9 @@ pub struct FluxPriors {
     pub h_mag: ParamPrior,
     /// Prior on G parameter.
     pub g_param: ParamPrior,
+    /// Prior on geometric albedo pV (linear scale).
+    /// Used by thermal models to penalize infeasible albedos derived from D and H.
+    pub pv: ParamPrior,
 }
 
 impl Default for FluxPriors {
@@ -265,6 +268,7 @@ impl Default for FluxPriors {
             ln_r_ir: ParamPrior::with_gaussian(0.5_f64.ln(), 2.0_f64.ln(), 1.6_f64.ln(), 0.3),
             h_mag: ParamPrior::bounds_only(-5.0, 35.0),
             g_param: ParamPrior::with_gaussian(-0.3, 0.7, 0.2, 0.01),
+            pv: ParamPrior::bounds_only(0.0, 1.0),
         }
     }
 }
@@ -474,8 +478,9 @@ pub(super) fn log_likelihood(
 /// Evaluate the log-prior at log-parameter vector `x`.
 ///
 /// All models share H, G, and `f_sigma` priors.  Thermal models add
-/// diameter, beaming, emissivity, and `R_IR` priors.
-pub(super) fn log_prior(model: Model, x: &[f64], priors: &FluxPriors) -> f64 {
+/// diameter, beaming, emissivity, and `R_IR` priors.  When a `pv` prior
+/// is present, the derived albedo `pV(D, H)` is also penalized.
+pub(super) fn log_prior(model: Model, x: &[f64], priors: &FluxPriors, c_hg: f64) -> f64 {
     let mut lp = 0.0;
 
     if model.is_hg() {
@@ -518,6 +523,16 @@ pub(super) fn log_prior(model: Model, x: &[f64], priors: &FluxPriors) -> f64 {
     // R_IR.
     lp += priors.ln_r_ir.log_prob(x[r_idx]);
 
+    // pV prior (derived from D and H).
+    let diam = x[0].exp();
+    let h = x[h_idx];
+    let pv = pv_from_diameter(diam, h, c_hg);
+    if pv.is_finite() && pv > 0.0 {
+        lp += priors.pv.log_prob(pv);
+    } else {
+        return f64::NEG_INFINITY;
+    }
+
     lp
 }
 
@@ -537,7 +552,7 @@ pub(super) fn log_posterior(
     if !ll.is_finite() {
         return f64::NEG_INFINITY;
     }
-    let val = ll + log_prior(model, x, priors);
+    let val = ll + log_prior(model, x, priors, c_hg);
     if val.is_finite() {
         val
     } else {
