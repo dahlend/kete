@@ -1,5 +1,3 @@
-use core::f64;
-
 use crate::{frame::PyFrames, vector::VectorLike};
 use itertools::Itertools;
 use kete_core::constants::{
@@ -77,8 +75,8 @@ pub fn solar_flux_py(dist: f64, wavelength: f64) -> PyResult<f64> {
 /// ----------
 /// sun_dist :
 ///     Distance from the object to the sun in AU.
-/// geom_albedo :
-///     Geometric albedo.
+/// vis_albedo :
+///     Visible geometric albedo.
 /// g_param :
 ///     G Phase parameter in the HG system.
 /// beaming :
@@ -86,15 +84,15 @@ pub fn solar_flux_py(dist: f64, wavelength: f64) -> PyResult<f64> {
 /// emissivity :
 ///     Emissivity of the object, 0.9 by default.
 #[pyfunction]
-#[pyo3(name = "sub_solar_temperature", signature = (sun_dist, geom_albedo, g_param, beaming, emissivity=0.9))]
+#[pyo3(name = "sub_solar_temperature", signature = (sun_dist, vis_albedo, g_param, beaming, emissivity=0.9))]
 pub fn sub_solar_temperature_py(
     sun_dist: f64,
-    geom_albedo: f64,
+    vis_albedo: f64,
     g_param: f64,
     beaming: f64,
     emissivity: f64,
 ) -> f64 {
-    sub_solar_temperature(sun_dist, geom_albedo, g_param, beaming, emissivity)
+    sub_solar_temperature(sun_dist, vis_albedo, g_param, beaming, emissivity)
 }
 
 /// Compute the black body flux at the specified temperatures and wavelength.
@@ -204,8 +202,8 @@ pub fn frm_facet_temperature_py(
 /// sun2obs :
 ///     A vector-like object containing the X/Y/Z coordinates pointing from the sun
 ///     to the observer in units of AU.
-/// v_albedo :
-///     The V geometric albedo of the object.
+/// vis_albedo :
+///     The visible geometric albedo of the object.
 /// g_param :
 ///     The G parameter of the object
 /// beaming :
@@ -222,12 +220,12 @@ pub fn frm_facet_temperature_py(
 /// float
 ///     Flux in units of Jy.
 #[pyfunction]
-#[pyo3(name = "neatm_flux", signature = (sun2obj, sun2obs, v_albedo, g_param, beaming, diameter, wavelength, emissivity=0.9))]
+#[pyo3(name = "neatm_flux", signature = (sun2obj, sun2obs, vis_albedo, g_param, beaming, diameter, wavelength, emissivity=0.9))]
 #[allow(clippy::too_many_arguments)]
 pub fn neatm_thermal_py(
     sun2obj: VectorLike,
     sun2obs: VectorLike,
-    v_albedo: f64,
+    vis_albedo: f64,
     g_param: f64,
     beaming: f64,
     diameter: f64,
@@ -241,7 +239,7 @@ pub fn neatm_thermal_py(
     let result = neatm_thermal_flux(
         &[band],
         diameter,
-        v_albedo,
+        vis_albedo,
         g_param,
         beaming,
         emissivity,
@@ -270,8 +268,8 @@ pub fn neatm_thermal_py(
 /// sun2obs : Vector
 ///     A vector-like object containing the X/Y/Z coordinates pointing from the sun
 ///     to the observer in units of AU.
-/// v_albedo : float
-///     The V geometric albedo of the object.
+/// vis_albedo : float
+///     The visible geometric albedo of the object.
 /// g_param : float
 ///     The G parameter of the object
 /// diameter : float
@@ -286,12 +284,12 @@ pub fn neatm_thermal_py(
 /// float
 ///     Flux in units of Jy.
 #[pyfunction]
-#[pyo3(name = "frm_flux", signature = (sun2obj, sun2obs, v_albedo, g_param, diameter, wavelength, emissivity=0.9))]
+#[pyo3(name = "frm_flux", signature = (sun2obj, sun2obs, vis_albedo, g_param, diameter, wavelength, emissivity=0.9))]
 #[allow(clippy::too_many_arguments)]
 pub fn frm_thermal_py(
     sun2obj: VectorLike,
     sun2obs: VectorLike,
-    v_albedo: f64,
+    vis_albedo: f64,
     g_param: f64,
     diameter: f64,
     wavelength: f64,
@@ -304,7 +302,7 @@ pub fn frm_thermal_py(
     let result = frm_thermal_flux(
         &[band],
         diameter,
-        v_albedo,
+        vis_albedo,
         g_param,
         emissivity,
         &sun2obj,

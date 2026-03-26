@@ -76,7 +76,7 @@ pub fn comet_dust_phase_curve_correction_py(phase_angle: f64) -> f64 {
 ///     The G parameter of the object.
 /// wavelength :
 ///     The wavelength of the object in nanometers.
-/// v_albedo :
+/// vis_albedo :
 ///     The geometric albedo of the object at the specified wavelength.
 /// h_mag :
 ///     H magnitude of the object in V band.
@@ -92,30 +92,30 @@ pub fn comet_dust_phase_curve_correction_py(phase_angle: f64) -> f64 {
 ///     Flux in Jy per unit frequency.
 #[allow(clippy::too_many_arguments)]
 #[pyfunction]
-#[pyo3(name = "hg_apparent_flux", signature = (sun2obj, sun2obs, g_param, wavelength, v_albedo,
+#[pyo3(name = "hg_apparent_flux", signature = (sun2obj, sun2obs, g_param, wavelength, vis_albedo,
     h_mag=None, diameter=None, c_hg=None))]
 pub fn hg_apparent_flux_py(
     sun2obj: VectorLike,
     sun2obs: VectorLike,
     g_param: f64,
     wavelength: f64,
-    v_albedo: f64,
+    vis_albedo: f64,
     h_mag: Option<f64>,
     diameter: Option<f64>,
     c_hg: Option<f64>,
 ) -> PyResult<f64> {
     let c_hg = c_hg.unwrap_or(constants::C_V);
-    let sun2obj = sun2obj.into_vector(PyFrames::Equatorial).into();
-    let sun2obs = sun2obs.into_vector(PyFrames::Equatorial).into();
-    let (_h_mag, _vis_albedo, diam, _c_hg) =
-        resolve_hg_params(h_mag, Some(v_albedo), diameter, Some(c_hg))?;
-    let diam = diam.ok_or_else(|| {
+    let sun2obj = sun2obj.into_vector(PyFrames::Ecliptic).into();
+    let sun2obs = sun2obs.into_vector(PyFrames::Ecliptic).into();
+    let (_h_mag, _vis_albedo, diameter, _c_hg) =
+        resolve_hg_params(h_mag, Some(vis_albedo), diameter, Some(c_hg))?;
+    let diameter = diameter.ok_or_else(|| {
         pyo3::exceptions::PyValueError::new_err(
             "Failed to compute apparent flux. Ensure h_mag or diameter is provided.",
         )
     })?;
     Ok(hg_apparent_flux(
-        g_param, diam, &sun2obj, &sun2obs, wavelength, v_albedo,
+        g_param, diameter, &sun2obj, &sun2obs, wavelength, vis_albedo,
     ))
 }
 

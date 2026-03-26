@@ -1,4 +1,5 @@
 //! Python support for orbital elements
+use kete_core::constants::{GMS_SQRT, GravParams};
 use kete_core::elements;
 use kete_core::frames::Ecliptic;
 use kete_core::prelude;
@@ -28,6 +29,8 @@ use crate::{state::PyState, time::PyTime};
 ///     The JD time of perihelion.
 /// lon_of_ascending:
 ///     The longitude of ascending node, in degrees.
+/// center_id:
+///     NAIF ID of the central body, defaults to 10 (Sun).
 #[pyclass(module = "kete", frozen, name = "CometElements", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyCometElements(pub elements::CometElements);
@@ -56,8 +59,11 @@ impl PyCometElements {
     ///     Time of perihelion passage in JD.
     /// lon_of_ascending: float
     ///     Longitude of ascending node in degrees.
+    /// center_id: int
+    ///     NAIF ID of the central body (default 10 = Sun).
     #[new]
     #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature=(desig, epoch, eccentricity, inclination, peri_dist, peri_arg, peri_time, lon_of_ascending, center_id=10))]
     pub fn new(
         desig: String,
         epoch: PyTime,
@@ -67,7 +73,15 @@ impl PyCometElements {
         peri_arg: f64,
         peri_time: PyTime,
         lon_of_ascending: f64,
+        center_id: i32,
     ) -> Self {
+        let gm_sqrt = {
+            let known = GravParams::known_masses();
+            known
+                .iter()
+                .find(|p| p.naif_id == center_id)
+                .map_or(GMS_SQRT, |p| p.mass.sqrt())
+        };
         Self(elements::CometElements {
             desig: prelude::Desig::Name(desig),
             epoch: epoch.into(),
@@ -77,6 +91,8 @@ impl PyCometElements {
             peri_time: peri_time.into(),
             peri_arg: peri_arg.to_radians(),
             peri_dist,
+            center_id,
+            gm_sqrt,
         })
     }
 
@@ -130,6 +146,12 @@ impl PyCometElements {
     #[getter]
     pub fn peri_time(&self) -> PyTime {
         self.0.peri_time.into()
+    }
+
+    /// NAIF ID of the central body.
+    #[getter]
+    pub fn center_id(&self) -> i32 {
+        self.0.center_id
     }
 
     /// Argument of Perihelion of the orbit in degrees.
@@ -194,7 +216,7 @@ impl PyCometElements {
 
     fn __repr__(&self) -> String {
         format!(
-            "CometElements(desig={:?}, epoch={}, eccentricity={}, inclination={}, lon_of_ascending={}, peri_time={}, peri_arg={}, peri_dist={})",
+            "CometElements(desig={:?}, epoch={}, eccentricity={}, inclination={}, lon_of_ascending={}, peri_time={}, peri_arg={}, peri_dist={}, center_id={})",
             self.desig(),
             self.epoch().jd(),
             self.eccentricity(),
@@ -202,7 +224,8 @@ impl PyCometElements {
             self.lon_of_ascending(),
             self.peri_time().jd(),
             self.peri_arg(),
-            self.peri_dist()
+            self.peri_dist(),
+            self.center_id()
         )
     }
 }

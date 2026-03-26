@@ -29,11 +29,10 @@
 
 use crate::{
     BandInfo, DEFAULT_SHAPE, ModelResults, black_body_flux, flux_to_mag, hg_apparent_flux,
-    hg_apparent_mag, lambertian_vis_scale_factor, sub_solar_temperature,
+    hg_apparent_mag, lambertian_vis_scale_factor, mag_to_flux, sub_solar_temperature,
 };
 use kete_core::constants::V_MAG_ZERO;
 
-use core::f64;
 use nalgebra::{UnitVector3, Vector3};
 use std::f64::consts::PI;
 
@@ -166,7 +165,7 @@ pub fn frm_total_flux(
     }
 
     let v_band_magnitude = hg_apparent_mag(g_param, h_mag, sun2obj, sun2obs);
-    let v_band_flux = flux_to_mag(v_band_magnitude, V_MAG_ZERO);
+    let v_band_flux = mag_to_flux(v_band_magnitude, V_MAG_ZERO);
 
     let magnitudes: Vec<_> = obs_bands
         .iter()

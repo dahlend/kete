@@ -146,7 +146,6 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     m.add_function(wrap_pyfunction!(flux::fit_model_py, m)?)?;
-    m.add_function(wrap_pyfunction!(flux::fit_model_batch_py, m)?)?;
 
     m.add_function(wrap_pyfunction!(spice::spk_load_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::spk_loaded_objects_py, m)?)?;

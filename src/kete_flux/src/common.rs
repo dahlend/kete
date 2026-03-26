@@ -271,7 +271,7 @@ pub fn lambertian_vis_scale_factor(
 /// # Arguments
 ///
 /// * `sun_dist` - Object distance to the Sun in AU.
-/// * `geom_albedo` - Geometric Albedo.
+/// * `vis_albedo` - Visible geometric albedo.
 /// * `g_param` - The G phase parameter.
 /// * `beaming` - Beaming of the object, this is geometry dependent.
 /// * `emissivity` - The emissivity of the surface.
@@ -279,14 +279,14 @@ pub fn lambertian_vis_scale_factor(
 #[must_use]
 pub fn sub_solar_temperature(
     sun_dist: f64,
-    geom_albedo: f64,
+    vis_albedo: f64,
     g_param: f64,
     beaming: f64,
     emissivity: f64,
 ) -> f64 {
     let phase_integral = 0.29 + 0.684 * g_param;
 
-    let bond_albedo = geom_albedo * phase_integral;
+    let bond_albedo = vis_albedo * phase_integral;
     let reflected = (1.0 - bond_albedo) * SOLAR_FLUX / sun_dist.powi(2);
     let temp = reflected / (beaming * emissivity * STEFAN_BOLTZMANN);
     if temp <= 0.0 {
@@ -306,7 +306,7 @@ pub fn mag_to_flux(mag: f64, mag_zero_flux: f64) -> f64 {
     10_f64.powf(mag / -2.5) * mag_zero_flux
 }
 
-/// Given a flux in Hy and a zero point magnitude in Jy, return the magnitude.
+/// Given a flux in Jy and a zero point magnitude in Jy, return the magnitude.
 ///
 /// # Arguments
 ///

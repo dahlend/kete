@@ -39,7 +39,7 @@ def test_subsolarpoint_temp():
     assert (
         sub_solar_temperature(
             vec.r,
-            geom_albedo=1 / 0.29,
+            vis_albedo=1 / 0.29,
             g_param=0,
             emissivity=1,
             beaming=1,
@@ -50,7 +50,7 @@ def test_subsolarpoint_temp():
     for r in range(1, 10):
         vec = Vector([r, 0, 0])
         temp = sub_solar_temperature(
-            r, geom_albedo=0, g_param=0, emissivity=1, beaming=1
+            r, vis_albedo=0, g_param=0, emissivity=1, beaming=1
         )
         temp = temp**4
         expected = constants.SOLAR_FLUX / r**2 / constants.STEFAN_BOLTZMANN
@@ -64,16 +64,16 @@ def test_reflected(obs_pos, h):
     g = 0.1
 
     app_mag = hg_apparent_mag([2, 0, 0], [0, obs_pos, 0], h, g)
-    diam = conversion.compute_diameter(albedo, h)
+    diameter = conversion.compute_diameter(albedo, h)
 
     flux = hg_apparent_flux(
         sun2obj=[2, 0, 0],
         sun2obs=[0, obs_pos, 0],
         g_param=g,
         wavelength=562.25,
-        v_albedo=albedo,
+        vis_albedo=albedo,
         h_mag=h,
-        diameter=diam,
+        diameter=diameter,
     )
     converted_mag = conversion.flux_to_mag(flux, 3620)
 

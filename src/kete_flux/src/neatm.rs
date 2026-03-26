@@ -29,7 +29,7 @@
 
 use crate::{
     BandInfo, ModelResults, black_body_flux, flux_to_mag, hg_apparent_flux, hg_apparent_mag,
-    sub_solar_temperature,
+    mag_to_flux, sub_solar_temperature,
 };
 use kete_core::constants::{AU_KM, V_MAG_ZERO};
 
@@ -242,7 +242,7 @@ pub fn neatm_total_flux(
     }
 
     let v_band_magnitude = hg_apparent_mag(g_param, h_mag, sun2obj, sun2obs);
-    let v_band_flux = flux_to_mag(v_band_magnitude, V_MAG_ZERO);
+    let v_band_flux = mag_to_flux(v_band_magnitude, V_MAG_ZERO);
 
     let magnitudes: Vec<_> = obs_bands
         .iter()

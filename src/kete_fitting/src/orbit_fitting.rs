@@ -34,9 +34,10 @@ use crate::uncertain_state::UncertainState;
 use kete_core::frames::Equatorial;
 use kete_core::prelude::{Error, KeteResult, State};
 use kete_core::propagation::{
-    NonGravModel, compute_state_transition, light_time_correct, propagate_n_body_spk,
+    NonGravModel, analytic_2_body_stm, compute_state_transition, light_time_correct,
+    propagate_n_body_spk,
 };
-use nalgebra::{DMatrix, DVector};
+use nalgebra::{DMatrix, DVector, Vector3};
 
 /// Result of orbit determination via batch least squares.
 #[derive(Debug, Clone)]
@@ -711,6 +712,95 @@ pub fn stm_sweep(
         let h_local = observation.partials(&obj_lt);
 
         // Weight vector.
+        let weights = observation.weights();
+
+        results.push(StmObs {
+            phi_cum: phi_cum.clone(),
+            residual,
+            h_local,
+            weights,
+        });
+    }
+
+    Ok(results)
+}
+
+/// Two-body variant of [`stm_sweep`] for MCMC sampling.
+///
+/// Uses analytic Keplerian propagation with the closed-form Lagrange-coefficient
+/// STM instead of the full N-body Radau integrator.  Lower accuracy but much faster.
+///
+/// The trade-off is that N-body perturbations are ignored in both the residuals
+/// and the Jacobian.  For the use case of MCMC this is usually acceptable because
+/// the posterior shape is dominated by observation geometry, not small planetary
+/// perturbations, and the likelihood + gradient remain internally consistent.
+///
+/// Non-gravitational parameter sensitivities are set to zero (two-body dynamics
+/// has no non-grav forces), so this is most useful when `non_grav` is `None`.
+///
+/// # Errors
+/// Returns an error if two-body propagation or light-time correction fails.
+pub(crate) fn stm_sweep_two_body(
+    state_epoch: &State<Equatorial>,
+    obs: &[AstrometricObservation],
+    included: &[bool],
+    non_grav: Option<&NonGravModel>,
+) -> KeteResult<Vec<StmObs>> {
+    debug_assert!(
+        obs.windows(2).all(|w| w[0].epoch().jd <= w[1].epoch().jd),
+        "stm_sweep_two_body: observations must be sorted by epoch"
+    );
+    let np = n_nongrav_params(non_grav);
+    let d = 6 + np;
+
+    let mut phi_cum = DMatrix::<f64>::zeros(6, d);
+    for i in 0..6 {
+        phi_cum[(i, i)] = 1.0;
+    }
+
+    let mut cur_pos: Vector3<f64> = state_epoch.pos.into();
+    let mut cur_vel: Vector3<f64> = state_epoch.vel.into();
+    let mut cur_epoch = state_epoch.epoch;
+    let mut results = Vec::new();
+
+    for (i, observation) in obs.iter().enumerate() {
+        let obs_epoch = observation.epoch();
+
+        if (obs_epoch.jd - cur_epoch.jd).abs() > 1e-12 {
+            let dt = obs_epoch - cur_epoch;
+            let (new_pos, new_vel, phi_k) = analytic_2_body_stm(dt, &cur_pos, &cur_vel, None)?;
+
+            // Chain the 6x6 state block.
+            let new_state_cols = &phi_k * phi_cum.columns(0, 6);
+            phi_cum.columns_mut(0, 6).copy_from(&new_state_cols);
+
+            // Non-grav parameter columns: phi_state * phi_cum_param + 0
+            // (two-body has no parameter sensitivity, so phi_param = 0).
+            if np > 0 {
+                let new_param_cols = &phi_k * phi_cum.columns(6, np);
+                phi_cum.columns_mut(6, np).copy_from(&new_param_cols);
+            }
+
+            cur_pos = new_pos;
+            cur_vel = new_vel;
+            cur_epoch = obs_epoch;
+        }
+
+        if !included[i] {
+            continue;
+        }
+
+        // Build a temporary State for light-time correction and residuals.
+        let mut cur_state = state_epoch.clone();
+        cur_state.pos = cur_pos.into();
+        cur_state.vel = cur_vel.into();
+        cur_state.epoch = cur_epoch;
+
+        let obs_state = observation.observer();
+        let obj_lt = light_time_correct(&cur_state, &obs_state.pos)?;
+
+        let residual = observation.residual_from_corrected(&obj_lt);
+        let h_local = observation.partials(&obj_lt);
         let weights = observation.weights();
 
         results.push(StmObs {

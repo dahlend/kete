@@ -91,7 +91,7 @@ impl PyModelResults {
     /// Expected flux in the V-band using the HG model.
     #[getter]
     pub fn v_band_flux(&self) -> f64 {
-        self.0.v_band_flux.to_degrees()
+        self.0.v_band_flux
     }
 
     fn __repr__(&self) -> String {
@@ -129,7 +129,7 @@ impl PyModelResults {
 ///     List of albedoes of the object for each wavelength (0-1).
 /// h_mag:
 ///     H magnitude of the object in the HG system.
-/// diam:
+/// diameter:
 ///     Diameter of the object in km.
 /// vis_albedo:
 ///     Visible geometric albedo of the object.
@@ -155,7 +155,7 @@ pub struct PyNeatmParams {
     pub g_param: f64,
     pub h_mag: f64,
     pub vis_albedo: f64,
-    pub diam: f64,
+    pub diameter: f64,
     pub emissivity: f64,
 }
 
@@ -163,13 +163,13 @@ pub struct PyNeatmParams {
 impl PyNeatmParams {
     #[new]
     #[allow(clippy::too_many_arguments, missing_docs)]
-    #[pyo3(signature = (band_wavelengths, band_albedos, h_mag=None, diam=None,
+    #[pyo3(signature = (band_wavelengths, band_albedos, h_mag=None, diameter=None,
         vis_albedo=None, beaming=1.0, g_param=0.15, c_hg=None, emissivity=0.9, zero_mags=None))]
     pub fn new(
         band_wavelengths: Vec<f64>,
         band_albedos: Vec<f64>,
         h_mag: Option<f64>,
-        diam: Option<f64>,
+        diameter: Option<f64>,
         vis_albedo: Option<f64>,
         beaming: f64,
         g_param: f64,
@@ -179,15 +179,16 @@ impl PyNeatmParams {
     ) -> PyResult<Self> {
         let n_bands = band_wavelengths.len();
         let zero_mags = zero_mags.unwrap_or(vec![f64::NAN; n_bands]);
-        let (h_mag, vis_albedo, diam, _c_hg) = resolve_hg_params(h_mag, vis_albedo, diam, c_hg)?;
+        let (h_mag, vis_albedo, diameter, _c_hg) =
+            resolve_hg_params(h_mag, vis_albedo, diameter, c_hg)?;
         let vis_albedo = vis_albedo.ok_or_else(|| {
             pyo3::exceptions::PyValueError::new_err(
-                "At least two of h_mag, diam, and vis_albedo must be provided.",
+                "At least two of h_mag, diameter, and vis_albedo must be provided.",
             )
         })?;
-        let diam = diam.ok_or_else(|| {
+        let diameter = diameter.ok_or_else(|| {
             pyo3::exceptions::PyValueError::new_err(
-                "At least two of h_mag, diam, and vis_albedo must be provided.",
+                "At least two of h_mag, diameter, and vis_albedo must be provided.",
             )
         })?;
 
@@ -204,7 +205,7 @@ impl PyNeatmParams {
             g_param,
             h_mag,
             vis_albedo,
-            diam,
+            diameter,
             emissivity,
         })
     }
@@ -218,7 +219,7 @@ impl PyNeatmParams {
     ///     List of albedoes of the object for each wavelength (0-1).
     /// h_mag:
     ///     H magnitude of the object in the HG system.
-    /// diam:
+    /// diameter:
     ///     Diameter of the object in km.
     /// vis_albedo:
     ///     Visible geometric albedo of the object.
@@ -234,27 +235,28 @@ impl PyNeatmParams {
     ///     Emissivity of the object, defaults to `0.9`.
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (band_albedos, h_mag=None, diam=None, vis_albedo=None,
+    #[pyo3(signature = (band_albedos, h_mag=None, diameter=None, vis_albedo=None,
         beaming=1.0, g_param=0.15, c_hg=None, emissivity=0.9))]
     pub fn new_wise(
         band_albedos: Vec<f64>,
         h_mag: Option<f64>,
-        diam: Option<f64>,
+        diameter: Option<f64>,
         vis_albedo: Option<f64>,
         beaming: f64,
         g_param: f64,
         c_hg: Option<f64>,
         emissivity: f64,
     ) -> PyResult<Self> {
-        let (h_mag, vis_albedo, diam, _c_hg) = resolve_hg_params(h_mag, vis_albedo, diam, c_hg)?;
+        let (h_mag, vis_albedo, diameter, _c_hg) =
+            resolve_hg_params(h_mag, vis_albedo, diameter, c_hg)?;
         let vis_albedo = vis_albedo.ok_or_else(|| {
             pyo3::exceptions::PyValueError::new_err(
-                "At least two of h_mag, diam, and vis_albedo must be provided.",
+                "At least two of h_mag, diameter, and vis_albedo must be provided.",
             )
         })?;
-        let diam = diam.ok_or_else(|| {
+        let diameter = diameter.ok_or_else(|| {
             pyo3::exceptions::PyValueError::new_err(
-                "At least two of h_mag, diam, and vis_albedo must be provided.",
+                "At least two of h_mag, diameter, and vis_albedo must be provided.",
             )
         })?;
 
@@ -274,7 +276,7 @@ impl PyNeatmParams {
             g_param,
             h_mag,
             vis_albedo,
-            diam,
+            diameter,
             emissivity,
         })
     }
@@ -288,7 +290,7 @@ impl PyNeatmParams {
     ///     List of albedoes of the object for each wavelength (0-1).
     /// h_mag:
     ///     H magnitude of the object in the HG system.
-    /// diam:
+    /// diameter:
     ///     Diameter of the object in km.
     /// vis_albedo:
     ///     Visible geometric albedo of the object.
@@ -303,35 +305,36 @@ impl PyNeatmParams {
     /// emissivity:
     ///     Emissivity of the object, defaults to `0.9`.
     #[staticmethod]
-    #[pyo3(signature = (band_albedos, h_mag=None, diam=None, vis_albedo=None, beaming=1.0,
+    #[pyo3(signature = (band_albedos, h_mag=None, diameter=None, vis_albedo=None, beaming=1.0,
         g_param=0.15, c_hg=None, emissivity=0.9))]
     #[allow(clippy::too_many_arguments)]
     pub fn new_neos(
         band_albedos: Vec<f64>,
         h_mag: Option<f64>,
-        diam: Option<f64>,
+        diameter: Option<f64>,
         vis_albedo: Option<f64>,
         beaming: f64,
         g_param: f64,
         c_hg: Option<f64>,
         emissivity: f64,
     ) -> PyResult<Self> {
-        let (h_mag, vis_albedo, diam, _c_hg) = resolve_hg_params(h_mag, vis_albedo, diam, c_hg)?;
+        let (h_mag, vis_albedo, diameter, _c_hg) =
+            resolve_hg_params(h_mag, vis_albedo, diameter, c_hg)?;
         let vis_albedo = vis_albedo.ok_or_else(|| {
             pyo3::exceptions::PyValueError::new_err(
-                "At least two of h_mag, diam, and vis_albedo must be provided.",
+                "At least two of h_mag, diameter, and vis_albedo must be provided.",
             )
         })?;
-        let diam = diam.ok_or_else(|| {
+        let diameter = diameter.ok_or_else(|| {
             pyo3::exceptions::PyValueError::new_err(
-                "At least two of h_mag, diam, and vis_albedo must be provided.",
+                "At least two of h_mag, diameter, and vis_albedo must be provided.",
             )
         })?;
 
-        let band_albedos: [f64; 4] = match band_albedos.try_into() {
+        let band_albedos: [f64; 2] = match band_albedos.try_into() {
             Ok(v) => v,
             Err(_) => Err(kete_core::errors::Error::ValueError(
-                "4 Albedos must be provided, one for each WISE band.".into(),
+                "2 Albedos must be provided, one for each NEOS band.".into(),
             ))?,
         };
 
@@ -344,7 +347,7 @@ impl PyNeatmParams {
             g_param,
             h_mag,
             vis_albedo,
-            diam,
+            diameter,
             emissivity,
         })
     }
@@ -367,7 +370,7 @@ impl PyNeatmParams {
     ) -> PyResult<Vec<PyModelResults>> {
         let obs_bands = &self.obs_bands;
         let band_albedos = &self.band_albedos;
-        let diam = self.diam;
+        let diameter = self.diameter;
         let vis_albedo = self.vis_albedo;
         let g_param = self.g_param;
         let h_mag = self.h_mag;
@@ -383,7 +386,7 @@ impl PyNeatmParams {
                 Ok(neatm_total_flux(
                     obs_bands,
                     band_albedos,
-                    diam,
+                    diameter,
                     vis_albedo,
                     g_param,
                     h_mag,
@@ -417,8 +420,8 @@ impl PyNeatmParams {
 
     /// Diameter of the object in km.
     #[getter]
-    pub fn diam(&self) -> f64 {
-        self.diam
+    pub fn diameter(&self) -> f64 {
+        self.diameter
     }
 
     /// Albedo in V band.
@@ -454,12 +457,12 @@ impl PyNeatmParams {
     fn __repr__(&self) -> String {
         format!(
             "NeatmParams(band_wavelength={:?}, band_albedos={:?}, h_mag={:?}, \
-                diam={:?}, vis_albedo={:?}, beaming={:?}, g_param={:?}, emissivity={:?}, \
+                diameter={:?}, vis_albedo={:?}, beaming={:?}, g_param={:?}, emissivity={:?}, \
                 zero_mags={:?})",
             self.band_wavelength(),
             self.band_albedos(),
             self.h_mag(),
-            self.diam(),
+            self.diameter(),
             self.vis_albedo(),
             self.beaming(),
             self.g_param(),
@@ -490,7 +493,7 @@ impl PyNeatmParams {
 ///     List of albedoes of the object for each wavelength (0-1).
 /// h_mag:
 ///     H magnitude of the object in the HG system.
-/// diam:
+/// diameter:
 ///     Diameter of the object in km.
 /// vis_albedo:
 ///     Visible geometric albedo of the object.
@@ -513,7 +516,7 @@ pub struct PyFrmParams {
     pub g_param: f64,
     pub h_mag: f64,
     pub vis_albedo: f64,
-    pub diam: f64,
+    pub diameter: f64,
     pub emissivity: f64,
 }
 
@@ -521,13 +524,13 @@ pub struct PyFrmParams {
 impl PyFrmParams {
     #[new]
     #[allow(clippy::too_many_arguments, missing_docs)]
-    #[pyo3(signature = (band_wavelengths, band_albedos, h_mag=None, diam=None,
+    #[pyo3(signature = (band_wavelengths, band_albedos, h_mag=None, diameter=None,
         vis_albedo=None, g_param=0.15, c_hg=None, emissivity=0.9, zero_mags=None))]
     pub fn new(
         band_wavelengths: Vec<f64>,
         band_albedos: Vec<f64>,
         h_mag: Option<f64>,
-        diam: Option<f64>,
+        diameter: Option<f64>,
         vis_albedo: Option<f64>,
         g_param: f64,
         c_hg: Option<f64>,
@@ -536,15 +539,16 @@ impl PyFrmParams {
     ) -> PyResult<Self> {
         let n_bands = band_wavelengths.len();
         let zero_mags = zero_mags.unwrap_or(vec![f64::NAN; n_bands]);
-        let (h_mag, vis_albedo, diam, _c_hg) = resolve_hg_params(h_mag, vis_albedo, diam, c_hg)?;
+        let (h_mag, vis_albedo, diameter, _c_hg) =
+            resolve_hg_params(h_mag, vis_albedo, diameter, c_hg)?;
         let vis_albedo = vis_albedo.ok_or_else(|| {
             pyo3::exceptions::PyValueError::new_err(
-                "At least two of h_mag, diam, and vis_albedo must be provided.",
+                "At least two of h_mag, diameter, and vis_albedo must be provided.",
             )
         })?;
-        let diam = diam.ok_or_else(|| {
+        let diameter = diameter.ok_or_else(|| {
             pyo3::exceptions::PyValueError::new_err(
-                "At least two of h_mag, diam, and vis_albedo must be provided.",
+                "At least two of h_mag, diameter, and vis_albedo must be provided.",
             )
         })?;
 
@@ -560,7 +564,7 @@ impl PyFrmParams {
             g_param,
             h_mag,
             vis_albedo,
-            diam,
+            diameter,
             emissivity,
         })
     }
@@ -574,7 +578,7 @@ impl PyFrmParams {
     ///     List of albedoes of the object for each wavelength (0-1).
     /// h_mag:
     ///     H magnitude of the object in the HG system.
-    /// diam:
+    /// diameter:
     ///     Diameter of the object in km.
     /// vis_albedo:
     ///     Visible geometric albedo of the object.
@@ -588,26 +592,27 @@ impl PyFrmParams {
     ///     Emissivity of the object, defaults to `0.9`.
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (band_albedos, h_mag=None, diam=None, vis_albedo=None, g_param=0.15,
+    #[pyo3(signature = (band_albedos, h_mag=None, diameter=None, vis_albedo=None, g_param=0.15,
         c_hg=None, emissivity=0.9))]
     pub fn new_wise(
         band_albedos: Vec<f64>,
         h_mag: Option<f64>,
-        diam: Option<f64>,
+        diameter: Option<f64>,
         vis_albedo: Option<f64>,
         g_param: f64,
         c_hg: Option<f64>,
         emissivity: f64,
     ) -> PyResult<Self> {
-        let (h_mag, vis_albedo, diam, _c_hg) = resolve_hg_params(h_mag, vis_albedo, diam, c_hg)?;
+        let (h_mag, vis_albedo, diameter, _c_hg) =
+            resolve_hg_params(h_mag, vis_albedo, diameter, c_hg)?;
         let vis_albedo = vis_albedo.ok_or_else(|| {
             pyo3::exceptions::PyValueError::new_err(
-                "At least two of h_mag, diam, and vis_albedo must be provided.",
+                "At least two of h_mag, diameter, and vis_albedo must be provided.",
             )
         })?;
-        let diam = diam.ok_or_else(|| {
+        let diameter = diameter.ok_or_else(|| {
             pyo3::exceptions::PyValueError::new_err(
-                "At least two of h_mag, diam, and vis_albedo must be provided.",
+                "At least two of h_mag, diameter, and vis_albedo must be provided.",
             )
         })?;
 
@@ -626,7 +631,7 @@ impl PyFrmParams {
             g_param,
             h_mag,
             vis_albedo,
-            diam,
+            diameter,
             emissivity,
         })
     }
@@ -640,7 +645,7 @@ impl PyFrmParams {
     ///     List of albedoes of the object for each wavelength (0-1).
     /// h_mag:
     ///     H magnitude of the object in the HG system.
-    /// diam:
+    /// diameter:
     ///     Diameter of the object in km.
     /// vis_albedo:
     ///     Visible geometric albedo of the object.
@@ -654,33 +659,34 @@ impl PyFrmParams {
     ///     Emissivity of the object, defaults to `0.9`.
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (band_albedos, h_mag=None, diam=None, vis_albedo=None, g_param=0.15,
+    #[pyo3(signature = (band_albedos, h_mag=None, diameter=None, vis_albedo=None, g_param=0.15,
         c_hg=None, emissivity=0.9))]
     pub fn new_neos(
         band_albedos: Vec<f64>,
         h_mag: Option<f64>,
-        diam: Option<f64>,
+        diameter: Option<f64>,
         vis_albedo: Option<f64>,
         g_param: f64,
         c_hg: Option<f64>,
         emissivity: f64,
     ) -> PyResult<Self> {
-        let (h_mag, vis_albedo, diam, _c_hg) = resolve_hg_params(h_mag, vis_albedo, diam, c_hg)?;
+        let (h_mag, vis_albedo, diameter, _c_hg) =
+            resolve_hg_params(h_mag, vis_albedo, diameter, c_hg)?;
         let vis_albedo = vis_albedo.ok_or_else(|| {
             pyo3::exceptions::PyValueError::new_err(
-                "At least two of h_mag, diam, and vis_albedo must be provided.",
+                "At least two of h_mag, diameter, and vis_albedo must be provided.",
             )
         })?;
-        let diam = diam.ok_or_else(|| {
+        let diameter = diameter.ok_or_else(|| {
             pyo3::exceptions::PyValueError::new_err(
-                "At least two of h_mag, diam, and vis_albedo must be provided.",
+                "At least two of h_mag, diameter, and vis_albedo must be provided.",
             )
         })?;
 
-        let band_albedos: [f64; 4] = match band_albedos.try_into() {
+        let band_albedos: [f64; 2] = match band_albedos.try_into() {
             Ok(v) => v,
             Err(_) => Err(kete_core::errors::Error::ValueError(
-                "4 Albedos must be provided, one for each WISE band.".into(),
+                "2 Albedos must be provided, one for each NEOS band.".into(),
             ))?,
         };
 
@@ -692,7 +698,7 @@ impl PyFrmParams {
             g_param,
             h_mag,
             vis_albedo,
-            diam,
+            diameter,
             emissivity,
         })
     }
@@ -715,7 +721,7 @@ impl PyFrmParams {
     ) -> PyResult<Vec<PyModelResults>> {
         let obs_bands = &self.obs_bands;
         let band_albedos = &self.band_albedos;
-        let diam = self.diam;
+        let diameter = self.diameter;
         let vis_albedo = self.vis_albedo;
         let g_param = self.g_param;
         let h_mag = self.h_mag;
@@ -730,7 +736,7 @@ impl PyFrmParams {
                 Ok(frm_total_flux(
                     obs_bands,
                     band_albedos,
-                    diam,
+                    diameter,
                     vis_albedo,
                     g_param,
                     h_mag,
@@ -763,8 +769,8 @@ impl PyFrmParams {
 
     /// Diameter of the object in km.
     #[getter]
-    pub fn diam(&self) -> f64 {
-        self.diam
+    pub fn diameter(&self) -> f64 {
+        self.diameter
     }
 
     /// Albedo in V band.
@@ -794,11 +800,11 @@ impl PyFrmParams {
     fn __repr__(&self) -> String {
         format!(
             "FrmParams(band_wavelength={:?}, band_albedos={:?}, h_mag={:?}, \
-                diam={:?}, vis_albedo={:?}, g_param={:?}, emissivity={:?}, zero_mags={:?})",
+                diameter={:?}, vis_albedo={:?}, g_param={:?}, emissivity={:?}, zero_mags={:?})",
             self.band_wavelength(),
             self.band_albedos(),
             self.h_mag(),
-            self.diam(),
+            self.diameter(),
             self.vis_albedo(),
             self.g_param(),
             self.emissivity(),

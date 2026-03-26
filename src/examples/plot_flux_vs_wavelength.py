@@ -17,7 +17,7 @@ import kete
 def flux_per_wavelength(
     phase=np.radians(90),
     solar_elong=np.radians(83),
-    v_albedo=0.17,
+    vis_albedo=0.17,
     diameter=0.140,
     wavelength=np.logspace(np.log10(300), np.log10(30000), 100),
 ):
@@ -57,7 +57,7 @@ def flux_per_wavelength(
         flux = kete.flux.neatm_flux(
             sun2obj,
             sun2sc,
-            v_albedo=v_albedo,
+            vis_albedo=vis_albedo,
             g_param=0.15,
             beaming=1.5,
             diameter=diameter,
@@ -70,7 +70,7 @@ def flux_per_wavelength(
             g_param=0.15,
             diameter=diameter,
             wavelength=wave,
-            v_albedo=v_albedo,
+            vis_albedo=vis_albedo,
         )
         fluxes.append((flux, refl_flux))
 
@@ -81,7 +81,7 @@ def flux_per_wavelength(
 y_min = 1000
 y_max = 0
 for ls, albedo in zip(["--", "-"], [0.17, 0.03]):
-    wavelength, fluxes = flux_per_wavelength(v_albedo=albedo)
+    wavelength, fluxes = flux_per_wavelength(vis_albedo=albedo)
     total_flux = np.sum(fluxes, axis=1)
     plt.plot(
         wavelength / 1000,

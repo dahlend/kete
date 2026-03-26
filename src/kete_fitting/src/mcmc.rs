@@ -38,7 +38,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use crate::obs::AstrometricObservation;
-use crate::orbit_fitting::{StmObs, accumulate_normal_equations, stm_sweep};
+use crate::orbit_fitting::{StmObs, accumulate_normal_equations, stm_sweep, stm_sweep_two_body};
 use kete_core::constants::GMS;
 use kete_core::frames::Equatorial;
 use kete_core::prelude::{Error, KeteResult, State};
@@ -389,13 +389,19 @@ impl CpuLogpFunc for OrbitalPosterior {
             });
         }
 
-        let sweep = stm_sweep(
-            &trial_state,
-            &self.obs,
-            &self.included,
-            self.include_asteroids,
-            trial_ng.as_ref(),
-        )
+        // Use cheap two-body STM when there are no non-gravitational
+        // parameters; fall back to full N-body STM otherwise.
+        let sweep = if self.non_grav.is_none() {
+            stm_sweep_two_body(&trial_state, &self.obs, &self.included, None)
+        } else {
+            stm_sweep(
+                &trial_state,
+                &self.obs,
+                &self.included,
+                self.include_asteroids,
+                trial_ng.as_ref(),
+            )
+        }
         .map_err(|e| PropagationError {
             msg: format!("STM sweep failed: {e}"),
             recoverable: true,
@@ -597,6 +603,16 @@ pub fn fit_orbit_mcmc(
         .map(|seed| build_cholesky(seed, &sorted_obs, include_asteroids, non_grav))
         .collect();
 
+    // Scale warmup across sub-chains: each sub-chain adapts independently,
+    // but the full warmup budget is excessive when many chains share the
+    // work.  Divide the budget, with a floor of 200 to ensure adequate
+    // adaptation.
+    let tune_per_chain = if chains_per_seed > 1 {
+        (num_tune / chains_per_seed).max(200)
+    } else {
+        num_tune
+    };
+
     // Run all chains in parallel.
     let chain_results: Vec<(usize, KeteResult<(Vec<Vec<f64>>, Vec<bool>)>)> = tasks
         .par_iter()
@@ -608,7 +624,7 @@ pub fn fit_orbit_mcmc(
                 include_asteroids,
                 non_grav,
                 draws,
-                num_tune,
+                tune_per_chain,
                 maxdepth,
                 target_accept,
                 rng_seed,
@@ -715,15 +731,31 @@ fn run_single_chain(
     // (standard normal in xi-space ~= covariance sample in Cartesian).
     // This disperses sub-chains across the prior, improving exploration
     // of elongated or multi-modal posteriors.
-    let init: Vec<f64> = {
+    //
+    // The random draw may land on an unbound orbit, so retry a few times
+    // before falling back to the origin (the seed state, which is
+    // guaranteed bound after the hyperbolic correction above).
+    {
         use rand::distr::Uniform;
         use rand::prelude::Distribution;
         let uniform = Uniform::new(-1.0, 1.0).unwrap();
-        (0..d).map(|_| uniform.sample(&mut rng)).collect()
-    };
-    sampler
-        .set_position(&init)
-        .map_err(|e| Error::ValueError(format!("NUTS init failed: {e}")))?;
+        let max_attempts = 10;
+        let mut initialized = false;
+        for _ in 0..max_attempts {
+            let init: Vec<f64> = (0..d).map(|_| uniform.sample(&mut rng)).collect();
+            if sampler.set_position(&init).is_ok() {
+                initialized = true;
+                break;
+            }
+        }
+        if !initialized {
+            // Fall back to the origin: xi = 0 corresponds to the seed state.
+            let init = vec![0.0; d];
+            sampler
+                .set_position(&init)
+                .map_err(|e| Error::ValueError(format!("NUTS init failed at seed state: {e}")))?;
+        }
+    }
 
     let total_draws = num_tune as u64 + num_draws as u64;
     let mut draws = Vec::with_capacity(num_draws);

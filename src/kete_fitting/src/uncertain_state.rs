@@ -378,6 +378,7 @@ fn perturb_element(elements: &CometElements, col: usize, delta: f64) -> CometEle
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kete_core::constants::GMS_SQRT;
     use kete_core::prelude::Desig;
     use kete_core::time::Time;
 
@@ -586,6 +587,8 @@ mod tests {
             // 60 deg
             peri_arg: std::f64::consts::FRAC_PI_3,
             inclination: 20.0_f64.to_radians(),
+            center_id: 10,
+            gm_sqrt: GMS_SQRT,
         };
 
         let jac = cometary_to_cartesian_jacobian(&elements).unwrap();
@@ -646,6 +649,8 @@ mod tests {
             peri_arg: 1e-6,
             // nearly equatorial
             inclination: 1e-4,
+            center_id: 10,
+            gm_sqrt: GMS_SQRT,
         };
 
         let jac = cometary_to_cartesian_jacobian(&elements).unwrap();

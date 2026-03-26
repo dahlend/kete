@@ -30,9 +30,7 @@
 //! MCMC posterior sampling via NUTS for model fitting,
 //! plus parallel batch fitting.
 
-use super::types::{
-    FluxObs, FluxPriors, Model, evaluate_forward_model, log_posterior, pv_from_diameter,
-};
+use super::types::{FluxObs, FluxPriors, Model};
 use kete_stats::fitting::{NelderMeadResult, nelder_mead};
 use nalgebra::{DMatrix, DVector};
 use nuts_rs::rand::SeedableRng;
@@ -53,7 +51,7 @@ fn build_neg_log_posterior(
     let obs = obs.to_vec();
     let priors = priors.clone();
     move |x: &[f64]| -> f64 {
-        let lp = log_posterior(model, x, &obs, c_hg, emissivity, &priors);
+        let lp = model.log_posterior(x, &obs, c_hg, emissivity, &priors);
         if lp.is_finite() { -lp } else { f64::MAX }
     }
 }
@@ -74,55 +72,90 @@ fn nelder_mead_seed(
 ) -> Option<NelderMeadSeed> {
     let objective = build_neg_log_posterior(model, obs, c_hg, emissivity, priors);
 
-    let ln1 = 0.0_f64;
-
     // Derive seed values for H, G from priors.
     let h0 = priors.h_mag.center();
     let g0 = priors.g_param.center();
 
     let (starts, scale): (Vec<Vec<f64>>, Vec<f64>) = match model {
         Model::Neatm => {
-            // [ln_D, ln_beaming, H, G, ln_f_sigma, ln_R_IR]
-            let mid_d = priors.ln_diam.center();
-            let mid_beaming = priors.ln_beaming.center();
+            // [D, beaming, H, G, f_sigma, R_IR]
+            let mid_d = priors.diameter.center();
+            let mid_beaming = priors.beaming.center();
+            let mid_r_ir = priors.r_ir.center();
             (
                 vec![
-                    vec![mid_d, ln1, h0, g0, 1.5_f64.ln(), ln1],
-                    vec![mid_d, mid_beaming, h0, g0, ln1, ln1],
-                    vec![1.0_f64.ln(), 1.5_f64.ln(), h0, g0, ln1, ln1],
-                    vec![20.0_f64.ln(), 0.8_f64.ln(), h0, g0, ln1, ln1],
-                    vec![50.0_f64.ln(), ln1, h0, g0, 2.0_f64.ln(), ln1],
+                    vec![mid_d, 1.0, h0, g0, 1.5, mid_r_ir],
+                    vec![mid_d, mid_beaming, h0, g0, 1.0, mid_r_ir],
+                    vec![1.0, 1.5, h0, g0, 1.0, mid_r_ir],
+                    vec![20.0, 0.8, h0, g0, 1.0, mid_r_ir],
+                    vec![50.0, 1.0, h0, g0, 2.0, mid_r_ir],
                 ],
-                vec![0.5, 0.3, 1.0, 0.05, 0.2, 0.2],
+                vec![5.0, 0.3, 1.0, 0.05, 0.2, 0.2],
             )
         }
         Model::Frm => {
-            // [ln_D, H, G, ln_f_sigma, ln_R_IR]
-            let mid_d = priors.ln_diam.center();
+            // [D, H, G, f_sigma, R_IR]
+            let mid_d = priors.diameter.center();
+            let mid_r_ir = priors.r_ir.center();
             (
                 vec![
-                    vec![mid_d, h0, g0, 1.5_f64.ln(), ln1],
-                    vec![mid_d, h0, g0, ln1, ln1],
-                    vec![1.0_f64.ln(), h0, g0, ln1, ln1],
-                    vec![20.0_f64.ln(), h0, g0, ln1, ln1],
-                    vec![50.0_f64.ln(), h0, g0, 2.0_f64.ln(), ln1],
+                    vec![mid_d, h0, g0, 1.5, mid_r_ir],
+                    vec![mid_d, h0, g0, 1.0, mid_r_ir],
+                    vec![1.0, h0, g0, 1.0, mid_r_ir],
+                    vec![20.0, h0, g0, 1.0, mid_r_ir],
+                    vec![50.0, h0, g0, 2.0, mid_r_ir],
                 ],
-                vec![0.5, 1.0, 0.05, 0.2, 0.2],
+                vec![5.0, 1.0, 0.05, 0.2, 0.2],
             )
         }
         Model::Hg => {
-            let mid_h = priors.h_mag.center();
+            // Two-phase approach for HG: first find H, G with f_sigma
+            // fixed at 1.0, then free all three.  This prevents the
+            // degenerate equilibrium where f_sigma inflates to absorb
+            // a wrong H value, producing uniform residuals near 1.0.
             let mid_g = priors.g_param.center();
-            (
+            let hg_starts_2d = vec![
+                vec![h0, g0],
+                vec![h0 - 2.0, g0],
+                vec![h0 + 2.0, mid_g],
+                vec![h0 - 4.0, g0],
+                vec![h0 + 4.0, mid_g],
+            ];
+            let scale_2d = vec![1.0, 0.05];
+
+            // Phase 1: optimize H, G with f_sigma = 1.0.
+            let objective_2d = |x2: &[f64]| -> f64 {
+                let x3 = [x2[0], x2[1], 1.0];
+                objective(&x3)
+            };
+
+            let mut best_2d: Option<(Vec<f64>, f64)> = None;
+            for start in &hg_starts_2d {
+                if let Ok(NelderMeadResult { point, value, .. }) =
+                    nelder_mead(objective_2d, start, &scale_2d, 1e-7, 2_000)
+                    && best_2d.as_ref().is_none_or(|b| value < b.1)
+                {
+                    best_2d = Some((point, value));
+                }
+            }
+
+            // Phase 2: free f_sigma, starting from the phase-1 best.
+            let hg_starts_3d: Vec<Vec<f64>> = if let Some((ref best, _)) = best_2d {
                 vec![
-                    vec![h0, g0, ln1],
-                    vec![mid_h, g0, ln1],
-                    vec![h0 - 2.0, g0, ln1],
-                    vec![h0 + 2.0, mid_g, ln1],
-                    vec![mid_h, mid_g, 1.5_f64.ln()],
-                ],
-                vec![1.0, 0.05, 0.2],
-            )
+                    vec![best[0], best[1], 1.0],
+                    vec![best[0], best[1], 0.5],
+                    vec![best[0], best[1], 2.0],
+                    vec![h0, g0, 1.0],
+                ]
+            } else {
+                vec![
+                    vec![h0, g0, 1.0],
+                    vec![h0 - 2.0, g0, 1.0],
+                    vec![h0 + 2.0, mid_g, 1.0],
+                ]
+            };
+
+            (hg_starts_3d, vec![1.0, 0.05, 0.2])
         }
     };
 
@@ -181,6 +214,14 @@ pub struct FitResult {
     pub best_fit_reflected_frac: Vec<f64>,
 }
 
+impl FitResult {
+    /// Column names for the posterior draw vectors.
+    #[must_use]
+    pub fn column_names(&self) -> &'static [&'static str] {
+        self.model.draw_column_names()
+    }
+}
+
 #[derive(Debug)]
 struct RecoverableError;
 
@@ -207,7 +248,7 @@ struct Posterior {
     c_hg: f64,
     emissivity: f64,
     priors: FluxPriors,
-    /// Center of the whitening transform (best NM point in log-space).
+    /// Center of the whitening transform (best NM point).
     seed_vec: DVector<f64>,
     /// Cholesky-like factor: `x = seed + L * xi`.
     whiten_l: DMatrix<f64>,
@@ -215,23 +256,17 @@ struct Posterior {
 }
 
 impl Posterior {
-    /// Convert whitened xi -> physical log-parameter vector x.
+    /// Convert whitened xi -> physical parameter vector x.
     fn xi_to_x(&self, xi: &[f64]) -> Vec<f64> {
         let xi = DVector::from_column_slice(xi);
         let x = &self.seed_vec + &self.whiten_l * &xi;
         x.as_slice().to_vec()
     }
 
-    /// Evaluate the log-posterior at physical log-parameter vector `x`.
+    /// Evaluate the log-posterior at physical parameter vector `x`.
     fn eval_logp(&self, x: &[f64]) -> f64 {
-        log_posterior(
-            self.model,
-            x,
-            &self.obs,
-            self.c_hg,
-            self.emissivity,
-            &self.priors,
-        )
+        self.model
+            .log_posterior(x, &self.obs, self.c_hg, self.emissivity, &self.priors)
     }
 }
 
@@ -296,7 +331,7 @@ impl CpuLogpFunc for Posterior {
     }
 }
 
-/// Run one NUTS chain and return `(draws_in_log_space, divergent_flags)`.
+/// Run one NUTS chain and return `(draws, divergent_flags)`.
 fn run_chain(
     posterior: Posterior,
     num_tune: u64,
@@ -421,12 +456,13 @@ pub fn fit_mcmc(
 
     // MAP diagnostics at the NM seed.
     let (reduced_chi2, nobs, best_fit_fluxes, best_fit_residuals, best_fit_reflected_frac) =
-        if let Some(fwd) = evaluate_forward_model(model, &seed, obs, c_hg, emissivity) {
+        if let Some(params) = model.unpack(&seed, emissivity, c_hg) {
+            let fwd = model.evaluate_forward_model(&params, obs);
             let mut chi2 = 0.0;
             let mut n = 0_usize;
             let mut residuals = Vec::with_capacity(obs.len());
             for (i, ob) in obs.iter().enumerate() {
-                let sigma = fwd.f_sigma * ob.sigma;
+                let sigma = params.f_sigma * ob.sigma;
                 let r = if sigma > 0.0 {
                     (ob.flux - fwd.model_fluxes[i]) / sigma
                 } else {
@@ -455,7 +491,6 @@ pub fn fit_mcmc(
     let whiten_l = DMatrix::from_diagonal(&DVector::from_column_slice(&scales));
 
     // 2. Run chains in parallel.
-    let is_hg = model.is_hg();
     let chain_results: Vec<(Vec<Vec<f64>>, Vec<bool>)> = (0..num_chains)
         .into_par_iter()
         .filter_map(|chain_idx| {
@@ -472,36 +507,23 @@ pub fn fit_mcmc(
                 posterior,
                 num_tune as u64,
                 num_draws as u64,
-                5,
+                10,
                 0.8,
                 chain_idx as u64,
             )
             .ok()
             .map(|(xi_draws, div)| {
-                let phys: Vec<Vec<f64>> = xi_draws
+                let (phys, filtered_div): (Vec<Vec<f64>>, Vec<bool>) = xi_draws
                     .iter()
-                    .map(|xi| {
+                    .zip(div)
+                    .filter_map(|(xi, d)| {
                         let xi_dv = DVector::from_column_slice(xi);
                         let x = &seed_vec + &whiten_l * &xi_dv;
-                        if is_hg {
-                            // HG draws: [H, G, f_sigma]
-                            vec![x[0], x[1], x[2].exp()]
-                        } else {
-                            // Thermal draws via ThermalParams.
-                            // NEATM: [D, pV, beaming, H, G, R_IR, f_sigma]
-                            // FRM:   [D, pV, H, G, R_IR, f_sigma]
-                            let tp = model.unpack_thermal_params(x.as_slice(), emissivity);
-                            let pv = pv_from_diameter(tp.diam, tp.h_mag, c_hg);
-                            let mut row = vec![tp.diam, pv];
-                            if model.is_neatm() {
-                                row.push(tp.beaming);
-                            }
-                            row.extend_from_slice(&[tp.h_mag, tp.g_param, tp.r_ir, tp.f_sigma]);
-                            row
-                        }
+                        let p = model.unpack(x.as_slice(), emissivity, c_hg)?;
+                        Some((p.to_draw_row(model), d))
                     })
-                    .collect();
-                (phys, div)
+                    .unzip();
+                (phys, filtered_div)
             })
         })
         .collect();

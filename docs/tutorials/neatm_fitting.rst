@@ -213,9 +213,9 @@ Passing ``h_mag`` as a convenience argument centers the H-magnitude
 prior on our approximate value (in a real scenario this would come
 from optical-survey photometry).
 
-The fitter explores 6 parameters in log-space:
-``[ln D, ln beaming, H, G, ln f_sigma, ln R_IR]``
-and returns posterior draws converted to physical units.
+The fitter explores 6 parameters:
+``[D, beaming, H, G, f_sigma, R_IR]``
+and returns posterior draws in physical units.
 
 .. code-block:: python
 
@@ -248,13 +248,12 @@ and returns posterior draws converted to physical units.
     reduced chi2 = 1.27 (nobs = 32, dof = 26)
 
     Posterior summary:
-      Diameter:  SampleStats(median=9.9813, std=0.1346, ci=[9.7222, 10.2595])
-      Albedo:    SampleStats(median=0.1506, std=0.0043, ci=[0.1424, 0.1593])
-      Beaming:   SampleStats(median=1.2048, std=0.0221, ci=[1.1618, 1.2513])
-      H mag:     SampleStats(median=12.6770, std=0.0100, ci=[12.6575, 12.6959])
-      G param:   SampleStats(median=0.1488, std=0.0100, ci=[0.1294, 0.1683])
-      R_IR:      SampleStats(median=1.5911, std=0.0343, ci=[1.5243, 1.6595])
-
+    Diameter:  SampleStats(median=9.9621, std=0.1297, ci=[9.7316, 10.2383])
+    Albedo:    SampleStats(median=0.1511, std=0.0229, ci=[0.1213, 0.2066])
+    Beaming:   SampleStats(median=1.2035, std=0.0237, ci=[1.1569, 1.2505])
+    H mag:     SampleStats(median=12.6745, std=0.1496, ci=[12.3363, 12.9049])
+    G param:   SampleStats(median=0.1368, std=0.0388, ci=[0.0662, 0.2169])
+    R_IR:      SampleStats(median=1.6059, std=0.2071, ci=[1.1802, 1.9611])
 
 5. Visualize the Posterior
 ---------------------------
@@ -408,13 +407,11 @@ For example, to tighten the beaming prior around 1.0:
 
 .. code-block:: python
 
-    import math
-
     custom_priors = kete.flux.FluxPriors(
-        ln_beaming=kete.flux.ParamPrior(
-            bounds=(math.log(0.5), math.log(3.0)),
+        beaming=kete.flux.ParamPrior(
+            bounds=(0.5, 3.0),
             # tighter sigma
-            gaussian=(math.log(1.0), 0.1),
+            gaussian=(1.0, 0.1),
         ),
     )
     result_custom = kete.flux.fit_model(

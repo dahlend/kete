@@ -31,3 +31,4 @@ SPHEREx
 .. automodule:: kete.spherex
    :members:
    :inherited-members:
+   :exclude-members: SpherexCmos, SpherexField

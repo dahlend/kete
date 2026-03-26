@@ -98,12 +98,12 @@ pub fn cometary_dust_phase_curve_correction(phase_angle: f64) -> f64 {
 ///
 /// # Arguments
 ///
-/// * `diam` - Diameter of the object in km.
-/// * `albedo` - Geometric albedo of the object.
+/// * `diameter` - Diameter of the object in km.
+/// * `vis_albedo` - Visible geometric albedo of the object.
 /// * `c_hg` - Relationship constant between H, D, and pV in km.
 #[must_use]
-pub fn h_mag_from_diam_albedo(diam: f64, albedo: f64, c_hg: f64) -> f64 {
-    -5.0 * (diam * albedo.sqrt() / c_hg).log10()
+pub fn h_mag_from_diam_albedo(diameter: f64, vis_albedo: f64, c_hg: f64) -> f64 {
+    -5.0 * (diameter * vis_albedo.sqrt() / c_hg).log10()
 }
 
 /// Compute diameter from H magnitude and geometric albedo.
@@ -111,11 +111,11 @@ pub fn h_mag_from_diam_albedo(diam: f64, albedo: f64, c_hg: f64) -> f64 {
 /// # Arguments
 ///
 /// * `h_mag` - Absolute magnitude.
-/// * `albedo` - Geometric albedo of the object.
+/// * `vis_albedo` - Visible geometric albedo of the object.
 /// * `c_hg` - Relationship constant between H, D, and pV in km.
 #[must_use]
-pub fn diam_from_h_mag_albedo(h_mag: f64, albedo: f64, c_hg: f64) -> f64 {
-    c_hg / albedo.sqrt() * 10_f64.powf(-0.2 * h_mag)
+pub fn diam_from_h_mag_albedo(h_mag: f64, vis_albedo: f64, c_hg: f64) -> f64 {
+    c_hg / vis_albedo.sqrt() * 10_f64.powf(-0.2 * h_mag)
 }
 
 /// Compute geometric albedo from H magnitude and diameter.
@@ -125,11 +125,11 @@ pub fn diam_from_h_mag_albedo(h_mag: f64, albedo: f64, c_hg: f64) -> f64 {
 /// # Arguments
 ///
 /// * `h_mag` - Absolute magnitude.
-/// * `diam` - Diameter of the object in km.
+/// * `diameter` - Diameter of the object in km.
 /// * `c_hg` - Relationship constant between H, D, and pV in km.
 #[must_use]
-pub fn albedo_from_h_mag_diam(h_mag: f64, diam: f64, c_hg: f64) -> f64 {
-    (c_hg * 10_f64.powf(-0.2 * h_mag) / diam)
+pub fn albedo_from_h_mag_diam(h_mag: f64, diameter: f64, c_hg: f64) -> f64 {
+    (c_hg * 10_f64.powf(-0.2 * h_mag) / diameter)
         .powi(2)
         .clamp(0.0, 1.0)
 }
@@ -240,17 +240,17 @@ pub fn hg_apparent_flux(
 ///
 /// The `c_hg` parameter defaults to the [`C_V`] constant if not provided.
 ///
-/// Returns `(h_mag, vis_albedo, diam, c_hg)`.
+/// Returns `(h_mag, vis_albedo, diameter, c_hg)`.
 ///
 /// # Arguments
 ///
 /// * `h_mag` - The H parameter of the object in the HG system.
 /// * `vis_albedo` - Visible geometric albedo of the object.
-/// * `diam` - Diameter of the object in km.
+/// * `diameter` - Diameter of the object in km.
 /// * `c_hg` - The relationship constant of the H-D-pV conversion in km.
 ///
 /// # Errors
-/// This can fail if parameters are not self consistent between H, diam, and albedo.
+/// This can fail if parameters are not self consistent between H, diameter, and albedo.
 #[allow(
     clippy::missing_panics_doc,
     reason = "Unwraps are guarded by prior checks"
@@ -258,43 +258,43 @@ pub fn hg_apparent_flux(
 pub fn resolve_hg_params(
     h_mag: Option<f64>,
     vis_albedo: Option<f64>,
-    diam: Option<f64>,
+    diameter: Option<f64>,
     c_hg: Option<f64>,
 ) -> KeteResult<(f64, Option<f64>, Option<f64>, f64)> {
-    if h_mag.is_none() && (vis_albedo.is_none() || diam.is_none()) {
+    if h_mag.is_none() && (vis_albedo.is_none() || diameter.is_none()) {
         Err(Error::ValueError(
-            "h_mag must be defined unless both vis_albedo and diam are provided.".into(),
+            "h_mag must be defined unless both vis_albedo and diameter are provided.".into(),
         ))?;
     }
 
     let c_hg = c_hg.unwrap_or(C_V);
 
-    if vis_albedo.is_none() && diam.is_none() {
+    if vis_albedo.is_none() && diameter.is_none() {
         if let Some(h) = h_mag {
             return Ok((h, None, None, c_hg));
         }
     } else if h_mag.is_none() {
-        let diam = diam.unwrap();
+        let diameter = diameter.unwrap();
         let albedo = vis_albedo.unwrap();
-        let h_mag = h_mag_from_diam_albedo(diam, albedo, c_hg);
-        return Ok((h_mag, Some(albedo), Some(diam), c_hg));
+        let h_mag = h_mag_from_diam_albedo(diameter, albedo, c_hg);
+        return Ok((h_mag, Some(albedo), Some(diameter), c_hg));
     }
 
     let h_mag = h_mag.unwrap();
 
     if let Some(albedo) = vis_albedo {
         let expected_diam = diam_from_h_mag_albedo(h_mag, albedo, c_hg);
-        if let Some(diam) = diam
-            && (expected_diam - diam).abs() > 1e-8
+        if let Some(diameter) = diameter
+            && (expected_diam - diameter).abs() > 1e-8
         {
             Err(Error::ValueError(format!(
-                "Provided diameter doesn't match with computed diameter. {expected_diam} != {diam}"
+                "Provided diameter doesn't match with computed diameter. {expected_diam} != {diameter}"
             )))?;
         }
         return Ok((h_mag, Some(albedo), Some(expected_diam), c_hg));
     }
 
-    let diam = diam.unwrap();
-    let expected_albedo = albedo_from_h_mag_diam(h_mag, diam, c_hg);
-    Ok((h_mag, Some(expected_albedo), Some(diam), c_hg))
+    let diameter = diameter.unwrap();
+    let expected_albedo = albedo_from_h_mag_diam(h_mag, diameter, c_hg);
+    Ok((h_mag, Some(expected_albedo), Some(diameter), c_hg))
 }

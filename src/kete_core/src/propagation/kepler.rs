@@ -357,6 +357,50 @@ pub fn analytic_2_body(
     }
 }
 
+/// Propagate using two-body mechanics and return the 6x6 state transition matrix.
+///
+/// The STM is computed via central finite differences on [`analytic_2_body`].
+/// Each call makes 12 perturbed evaluations plus 1 nominal -- cheaper than the N-body
+/// Radau STM, making it good for MCMC sampling where observation geometry dominates the
+/// posterior shape.
+///
+/// # Errors
+/// Same failure modes as [`analytic_2_body`].
+pub fn analytic_2_body_stm(
+    time: Duration<TDB>,
+    pos: &Vector3<f64>,
+    vel: &Vector3<f64>,
+    depth: Option<usize>,
+) -> KeteResult<(Vector3<f64>, Vector3<f64>, nalgebra::DMatrix<f64>)> {
+    let (nom_pos, nom_vel) = analytic_2_body(time, pos, vel, depth)?;
+
+    let mut stm = nalgebra::DMatrix::<f64>::zeros(6, 6);
+    let eps = 1e-8;
+
+    for j in 0..6 {
+        let mut pos_p = *pos;
+        let mut vel_p = *vel;
+        let mut pos_m = *pos;
+        let mut vel_m = *vel;
+        if j < 3 {
+            pos_p[j] += eps;
+            pos_m[j] -= eps;
+        } else {
+            vel_p[j - 3] += eps;
+            vel_m[j - 3] -= eps;
+        }
+        let (pp, vp) = analytic_2_body(time, &pos_p, &vel_p, depth)?;
+        let (pm, vm) = analytic_2_body(time, &pos_m, &vel_m, depth)?;
+        let inv_2eps = 0.5 / eps;
+        for i in 0..3 {
+            stm[(i, j)] = (pp[i] - pm[i]) * inv_2eps;
+            stm[(3 + i, j)] = (vp[i] - vm[i]) * inv_2eps;
+        }
+    }
+
+    Ok((nom_pos, nom_vel, stm))
+}
+
 /// Propagate a [`State`] object using the analytic two body equations of motion.
 ///
 /// Orbits are calculated where the central mass is located at (0, 0, 0) and has the
@@ -602,5 +646,63 @@ mod tests {
         let ecc_anom = compute_eccentric_anomaly(1.5, 3.211, 0.1).unwrap();
         let c = eccentric_anomaly_from_true(1.5, a, 0.1).unwrap();
         assert!((c - ecc_anom).abs() < 1e-11);
+    }
+
+    #[test]
+    fn test_two_body_stm_identity_at_zero_time() {
+        let pos = Vector3::new(1.0, 0.0, 0.0);
+        let vel = Vector3::new(0.0, 0.017, 0.0);
+        // At zero time the FD perturbations propagate ~0 time, so
+        // the STM should be close to identity (within FD truncation).
+        let (p, v, stm) = analytic_2_body_stm(0.0.into(), &pos, &vel, None).unwrap();
+        assert!((p - pos).norm() < 1e-14);
+        assert!((v - vel).norm() < 1e-14);
+        let id = nalgebra::DMatrix::<f64>::identity(6, 6);
+        assert!(
+            (stm - id).norm() < 1e-6,
+            "STM at t=0 should be near identity"
+        );
+    }
+
+    #[test]
+    fn test_two_body_stm_finite_difference() {
+        // Verify the analytic STM against finite differences.
+        let pos = Vector3::new(1.5, 0.3, -0.1);
+        let vel = Vector3::new(0.002, -0.014, 0.001);
+        let dt = 30.0; // days
+
+        let (_, _, stm) = analytic_2_body_stm(dt.into(), &pos, &vel, None).unwrap();
+
+        let eps = 1e-7;
+        for j in 0..6 {
+            let mut pos_p = pos;
+            let mut vel_p = vel;
+            let mut pos_m = pos;
+            let mut vel_m = vel;
+            if j < 3 {
+                pos_p[j] += eps;
+                pos_m[j] -= eps;
+            } else {
+                vel_p[j - 3] += eps;
+                vel_m[j - 3] -= eps;
+            }
+            let (pp, vp) = analytic_2_body(dt.into(), &pos_p, &vel_p, None).unwrap();
+            let (pm, vm) = analytic_2_body(dt.into(), &pos_m, &vel_m, None).unwrap();
+            for i in 0..3 {
+                let fd_pos = (pp[i] - pm[i]) / (2.0 * eps);
+                let fd_vel = (vp[i] - vm[i]) / (2.0 * eps);
+                assert!(
+                    (stm[(i, j)] - fd_pos).abs() < 1e-4,
+                    "STM[{i},{j}] pos: analytic={} fd={fd_pos}",
+                    stm[(i, j)]
+                );
+                assert!(
+                    (stm[(3 + i, j)] - fd_vel).abs() < 1e-4,
+                    "STM[{},{j}] vel: analytic={} fd={fd_vel}",
+                    3 + i,
+                    stm[(3 + i, j)]
+                );
+            }
+        }
     }
 }

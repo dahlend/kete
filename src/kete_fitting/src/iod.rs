@@ -142,7 +142,7 @@ fn scanning_iod_core(
         .collect();
 
     for entry in &mut all_refined {
-        if let Some(score) = observation_residual(&entry.1, &rescore_obs) {
+        if let Some(score) = score_candidate(&entry.1, &rescore_obs) {
             entry.0 = score;
         } else {
             entry.0 = 1e20;
@@ -259,7 +259,7 @@ fn run_ranging_for_pair(
                 return None;
             }
 
-            let score = observation_residual(&state, &scoring_obs)?;
+            let score = score_candidate(&state, &scoring_obs)?;
             Some((score, rho_a, rho_b))
         })
         .collect();
@@ -339,7 +339,7 @@ fn run_ranging_for_pair(
                         continue;
                     }
 
-                    let Some(score) = observation_residual(&state, &scoring_obs) else {
+                    let Some(score) = score_candidate(&state, &scoring_obs) else {
                         continue;
                     };
 
@@ -500,6 +500,40 @@ fn select_scoring_cluster(sorted_obs: &[AstrometricObservation], ref_jd: f64) ->
     indices
 }
 
+/// Compute the eccentricity of a candidate state.
+///
+/// Uses the vis-viva relation to get the eccentricity vector directly from
+/// Cartesian pos/vel, avoiding the full [`CometElements`] construction.
+fn compute_eccentricity(state: &State<Equatorial>) -> f64 {
+    let r = state.pos.norm();
+    let vel_scaled = state.vel / GMS_SQRT;
+    let v_mag2 = vel_scaled.norm_squared();
+    let vp_dot = state.pos.dot(&vel_scaled);
+    let ecc_vec = (v_mag2 - 1.0 / r) * state.pos - vp_dot * vel_scaled;
+    ecc_vec.norm()
+}
+
+/// Soft eccentricity prior for IOD scoring.
+///
+/// Returns a penalty proportional to `e^2` that biases scoring toward
+/// lower-eccentricity solutions when residuals are comparable.  The
+/// weight is calibrated so that `e = 0.5` adds roughly 1 arcsec^2
+/// equivalent penalty -- enough to break ties but not override a
+/// genuinely better fit.
+fn eccentricity_penalty(state: &State<Equatorial>) -> f64 {
+    let e = compute_eccentricity(state);
+    // 1 arcsec^2 in radians^2
+    let one_arcsec2 = (std::f64::consts::PI / (180.0 * 3600.0)).powi(2);
+    // At e=0.5, penalty = 0.25 * 4 * one_arcsec2 = 1 arcsec^2.
+    4.0 * one_arcsec2 * e * e
+}
+
+/// Score a candidate: angular residual plus soft eccentricity prior.
+fn score_candidate(state: &State<Equatorial>, obs: &[AstrometricObservation]) -> Option<f64> {
+    let residual = observation_residual(state, obs)?;
+    Some(residual + eccentricity_penalty(state))
+}
+
 /// Check that a candidate state represents a physically plausible solar system orbit.
 ///
 /// Broad bounds: heliocentric distance 0.001-1000 AU, eccentricity < 5.0.
@@ -512,13 +546,7 @@ fn is_physically_valid(state: &State<Equatorial>) -> bool {
         return false;
     }
 
-    // Eccentricity is frame-independent; compute directly from pos/vel
-    // without the full CometElements construction and frame conversion.
-    let vel_scaled = state.vel / GMS_SQRT;
-    let v_mag2 = vel_scaled.norm_squared();
-    let vp_dot = state.pos.dot(&vel_scaled);
-    let ecc_vec = (v_mag2 - 1.0 / r) * state.pos - vp_dot * vel_scaled;
-    if ecc_vec.norm() >= 5.0 {
+    if compute_eccentricity(state) >= 5.0 {
         return false;
     }
 
