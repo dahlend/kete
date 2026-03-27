@@ -107,13 +107,8 @@ pub fn hg_apparent_flux_py(
     let c_hg = c_hg.unwrap_or(constants::C_V);
     let sun2obj = sun2obj.into_vector(PyFrames::Ecliptic).into();
     let sun2obs = sun2obs.into_vector(PyFrames::Ecliptic).into();
-    let (_h_mag, _vis_albedo, diameter, _c_hg) =
+    let (_h_mag, _vis_albedo, diameter) =
         resolve_hg_params(h_mag, Some(vis_albedo), diameter, Some(c_hg))?;
-    let diameter = diameter.ok_or_else(|| {
-        pyo3::exceptions::PyValueError::new_err(
-            "Failed to compute apparent flux. Ensure h_mag or diameter is provided.",
-        )
-    })?;
     Ok(hg_apparent_flux(
         g_param, diameter, &sun2obj, &sun2obs, wavelength, vis_albedo,
     ))

@@ -137,7 +137,7 @@ WISE scans of the same field:
 3. Simulate WISE Observations
 -------------------------------
 
-We use :class:`~kete.flux.NeatmParams` to compute the true thermal
+We use :func:`~kete.flux.neatm_model_flux` to compute the true thermal
 + reflected flux in all four WISE bands, then add Gaussian noise to
 simulate real measurements.
 
@@ -146,19 +146,21 @@ simulate real measurements.
     ir_albedo = true_r_ir * true_vis_albedo
     band_names = ["W1", "W2", "W3", "W4"]
 
-    params = kete.flux.NeatmParams.new_wise(
-        band_albedos=[ir_albedo] * 4,
-        h_mag=true_h_mag,
-        vis_albedo=true_vis_albedo,
-        beaming=true_beaming,
-        g_param=true_g_param,
-        emissivity=true_emissivity,
-    )
-
     # Evaluate the model at each geometry
-    sun2obj_list = [g[0] for g in geometries]
-    sun2obs_list = [g[1] for g in geometries]
-    model_outputs = params.evaluate(sun2obj_list, sun2obs_list)
+    model_outputs = [
+        kete.flux.neatm_model_flux(
+            sun2obj, sun2obs,
+            band_albedos=[ir_albedo] * 4,
+            h_mag=true_h_mag,
+            vis_albedo=true_vis_albedo,
+            diameter=true_diam,
+            beaming=true_beaming,
+            g_param=true_g_param,
+            emissivity=true_emissivity,
+            bands="wise",
+        )
+        for sun2obj, sun2obs in geometries
+    ]
 
     # Extract true fluxes for all four bands
     true_fluxes = {}

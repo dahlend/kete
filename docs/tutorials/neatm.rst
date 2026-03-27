@@ -49,24 +49,22 @@ contribution of thermal and emitted fluxes.
 
     observer = [0, 1, 0]
 
-    # Define the NEATM model parameters for an object
-    params = kete.flux.NeatmParams(
-        band_wavelengths=bands,
-        band_albedos=[0.1] * len(bands),
-        h_mag=3.34,
-        diameter=939.4,
-        g_param=0.12,
-    )
-
     # Define some observing geometry, this can be calculated using orbital
     # propagation code in kete.
     distances = np.linspace(0.1, 6, 1000)
-    sun2obj_vecs = [[r, 0, 0] for r in distances]
-    sun2obs_vecs = [observer] * len(sun2obj_vecs)
 
-
-    # Evaluate NEATM at these geometries
-    outputs = params.evaluate(sun2obj_vecs, sun2obs_vecs)
+    # Evaluate NEATM at each geometry
+    outputs = [
+        kete.flux.neatm_model_flux(
+            [r, 0, 0], observer,
+            band_albedos=[0.1] * len(bands),
+            diameter=939.4,
+            vis_albedo=0.1,
+            g_param=0.12,
+            band_wavelengths=list(bands),
+        )
+        for r in distances
+    ]
 
 
     plt.figure(figsize=(6, 5), dpi=150)

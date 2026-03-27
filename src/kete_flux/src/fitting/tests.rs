@@ -30,6 +30,7 @@
 use super::*;
 use crate::fitting::types::logistic_barrier;
 use crate::{BandInfo, frm_total_flux, neatm_total_flux, resolve_hg_params};
+use kete_core::constants::C_V;
 use nalgebra::Vector3;
 
 /// Resolved HG parameters for testing.
@@ -38,7 +39,6 @@ struct TestHg {
     h_mag: f64,
     vis_albedo: f64,
     diameter: f64,
-    c_hg: f64,
 }
 
 impl TestHg {
@@ -48,14 +48,13 @@ impl TestHg {
         vis_albedo: Option<f64>,
         diameter: Option<f64>,
     ) -> Self {
-        let (h_mag, vis_albedo, diameter, c_hg) =
+        let (h_mag, vis_albedo, diameter) =
             resolve_hg_params(h_mag, vis_albedo, diameter, None).unwrap();
         Self {
             g_param,
             h_mag,
-            vis_albedo: vis_albedo.unwrap(),
-            diameter: diameter.unwrap(),
-            c_hg,
+            vis_albedo,
+            diameter,
         }
     }
 }
@@ -140,8 +139,8 @@ fn test_logistic_barrier_boundary() {
 
 #[test]
 fn test_neatm_nll_at_truth() {
-    let (obs, hg) = synthetic_neatm_obs();
-    let neg_log_lik = make_neg_log_likelihood(Model::Neatm, &obs, hg.c_hg, 0.9);
+    let (obs, _hg) = synthetic_neatm_obs();
+    let neg_log_lik = make_neg_log_likelihood(Model::Neatm, &obs, C_V, 0.9);
 
     // Truth: [D, beaming, H, G, f_sigma, R_IR]
     let truth = [10.0, 1.2, 18.0, 0.15, 1.0, 1.0];
@@ -162,8 +161,8 @@ fn test_neatm_nll_at_truth() {
 
 #[test]
 fn test_neatm_nll_away_from_truth() {
-    let (obs, hg) = synthetic_neatm_obs();
-    let neg_log_lik = make_neg_log_likelihood(Model::Neatm, &obs, hg.c_hg, 0.9);
+    let (obs, _hg) = synthetic_neatm_obs();
+    let neg_log_lik = make_neg_log_likelihood(Model::Neatm, &obs, C_V, 0.9);
 
     let truth = [10.0, 1.2, 18.0, 0.15, 1.0, 1.0];
     let wrong = [20.0, 1.2, 18.0, 0.15, 1.0, 1.0];
@@ -183,7 +182,7 @@ fn test_neatm_fit_recovery() {
         ..FluxPriors::default()
     };
 
-    let res = fit_mcmc(Model::Neatm, &obs, hg.c_hg, 0.9, &priors, 1, 50, 50)
+    let res = fit_mcmc(Model::Neatm, &obs, C_V, 0.9, &priors, 1, 50, 50)
         .expect("MCMC should produce a result");
 
     let d_median = {
@@ -235,7 +234,7 @@ fn test_frm_nll_at_truth() {
         })
         .collect();
 
-    let neg_log_lik = make_neg_log_likelihood(Model::Frm, &obs, hg.c_hg, 0.9);
+    let neg_log_lik = make_neg_log_likelihood(Model::Frm, &obs, C_V, 0.9);
     // Truth: [D, H, G, f_sigma, R_IR]
     let truth = [10.0, 18.0, 0.15, 1.0, 1.0];
     let neg_log_lik_val = neg_log_lik(&truth);
@@ -255,7 +254,7 @@ fn test_frm_nll_at_truth() {
 
 #[test]
 fn test_upper_limit_penalty() {
-    let (obs, hg) = synthetic_neatm_obs();
+    let (obs, _hg) = synthetic_neatm_obs();
 
     // Turn all observations into upper limits with threshold = actual flux
     let ul_obs: Vec<FluxObs> = obs
@@ -266,7 +265,7 @@ fn test_upper_limit_penalty() {
         })
         .collect();
 
-    let neg_log_lik = make_neg_log_likelihood(Model::Neatm, &ul_obs, hg.c_hg, 0.9);
+    let neg_log_lik = make_neg_log_likelihood(Model::Neatm, &ul_obs, C_V, 0.9);
 
     // At truth, model == threshold -> NLL should be 0
     // (upper limits don't include the ln(sigma) term)
@@ -325,7 +324,7 @@ fn test_frm_fit_recovery() {
         h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
         ..FluxPriors::default()
     };
-    let res = fit_mcmc(Model::Frm, &obs, hg.c_hg, 0.9, &priors, 1, 50, 50)
+    let res = fit_mcmc(Model::Frm, &obs, C_V, 0.9, &priors, 1, 50, 50)
         .expect("MCMC should produce a result");
 
     let d_median = {
@@ -350,7 +349,7 @@ fn test_neatm_mcmc_smoke() {
     };
     let n_obs = obs.len();
 
-    let result = fit_mcmc(Model::Neatm, &obs, hg.c_hg, 0.9, &priors, 1, 50, 50);
+    let result = fit_mcmc(Model::Neatm, &obs, C_V, 0.9, &priors, 1, 50, 50);
     assert!(result.is_some(), "MCMC should produce a result");
     let res = result.unwrap();
     assert!(!res.draws.is_empty(), "Should have draws");
@@ -418,7 +417,7 @@ fn test_frm_mcmc_smoke() {
         ..FluxPriors::default()
     };
     let n_obs = obs.len();
-    let result = fit_mcmc(Model::Frm, &obs, hg.c_hg, 0.9, &priors, 1, 50, 50);
+    let result = fit_mcmc(Model::Frm, &obs, C_V, 0.9, &priors, 1, 50, 50);
     assert!(result.is_some(), "FRM MCMC should produce a result");
     let res = result.unwrap();
     // FRM draws: [D, pV, H, G, R_IR, f_sigma] -> 6 columns
@@ -450,7 +449,7 @@ fn test_neatm_batch() {
         FitTask {
             model: Model::Neatm,
             obs: obs.clone(),
-            c_hg: hg.c_hg,
+            c_hg: C_V,
             emissivity: 0.9,
             priors: priors.clone(),
             num_chains: 1,
@@ -460,7 +459,7 @@ fn test_neatm_batch() {
         FitTask {
             model: Model::Neatm,
             obs,
-            c_hg: hg.c_hg,
+            c_hg: C_V,
             emissivity: 0.9,
             priors,
             num_chains: 1,
@@ -514,7 +513,7 @@ fn test_frm_batch() {
     let tasks = vec![FitTask {
         model: Model::Frm,
         obs,
-        c_hg: hg.c_hg,
+        c_hg: C_V,
         emissivity: 0.9,
         priors,
         num_chains: 1,
@@ -533,11 +532,11 @@ fn test_coupling_consistency_neatm() {
         h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
         ..FluxPriors::default()
     };
-    let res = fit_mcmc(Model::Neatm, &obs, hg.c_hg, 0.9, &priors, 1, 50, 50).unwrap();
+    let res = fit_mcmc(Model::Neatm, &obs, C_V, 0.9, &priors, 1, 50, 50).unwrap();
 
     // Every draw must satisfy D = c_hg / sqrt(pV) * 10^(-H/5).
     // H is now per-draw at index 3.
-    let c_hg = hg.c_hg;
+    let c_hg = C_V;
     for (i, draw) in res.draws.iter().enumerate() {
         let d = draw[0];
         let vis_albedo = draw[1];
@@ -587,10 +586,10 @@ fn test_coupling_consistency_frm() {
         h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
         ..FluxPriors::default()
     };
-    let res = fit_mcmc(Model::Frm, &obs, hg.c_hg, 0.9, &priors, 1, 50, 50).unwrap();
+    let res = fit_mcmc(Model::Frm, &obs, C_V, 0.9, &priors, 1, 50, 50).unwrap();
 
     // H is now per-draw at index 2.
-    let c_hg = hg.c_hg;
+    let c_hg = C_V;
     for (i, draw) in res.draws.iter().enumerate() {
         let d = draw[0];
         let vis_albedo_draw = draw[1];
@@ -645,7 +644,7 @@ fn test_neatm_w3_w4_only() {
         h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
         ..FluxPriors::default()
     };
-    let res = fit_mcmc(Model::Neatm, &obs, hg.c_hg, 0.9, &priors, 1, 50, 50)
+    let res = fit_mcmc(Model::Neatm, &obs, C_V, 0.9, &priors, 1, 50, 50)
         .expect("W3+W4 MCMC should produce a result");
 
     let d_median = {
@@ -678,7 +677,7 @@ fn test_all_upper_limits_no_panic() {
         h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
         ..FluxPriors::default()
     };
-    let _ = fit_mcmc(Model::Neatm, &ul_obs, hg.c_hg, 0.9, &priors, 1, 50, 50);
+    let _ = fit_mcmc(Model::Neatm, &ul_obs, C_V, 0.9, &priors, 1, 50, 50);
 }
 
 #[test]
@@ -690,7 +689,7 @@ fn test_mcmc_draw_column_counts() {
     };
 
     // NEATM: 7 columns [D, pV, beaming, H, G, R_IR, f_sigma].
-    let neatm_res = fit_mcmc(Model::Neatm, &obs, hg.c_hg, 0.9, &priors, 1, 50, 50).unwrap();
+    let neatm_res = fit_mcmc(Model::Neatm, &obs, C_V, 0.9, &priors, 1, 50, 50).unwrap();
     for (i, d) in neatm_res.draws.iter().enumerate() {
         assert_eq!(d.len(), 7, "NEATM draw {i} should have 7 columns");
         // D, pV, beaming, R_IR, f_sigma must be positive.
@@ -707,7 +706,7 @@ fn test_mcmc_draw_column_counts() {
     }
 
     // FRM: 6 columns [D, pV, H, G, R_IR, f_sigma].
-    let frm_res = fit_mcmc(Model::Frm, &obs, hg.c_hg, 0.9, &priors, 1, 50, 50).unwrap();
+    let frm_res = fit_mcmc(Model::Frm, &obs, C_V, 0.9, &priors, 1, 50, 50).unwrap();
     for (i, d) in frm_res.draws.iter().enumerate() {
         assert_eq!(d.len(), 6, "FRM draw {i} should have 6 columns");
         // D, pV, R_IR, f_sigma must be positive.
@@ -728,7 +727,7 @@ fn test_mcmc_draw_column_counts() {
         h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg_hg.h_mag, 1.0),
         ..FluxPriors::default()
     };
-    let hg_res = fit_mcmc(Model::Hg, &hg_obs, hg_hg.c_hg, 0.9, &hg_priors, 1, 50, 50).unwrap();
+    let hg_res = fit_mcmc(Model::Hg, &hg_obs, C_V, 0.9, &hg_priors, 1, 50, 50).unwrap();
     for (i, d) in hg_res.draws.iter().enumerate() {
         assert_eq!(d.len(), 3, "HG draw {i} should have 3 columns");
         assert!(d[0].is_finite(), "HG draw {i} H = {} not finite", d[0]);
@@ -790,8 +789,8 @@ fn synthetic_hg_obs() -> (Vec<FluxObs>, TestHg) {
 
 #[test]
 fn test_hg_nll_at_truth() {
-    let (obs, hg) = synthetic_hg_obs();
-    let neg_log_lik = make_neg_log_likelihood(Model::Hg, &obs, hg.c_hg, 0.9);
+    let (obs, _hg) = synthetic_hg_obs();
+    let neg_log_lik = make_neg_log_likelihood(Model::Hg, &obs, C_V, 0.9);
 
     // Truth: H=18, G=0.15, f_sigma=1.0.
     // [H, G, f_sigma]
@@ -827,7 +826,7 @@ fn test_hg_fit_recovery() {
         ..FluxPriors::default()
     };
 
-    let res = fit_mcmc(Model::Hg, &obs, hg.c_hg, 0.9, &priors, 1, 100, 100)
+    let res = fit_mcmc(Model::Hg, &obs, C_V, 0.9, &priors, 1, 100, 100)
         .expect("HG MCMC should produce a result");
 
     // H should recover near 18.0.
@@ -852,7 +851,7 @@ fn test_hg_mcmc_smoke() {
     };
     let n_obs = obs.len();
 
-    let res = fit_mcmc(Model::Hg, &obs, hg.c_hg, 0.9, &priors, 1, 50, 50)
+    let res = fit_mcmc(Model::Hg, &obs, C_V, 0.9, &priors, 1, 50, 50)
         .expect("HG MCMC should produce a result");
 
     assert!(!res.draws.is_empty(), "Should have draws");
@@ -889,7 +888,7 @@ fn test_hg_batch() {
         FitTask {
             model: Model::Hg,
             obs: obs.clone(),
-            c_hg: hg.c_hg,
+            c_hg: C_V,
             emissivity: 0.9,
             priors: priors.clone(),
             num_chains: 1,
@@ -899,7 +898,7 @@ fn test_hg_batch() {
         FitTask {
             model: Model::Hg,
             obs,
-            c_hg: hg.c_hg,
+            c_hg: C_V,
             emissivity: 0.9,
             priors,
             num_chains: 1,
@@ -968,7 +967,7 @@ fn test_multi_geometry_neatm() {
         h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
         ..FluxPriors::default()
     };
-    let res = fit_mcmc(Model::Neatm, &obs, hg.c_hg, 0.9, &priors, 1, 50, 50)
+    let res = fit_mcmc(Model::Neatm, &obs, C_V, 0.9, &priors, 1, 50, 50)
         .expect("Multi-geometry NEATM MCMC should produce a result");
 
     let d_median = {
@@ -996,7 +995,7 @@ fn test_pv_draws_reasonable() {
         h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
         ..FluxPriors::default()
     };
-    let res = fit_mcmc(Model::Neatm, &obs, hg.c_hg, 0.9, &priors, 1, 50, 50).unwrap();
+    let res = fit_mcmc(Model::Neatm, &obs, C_V, 0.9, &priors, 1, 50, 50).unwrap();
 
     for (i, draw) in res.draws.iter().enumerate() {
         let vis_albedo = draw[1];

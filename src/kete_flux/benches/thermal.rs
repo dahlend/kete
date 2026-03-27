@@ -37,10 +37,8 @@ fn frm_bench(bands: &[BandInfo], diam: f64, vis_albedo: f64, g_param: f64, emiss
 pub fn neatm_benchmark(c: &mut Criterion) {
     let mut neatm_group = c.benchmark_group("NEATM");
 
-    let (_h_mag, vis_albedo, diam, _c_hg) =
+    let (_h_mag, vis_albedo, diam) =
         resolve_hg_params(Some(15.0), Some(0.2), None, Some(1329.0)).unwrap();
-    let vis_albedo = vis_albedo.unwrap();
-    let diam = diam.unwrap();
     let g_param = 0.15;
 
     let wise_bands = BandInfo::new_wise().to_vec();
@@ -81,10 +79,8 @@ pub fn neatm_benchmark(c: &mut Criterion) {
 pub fn frm_benchmark(c: &mut Criterion) {
     let mut frm_group = c.benchmark_group("FRM");
 
-    let (_h_mag, vis_albedo, diam, _c_hg) =
+    let (_h_mag, vis_albedo, diam) =
         resolve_hg_params(Some(15.0), Some(0.2), None, Some(1329.0)).unwrap();
-    let vis_albedo = vis_albedo.unwrap();
-    let diam = diam.unwrap();
     let g_param = 0.15;
 
     let wise_bands = BandInfo::new_wise().to_vec();

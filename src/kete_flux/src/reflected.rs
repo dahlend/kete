@@ -240,7 +240,7 @@ pub fn hg_apparent_flux(
 ///
 /// The `c_hg` parameter defaults to the [`C_V`] constant if not provided.
 ///
-/// Returns `(h_mag, vis_albedo, diameter, c_hg)`.
+/// Returns `(h_mag, vis_albedo, diameter)`.
 ///
 /// # Arguments
 ///
@@ -250,7 +250,8 @@ pub fn hg_apparent_flux(
 /// * `c_hg` - The relationship constant of the H-D-pV conversion in km.
 ///
 /// # Errors
-/// This can fail if parameters are not self consistent between H, diameter, and albedo.
+/// This can fail if fewer than two of (`h_mag`, `vis_albedo`, `diameter`) are provided,
+/// or if all three are provided but not self consistent.
 #[allow(
     clippy::missing_panics_doc,
     reason = "Unwraps are guarded by prior checks"
@@ -260,41 +261,24 @@ pub fn resolve_hg_params(
     vis_albedo: Option<f64>,
     diameter: Option<f64>,
     c_hg: Option<f64>,
-) -> KeteResult<(f64, Option<f64>, Option<f64>, f64)> {
-    if h_mag.is_none() && (vis_albedo.is_none() || diameter.is_none()) {
-        Err(Error::ValueError(
-            "h_mag must be defined unless both vis_albedo and diameter are provided.".into(),
-        ))?;
-    }
-
+) -> KeteResult<(f64, f64, f64)> {
     let c_hg = c_hg.unwrap_or(C_V);
 
-    if vis_albedo.is_none() && diameter.is_none() {
-        if let Some(h) = h_mag {
-            return Ok((h, None, None, c_hg));
+    match (h_mag, vis_albedo, diameter) {
+        (None, Some(pv), Some(d)) => Ok((h_mag_from_diam_albedo(d, pv, c_hg), pv, d)),
+        (Some(h), None, Some(d)) => Ok((h, albedo_from_h_mag_diam(h, d, c_hg), d)),
+        (Some(h), Some(pv), None) => Ok((h, pv, diam_from_h_mag_albedo(h, pv, c_hg))),
+        (Some(h), Some(pv), Some(d)) => {
+            let expected_d = diam_from_h_mag_albedo(h, pv, c_hg);
+            if (expected_d - d).abs() > 1e-8 {
+                return Err(Error::ValueError(format!(
+                    "Provided diameter doesn't match with computed diameter. {expected_d} != {d}"
+                )));
+            }
+            Ok((h, pv, expected_d))
         }
-    } else if h_mag.is_none() {
-        let diameter = diameter.unwrap();
-        let albedo = vis_albedo.unwrap();
-        let h_mag = h_mag_from_diam_albedo(diameter, albedo, c_hg);
-        return Ok((h_mag, Some(albedo), Some(diameter), c_hg));
+        _ => Err(Error::ValueError(
+            "At least two of (h_mag, vis_albedo, diameter) must be provided.".into(),
+        )),
     }
-
-    let h_mag = h_mag.unwrap();
-
-    if let Some(albedo) = vis_albedo {
-        let expected_diam = diam_from_h_mag_albedo(h_mag, albedo, c_hg);
-        if let Some(diameter) = diameter
-            && (expected_diam - diameter).abs() > 1e-8
-        {
-            Err(Error::ValueError(format!(
-                "Provided diameter doesn't match with computed diameter. {expected_diam} != {diameter}"
-            )))?;
-        }
-        return Ok((h_mag, Some(albedo), Some(expected_diam), c_hg));
-    }
-
-    let diameter = diameter.unwrap();
-    let expected_albedo = albedo_from_h_mag_diam(h_mag, diameter, c_hg);
-    Ok((h_mag, Some(expected_albedo), Some(diameter), c_hg))
 }
