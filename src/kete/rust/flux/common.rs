@@ -44,7 +44,7 @@ pub fn lambertian_flux_py(
         .zip(facet_flux)
         .map(|(normal, flux)| {
             let normal = UnitVector3::new_normalize(normal.into());
-            lambertian_flux(&normal, &obs2obj, &flux, &obs2obj_r, &diameter, &emissivity)
+            lambertian_flux(&normal, &obs2obj, flux, obs2obj_r, diameter, emissivity)
         })
         .sum()
 }

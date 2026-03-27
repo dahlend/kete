@@ -147,7 +147,7 @@ pub fn hg_apparent_mag_py(
     h_mag: f64,
     g_param: f64,
 ) -> f64 {
-    let sun2obj = sun2obj.into_vector(PyFrames::Equatorial).into();
-    let sun2obs = sun2obs.into_vector(PyFrames::Equatorial).into();
+    let sun2obj = sun2obj.into_vector(PyFrames::Ecliptic).into();
+    let sun2obs = sun2obs.into_vector(PyFrames::Ecliptic).into();
     hg_apparent_mag(g_param, h_mag, &sun2obj, &sun2obs)
 }

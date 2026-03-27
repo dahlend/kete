@@ -97,13 +97,8 @@ pub fn frm_thermal_flux(
     let mut fluxes = vec![0.0; obs_bands.len()];
     for facet in &geom.facets {
         let temp = frm_facet_temperature(&facet.normal, ss_temp, &obj2sun);
-        let obs_flux_scaling = lambertian_vis_scale_factor(
-            &facet.normal,
-            &obs2obj,
-            &obs2obj_r,
-            &diameter,
-            &emissivity,
-        );
+        let obs_flux_scaling =
+            lambertian_vis_scale_factor(&facet.normal, &obs2obj, obs2obj_r, diameter, emissivity);
         if temp == 0.0 || obs_flux_scaling == 0.0 {
             continue;
         }

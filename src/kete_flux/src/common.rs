@@ -229,10 +229,10 @@ pub fn black_body_flux(temp: f64, wavelength: f64) -> f64 {
 pub fn lambertian_flux(
     facet_normal: &UnitVector3<f64>,
     obs2obj: &UnitVector3<f64>,
-    facet_flux: &f64,
-    obs2obj_r: &f64,
-    diameter: &f64,
-    emissivity: &f64,
+    facet_flux: f64,
+    obs2obj_r: f64,
+    diameter: f64,
+    emissivity: f64,
 ) -> f64 {
     lambertian_vis_scale_factor(facet_normal, obs2obj, obs2obj_r, diameter, emissivity) * facet_flux
 }
@@ -251,9 +251,9 @@ pub fn lambertian_flux(
 pub fn lambertian_vis_scale_factor(
     facet_normal: &UnitVector3<f64>,
     obs2obj: &UnitVector3<f64>,
-    obs2obj_r: &f64,
-    diameter: &f64,
-    emissivity: &f64,
+    obs2obj_r: f64,
+    diameter: f64,
+    emissivity: f64,
 ) -> f64 {
     // effective scaling due to distance from the observer
     let scale = (obs2obj_r * AU_KM / diameter).powi(-2);
