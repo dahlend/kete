@@ -41,7 +41,7 @@ pub fn neatm_benchmark(c: &mut Criterion) {
         resolve_hg_params(Some(15.0), Some(0.2), None, Some(1329.0)).unwrap();
     let g_param = 0.15;
 
-    let wise_bands = BandInfo::new_wise().to_vec();
+    let wise_bands = BandInfo::WISE.to_vec();
 
     let generic_bands: Vec<BandInfo> = [1000.0; 4]
         .iter()
@@ -83,7 +83,7 @@ pub fn frm_benchmark(c: &mut Criterion) {
         resolve_hg_params(Some(15.0), Some(0.2), None, Some(1329.0)).unwrap();
     let g_param = 0.15;
 
-    let wise_bands = BandInfo::new_wise().to_vec();
+    let wise_bands = BandInfo::WISE.to_vec();
 
     let generic_bands: Vec<BandInfo> = [1000.0; 4]
         .iter()

@@ -286,7 +286,7 @@ impl Model {
         let mut reflected_frac = Vec::with_capacity(n);
 
         for ob in obs {
-            let bands = [ob.band.clone()];
+            let bands = [ob.band];
             let result = self.compute_fluxes(params, &bands, &ob.sun2obj, &ob.sun2obs);
             let rf = result.reflected_fraction();
             model_fluxes.push(result.fluxes[0]);

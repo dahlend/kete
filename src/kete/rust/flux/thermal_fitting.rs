@@ -9,7 +9,9 @@ use kete_flux::BandInfo;
 use kete_flux::fitting::{self, FitResult, FluxObs, FluxPriors, Model, ParamPrior};
 use pyo3::prelude::*;
 
-/// Accept either a WISE band name ("W1"-"W4") or a wavelength in nm.
+/// Accept either a WISE band name ("W1"-"W4", "NEOS1", "NEOS2", "V") or a wavelength in
+/// nm. If a wavelength is provided, no zero-magnitude will be used, and magnitudes will
+/// need to be computed manually.
 #[derive(Debug, FromPyObject)]
 enum BandSpec {
     Name(String),
@@ -20,21 +22,21 @@ impl BandSpec {
     fn into_band_info(self) -> PyResult<BandInfo> {
         match self {
             BandSpec::Name(s) => {
-                let wise = BandInfo::new_wise();
+                let wise = BandInfo::WISE;
+                let neos = BandInfo::NEOS;
                 match s.to_uppercase().as_str() {
-                    "W1" => Ok(wise[0].clone()),
-                    "W2" => Ok(wise[1].clone()),
-                    "W3" => Ok(wise[2].clone()),
-                    "W4" => Ok(wise[3].clone()),
-                    "V" => Ok(BandInfo::new_v()),
+                    "W1" => Ok(wise[0]),
+                    "W2" => Ok(wise[1]),
+                    "W3" => Ok(wise[2]),
+                    "W4" => Ok(wise[3]),
+                    "NEOS1" => Ok(neos[0]),
+                    "NEOS2" => Ok(neos[1]),
+                    "V" => Ok(BandInfo::V),
                     other => Err(pyo3::exceptions::PyValueError::new_err(format!(
                         "Unknown band name '{other}'. Use 'W1'-'W4', 'V' or a wavelength in nm."
                     ))),
                 }
             }
-            // Beam area 1.0 and NaN zero-mag flux are safe placeholders:
-            // the fitting code works entirely in Jy, never converting to
-            // magnitudes, so the zero-mag flux is unused.
             BandSpec::Wavelength(w) => Ok(BandInfo::new(w, 1.0, f64::NAN, None)),
         }
     }

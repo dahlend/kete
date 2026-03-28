@@ -84,7 +84,7 @@ fn synthetic_neatm_obs() -> (Vec<FluxObs>, TestHg) {
     // observer at Sun for simplicity
     let sun2obs = Vector3::new(0.0, 0.0, 0.0);
 
-    let bands = BandInfo::new_wise();
+    let bands = BandInfo::WISE;
     let vis_albedo = hg.vis_albedo;
     let beaming = 1.2;
     let r_ir = 1.0;
@@ -106,13 +106,13 @@ fn synthetic_neatm_obs() -> (Vec<FluxObs>, TestHg) {
     );
 
     let obs: Vec<FluxObs> = bands
-        .iter()
+        .into_iter()
         .zip(&result.fluxes)
         .map(|(band, &flux)| FluxObs {
             flux,
             // 5% uncertainty
             sigma: flux * 0.05,
-            band: band.clone(),
+            band,
             is_upper_limit: false,
             sun2obj,
             sun2obs,
@@ -204,7 +204,7 @@ fn test_frm_nll_at_truth() {
 
     let sun2obj = Vector3::new(2.0, 0.0, 0.0);
     let sun2obs = Vector3::new(0.0, 0.0, 0.0);
-    let bands = BandInfo::new_wise();
+    let bands = BandInfo::WISE;
     let vis_albedo = hg.vis_albedo;
     let r_ir = 1.0;
 
@@ -222,12 +222,12 @@ fn test_frm_nll_at_truth() {
     );
 
     let obs: Vec<FluxObs> = bands
-        .iter()
+        .into_iter()
         .zip(&result.fluxes)
         .map(|(band, &flux)| FluxObs {
             flux,
             sigma: flux * 0.05,
-            band: band.clone(),
+            band,
             is_upper_limit: false,
             sun2obj,
             sun2obs,
@@ -290,7 +290,7 @@ fn test_frm_fit_recovery() {
     let hg = TestHg::new(0.15, Some(18.0), None, Some(10.0));
     let sun2obj = Vector3::new(2.0, 0.0, 0.0);
     let sun2obs = Vector3::new(0.0, 0.0, 0.0);
-    let bands = BandInfo::new_wise();
+    let bands = BandInfo::WISE;
     let vis_albedo = hg.vis_albedo;
     let r_ir = 1.0;
 
@@ -308,12 +308,12 @@ fn test_frm_fit_recovery() {
     );
 
     let obs: Vec<FluxObs> = bands
-        .iter()
+        .into_iter()
         .zip(&result.fluxes)
         .map(|(band, &flux)| FluxObs {
             flux,
             sigma: flux * 0.05,
-            band: band.clone(),
+            band,
             is_upper_limit: false,
             sun2obj,
             sun2obs,
@@ -383,7 +383,7 @@ fn test_frm_mcmc_smoke() {
     let hg = TestHg::new(0.15, Some(18.0), None, Some(10.0));
     let sun2obj = Vector3::new(2.0, 0.0, 0.0);
     let sun2obs = Vector3::new(0.0, 0.0, 0.0);
-    let bands = BandInfo::new_wise();
+    let bands = BandInfo::WISE;
     let vis_albedo = hg.vis_albedo;
 
     let band_albedos: Vec<f64> = bands.iter().map(|_| vis_albedo).collect();
@@ -400,12 +400,12 @@ fn test_frm_mcmc_smoke() {
     );
 
     let obs: Vec<FluxObs> = bands
-        .iter()
+        .into_iter()
         .zip(&result.fluxes)
         .map(|(band, &flux)| FluxObs {
             flux,
             sigma: flux * 0.05,
-            band: band.clone(),
+            band,
             is_upper_limit: false,
             sun2obj,
             sun2obs,
@@ -479,7 +479,7 @@ fn test_frm_batch() {
     let hg = TestHg::new(0.15, Some(18.0), None, Some(10.0));
     let sun2obj = Vector3::new(2.0, 0.0, 0.0);
     let sun2obs = Vector3::new(0.0, 0.0, 0.0);
-    let bands = BandInfo::new_wise();
+    let bands = BandInfo::WISE;
     let vis_albedo = hg.vis_albedo;
     let r_ir = 1.0;
     let band_albedos: Vec<f64> = bands.iter().map(|_| r_ir * vis_albedo).collect();
@@ -495,12 +495,12 @@ fn test_frm_batch() {
         &sun2obs,
     );
     let obs: Vec<FluxObs> = bands
-        .iter()
+        .into_iter()
         .zip(&result.fluxes)
         .map(|(band, &flux)| FluxObs {
             flux,
             sigma: flux * 0.05,
-            band: band.clone(),
+            band,
             is_upper_limit: false,
             sun2obj,
             sun2obs,
@@ -555,7 +555,7 @@ fn test_coupling_consistency_frm() {
     let hg = TestHg::new(0.15, Some(18.0), None, Some(10.0));
     let sun2obj = Vector3::new(2.0, 0.0, 0.0);
     let sun2obs = Vector3::new(0.0, 0.0, 0.0);
-    let bands = BandInfo::new_wise();
+    let bands = BandInfo::WISE;
     let vis_albedo = hg.vis_albedo;
     let band_albedos: Vec<f64> = bands.iter().map(|_| vis_albedo).collect();
     let result = frm_total_flux(
@@ -570,12 +570,12 @@ fn test_coupling_consistency_frm() {
         &sun2obs,
     );
     let obs: Vec<FluxObs> = bands
-        .iter()
+        .into_iter()
         .zip(&result.fluxes)
         .map(|(band, &flux)| FluxObs {
             flux,
             sigma: flux * 0.05,
-            band: band.clone(),
+            band,
             is_upper_limit: false,
             sun2obj,
             sun2obs,
@@ -608,11 +608,11 @@ fn test_neatm_w3_w4_only() {
     let hg = TestHg::new(0.15, Some(18.0), None, Some(10.0));
     let sun2obj = Vector3::new(2.0, 0.0, 0.0);
     let sun2obs = Vector3::new(0.0, 0.0, 0.0);
-    let bands = BandInfo::new_wise();
+    let bands = BandInfo::WISE;
     let vis_albedo = hg.vis_albedo;
 
     // Generate truth from NEATM with W3 + W4 only.
-    let w3w4: Vec<BandInfo> = vec![bands[2].clone(), bands[3].clone()];
+    let w3w4: Vec<BandInfo> = vec![bands[2], bands[3]];
     let band_albedos: Vec<f64> = w3w4.iter().map(|_| vis_albedo).collect();
     let result = neatm_total_flux(
         &w3w4,
@@ -628,12 +628,12 @@ fn test_neatm_w3_w4_only() {
     );
 
     let obs: Vec<FluxObs> = w3w4
-        .iter()
+        .into_iter()
         .zip(&result.fluxes)
         .map(|(band, &flux)| FluxObs {
             flux,
             sigma: flux * 0.05,
-            band: band.clone(),
+            band,
             is_upper_limit: false,
             sun2obj,
             sun2obs,
@@ -750,7 +750,7 @@ fn test_mcmc_draw_column_counts() {
 /// The observer is offset from the Sun so that the phase angle is non-zero.
 fn synthetic_hg_obs() -> (Vec<FluxObs>, TestHg) {
     let hg = TestHg::new(0.15, Some(18.0), None, Some(10.0));
-    let v_band = BandInfo::new_v();
+    let v_band = BandInfo::V;
 
     // Geometry 1: opposition-like (small phase angle).
     let sun2obj_1 = Vector3::new(2.0, 0.0, 0.0);
@@ -777,7 +777,7 @@ fn synthetic_hg_obs() -> (Vec<FluxObs>, TestHg) {
         obs.push(FluxObs {
             flux,
             sigma: flux * 0.05,
-            band: v_band.clone(),
+            band: v_band,
             is_upper_limit: false,
             sun2obj: s2o,
             sun2obs: s2obs,
@@ -925,7 +925,7 @@ fn test_multi_geometry_neatm() {
     let beaming = 1.2;
     let r_ir = 1.0;
     let emissivity = 0.9;
-    let bands = BandInfo::new_wise();
+    let bands = BandInfo::WISE;
 
     // Two different geometries.
     let geoms: Vec<(Vector3<f64>, Vector3<f64>)> = vec![
@@ -948,11 +948,11 @@ fn test_multi_geometry_neatm() {
             sun2obj,
             sun2obs,
         );
-        for (band, &flux) in bands.iter().zip(&result.fluxes) {
+        for (band, &flux) in bands.into_iter().zip(&result.fluxes) {
             obs.push(FluxObs {
                 flux,
                 sigma: flux * 0.05,
-                band: band.clone(),
+                band,
                 is_upper_limit: false,
                 sun2obj: *sun2obj,
                 sun2obs: *sun2obs,

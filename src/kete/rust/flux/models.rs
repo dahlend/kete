@@ -300,8 +300,8 @@ fn resolve_bands(
 ) -> PyResult<Vec<BandInfo>> {
     match (bands, band_wavelengths) {
         (Some(name), _) => match name.to_lowercase().as_str() {
-            "wise" => Ok(BandInfo::new_wise().to_vec()),
-            "neos" => Ok(BandInfo::new_neos().to_vec()),
+            "wise" => Ok(BandInfo::WISE.to_vec()),
+            "neos" => Ok(BandInfo::NEOS.to_vec()),
             other => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Unknown band preset '{other}'. Use 'wise' or 'neos'."
             ))),

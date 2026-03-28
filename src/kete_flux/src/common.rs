@@ -41,7 +41,7 @@ use kete_core::constants::{
 pub type ColorCorrFn = fn(f64) -> f64;
 
 /// Generic band information
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct BandInfo {
     /// Effective central band wavelengths in nm
     pub wavelength: f64,
@@ -64,7 +64,7 @@ impl BandInfo {
     /// ``solar_correction``: Flux correction for each of the bands for reflected light
     /// from the sun, 1.0 means no change.
     #[must_use]
-    pub fn new(
+    pub const fn new(
         wavelength: f64,
         solar_correction: f64,
         zero_mag: f64,
@@ -78,61 +78,52 @@ impl BandInfo {
         }
     }
 
-    #[must_use]
-    /// New [`BandInfo`] for the Johnson V band (551 nm).
-    pub fn new_v() -> Self {
-        Self::new(551.0, 1.0, V_MAG_ZERO, None)
-    }
+    /// [`BandInfo`] for the Johnson V band (551 nm).
+    pub const V: Self = Self::new(551.0, 1.0, V_MAG_ZERO, None);
 
-    #[must_use]
-    /// New [`BandInfo`] containing NEOS band information.
-    pub fn new_neos() -> [Self; 2] {
-        [
-            Self::new(
-                NEOS_BANDS[0],
-                NEOS_SUN_CORRECTION[0],
-                NEOS_ZERO_MAG[0],
-                None,
-            ),
-            Self::new(
-                NEOS_BANDS[1],
-                NEOS_SUN_CORRECTION[1],
-                NEOS_ZERO_MAG[1],
-                None,
-            ),
-        ]
-    }
+    /// [`BandInfo`] array for the two NEOS bands.
+    pub const NEOS: [Self; 2] = [
+        Self::new(
+            NEOS_BANDS[0],
+            NEOS_SUN_CORRECTION[0],
+            NEOS_ZERO_MAG[0],
+            None,
+        ),
+        Self::new(
+            NEOS_BANDS[1],
+            NEOS_SUN_CORRECTION[1],
+            NEOS_ZERO_MAG[1],
+            None,
+        ),
+    ];
 
-    #[must_use]
-    /// New [`BandInfo`] containing WISE band information.
-    pub fn new_wise() -> [Self; 4] {
-        [
-            Self::new(
-                WISE_BANDS_300K[0],
-                WISE_SUN_CORRECTION[0],
-                WISE_ZERO_MAG_300K[0],
-                Some(WISE_CC[0]),
-            ),
-            Self::new(
-                WISE_BANDS_300K[1],
-                WISE_SUN_CORRECTION[1],
-                WISE_ZERO_MAG_300K[1],
-                Some(WISE_CC[1]),
-            ),
-            Self::new(
-                WISE_BANDS_300K[2],
-                WISE_SUN_CORRECTION[2],
-                WISE_ZERO_MAG_300K[2],
-                Some(WISE_CC[2]),
-            ),
-            Self::new(
-                WISE_BANDS_300K[3],
-                WISE_SUN_CORRECTION[3],
-                WISE_ZERO_MAG_300K[3],
-                Some(WISE_CC[3]),
-            ),
-        ]
-    }
+    /// [`BandInfo`] array for the four WISE bands.
+    pub const WISE: [Self; 4] = [
+        Self::new(
+            WISE_BANDS_300K[0],
+            WISE_SUN_CORRECTION[0],
+            WISE_ZERO_MAG_300K[0],
+            Some(WISE_CC[0]),
+        ),
+        Self::new(
+            WISE_BANDS_300K[1],
+            WISE_SUN_CORRECTION[1],
+            WISE_ZERO_MAG_300K[1],
+            Some(WISE_CC[1]),
+        ),
+        Self::new(
+            WISE_BANDS_300K[2],
+            WISE_SUN_CORRECTION[2],
+            WISE_ZERO_MAG_300K[2],
+            Some(WISE_CC[2]),
+        ),
+        Self::new(
+            WISE_BANDS_300K[3],
+            WISE_SUN_CORRECTION[3],
+            WISE_ZERO_MAG_300K[3],
+            Some(WISE_CC[3]),
+        ),
+    ];
 }
 
 /// Output of a flux calculation.
