@@ -10,8 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added comprehensive MCMC thermal and reflected light fitting.
 - Added orbit determination, including Initial Orbit Determination (IOD), State
   Transition Matrices, and support for non-gravitational parameter fitting.
+
+### Changed
+
+- API for NEATM/FRM and generally all flux functions were re-written to support the new
+  fitting methods. No functionality was lost, but this was a significant restructuring.
+
 
 ## [v2.1.6]
 
