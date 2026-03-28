@@ -25,7 +25,7 @@ obj2sun = kete.Vector([1, 0, 0])
 
 # Compute the temperature at the subsolar point on the object.
 subsolar_temp = kete.flux.sub_solar_temperature(
-    obj2sun.r, vis_albedo, g_phase, emissivity, beaming
+    obj2sun.r, vis_albedo, g_phase, beaming, emissivity
 )
 
 # Compute the NEATM facet temperatures for the object

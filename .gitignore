@@ -23,7 +23,6 @@
 dist
 _skbuild
 build
-_skbuild
 
 # Mac files
 .DS_Store
@@ -43,6 +42,7 @@ docs/auto_examples
 docs/plot_directive
 docs/doctest
 docs/latex
+docs/_build_test
 docs/sg_execution_times.rst
 docs/**/.ipynb_checkpoints
 *.mod

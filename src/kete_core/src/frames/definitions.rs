@@ -236,7 +236,8 @@ impl NonInertialFrame {
                     }
                     let (time, frame) = frame.unwrap();
                     if (time.jd - self.time.jd).abs() > 1e-8 {
-                        continue; // time mismatch, skip this frame
+                        // time mismatch, skip this frame
+                        continue;
                     }
                     let (rot, vel) = frame.rotations_to_equatorial()?;
                     return Ok((

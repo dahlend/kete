@@ -19,7 +19,12 @@ use pyo3::{PyResult, exceptions::PyValueError, pyclass, pymethods};
 /// Yarkovsky effect, see :py:meth:`NonGravModel.new_asteroid`, which is a convenience
 /// function over the :py:meth:`NonGravModel.new_comet` method, but with 1/r^2 falloff.
 ///
-#[pyclass(frozen, module = "kete.propagation", name = "NonGravModel")]
+#[pyclass(
+    frozen,
+    module = "kete.propagation",
+    name = "NonGravModel",
+    from_py_object
+)]
 #[derive(Debug, Clone)]
 pub struct PyNonGravModel(pub NonGravModel);
 

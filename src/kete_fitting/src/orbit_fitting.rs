@@ -29,14 +29,15 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use crate::obs::Observation;
+use crate::obs::AstrometricObservation;
 use crate::uncertain_state::UncertainState;
 use kete_core::frames::Equatorial;
 use kete_core::prelude::{Error, KeteResult, State};
 use kete_core::propagation::{
-    NonGravModel, compute_state_transition, light_time_correct, propagate_n_body_spk,
+    NonGravModel, analytic_2_body_stm, compute_state_transition, light_time_correct,
+    propagate_n_body_spk,
 };
-use nalgebra::{DMatrix, DVector};
+use nalgebra::{DMatrix, DVector, Vector3};
 
 /// Result of orbit determination via batch least squares.
 #[derive(Debug, Clone)]
@@ -51,7 +52,7 @@ pub struct OrbitFit {
     pub residuals: Vec<DVector<f64>>,
 
     /// All input observations (time-sorted).
-    pub observations: Vec<Observation>,
+    pub observations: Vec<AstrometricObservation>,
 
     /// Per-observation inclusion mask (time-sorted, same length as
     /// `observations`).  `true` means the observation was used in
@@ -78,7 +79,7 @@ pub struct OrbitFit {
 /// All internal propagation uses SSB coordinates.
 ///
 /// Observations are fitted in progressively wider time windows
-/// centered on the reference epoch: ±30, ±60, ±180, and ±360 days,
+/// centered on the reference epoch: +/-30, +/-60, +/-180, and +/-360 days,
 /// followed by a final pass that includes the full arc.  Each stage
 /// bootstraps from the previous converged solution.  Windows that
 /// contain fewer than 4 observations are skipped automatically.
@@ -113,7 +114,7 @@ pub struct OrbitFit {
 /// Fails if any internal propagation or solve fails.
 pub fn fit_orbit(
     initial_state: &State<Equatorial>,
-    obs: &[Observation],
+    obs: &[AstrometricObservation],
     include_asteroids: bool,
     non_grav: Option<&NonGravModel>,
     max_iter: usize,
@@ -125,7 +126,7 @@ pub fn fit_orbit(
     if obs.is_empty() {
         return Err(Error::ValueError("No observations provided".into()));
     }
-    let sorted: Vec<Observation> = sort_by_epoch(obs)
+    let sorted: Vec<AstrometricObservation> = sort_by_epoch(obs)
         .into_iter()
         .filter(|o| {
             let s = o.observer();
@@ -199,7 +200,11 @@ pub fn fit_orbit(
 
 /// Build a boolean inclusion mask for observations within +/-`dt_days` of
 /// `ref_jd`.
-fn select_obs_within_window(sorted_obs: &[Observation], ref_jd: f64, dt_days: f64) -> Vec<bool> {
+fn select_obs_within_window(
+    sorted_obs: &[AstrometricObservation],
+    ref_jd: f64,
+    dt_days: f64,
+) -> Vec<bool> {
     sorted_obs
         .iter()
         .map(|ob| (ob.epoch().jd - ref_jd).abs() <= dt_days)
@@ -216,7 +221,7 @@ fn select_obs_within_window(sorted_obs: &[Observation], ref_jd: f64, dt_days: f6
 /// This makes rejection adaptive to the actual data scatter.
 fn solve_with_rejection(
     initial_state: &State<Equatorial>,
-    sorted_obs: &[Observation],
+    sorted_obs: &[AstrometricObservation],
     included: &[bool],
     include_asteroids: bool,
     non_grav: Option<NonGravModel>,
@@ -367,7 +372,7 @@ fn solve_with_rejection(
 }
 
 /// Return observations sorted by epoch (ascending).
-fn sort_by_epoch(obs: &[Observation]) -> Vec<Observation> {
+fn sort_by_epoch(obs: &[AstrometricObservation]) -> Vec<AstrometricObservation> {
     let mut sorted = obs.to_vec();
     sorted.sort_by(|a, b| {
         a.epoch()
@@ -405,7 +410,7 @@ fn n_nongrav_params(ng: Option<&NonGravModel>) -> usize {
 /// `state_epoch` is always the best state seen.
 fn iterate_to_convergence(
     initial_state: &State<Equatorial>,
-    obs: &[Observation],
+    obs: &[AstrometricObservation],
     included: &[bool],
     include_asteroids: bool,
     mut non_grav: Option<NonGravModel>,
@@ -548,7 +553,7 @@ fn iterate_to_convergence(
 /// valid `OrbitFit` instead of a hard error.
 fn make_non_converged_result(
     state: &State<Equatorial>,
-    obs: &[Observation],
+    obs: &[AstrometricObservation],
     included: &[bool],
     include_asteroids: bool,
     non_grav: Option<NonGravModel>,
@@ -637,7 +642,7 @@ pub struct StmObs {
 /// Panics if the observer state position has zero norm.
 pub fn stm_sweep(
     state_epoch: &State<Equatorial>,
-    obs: &[Observation],
+    obs: &[AstrometricObservation],
     included: &[bool],
     include_asteroids: bool,
     non_grav: Option<&NonGravModel>,
@@ -720,6 +725,95 @@ pub fn stm_sweep(
     Ok(results)
 }
 
+/// Two-body variant of [`stm_sweep`] for MCMC sampling.
+///
+/// Uses analytic Keplerian propagation with the closed-form Lagrange-coefficient
+/// STM instead of the full N-body Radau integrator.  Lower accuracy but much faster.
+///
+/// The trade-off is that N-body perturbations are ignored in both the residuals
+/// and the Jacobian.  For the use case of MCMC this is usually acceptable because
+/// the posterior shape is dominated by observation geometry, not small planetary
+/// perturbations, and the likelihood + gradient remain internally consistent.
+///
+/// Non-gravitational parameter sensitivities are set to zero (two-body dynamics
+/// has no non-grav forces), so this is most useful when `non_grav` is `None`.
+///
+/// # Errors
+/// Returns an error if two-body propagation or light-time correction fails.
+pub(crate) fn stm_sweep_two_body(
+    state_epoch: &State<Equatorial>,
+    obs: &[AstrometricObservation],
+    included: &[bool],
+    non_grav: Option<&NonGravModel>,
+) -> KeteResult<Vec<StmObs>> {
+    debug_assert!(
+        obs.windows(2).all(|w| w[0].epoch().jd <= w[1].epoch().jd),
+        "stm_sweep_two_body: observations must be sorted by epoch"
+    );
+    let np = n_nongrav_params(non_grav);
+    let d = 6 + np;
+
+    let mut phi_cum = DMatrix::<f64>::zeros(6, d);
+    for i in 0..6 {
+        phi_cum[(i, i)] = 1.0;
+    }
+
+    let mut cur_pos: Vector3<f64> = state_epoch.pos.into();
+    let mut cur_vel: Vector3<f64> = state_epoch.vel.into();
+    let mut cur_epoch = state_epoch.epoch;
+    let mut results = Vec::new();
+
+    for (i, observation) in obs.iter().enumerate() {
+        let obs_epoch = observation.epoch();
+
+        if (obs_epoch.jd - cur_epoch.jd).abs() > 1e-12 {
+            let dt = obs_epoch - cur_epoch;
+            let (new_pos, new_vel, phi_k) = analytic_2_body_stm(dt, &cur_pos, &cur_vel, None)?;
+
+            // Chain the 6x6 state block.
+            let new_state_cols = &phi_k * phi_cum.columns(0, 6);
+            phi_cum.columns_mut(0, 6).copy_from(&new_state_cols);
+
+            // Non-grav parameter columns: phi_state * phi_cum_param + 0
+            // (two-body has no parameter sensitivity, so phi_param = 0).
+            if np > 0 {
+                let new_param_cols = &phi_k * phi_cum.columns(6, np);
+                phi_cum.columns_mut(6, np).copy_from(&new_param_cols);
+            }
+
+            cur_pos = new_pos;
+            cur_vel = new_vel;
+            cur_epoch = obs_epoch;
+        }
+
+        if !included[i] {
+            continue;
+        }
+
+        // Build a temporary State for light-time correction and residuals.
+        let mut cur_state = state_epoch.clone();
+        cur_state.pos = cur_pos.into();
+        cur_state.vel = cur_vel.into();
+        cur_state.epoch = cur_epoch;
+
+        let obs_state = observation.observer();
+        let obj_lt = light_time_correct(&cur_state, &obs_state.pos)?;
+
+        let residual = observation.residual_from_corrected(&obj_lt);
+        let h_local = observation.partials(&obj_lt);
+        let weights = observation.weights();
+
+        results.push(StmObs {
+            phi_cum: phi_cum.clone(),
+            residual,
+            h_local,
+            weights,
+        });
+    }
+
+    Ok(results)
+}
+
 /// Accumulate the weighted normal equations for one linearization pass.
 ///
 /// Returns `(info_mat, rhs_vec, chi2)` where `info_mat` is the
@@ -730,7 +824,7 @@ pub fn stm_sweep(
 /// Returns an error if the underlying STM sweep fails.
 pub fn accumulate_normal_equations(
     state_epoch: &State<Equatorial>,
-    obs: &[Observation],
+    obs: &[AstrometricObservation],
     included: &[bool],
     include_asteroids: bool,
     non_grav: Option<&NonGravModel>,
@@ -900,7 +994,7 @@ fn svd_pseudo_inverse(mat: &DMatrix<f64>, eps: f64) -> KeteResult<DMatrix<f64>> 
 /// integrator) so this is ~5x cheaper than an STM sweep.
 fn compute_residuals(
     state_epoch: &State<Equatorial>,
-    obs: &[Observation],
+    obs: &[AstrometricObservation],
     include_asteroids: bool,
     non_grav: Option<&NonGravModel>,
 ) -> KeteResult<Vec<DVector<f64>>> {
@@ -931,7 +1025,7 @@ fn compute_residuals(
 /// value is comparable regardless of the number of observations.
 fn weighted_rms(
     residuals: &[DVector<f64>],
-    obs: &[Observation],
+    obs: &[AstrometricObservation],
     included: &[bool],
     n_params: usize,
 ) -> f64 {
@@ -980,7 +1074,7 @@ mod tests {
         observer_pos_fn: impl Fn(f64) -> ([f64; 3], [f64; 3]),
         sigma: f64,
         non_grav: Option<&NonGravModel>,
-    ) -> Vec<Observation> {
+    ) -> Vec<AstrometricObservation> {
         let mut observations = Vec::new();
         for &jd in epochs {
             let (obs_pos, obs_vel) = observer_pos_fn(jd);
@@ -997,7 +1091,7 @@ mod tests {
             let obj_lt = light_time_correct(&obj_at, &observer.pos).unwrap();
             let (ra, dec) = (obj_lt.pos - observer.pos).to_ra_dec();
 
-            observations.push(Observation::Optical {
+            observations.push(AstrometricObservation::Optical {
                 observer,
                 ra,
                 dec,
@@ -1128,7 +1222,7 @@ mod tests {
             synth_observations(&true_state, &epochs, earth_observer, sigma, None);
 
         // Corrupt observation 3 with a large offset (100x sigma).
-        if let Observation::Optical { ref mut ra, .. } = observations[3] {
+        if let AstrometricObservation::Optical { ref mut ra, .. } = observations[3] {
             *ra += 100.0 * sigma;
         }
 
@@ -1338,7 +1432,7 @@ mod tests {
         // seed window).  With a bad initial guess this might look like an
         // outlier during early windows but should be correctly handled
         // in the final pass.
-        if let Observation::Optical { ref mut ra, .. } = observations[18] {
+        if let AstrometricObservation::Optical { ref mut ra, .. } = observations[18] {
             *ra += 50.0 * sigma;
         }
 

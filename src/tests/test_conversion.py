@@ -43,7 +43,8 @@ def test_compute_h_d_pv(d_pv_Hv):
     that all three conversions between the params work.
     """
     d, pv, hv = d_pv_Hv
-    c_hg = 1329.0  # default for V band
+    # default for V band
+    c_hg = 1329.0
     assert np.isclose(compute_h_mag(d, pv, c_hg), hv, atol=0.0001)
     assert np.isclose(compute_albedo(d, hv, c_hg), pv, atol=0.0001)
     assert np.isclose(compute_diameter(pv, hv, c_hg), d, atol=0.0001)

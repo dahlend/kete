@@ -4,6 +4,7 @@ use std::fmt::Debug;
 use crate::elements::PyCometElements;
 use crate::state::PyState;
 use crate::uncertain_state::PyUncertainState;
+use kete_core::constants::GMS_SQRT;
 use kete_core::elements::CometElements;
 use kete_core::prelude;
 use kete_core::propagation::NonGravModel;
@@ -12,7 +13,7 @@ use pyo3::prelude::*;
 
 /// Horizons object properties
 /// Physical, orbital, and observational properties of a solar system object as recorded in JPL Horizons.
-#[pyclass(frozen, module = "kete")]
+#[pyclass(frozen, module = "kete", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct HorizonsProperties {
     /// The MPC designation of the object.
@@ -269,6 +270,8 @@ impl HorizonsProperties {
                     "No longitude of ascending node defined".into(),
                 ))?
                 .to_radians(),
+            center_id: 10,
+            gm_sqrt: GMS_SQRT,
         }))
     }
 
@@ -417,6 +420,8 @@ fn build_uncertain_state(
             peri_dist: get("peri_dist")?,
             peri_time: get("peri_time")?.into(),
             lon_of_ascending: get("lon_of_ascending")?.to_radians(),
+            center_id: 10,
+            gm_sqrt: GMS_SQRT,
         };
 
         let deg2rad = std::f64::consts::PI / 180.0;

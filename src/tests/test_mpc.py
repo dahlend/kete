@@ -119,7 +119,8 @@ def test_mpc_obs_to_observations_ground():
     assert obs.observer.center_id == 10
     # Sigma should be in arcseconds (default 0.1 arcsec).
     assert abs(obs.sigma_dec - 0.1) < 1e-10
-    assert obs.sigma_ra > 0.1  # cos(dec) factor makes RA sigma larger
+    # cos(dec) factor makes RA sigma larger
+    assert obs.sigma_ra > 0.1
 
 
 def test_mpc_obs_to_observations_spacecraft():

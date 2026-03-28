@@ -286,7 +286,8 @@ fn nongrav_param_partials(
             let mut eval_pos = *pos;
             let pos_hat = pos.normalize();
             let t_hat = (vel - pos_hat * vel.dot(&pos_hat)).normalize();
-            let n_hat = t_hat.cross(&pos_hat); // perpendicular unit vecs -> already unit length
+            // perpendicular unit vecs -> already unit length
+            let n_hat = t_hat.cross(&pos_hat);
 
             if *dt != 0.0 {
                 (eval_pos, _) = analytic_2_body((-dt).into(), pos, vel, None).unwrap();
@@ -457,9 +458,11 @@ mod tests {
     fn test_state() -> State<Equatorial> {
         State::new(
             Desig::Name("Test".into()),
-            2451545.0.into(), // J2000.0
+            // J2000.0
+            2451545.0.into(),
             [1.0, 0.0, 0.0].into(),
-            [0.0, 0.01720209895, 0.0].into(), // ~circular at 1 AU
+            // ~circular at 1 AU
+            [0.0, 0.01720209895, 0.0].into(),
             0,
         )
     }
@@ -468,7 +471,8 @@ mod tests {
     fn stm_n_body_finite_difference_validation() {
         // Validate the variational STM against finite-difference-of-trajectory.
         let state = test_state();
-        let jd_final = (2451545.0 + 30.0).into(); // 30 days
+        // 30 days
+        let jd_final = (2451545.0 + 30.0).into();
 
         let (_final_state, sens) = compute_state_transition(&state, jd_final, false, None).unwrap();
 
@@ -623,7 +627,8 @@ mod tests {
 
         for row in 0..6 {
             let fd = (vec_p[row] - vec_m[row]) / (2.0 * eps_beta);
-            let var = sens[(row, 6)]; // column 6 = beta sensitivity
+            // column 6 = beta sensitivity
+            let var = sens[(row, 6)];
             let abs_err = (fd - var).abs();
             let scale = fd.abs().max(var.abs()).max(1e-10);
             assert!(
@@ -641,7 +646,8 @@ mod tests {
     fn stm_long_arc_90_day() {
         // Validate STM over a 90-day arc against finite-difference-of-trajectory.
         let state = test_state();
-        let jd_final = (2451545.0 + 90.0).into(); // 90 days
+        // 90 days
+        let jd_final = (2451545.0 + 90.0).into();
 
         let (_final_state, sens) = compute_state_transition(&state, jd_final, false, None).unwrap();
 

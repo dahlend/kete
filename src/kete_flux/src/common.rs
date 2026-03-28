@@ -30,9 +30,9 @@
 use nalgebra::UnitVector3;
 use std::f64::consts::PI;
 
-use crate::constants::{
+use kete_core::constants::{
     AU_KM, NEOS_BANDS, NEOS_SUN_CORRECTION, NEOS_ZERO_MAG, SOLAR_FLUX, STEFAN_BOLTZMANN,
-    WISE_BANDS_300K, WISE_CC, WISE_SUN_CORRECTION, WISE_ZERO_MAG_300K,
+    V_MAG_ZERO, WISE_BANDS_300K, WISE_CC, WISE_SUN_CORRECTION, WISE_ZERO_MAG_300K,
 };
 
 /// A function which computes the color correction on a single facet for NEATM and FRM.
@@ -41,7 +41,7 @@ use crate::constants::{
 pub type ColorCorrFn = fn(f64) -> f64;
 
 /// Generic band information
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct BandInfo {
     /// Effective central band wavelengths in nm
     pub wavelength: f64,
@@ -64,7 +64,7 @@ impl BandInfo {
     /// ``solar_correction``: Flux correction for each of the bands for reflected light
     /// from the sun, 1.0 means no change.
     #[must_use]
-    pub fn new(
+    pub const fn new(
         wavelength: f64,
         solar_correction: f64,
         zero_mag: f64,
@@ -78,55 +78,52 @@ impl BandInfo {
         }
     }
 
-    #[must_use]
-    /// New [`BandInfo`] containing NEOS band information.
-    pub fn new_neos() -> [Self; 2] {
-        [
-            Self::new(
-                NEOS_BANDS[0],
-                NEOS_SUN_CORRECTION[0],
-                NEOS_ZERO_MAG[0],
-                None,
-            ),
-            Self::new(
-                NEOS_BANDS[1],
-                NEOS_SUN_CORRECTION[1],
-                NEOS_ZERO_MAG[1],
-                None,
-            ),
-        ]
-    }
+    /// [`BandInfo`] for the Johnson V band (551 nm).
+    pub const V: Self = Self::new(551.0, 1.0, V_MAG_ZERO, None);
 
-    #[must_use]
-    /// New [`BandInfo`] containing WISE band information.
-    pub fn new_wise() -> [Self; 4] {
-        [
-            Self::new(
-                WISE_BANDS_300K[0],
-                WISE_SUN_CORRECTION[0],
-                WISE_ZERO_MAG_300K[0],
-                Some(WISE_CC[0]),
-            ),
-            Self::new(
-                WISE_BANDS_300K[1],
-                WISE_SUN_CORRECTION[1],
-                WISE_ZERO_MAG_300K[1],
-                Some(WISE_CC[1]),
-            ),
-            Self::new(
-                WISE_BANDS_300K[2],
-                WISE_SUN_CORRECTION[2],
-                WISE_ZERO_MAG_300K[2],
-                Some(WISE_CC[2]),
-            ),
-            Self::new(
-                WISE_BANDS_300K[3],
-                WISE_SUN_CORRECTION[3],
-                WISE_ZERO_MAG_300K[3],
-                Some(WISE_CC[3]),
-            ),
-        ]
-    }
+    /// [`BandInfo`] array for the two NEOS bands.
+    pub const NEOS: [Self; 2] = [
+        Self::new(
+            NEOS_BANDS[0],
+            NEOS_SUN_CORRECTION[0],
+            NEOS_ZERO_MAG[0],
+            None,
+        ),
+        Self::new(
+            NEOS_BANDS[1],
+            NEOS_SUN_CORRECTION[1],
+            NEOS_ZERO_MAG[1],
+            None,
+        ),
+    ];
+
+    /// [`BandInfo`] array for the four WISE bands.
+    pub const WISE: [Self; 4] = [
+        Self::new(
+            WISE_BANDS_300K[0],
+            WISE_SUN_CORRECTION[0],
+            WISE_ZERO_MAG_300K[0],
+            Some(WISE_CC[0]),
+        ),
+        Self::new(
+            WISE_BANDS_300K[1],
+            WISE_SUN_CORRECTION[1],
+            WISE_ZERO_MAG_300K[1],
+            Some(WISE_CC[1]),
+        ),
+        Self::new(
+            WISE_BANDS_300K[2],
+            WISE_SUN_CORRECTION[2],
+            WISE_ZERO_MAG_300K[2],
+            Some(WISE_CC[2]),
+        ),
+        Self::new(
+            WISE_BANDS_300K[3],
+            WISE_SUN_CORRECTION[3],
+            WISE_ZERO_MAG_300K[3],
+            Some(WISE_CC[3]),
+        ),
+    ];
 }
 
 /// Output of a flux calculation.
@@ -223,10 +220,10 @@ pub fn black_body_flux(temp: f64, wavelength: f64) -> f64 {
 pub fn lambertian_flux(
     facet_normal: &UnitVector3<f64>,
     obs2obj: &UnitVector3<f64>,
-    facet_flux: &f64,
-    obs2obj_r: &f64,
-    diameter: &f64,
-    emissivity: &f64,
+    facet_flux: f64,
+    obs2obj_r: f64,
+    diameter: f64,
+    emissivity: f64,
 ) -> f64 {
     lambertian_vis_scale_factor(facet_normal, obs2obj, obs2obj_r, diameter, emissivity) * facet_flux
 }
@@ -235,8 +232,8 @@ pub fn lambertian_flux(
 /// This is a helper function for [`lambertian_flux`], see that function for
 /// more description.
 ///
-/// This is broken out into its own function because of [`crate::flux::FrmParams`] and
-/// [`crate::flux::NeatmParams`] running over the same geometry for different
+/// This is broken out into its own function because the FRM and
+/// NEATM models run over the same geometry for different
 /// wavelengths.
 /// This allows this to be computed once per geometry, but then multiple wavelengths
 /// be multiplied against it. This resulted in a 50% speedup in FRM and NEATM overall.
@@ -245,9 +242,9 @@ pub fn lambertian_flux(
 pub fn lambertian_vis_scale_factor(
     facet_normal: &UnitVector3<f64>,
     obs2obj: &UnitVector3<f64>,
-    obs2obj_r: &f64,
-    diameter: &f64,
-    emissivity: &f64,
+    obs2obj_r: f64,
+    diameter: f64,
+    emissivity: f64,
 ) -> f64 {
     // effective scaling due to distance from the observer
     let scale = (obs2obj_r * AU_KM / diameter).powi(-2);
@@ -265,7 +262,7 @@ pub fn lambertian_vis_scale_factor(
 /// # Arguments
 ///
 /// * `sun_dist` - Object distance to the Sun in AU.
-/// * `geom_albedo` - Geometric Albedo.
+/// * `vis_albedo` - Visible geometric albedo.
 /// * `g_param` - The G phase parameter.
 /// * `beaming` - Beaming of the object, this is geometry dependent.
 /// * `emissivity` - The emissivity of the surface.
@@ -273,14 +270,14 @@ pub fn lambertian_vis_scale_factor(
 #[must_use]
 pub fn sub_solar_temperature(
     sun_dist: f64,
-    geom_albedo: f64,
+    vis_albedo: f64,
     g_param: f64,
     beaming: f64,
     emissivity: f64,
 ) -> f64 {
     let phase_integral = 0.29 + 0.684 * g_param;
 
-    let bond_albedo = geom_albedo * phase_integral;
+    let bond_albedo = vis_albedo * phase_integral;
     let reflected = (1.0 - bond_albedo) * SOLAR_FLUX / sun_dist.powi(2);
     let temp = reflected / (beaming * emissivity * STEFAN_BOLTZMANN);
     if temp <= 0.0 {
@@ -300,7 +297,7 @@ pub fn mag_to_flux(mag: f64, mag_zero_flux: f64) -> f64 {
     10_f64.powf(mag / -2.5) * mag_zero_flux
 }
 
-/// Given a flux in Hy and a zero point magnitude in Jy, return the magnitude.
+/// Given a flux in Jy and a zero point magnitude in Jy, return the magnitude.
 ///
 /// # Arguments
 ///
@@ -314,8 +311,8 @@ pub fn flux_to_mag(flux: f64, mag_zero_flux: f64) -> f64 {
 #[cfg(test)]
 mod tests {
 
-    use crate::constants::{C_M_PER_S, SOLAR_FLUX, STEFAN_BOLTZMANN};
-    use crate::flux::*;
+    use crate::*;
+    use kete_core::constants::{C_M_PER_S, SOLAR_FLUX, STEFAN_BOLTZMANN};
     use std::f64::consts::E;
 
     #[test]

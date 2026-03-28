@@ -82,9 +82,13 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<fovs::PyOmniDirectional>()?;
     m.add_class::<fovs::FOVList>()?;
 
-    m.add_class::<flux::PyNeatmParams>()?;
-    m.add_class::<flux::PyFrmParams>()?;
     m.add_class::<flux::PyModelResults>()?;
+    m.add_class::<flux::PyTriangleShape>()?;
+    m.add_class::<flux::PyFluxObs>()?;
+    m.add_class::<flux::PyParamPrior>()?;
+    m.add_class::<flux::PyFluxPriors>()?;
+    m.add_class::<flux::PySampleStats>()?;
+    m.add_class::<flux::PyFitResult>()?;
 
     m.add_class::<horizons::HorizonsProperties>()?;
 
@@ -123,8 +127,7 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(flux::hg_phase_curve_correction_py, m)?)?;
     m.add_function(wrap_pyfunction!(flux::sub_solar_temperature_py, m)?)?;
     m.add_function(wrap_pyfunction!(flux::black_body_flux_py, m)?)?;
-    m.add_function(wrap_pyfunction!(flux::neatm_thermal_py, m)?)?;
-    m.add_function(wrap_pyfunction!(flux::frm_thermal_py, m)?)?;
+
     m.add_function(wrap_pyfunction!(flux::neatm_facet_temperature_py, m)?)?;
     m.add_function(wrap_pyfunction!(flux::frm_facet_temperature_py, m)?)?;
     m.add_function(wrap_pyfunction!(flux::lambertian_flux_py, m)?)?;
@@ -135,10 +138,14 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(flux::comet_mags_py, m)?)?;
     m.add_function(wrap_pyfunction!(flux::fib_lattice_vecs_py, m)?)?;
     m.add_function(wrap_pyfunction!(flux::solar_flux_py, m)?)?;
+    m.add_function(wrap_pyfunction!(flux::neatm_model_flux_py, m)?)?;
+    m.add_function(wrap_pyfunction!(flux::frm_model_flux_py, m)?)?;
+    m.add_function(wrap_pyfunction!(flux::resolve_hg_params_py, m)?)?;
     m.add_function(wrap_pyfunction!(
         flux::comet_dust_phase_curve_correction_py,
         m
     )?)?;
+    m.add_function(wrap_pyfunction!(flux::fit_model_py, m)?)?;
 
     m.add_function(wrap_pyfunction!(spice::spk_load_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::spk_loaded_objects_py, m)?)?;

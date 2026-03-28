@@ -1,8 +1,8 @@
 use crate::{frame::PyFrames, vector::VectorLike};
 use kete_core::constants;
-use kete_core::flux::HGParams;
-use kete_core::flux::cometary_dust_phase_curve_correction;
-use kete_core::flux::hg_phase_curve_correction;
+use kete_flux::cometary_dust_phase_curve_correction;
+use kete_flux::hg_phase_curve_correction;
+use kete_flux::{hg_apparent_flux, hg_apparent_mag, resolve_hg_params};
 use pyo3::PyResult;
 use pyo3::pyfunction;
 
@@ -76,7 +76,7 @@ pub fn comet_dust_phase_curve_correction_py(phase_angle: f64) -> f64 {
 ///     The G parameter of the object.
 /// wavelength :
 ///     The wavelength of the object in nanometers.
-/// v_albedo :
+/// vis_albedo :
 ///     The geometric albedo of the object at the specified wavelength.
 /// h_mag :
 ///     H magnitude of the object in V band.
@@ -92,36 +92,26 @@ pub fn comet_dust_phase_curve_correction_py(phase_angle: f64) -> f64 {
 ///     Flux in Jy per unit frequency.
 #[allow(clippy::too_many_arguments)]
 #[pyfunction]
-#[pyo3(name = "hg_apparent_flux", signature = (sun2obj, sun2obs, g_param, wavelength, v_albedo,
+#[pyo3(name = "hg_apparent_flux", signature = (sun2obj, sun2obs, g_param, wavelength, vis_albedo,
     h_mag=None, diameter=None, c_hg=None))]
 pub fn hg_apparent_flux_py(
     sun2obj: VectorLike,
     sun2obs: VectorLike,
     g_param: f64,
     wavelength: f64,
-    v_albedo: f64,
+    vis_albedo: f64,
     h_mag: Option<f64>,
     diameter: Option<f64>,
     c_hg: Option<f64>,
 ) -> PyResult<f64> {
     let c_hg = c_hg.unwrap_or(constants::C_V);
-    let sun2obj = sun2obj.into_vector(PyFrames::Equatorial).into();
-    let sun2obs = sun2obs.into_vector(PyFrames::Equatorial).into();
-    let params = HGParams::try_new(
-        "".into(),
-        g_param,
-        h_mag,
-        Some(c_hg),
-        Some(v_albedo),
-        diameter,
-    )?;
-    params
-        .apparent_flux(&sun2obj, &sun2obs, wavelength, v_albedo)
-        .ok_or_else(|| {
-            pyo3::exceptions::PyValueError::new_err(
-                "Failed to compute apparent flux. Ensure h_mag or diameter is provided.",
-            )
-        })
+    let sun2obj = sun2obj.into_vector(PyFrames::Ecliptic).into();
+    let sun2obs = sun2obs.into_vector(PyFrames::Ecliptic).into();
+    let (_h_mag, _vis_albedo, diameter) =
+        resolve_hg_params(h_mag, Some(vis_albedo), diameter, Some(c_hg))?;
+    Ok(hg_apparent_flux(
+        g_param, diameter, &sun2obj, &sun2obs, wavelength, vis_albedo,
+    ))
 }
 
 /// Compute the apparent magnitude of an object using the absolute magnitude H, G, and
@@ -157,8 +147,7 @@ pub fn hg_apparent_mag_py(
     h_mag: f64,
     g_param: f64,
 ) -> f64 {
-    let sun2obj = sun2obj.into_vector(PyFrames::Equatorial).into();
-    let sun2obs = sun2obs.into_vector(PyFrames::Equatorial).into();
-    let params = HGParams::new("".into(), g_param, h_mag, None);
-    params.apparent_mag(&sun2obj, &sun2obs)
+    let sun2obj = sun2obj.into_vector(PyFrames::Ecliptic).into();
+    let sun2obs = sun2obs.into_vector(PyFrames::Ecliptic).into();
+    hg_apparent_mag(g_param, h_mag, &sun2obj, &sun2obs)
 }

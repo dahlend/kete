@@ -12,24 +12,25 @@ license.workspace = true
 repository.workspace = true
 
 [workspace]
-members = ["src/kete_core", "src/kete_stats", "src/kete_fitting"]
-default-members = ["src/kete_core", "src/kete_stats", "src/kete_fitting"]
+members = ["src/kete_core", "src/kete_stats", "src/kete_fitting", "src/kete_flux"]
+default-members = ["src/kete_core", "src/kete_stats", "src/kete_fitting", "src/kete_flux"]
 
 [workspace.package]
 version = "2.1.6"
 edition = "2024"
-rust-version = "1.90"
+rust-version = "1.93"
 license = "BSD-3-Clause"
 license-file = "LICENSE"
 repository = "https://github.com/dahlend/kete"
 
 [dependencies]
 kete_core = { version = "*", path = "src/kete_core", features=["pyo3", "polars"]}
-kete_stats = {version = "*", path = "src/kete_stats"}
-kete_fitting = {version = "*", path = "src/kete_fitting"}
-pyo3 = { version =  "^0.25.0", features = ["extension-module", "abi3-py39"] }
-serde = { version = "^1.0.203", features = ["derive"] }
-nalgebra = {version = "^0.33.0", features = ["rayon"]}
+kete_flux = { version = "*", path = "src/kete_flux"}
+kete_stats = { version = "*", path = "src/kete_stats"}
+kete_fitting = { version = "*", path = "src/kete_fitting"}
+pyo3 = { version =  "^0.28.2", features = ["extension-module", "abi3-py39"] }
+serde = { version = "^1.0.228", features = ["derive"] }
+nalgebra = {version = "^0.34.1", features = ["rayon"]}
 rand = "^0.10.0"
 rand_distr = "^0.6.0"
 itertools = "^0.14.0"

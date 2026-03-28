@@ -17,7 +17,7 @@ import kete
 def flux_per_wavelength(
     phase=np.radians(90),
     solar_elong=np.radians(83),
-    v_albedo=0.17,
+    vis_albedo=0.17,
     diameter=0.140,
     wavelength=np.logspace(np.log10(300), np.log10(30000), 100),
 ):
@@ -52,36 +52,28 @@ def flux_per_wavelength(
 
     sun2obj = kete.Vector([np.cos(alpha) * peri_dist, np.sin(alpha) * peri_dist, 0])
 
-    fluxes = []
-    for wave in wavelength:
-        flux = kete.flux.neatm_flux(
-            sun2obj,
-            sun2sc,
-            v_albedo=v_albedo,
-            g_param=0.15,
-            beaming=1.5,
-            diameter=diameter,
-            wavelength=wave,
-            emissivity=0.9,
-        )
-        refl_flux = kete.flux.hg_apparent_flux(
-            sun2obj,
-            sun2sc,
-            g_param=0.15,
-            diameter=diameter,
-            wavelength=wave,
-            v_albedo=v_albedo,
-        )
-        fluxes.append((flux, refl_flux))
+    result = kete.flux.neatm_model_flux(
+        sun2obj,
+        sun2sc,
+        band_albedos=[vis_albedo] * len(wavelength),
+        diameter=diameter,
+        vis_albedo=vis_albedo,
+        g_param=0.15,
+        beaming=1.5,
+        emissivity=0.9,
+        band_wavelengths=list(wavelength),
+    )
 
-    return wavelength, np.array(fluxes)
+    fluxes = np.array(list(zip(result.thermal_fluxes, result.hg_fluxes)))
+
+    return wavelength, fluxes
 
 
 # The values selected here were chosen to closely match the previously circulated plot.
 y_min = 1000
 y_max = 0
 for ls, albedo in zip(["--", "-"], [0.17, 0.03]):
-    wavelength, fluxes = flux_per_wavelength(v_albedo=albedo)
+    wavelength, fluxes = flux_per_wavelength(vis_albedo=albedo)
     total_flux = np.sum(fluxes, axis=1)
     plt.plot(
         wavelength / 1000,

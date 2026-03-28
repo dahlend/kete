@@ -31,7 +31,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use crate::constants::GMS_SQRT;
+use crate::constants::{GMS_SQRT, GravParams};
 use crate::frames::Ecliptic;
 use crate::prelude::{Desig, KeteResult, State};
 use crate::propagation::{PARABOLIC_ECC_LIMIT, compute_eccentric_anomaly, compute_true_anomaly};
@@ -41,8 +41,6 @@ use nalgebra::Vector3;
 use std::f64::consts::TAU;
 
 /// Cometary Orbital Elements.
-///
-/// Central mass is assumed to be the Sun, not the solar system barycenter.
 ///
 /// Units are:
 /// - Radians
@@ -73,33 +71,55 @@ pub struct CometElements {
 
     /// Perihelion distance in AU
     pub peri_dist: f64,
+
+    /// NAIF ID of the central body (default: 10 for the Sun)
+    pub center_id: i32,
+
+    /// Square root of the gravitational parameter of the central body.
+    /// Units: AU^(3/2) / Day
+    pub gm_sqrt: f64,
 }
 
 impl CometElements {
+    /// Look up the sqrt of the gravitational parameter for a given NAIF center ID.
+    /// Falls back to the Sun if the ID is not found.
+    #[must_use]
+    fn gm_sqrt_for_center(center_id: i32) -> f64 {
+        let known = GravParams::known_masses();
+        known
+            .iter()
+            .find(|p| p.naif_id == center_id)
+            .map_or(GMS_SQRT, |p| p.mass.sqrt())
+    }
+
     /// Create cometary elements from a state.
     #[must_use]
     pub fn from_state(state: &State<Ecliptic>) -> Self {
+        let gm_sqrt = Self::gm_sqrt_for_center(state.center_id);
         Self::from_pos_vel(
             state.desig.clone(),
             state.epoch,
             &state.pos.into(),
             &state.vel.into(),
+            state.center_id,
+            gm_sqrt,
         )
     }
 
     /// Construct Cometary Orbital elements from a position and velocity vector.
     ///
-    /// The units of the vectors are AU and AU/Day, with the central mass assumed
-    /// to be the Sun.
+    /// The units of the vectors are AU and AU/Day.
     ///
     fn from_pos_vel(
         desig: Desig,
         epoch: Time<TDB>,
         pos: &Vector3<f64>,
         vel: &Vector3<f64>,
+        center_id: i32,
+        gm_sqrt: f64,
     ) -> Self {
         let epoch = epoch.jd;
-        let vel_scaled = vel / GMS_SQRT;
+        let vel_scaled = vel / gm_sqrt;
         let v_mag2 = vel_scaled.norm_squared();
         let p_mag = pos.norm();
         let vp_mag = pos.dot(&vel_scaled);
@@ -154,11 +174,11 @@ impl CometElements {
                     true_anomaly = -true_anomaly;
                 }
                 let d = (true_anomaly / 2.0).tan();
-                let dt = (2_f64.sqrt() * peri_dist.powf(1.5) / GMS_SQRT) * (d + d.powi(3) / 3.0);
+                let dt = (2_f64.sqrt() * peri_dist.powf(1.5) / gm_sqrt) * (d + d.powi(3) / 3.0);
                 epoch - dt
             } else if ecc < 1e-6 {
                 let semi_major = (2.0 / p_mag - v_mag2).recip();
-                let mean_motion = semi_major.abs().powf(-1.5) * GMS_SQRT;
+                let mean_motion = semi_major.abs().powf(-1.5) * gm_sqrt;
                 // for circular cases mean_anomaly == true_anomaly
                 // for circular orbits, the eccentric vector is 0, so we use the
                 // ascending node as the reference for the true anomaly.
@@ -170,7 +190,7 @@ impl CometElements {
             } else {
                 // Hyperbolic or elliptical
                 let semi_major = (2.0 / p_mag - v_mag2).recip();
-                let mean_motion = semi_major.abs().powf(-1.5) * GMS_SQRT;
+                let mean_motion = semi_major.abs().powf(-1.5) * gm_sqrt;
                 let mean_anomaly: f64 = {
                     let x_bar = (ang_vec_mag.powi(2) - p_mag) / ecc;
                     let y_bar = vp_mag / ecc * ang_vec_mag;
@@ -196,12 +216,12 @@ impl CometElements {
             peri_time: peri_time.into(),
             peri_arg,
             peri_dist,
+            center_id,
+            gm_sqrt,
         }
     }
 
     /// Convert cometary elements to an [`State`] if possible.
-    ///
-    /// Center ID is set to 10.
     ///
     /// # Errors
     /// Conversion can fail for numerous reasons, examples include non-finite values, or if
@@ -213,7 +233,7 @@ impl CometElements {
             self.epoch,
             pos.into(),
             vel.into(),
-            10,
+            self.center_id,
         ))
     }
 
@@ -233,9 +253,9 @@ impl CometElements {
         };
 
         let mean_motion = if parabolic {
-            GMS_SQRT
+            self.gm_sqrt
         } else {
-            semi_major.abs().powf(-1.5) * GMS_SQRT
+            semi_major.abs().powf(-1.5) * self.gm_sqrt
         };
 
         let mean_anom = mean_motion * (self.epoch - self.peri_time).elapsed;
@@ -253,8 +273,8 @@ impl CometElements {
 
             x = semi_major * (cos_e - self.eccentricity);
             y = b * sin_e;
-            x_dot = -semi_major / e_dot * sin_e * GMS_SQRT;
-            y_dot = b / e_dot * cos_e * GMS_SQRT;
+            x_dot = -semi_major / e_dot * sin_e * self.gm_sqrt;
+            y_dot = b / e_dot * cos_e * self.gm_sqrt;
         } else if hyperbolic {
             let sinh_h = ecc_anom.sinh();
             let cosh_h = ecc_anom.cosh();
@@ -264,16 +284,16 @@ impl CometElements {
 
             x = semi_major * (cosh_h - self.eccentricity);
             y = b * sinh_h;
-            x_dot = -semi_major / h_dot * sinh_h * GMS_SQRT;
-            y_dot = -b / h_dot * cosh_h * GMS_SQRT;
+            x_dot = -semi_major / h_dot * sinh_h * self.gm_sqrt;
+            y_dot = -b / h_dot * cosh_h * self.gm_sqrt;
         } else {
             // Parabolic
             let d_dot = self.peri_dist + ecc_anom.powi(2) / 2.0;
 
             x = self.peri_dist - ecc_anom.powi(2) / 2.0;
             y = (2.0 * self.peri_dist).sqrt() * ecc_anom;
-            x_dot = -ecc_anom / d_dot * GMS_SQRT;
-            y_dot = (2.0 * self.peri_dist).sqrt() / d_dot * GMS_SQRT;
+            x_dot = -ecc_anom / d_dot * self.gm_sqrt;
+            y_dot = (2.0 * self.peri_dist).sqrt() / d_dot * self.gm_sqrt;
         }
 
         let (s_w, c_w) = self.peri_arg.sin_cos();
@@ -327,7 +347,7 @@ impl CometElements {
         let semi_major = self.semi_major();
         match semi_major {
             a if a <= 1e-8 => f64::INFINITY,
-            a => TAU * a.powf(1.5) / GMS_SQRT,
+            a => TAU * a.powf(1.5) / self.gm_sqrt,
         }
     }
 
@@ -345,9 +365,9 @@ impl CometElements {
     pub fn mean_motion(&self) -> f64 {
         match self.eccentricity {
             ecc if ((ecc - 1.0).abs() <= PARABOLIC_ECC_LIMIT) => {
-                GMS_SQRT * 1.5 / 2_f64.sqrt() / self.peri_dist.powf(1.5)
+                self.gm_sqrt * 1.5 / 2_f64.sqrt() / self.peri_dist.powf(1.5)
             }
-            _ => GMS_SQRT / self.semi_major().abs().powf(1.5),
+            _ => self.gm_sqrt / self.semi_major().abs().powf(1.5),
         }
     }
 
@@ -378,6 +398,7 @@ impl CometElements {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::GMS_SQRT;
 
     #[test]
     fn test_specific_conversion() {
@@ -392,6 +413,8 @@ mod tests {
                 peri_time: 2459273.227910867.into(),
                 peri_arg: 4.229481513899533,
                 peri_dist: 0.5613867506855604,
+                center_id: 10,
+                gm_sqrt: GMS_SQRT,
             };
             assert!(elem.to_pos_vel().is_ok());
         }
@@ -406,6 +429,8 @@ mod tests {
                 peri_time: 2454482.5825015577.into(),
                 peri_arg: 0.823935226897,
                 peri_dist: 5.594792535298549,
+                center_id: 10,
+                gm_sqrt: GMS_SQRT,
             };
             assert!((elem.true_anomaly().unwrap() - 1.198554792).abs() < 1e-6);
             assert!(elem.to_pos_vel().is_ok());
@@ -420,6 +445,8 @@ mod tests {
                 peri_time: 2455369.7.into(),
                 peri_arg: -0.8726646259,
                 peri_dist: 0.5,
+                center_id: 10,
+                gm_sqrt: GMS_SQRT,
             };
             assert!((elem.true_anomaly().unwrap() - 2.6071638616282553).abs() < 1e-6);
         }
@@ -441,6 +468,8 @@ mod tests {
                                 peri_time: 10.0.into(),
                                 peri_arg,
                                 peri_dist,
+                                center_id: 10,
+                                gm_sqrt: GMS_SQRT,
                             };
                             let [pos, vel] = elem.to_pos_vel().unwrap();
                             assert!(
@@ -452,6 +481,8 @@ mod tests {
                                 10.0.into(),
                                 &pos.into(),
                                 &vel.into(),
+                                10,
+                                GMS_SQRT,
                             );
                             assert!((peri_dist - new_elem.peri_dist).abs() < 1e-8);
                             assert!((ecc - new_elem.eccentricity).abs() < 1e-8);
@@ -480,6 +511,8 @@ mod tests {
                                         peri_time: peri_time.into(),
                                         peri_arg,
                                         peri_dist,
+                                        center_id: 10,
+                                        gm_sqrt: GMS_SQRT,
                                     };
                                     let [pos, vel] =
                                         elem.to_pos_vel().expect("Failed to convert to state.");
@@ -488,6 +521,8 @@ mod tests {
                                         epoch.into(),
                                         &pos.into(),
                                         &vel.into(),
+                                        10,
+                                        GMS_SQRT,
                                     );
                                     let [new_pos, new_vel] =
                                         new_elem.to_pos_vel().expect("Failed to convert to state.");
@@ -541,6 +576,8 @@ mod tests {
                                     peri_time: peri_time.into(),
                                     peri_arg,
                                     peri_dist,
+                                    center_id: 10,
+                                    gm_sqrt: GMS_SQRT,
                                 };
                                 let [pos, vel] = elem.to_pos_vel().unwrap();
                                 let new_elem = CometElements::from_pos_vel(
@@ -548,6 +585,8 @@ mod tests {
                                     epoch.into(),
                                     &pos.into(),
                                     &vel.into(),
+                                    10,
+                                    GMS_SQRT,
                                 );
 
                                 let [new_pos, new_vel] = new_elem.to_pos_vel().unwrap();

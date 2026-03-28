@@ -1054,7 +1054,8 @@ mod tests {
         let sorted2 = data2.into_sorted();
 
         let ks_stat: f64 = sorted1.two_sample_ks_statistic(&sorted2);
-        assert!(ks_stat.abs() < 1e-10); // Should be 0 for identical distributions
+        // Should be 0 for identical distributions
+        assert!(ks_stat.abs() < 1e-10);
     }
 
     #[test]
@@ -1105,8 +1106,10 @@ mod tests {
         let data = data.into_sorted();
 
         // Test clamping
-        assert_eq!(data.quantile(-0.5), 1.0); // Should clamp to 0
-        assert_eq!(data.quantile(1.5), 5.0); // Should clamp to 1
+        // Should clamp to 0
+        assert_eq!(data.quantile(-0.5), 1.0);
+        // Should clamp to 1
+        assert_eq!(data.quantile(1.5), 5.0);
     }
 
     #[test]
@@ -1233,7 +1236,8 @@ mod tests {
 
         // Should return a single element (the median)
         assert_eq!(clipped.len(), 1);
-        assert_eq!(clipped[0], 3.5); // median of [1,2,3,4,5,6] is 3.5
+        // median of [1,2,3,4,5,6] is 3.5
+        assert_eq!(clipped[0], 3.5);
     }
 
     #[test]
@@ -1416,7 +1420,8 @@ mod tests {
 
         // When uncertainties vary, n_eff < n
         let values = vec![1.0, 2.0, 3.0];
-        let uncertainties = vec![0.1, 1.0, 10.0]; // Very different uncertainties
+        // Very different uncertainties
+        let uncertainties = vec![0.1, 1.0, 10.0];
 
         let data: UncertainData<f64> = (values.as_slice(), uncertainties.as_slice())
             .try_into()

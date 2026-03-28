@@ -36,12 +36,14 @@ use pyo3::prelude::*;
 #[derive(Debug)]
 pub struct PyTime(pub Time<TDB>);
 
-impl<'py> FromPyObject<'py> for PyTime {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for PyTime {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         if let Ok(jd) = ob.extract::<f64>() {
             return Ok(PyTime(Time::new(jd)));
         }
-        Ok(PyTime(ob.downcast_exact::<PyTime>()?.get().0))
+        Ok(PyTime(ob.cast_exact::<PyTime>()?.get().0))
     }
 }
 

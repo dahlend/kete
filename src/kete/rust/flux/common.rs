@@ -1,14 +1,12 @@
-use core::f64;
-
 use crate::{frame::PyFrames, vector::VectorLike};
 use itertools::Itertools;
 use kete_core::constants::{
-    C_V, w1_color_correction, w2_color_correction, w3_color_correction, w4_color_correction,
+    w1_color_correction, w2_color_correction, w3_color_correction, w4_color_correction,
 };
-use kete_core::flux::*;
 use kete_core::prelude::Error;
+use kete_flux::*;
 use nalgebra::UnitVector3;
-use pyo3::{PyResult, pyfunction};
+use pyo3::{PyResult, pyclass, pyfunction, pymethods};
 
 /// Calculate the visible flux at the observer assuming a convex faceted object made up
 /// of a collection of lambertian surfaces.
@@ -46,7 +44,7 @@ pub fn lambertian_flux_py(
         .zip(facet_flux)
         .map(|(normal, flux)| {
             let normal = UnitVector3::new_normalize(normal.into());
-            lambertian_flux(&normal, &obs2obj, &flux, &obs2obj_r, &diameter, &emissivity)
+            lambertian_flux(&normal, &obs2obj, flux, obs2obj_r, diameter, emissivity)
         })
         .sum()
 }
@@ -77,8 +75,8 @@ pub fn solar_flux_py(dist: f64, wavelength: f64) -> PyResult<f64> {
 /// ----------
 /// sun_dist :
 ///     Distance from the object to the sun in AU.
-/// geom_albedo :
-///     Geometric albedo.
+/// vis_albedo :
+///     Visible geometric albedo.
 /// g_param :
 ///     G Phase parameter in the HG system.
 /// beaming :
@@ -86,15 +84,15 @@ pub fn solar_flux_py(dist: f64, wavelength: f64) -> PyResult<f64> {
 /// emissivity :
 ///     Emissivity of the object, 0.9 by default.
 #[pyfunction]
-#[pyo3(name = "sub_solar_temperature", signature = (sun_dist, geom_albedo, g_param, beaming, emissivity=0.9))]
+#[pyo3(name = "sub_solar_temperature", signature = (sun_dist, vis_albedo, g_param, beaming, emissivity=0.9))]
 pub fn sub_solar_temperature_py(
     sun_dist: f64,
-    geom_albedo: f64,
+    vis_albedo: f64,
     g_param: f64,
     beaming: f64,
     emissivity: f64,
 ) -> f64 {
-    sub_solar_temperature(sun_dist, geom_albedo, g_param, beaming, emissivity)
+    sub_solar_temperature(sun_dist, vis_albedo, g_param, beaming, emissivity)
 }
 
 /// Compute the black body flux at the specified temperatures and wavelength.
@@ -190,145 +188,6 @@ pub fn frm_facet_temperature_py(
             frm_facet_temperature(&UnitVector3::new_normalize(normal), subsolar_temp, &obj2sun)
         })
         .collect_vec()
-}
-
-/// Calculate the flux in Janskys from an object using the NEATM thermal model.
-///
-/// See :doc:`../auto_examples/plot_thermal_model`
-///
-/// Parameters
-/// ----------
-/// sun2obj :
-///     A vector-like object containing the X/Y/Z coordinates pointing from the sun
-///     to the object in units of AU.
-/// sun2obs :
-///     A vector-like object containing the X/Y/Z coordinates pointing from the sun
-///     to the observer in units of AU.
-/// v_albedo :
-///     The V geometric albedo of the object.
-/// g_param :
-///     The G parameter of the object
-/// beaming :
-///     The beaming parameter.
-/// diameter :
-///     The diameter of the object in km.
-/// wavelength :
-///     The wavelength of the object in nanometers.
-/// emissivity :
-///     The emissivity of the object, defaults to 0.9.
-///
-/// Returns
-/// -------
-/// float
-///     Flux in units of Jy.
-#[pyfunction]
-#[pyo3(name = "neatm_flux", signature = (sun2obj, sun2obs, v_albedo, g_param, beaming, diameter, wavelength, emissivity=0.9))]
-#[allow(clippy::too_many_arguments)]
-pub fn neatm_thermal_py(
-    sun2obj: VectorLike,
-    sun2obs: VectorLike,
-    v_albedo: f64,
-    g_param: f64,
-    beaming: f64,
-    diameter: f64,
-    wavelength: f64,
-    emissivity: f64,
-) -> PyResult<f64> {
-    let sun2obj = sun2obj.into_vector(PyFrames::Ecliptic).into();
-    let sun2obs = sun2obs.into_vector(PyFrames::Ecliptic).into();
-
-    let hg_params = HGParams::try_new(
-        "".into(),
-        g_param,
-        None,
-        Some(C_V),
-        Some(v_albedo),
-        Some(diameter),
-    )?;
-    let params = NeatmParams {
-        obs_bands: vec![BandInfo::new(wavelength, 1.0, f64::NAN, None)],
-        band_albedos: vec![0.0],
-        hg_params,
-        emissivity,
-        beaming,
-    };
-    params
-        .apparent_thermal_flux(&sun2obj, &sun2obs)
-        .and_then(|fluxes| fluxes.first().copied())
-        .ok_or_else(|| {
-            pyo3::exceptions::PyValueError::new_err(
-                "Failed to compute thermal flux. Check input parameters.",
-            )
-        })
-}
-
-/// Calculate the flux from an object using the FRM thermal model in Jansky.
-///
-/// This is a slightly simplified FRM model, where the pole is assumed to be in the
-/// ecliptic Z direction.
-///
-/// See :doc:`../auto_examples/plot_thermal_model`
-///
-/// Parameters
-/// ----------
-/// sun2obj : Vector
-///     A vector-like object containing the X/Y/Z coordinates pointing from the sun
-///     to the object in units of AU.
-/// sun2obs : Vector
-///     A vector-like object containing the X/Y/Z coordinates pointing from the sun
-///     to the observer in units of AU.
-/// v_albedo : float
-///     The V geometric albedo of the object.
-/// g_param : float
-///     The G parameter of the object
-/// diameter : float
-///     The diameter of the object in km.
-/// wavelength : float
-///     The wavelength of the object in nanometers.
-/// emissivity : float
-///     The emissivity of the object, defaults to 0.9.
-///
-/// Returns
-/// -------
-/// float
-///     Flux in units of Jy.
-#[pyfunction]
-#[pyo3(name = "frm_flux", signature = (sun2obj, sun2obs, v_albedo, g_param, diameter, wavelength, emissivity=0.9))]
-#[allow(clippy::too_many_arguments)]
-pub fn frm_thermal_py(
-    sun2obj: VectorLike,
-    sun2obs: VectorLike,
-    v_albedo: f64,
-    g_param: f64,
-    diameter: f64,
-    wavelength: f64,
-    emissivity: f64,
-) -> PyResult<f64> {
-    let sun2obj = sun2obj.into_vector(PyFrames::Ecliptic).into();
-    let sun2obs = sun2obs.into_vector(PyFrames::Ecliptic).into();
-    let hg_params = HGParams::try_new(
-        "".into(),
-        g_param,
-        None,
-        Some(C_V),
-        Some(v_albedo),
-        Some(diameter),
-    )?;
-
-    let params = FrmParams {
-        obs_bands: vec![BandInfo::new(wavelength, 1.0, f64::NAN, None)],
-        band_albedos: vec![0.0],
-        hg_params,
-        emissivity,
-    };
-    params
-        .apparent_thermal_flux(&sun2obj, &sun2obs)
-        .and_then(|fluxes| fluxes.first().copied())
-        .ok_or_else(|| {
-            pyo3::exceptions::PyValueError::new_err(
-                "Failed to compute thermal flux. Check input parameters.",
-            )
-        })
 }
 
 /// Given the M1/K1 and M2/K2 values, compute the apparent Comet visible magnitudes.
@@ -432,4 +291,109 @@ pub fn fib_lattice_vecs_py(n_facets: u32) -> Vec<[f64; 3]> {
         .iter()
         .map(|f| f.normal.into_inner().into())
         .collect()
+}
+
+/// A triangle-faceted ellipsoid shape, used for visualization of thermal models.
+///
+/// This generates a nearly-uniform triangulation of an ellipsoid using the algorithm
+/// from https://arxiv.org/abs/1502.04816.
+///
+/// Examples
+/// --------
+///
+/// .. plot::
+///     :context: close-figs
+///
+///         >>> import kete
+///         >>> import matplotlib.pyplot as plt
+///         >>> from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+///         >>> geom = kete.shape.TriangleEllipsoid(6)
+///         >>> # Plot the results
+///         >>> plt.figure(dpi=150, figsize=(4, 4))
+///         >>> plt.subplot(111, projection="3d")
+///         >>> polygons = Poly3DCollection(geom.facets, edgecolor="black", lw=0.2)
+///         >>> plt.gca().add_collection3d(polygons)
+///         >>> plt.xlim(-1.1, 1.1)
+///         >>> plt.ylim(-1.1, 1.1)
+///         >>> plt.gca().set_zlim(-1.1, 1.1)
+///
+/// Parameters
+/// ----------
+/// n_div :
+///     Number of divisions from pole to equator. Total facet count is ``8 * n_div^2``.
+///     Must be at least 1.
+/// x_scale :
+///     Scale factor along the x-axis.
+/// y_scale :
+///     Scale factor along the y-axis.
+/// z_scale :
+///     Scale factor along the z-axis.
+#[pyclass(
+    module = "kete._core",
+    name = "TriangleEllipsoid",
+    frozen,
+    from_py_object
+)]
+#[derive(Clone, Debug)]
+pub struct PyTriangleShape {
+    shape: TriangleShape,
+}
+
+#[pymethods]
+impl PyTriangleShape {
+    /// Create a new TriangleEllipsoid.
+    #[new]
+    #[pyo3(signature = (n_div=6, x_scale=1.0, y_scale=1.0, z_scale=1.0))]
+    pub fn new(n_div: u32, x_scale: f64, y_scale: f64, z_scale: f64) -> PyResult<Self> {
+        if n_div == 0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "n_div must be at least 1",
+            ));
+        }
+        Ok(Self {
+            shape: TriangleShape::new_ellipsoid(n_div, x_scale, y_scale, z_scale),
+        })
+    }
+
+    /// Unit normal vectors of each facet, shape ``(n, 3)``.
+    #[getter]
+    pub fn normals(&self) -> Vec<[f64; 3]> {
+        self.shape
+            .facets
+            .iter()
+            .map(|f| f.normal.into_inner().into())
+            .collect()
+    }
+
+    /// Area of each facet (normalized so total area is 1), shape ``(n,)``.
+    #[getter]
+    pub fn areas(&self) -> Vec<f64> {
+        self.shape.facets.iter().map(|f| f.area).collect()
+    }
+
+    /// Triangle vertices of each facet, shape ``(n, 3, 3)``.
+    #[getter]
+    pub fn facets(&self) -> Vec<[[f64; 3]; 3]> {
+        self.shape
+            .facets
+            .iter()
+            .map(|f| {
+                [
+                    f.vertices[0].into(),
+                    f.vertices[1].into(),
+                    f.vertices[2].into(),
+                ]
+            })
+            .collect()
+    }
+
+    /// Number of facets.
+    pub fn __len__(&self) -> usize {
+        self.shape.len()
+    }
+
+    /// String representation.
+    pub fn __repr__(&self) -> String {
+        format!("TriangleEllipsoid({} facets)", self.shape.len())
+    }
 }

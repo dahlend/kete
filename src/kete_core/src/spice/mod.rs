@@ -86,7 +86,8 @@ mod tests {
             assert_eq!(jd, 2451545.0.into());
         }
         {
-            let jd_sec = 86400.0; // 1 day in seconds
+            // 1 day in seconds
+            let jd_sec = 86400.0;
             let jd = spice_jd_to_jd(jd_sec);
             assert_eq!(jd, 2451546.0.into());
         }
@@ -100,7 +101,8 @@ mod tests {
             assert_eq!(jd_sec, 0.0);
         }
         {
-            let jd = 2451546.0.into(); // 1 day after J2000
+            // 1 day after J2000
+            let jd = 2451546.0.into();
             let jd_sec = jd_to_spice_jd(jd);
             assert_eq!(jd_sec, 86400.0);
         }

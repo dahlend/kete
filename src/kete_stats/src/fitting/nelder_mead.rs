@@ -106,10 +106,14 @@ pub fn nelder_mead(
     assert_eq!(scale.len(), n, "scale must have the same length as initial");
 
     // Standard Nelder-Mead coefficients.
-    let alpha = 1.0; // reflection
-    let gamma = 2.0; // expansion
-    let rho = 0.5; // contraction
-    let sigma = 0.5; // shrink
+    // reflection
+    let alpha = 1.0;
+    // expansion
+    let gamma = 2.0;
+    // contraction
+    let rho = 0.5;
+    // shrink
+    let sigma = 0.5;
 
     let mut func_evals: usize = 0;
 
@@ -214,7 +218,8 @@ pub fn nelder_mead(
 
 /// Centroid of all simplex vertices except the last (worst).
 fn centroid_excluding_last(simplex: &[Vec<f64>]) -> Vec<f64> {
-    let n = simplex.len() - 1; // number of dimensions
+    // number of dimensions
+    let n = simplex.len() - 1;
     let mut c = vec![0.0; simplex[0].len()];
     for v in &simplex[..n] {
         for (ci, vi) in c.iter_mut().zip(v.iter()) {

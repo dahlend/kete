@@ -5,6 +5,7 @@
 //!
 // BSD 3-Clause License
 //
+// Copyright (c) 2026, Dar Dahlen
 // Copyright (c) 2025, California Institute of Technology
 //
 // Redistribution and use in source and binary forms, with or without
@@ -34,10 +35,9 @@
 
 use std::f64::consts::PI;
 
-use crate::{
-    constants::{AU_KM, C_M_PER_S, SUN_DIAMETER, SUN_TEMP},
-    prelude::black_body_flux,
-};
+use kete_core::constants::{AU_KM, C_M_PER_S, SUN_DIAMETER, SUN_TEMP};
+
+use crate::black_body_flux;
 
 /// Return the Solar flux at the provide wavelength using the 2000 ASTM Reference Spectrum.
 ///
@@ -98,8 +98,8 @@ pub fn solar_flux_black_body(dist: f64, wavelength: f64) -> f64 {
     let solar_flux = black_body_flux(SUN_TEMP, wavelength);
 
     // solar flux at the radius of where the object is, this treats the sun as a flat
-    // disk facing the object. This is an approximation which breaks down when the object
-    // gets within a few solar radii.
+    // disk facing the object. This is an approximation which breaks down when the
+    // object gets within a few solar radii.
     // Jy / steradian per unit freq
     PI * solar_flux * (SUN_R_AU / dist).powi(2)
 }

@@ -42,6 +42,6 @@ mod uncertain_state;
 pub use iod::initial_orbit_determination;
 pub use lambert::lambert;
 pub use mcmc::{OrbitSamples, fit_orbit_mcmc};
-pub use obs::Observation;
+pub use obs::AstrometricObservation;
 pub use orbit_fitting::{OrbitFit, StmObs, accumulate_normal_equations, fit_orbit, stm_sweep};
 pub use uncertain_state::UncertainState;

@@ -25,7 +25,7 @@ use pyo3::prelude::*;
 /// center_id :
 ///     The SPICE kernel ID which defines the central reference point, defaults to the
 ///     Sun (10).
-#[pyclass(module = "kete", name = "State")]
+#[pyclass(module = "kete", name = "State", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyState {
     /// The raw state object, always in the Equatorial frame.

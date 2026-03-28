@@ -39,7 +39,7 @@ use nalgebra::{DVector, Matrix2x3, Matrix3x1, RowVector6};
 /// Each variant carries the observer geometry, measured values, and
 /// uncertainties. The observation epoch is taken from `observer.epoch`.
 #[derive(Debug, Clone)]
-pub enum Observation {
+pub enum AstrometricObservation {
     /// Optical astrometry: RA and Dec on the sky.
     Optical {
         /// Observer state (SSB-centered, Equatorial).
@@ -75,7 +75,7 @@ pub enum Observation {
     },
 }
 
-impl Observation {
+impl AstrometricObservation {
     /// Reference to the observer state (carries the observation epoch).
     pub fn observer(&self) -> &State<Equatorial> {
         match self {
@@ -136,7 +136,7 @@ impl Observation {
     }
 }
 
-impl Observation {
+impl AstrometricObservation {
     /// Compute the predicted measurement and residual (observed - computed).
     ///
     /// The input `obj_state` is the object at the observation epoch (before
@@ -267,7 +267,7 @@ fn range_rate_partials(obj: &State<Equatorial>, obs: &State<Equatorial>) -> RowV
     RowVector6::new(dr[0], dr[1], dr[2], d_hat[0], d_hat[1], d_hat[2])
 }
 
-impl Observation {
+impl AstrometricObservation {
     /// Compute the local geometric partial derivatives (`H_local`).
     ///
     /// Returns an m x 6 matrix where m is the measurement dimension
@@ -323,7 +323,7 @@ mod tests {
     /// by `eps`, recompute the predicted measurement, return the numerical
     /// partial derivative.
     fn fd_partial(
-        obs: &Observation,
+        obs: &AstrometricObservation,
         obj: &State<Equatorial>,
         idx: usize,
         eps: f64,
@@ -352,17 +352,17 @@ mod tests {
 
     /// Direct prediction without light-time (for FD tests where we want to
     /// test the geometric partials in isolation).
-    fn predict_for_fd(obs: &Observation, obj: &State<Equatorial>) -> DVector<f64> {
+    fn predict_for_fd(obs: &AstrometricObservation, obj: &State<Equatorial>) -> DVector<f64> {
         let observer = obs.observer();
         match obs {
-            Observation::Optical { .. } => {
+            AstrometricObservation::Optical { .. } => {
                 let (ra, dec) = (obj.pos - observer.pos).to_ra_dec();
                 DVector::from_vec(vec![ra, dec])
             }
-            Observation::RadarRange { .. } => {
+            AstrometricObservation::RadarRange { .. } => {
                 DVector::from_vec(vec![(obj.pos - observer.pos).norm()])
             }
-            Observation::RadarRate { .. } => {
+            AstrometricObservation::RadarRate { .. } => {
                 let d_pos = obj.pos - observer.pos;
                 DVector::from_vec(vec![d_pos.dot(&(obj.vel - observer.vel)) / d_pos.norm()])
             }
@@ -375,7 +375,7 @@ mod tests {
         let observer = make_state([1.0, 0.0, 0.0], [0.0, 0.01, 0.0], 2460000.5);
         let obj = make_state([1.5, 0.8, 0.3], [0.001, -0.002, 0.0005], 2460000.5);
 
-        let obs = Observation::Optical {
+        let obs = AstrometricObservation::Optical {
             observer: observer.clone(),
             ra: 0.0,
             dec: 0.0,
@@ -406,7 +406,7 @@ mod tests {
         let observer = make_state([1.0, 0.0, 0.0], [0.0, 0.01, 0.0], 2460000.5);
         let obj = make_state([2.3, 0.5, -0.2], [0.002, -0.001, 0.001], 2460000.5);
 
-        let obs = Observation::RadarRange {
+        let obs = AstrometricObservation::RadarRange {
             observer: observer.clone(),
             range: 1.0,
             sigma_range: 1e-6,
@@ -433,7 +433,7 @@ mod tests {
         let observer = make_state([1.0, 0.0, 0.0], [0.0, 0.01, 0.0], 2460000.5);
         let obj = make_state([2.3, 0.5, -0.2], [0.002, -0.001, 0.001], 2460000.5);
 
-        let obs = Observation::RadarRate {
+        let obs = AstrometricObservation::RadarRate {
             observer: observer.clone(),
             range_rate: 0.01,
             sigma_range_rate: 1e-6,
@@ -484,7 +484,7 @@ mod tests {
         let d = obj.pos - observer.pos;
         let (true_ra, true_dec) = d.to_ra_dec();
 
-        let obs = Observation::Optical {
+        let obs = AstrometricObservation::Optical {
             observer,
             ra: true_ra + 0.01,
             dec: true_dec + 0.005,
@@ -501,7 +501,7 @@ mod tests {
 
     #[test]
     fn test_weights() {
-        let obs = Observation::Optical {
+        let obs = AstrometricObservation::Optical {
             observer: make_state([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], 2460000.5),
             ra: 0.0,
             dec: 0.0,

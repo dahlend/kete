@@ -25,7 +25,8 @@ def _local_time(self, timezone=None) -> str:
         python maintains a list of pre-defined timezones:
 
             from zoneinfo import available_timezones, ZoneInfo
-            available_timezones() # List all available timezones
+            # List all available timezones
+            available_timezones()
             timezone = ZoneInfo("US/Pacific")
             kete.Time.j2000().local_time(timezone)
 

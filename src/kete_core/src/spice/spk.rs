@@ -157,7 +157,7 @@ impl SpkCollection {
                 state.try_change_center(self.try_get_state(i, state.epoch)?)?;
                 state.try_change_center(self.try_get_state(10, state.epoch)?)?;
             }
-            (10, i) if (i > 1) & (i < 10) => {
+            (10, i) if (i > 1) && (i < 10) => {
                 state.try_change_center(self.try_get_state(10, state.epoch)?)?;
                 state.try_change_center(self.try_get_state(i, state.epoch)?)?;
             }

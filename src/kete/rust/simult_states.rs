@@ -34,9 +34,11 @@ impl From<SimultaneousStates> for PySimultaneousStates {
     }
 }
 
-impl<'py> FromPyObject<'py> for PySimultaneousStates {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
-        match ob.downcast_exact::<PySimultaneousStates>() {
+impl<'a, 'py> FromPyObject<'a, 'py> for PySimultaneousStates {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        match ob.cast_exact::<PySimultaneousStates>() {
             Ok(downcast) => Ok(PySimultaneousStates(downcast.get().0.clone())),
             Err(_) => {
                 if let Ok(states) = ob.extract::<Vec<PyState>>() {

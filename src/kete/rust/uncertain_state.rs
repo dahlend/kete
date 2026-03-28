@@ -28,7 +28,7 @@ use pyo3::prelude::*;
 /// - :meth:`from_cometary` -- from cometary orbital elements and an
 ///   element-space covariance (e.g. from JPL Horizons).
 /// - Returned as part of :class:`~kete.fitting.OrbitFit` from orbit fitting.
-#[pyclass(frozen, module = "kete", name = "UncertainState")]
+#[pyclass(frozen, module = "kete", name = "UncertainState", from_py_object)]
 #[derive(Debug, Clone)]
 pub struct PyUncertainState(pub UncertainState);
 
@@ -37,7 +37,7 @@ impl PyUncertainState {
     /// Build an ``UncertainState`` from a state with isotropic diagonal
     /// uncertainties.
     ///
-    /// The covariance is initialised to a diagonal matrix with the
+    /// The covariance is initialized to a diagonal matrix with the
     /// given ``pos_sigma`` (AU) and ``vel_sigma`` (AU/day) on the
     /// diagonal.  Useful for seeding MCMC from an IOD candidate.
     ///
