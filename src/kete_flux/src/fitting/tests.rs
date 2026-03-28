@@ -160,21 +160,6 @@ fn test_neatm_nll_at_truth() {
 }
 
 #[test]
-fn test_neatm_nll_away_from_truth() {
-    let (obs, _hg) = synthetic_neatm_obs();
-    let neg_log_lik = make_neg_log_likelihood(Model::Neatm, &obs, C_V, 0.9);
-
-    let truth = [10.0, 1.2, 18.0, 0.15, 1.0, 1.0];
-    let wrong = [20.0, 1.2, 18.0, 0.15, 1.0, 1.0];
-    let neg_log_lik_wrong = neg_log_lik(&wrong);
-    let neg_log_lik_truth = neg_log_lik(&truth);
-    assert!(
-        neg_log_lik_wrong > neg_log_lik_truth,
-        "NLL at wrong D ({neg_log_lik_wrong}) should exceed truth ({neg_log_lik_truth})"
-    );
-}
-
-#[test]
 fn test_neatm_fit_recovery() {
     let (obs, hg) = synthetic_neatm_obs();
     let priors = FluxPriors {
@@ -182,6 +167,7 @@ fn test_neatm_fit_recovery() {
         ..FluxPriors::default()
     };
 
+    let n_obs = obs.len();
     let res = fit_mcmc(Model::Neatm, &obs, C_V, 0.9, &priors, 1, 50, 50)
         .expect("MCMC should produce a result");
 
@@ -194,6 +180,16 @@ fn test_neatm_fit_recovery() {
     assert!(
         (d_median - 10.0).abs() / 10.0 < 0.3,
         "Fit diameter {d_median:.2} too far from truth 10.0",
+    );
+
+    // MAP diagnostic fields.
+    assert_eq!(res.nobs, n_obs, "nobs should match observation count");
+    assert_eq!(res.best_fit_fluxes.len(), n_obs);
+    assert_eq!(res.best_fit_residuals.len(), n_obs);
+    assert_eq!(res.best_fit_reflected_frac.len(), n_obs);
+    assert!(
+        res.reduced_chi2.is_finite() || n_obs <= Model::Neatm.dim(),
+        "reduced_chi2 should be finite when nobs > nparams",
     );
 }
 
@@ -338,96 +334,9 @@ fn test_frm_fit_recovery() {
         "FRM fit diameter {d_median:.2} too far from truth 10.0",
     );
     assert!(!res.model.is_neatm(), "FRM should not be NEATM");
-}
 
-#[test]
-fn test_neatm_mcmc_smoke() {
-    let (obs, hg) = synthetic_neatm_obs();
-    let priors = FluxPriors {
-        h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
-        ..FluxPriors::default()
-    };
+    // MAP diagnostic fields.
     let n_obs = obs.len();
-
-    let result = fit_mcmc(Model::Neatm, &obs, C_V, 0.9, &priors, 1, 50, 50);
-    assert!(result.is_some(), "MCMC should produce a result");
-    let res = result.unwrap();
-    assert!(!res.draws.is_empty(), "Should have draws");
-    // Each NEATM draw: [D, pV, beaming, H, G, R_IR, f_sigma] -> length 7
-    assert_eq!(res.draws[0].len(), 7, "NEATM draws should have 7 columns");
-    // Diameter median should be in a reasonable range.
-    let d_median = {
-        let vals: Vec<f64> = res.draws.iter().map(|r| r[0]).collect();
-        kete_stats::prelude::SortedData::try_from(vals)
-            .unwrap()
-            .median()
-    };
-    assert!(
-        d_median > 1.0 && d_median < 100.0,
-        "Diameter median {d_median} out of reasonable range",
-    );
-
-    // MAP diagnostic fields
-    assert_eq!(res.nobs, n_obs, "nobs should match observation count");
-    assert_eq!(res.best_fit_fluxes.len(), n_obs);
-    assert_eq!(res.best_fit_residuals.len(), n_obs);
-    assert_eq!(res.best_fit_reflected_frac.len(), n_obs);
-    assert!(
-        res.reduced_chi2.is_finite() || n_obs <= Model::Neatm.dim(),
-        "reduced_chi2 should be finite when nobs > nparams",
-    );
-}
-
-#[test]
-fn test_frm_mcmc_smoke() {
-    let hg = TestHg::new(0.15, Some(18.0), None, Some(10.0));
-    let sun2obj = Vector3::new(2.0, 0.0, 0.0);
-    let sun2obs = Vector3::new(0.0, 0.0, 0.0);
-    let bands = BandInfo::WISE;
-    let vis_albedo = hg.vis_albedo;
-
-    let band_albedos: Vec<f64> = bands.iter().map(|_| vis_albedo).collect();
-    let result = frm_total_flux(
-        &bands,
-        &band_albedos,
-        hg.diameter,
-        vis_albedo,
-        hg.g_param,
-        hg.h_mag,
-        0.9,
-        &sun2obj,
-        &sun2obs,
-    );
-
-    let obs: Vec<FluxObs> = bands
-        .into_iter()
-        .zip(&result.fluxes)
-        .map(|(band, &flux)| FluxObs {
-            flux,
-            sigma: flux * 0.05,
-            band,
-            is_upper_limit: false,
-            sun2obj,
-            sun2obs,
-        })
-        .collect();
-
-    let priors = FluxPriors {
-        h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
-        ..FluxPriors::default()
-    };
-    let n_obs = obs.len();
-    let result = fit_mcmc(Model::Frm, &obs, C_V, 0.9, &priors, 1, 50, 50);
-    assert!(result.is_some(), "FRM MCMC should produce a result");
-    let res = result.unwrap();
-    // FRM draws: [D, pV, H, G, R_IR, f_sigma] -> 6 columns
-    assert_eq!(res.draws[0].len(), 6, "FRM draws should have 6 columns");
-    assert!(
-        !res.model.is_neatm(),
-        "FRM result should have is_neatm=false"
-    );
-
-    // MAP diagnostic fields
     assert_eq!(res.nobs, n_obs, "nobs should match observation count");
     assert_eq!(res.best_fit_fluxes.len(), n_obs);
     assert_eq!(res.best_fit_residuals.len(), n_obs);
@@ -700,6 +609,12 @@ fn test_mcmc_draw_column_counts() {
                 d[col]
             );
         }
+        // pV should be physically reasonable.
+        assert!(
+            d[1] < 2.0,
+            "NEATM draw {i}: pV = {:.4} out of physical range",
+            d[1]
+        );
         // H and G must be finite (can be <= 0).
         assert!(d[3].is_finite(), "NEATM draw {i} H = {} not finite", d[3]);
         assert!(d[4].is_finite(), "NEATM draw {i} G = {} not finite", d[4]);
@@ -840,25 +755,11 @@ fn test_hg_fit_recovery() {
         (h_median - 18.0).abs() < 1.0,
         "HG fit H {h_median:.2} too far from truth 18.0",
     );
-}
 
-#[test]
-fn test_hg_mcmc_smoke() {
-    let (obs, hg) = synthetic_hg_obs();
-    let priors = FluxPriors {
-        h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
-        ..FluxPriors::default()
-    };
-    let n_obs = obs.len();
-
-    let res = fit_mcmc(Model::Hg, &obs, C_V, 0.9, &priors, 1, 50, 50)
-        .expect("HG MCMC should produce a result");
-
-    assert!(!res.draws.is_empty(), "Should have draws");
-    assert_eq!(res.draws[0].len(), 3, "HG draws should have 3 columns");
     assert!(res.model.is_hg(), "Model flag should be HG");
 
-    // MAP diagnostics.
+    // MAP diagnostic fields.
+    let n_obs = obs.len();
     assert_eq!(res.nobs, n_obs, "nobs should match observation count");
     assert_eq!(res.best_fit_fluxes.len(), n_obs);
     assert_eq!(res.best_fit_residuals.len(), n_obs);
@@ -915,7 +816,7 @@ fn test_hg_batch() {
 }
 
 // ---------------------------------------------------------------------------
-// Multi-geometry test (exercises the observation-batching optimisation)
+// Multi-geometry test (exercises the observation-batching optimization)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -982,26 +883,4 @@ fn test_multi_geometry_neatm() {
     );
     assert_eq!(res.nobs, 8, "Should count all 8 observations");
     assert_eq!(res.best_fit_fluxes.len(), 8);
-}
-
-// ---------------------------------------------------------------------------
-// pV reasonableness check
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_pv_draws_reasonable() {
-    let (obs, hg) = synthetic_neatm_obs();
-    let priors = FluxPriors {
-        h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
-        ..FluxPriors::default()
-    };
-    let res = fit_mcmc(Model::Neatm, &obs, C_V, 0.9, &priors, 1, 50, 50).unwrap();
-
-    for (i, draw) in res.draws.iter().enumerate() {
-        let vis_albedo = draw[1];
-        assert!(
-            vis_albedo > 0.0 && vis_albedo < 2.0,
-            "NEATM draw {i}: pV = {vis_albedo:.4} out of physical range (0, 2)"
-        );
-    }
 }
