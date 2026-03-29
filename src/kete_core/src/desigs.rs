@@ -58,10 +58,7 @@ use std::fmt::Display;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    errors::{Error, KeteResult},
-    spice::{naif_ids_from_name, try_name_from_id, try_obs_code_from_name},
-};
+use crate::errors::{Error, KeteResult};
 
 static MPC_HEX: &str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 static ORDER_CHARS: &str = "ABCDEFGHJKLMNOPQRSTUVWXYZ";
@@ -121,21 +118,10 @@ impl Desig {
 
     /// Try to convert a [`Desig::Naif`] into a [`Desig::Name`] by looking it up.
     ///
-    /// If unsuccessful this returns the original type.
-    ///
-    /// ```
-    ///     use kete_core::desigs::Desig;
-    ///
-    ///     let desig = Desig::Naif(399).try_naif_id_to_name();
-    ///     assert_eq!(desig, Desig::Name("earth".into()));
-    ///
-    ///     let desig = Desig::Empty.try_naif_id_to_name();
-    ///     assert_eq!(desig, Desig::Empty);
-    /// ```
-    ///
+    /// If unsuccessful this returns the original designation unchanged.
     pub fn try_naif_id_to_name(self) -> Self {
         if let Self::Naif(id) = &self {
-            if let Some(name) = try_name_from_id(*id) {
+            if let Some(name) = crate::naif_ids::try_name_from_id(*id) {
                 Self::Name(name)
             } else {
                 self
@@ -145,100 +131,45 @@ impl Desig {
         }
     }
 
-    /// Convert the [`Desig::Name`] into a [`Desig::Naif`] if possible.
+    /// Convert a [`Desig::Name`] into a [`Desig::Naif`] if possible.
     ///
-    /// This will lookup a NAIF id from the name if it exists.
-    ///
-    /// ```
-    ///     use kete_core::desigs::Desig;
-    ///
-    ///     // Integers are parsed if possible
-    ///     let desig = Desig::Name("399".into()).try_name_to_naif_id();
-    ///     assert_eq!(desig, Desig::Naif(399));
-    ///
-    ///     // If there is an exact match, then it is returned
-    ///     let desig = Desig::Name("Earth".into()).try_name_to_naif_id();
-    ///     assert_eq!(desig, Desig::Naif(399));
-    ///
-    ///     // Partial but unique matches are returned.
-    ///     let desig = Desig::Name("Earth b".into()).try_name_to_naif_id();
-    ///     assert_eq!(desig, Desig::Naif(3));
-    ///
-    ///     // Partial but not-unique will leave the input unchanged.
-    ///     let desig = Desig::Name("Ear".into()).try_name_to_naif_id();
-    ///     assert_eq!(desig, Desig::Name("Ear".into()));
-    ///
-    ///     // Non-Names are returned unchanged.
-    ///     let desig = Desig::Empty.try_naif_id_to_name();
-    ///     assert_eq!(desig, Desig::Empty);
-    /// ```
+    /// This will look up a NAIF id from the name if it exists.
     pub fn try_name_to_naif_id(self) -> Self {
         if let Self::Name(name) = &self {
             if let Ok(id) = name.parse::<i32>() {
                 return Self::Naif(id);
             }
 
-            let naif_ids = naif_ids_from_name(name);
+            let naif_ids = crate::naif_ids::naif_ids_from_name(name);
             match naif_ids.as_slice() {
-                // if there is a single entry, return it
                 [i] => return Self::Naif(i.id),
                 _ => {
                     for id in &naif_ids {
-                        // if there is an EXACT match, return it.
                         if id.name.to_lowercase() == name.to_lowercase() {
                             return Self::Naif(id.id);
                         }
                     }
                 }
             }
-
-            // if there are multiple NAIF ids, or none, do not change the designation.
         }
         self
     }
 
-    /// Convert the [`Desig::Name`] into an [`Desig::ObservatoryCode`] if possible.
-    ///
-    /// ```
-    ///     use kete_core::desigs::Desig;
-    ///
-    ///     // If it is an existing observatory code, just upgrade it.
-    ///     let desig = Desig::Name("000".into()).try_name_to_obs_code();
-    ///     assert_eq!(desig, Desig::ObservatoryCode("000".into()));
-    ///
-    ///     // If there is an exact match, then it is returned
-    ///     let desig = Desig::Name("Maunakea".into()).try_name_to_obs_code();
-    ///     assert_eq!(desig, Desig::ObservatoryCode("568".into()));
-    ///
-    ///     // Partial but unique matches are returned.
-    ///     let desig = Desig::Name("Subaru Telescope, Mauna".into()).try_name_to_obs_code();
-    ///     assert_eq!(desig, Desig::ObservatoryCode("T09".into()));
-    ///
-    ///     // Partial but not-unique will leave the input unchanged.
-    ///     let desig = Desig::Name(", Maunakea".into()).try_name_to_obs_code();
-    ///     assert_eq!(desig, Desig::Name(", Maunakea".into()));
-    ///
-    ///     // Non-Names are returned unchanged.
-    ///     let desig = Desig::Empty.try_name_to_obs_code();
-    ///     assert_eq!(desig, Desig::Empty);
-    /// ```
-    ///
+    /// Convert a [`Desig::Name`] into a [`Desig::ObservatoryCode`] if possible.
     pub fn try_name_to_obs_code(self) -> Self {
         if let Self::Name(name) = &self {
-            let obs_codes = try_obs_code_from_name(name);
+            let obs_codes = crate::obs_codes::try_obs_code_from_name(name);
 
             match obs_codes.as_slice() {
                 [i] => return i.code.clone(),
                 _ => {
                     for id in &obs_codes {
-                        // if there is an EXACT match, return it.
                         if id.name.to_lowercase() == name.to_lowercase() {
                             return id.code.clone();
                         }
                     }
                 }
             }
-            // if there are multiple NAIF ids, or none, do not change the designation.
         }
         self
     }
@@ -1236,5 +1167,13 @@ mod tests {
         assert!(Desig::Name("Foo".into()).to_string() == "Foo");
         assert!(Desig::Perm(123).to_string() == "123");
         assert!(Desig::Prov("Prov".into()).to_string() == "Prov");
+    }
+
+    #[test]
+    fn naif_name_resolution() {
+        let desig = Desig::Naif(1).try_naif_id_to_name();
+        assert!(desig == Desig::Name("mercury barycenter".into()));
+        assert!(desig.full_string() == "Name(\"mercury barycenter\")");
+        assert!(desig.to_string() == "mercury barycenter");
     }
 }

@@ -33,16 +33,9 @@
 //! - [`fov::FOV`] - A field of view, which is a representation of an
 //!   area of sky that a telescope can see. This is used to calculate
 //!   whether an object is visible from a given location at a given time.
-//! - [`propagation::propagate_n_body_spk`] - The main function which should be
-//!   used to propagate the state of an object for highest precision.
 //! - [`propagation::propagate_two_body`] - If only an approximate position is
 //!   required over a short time period, this function can be used as it is about 50x
 //!   faster.
-//! - [`spice`] - JPL maintains a very complex software tool called SPICE, which
-//!   is used to save and load states of objects in the solar system. The original
-//!   SPICE tool was written in Fortran, and is not very user friendly or terribly
-//!   thread safe. Kete provides a custom implementation of a read-only interface to
-//!   the files produces by SPICE that is thread safe and performant.
 //!
 //!
 //
@@ -84,9 +77,10 @@ pub mod errors;
 pub mod fov;
 pub mod frames;
 pub mod io;
+pub mod naif_ids;
+pub mod obs_codes;
 pub mod propagation;
 pub mod simult_states;
-pub mod spice;
 pub mod state;
 pub mod time;
 pub mod util;
@@ -97,11 +91,10 @@ pub mod prelude {
     pub use crate::elements::CometElements;
     pub use crate::errors::{Error, KeteResult};
     pub use crate::frames::{Ecliptic, Equatorial, FK4, Galactic, NonInertialFrame};
-    pub use crate::propagation::{
-        NonGravModel, propagate_n_body_spk, propagate_two_body, propagation_n_body_spk_par,
-    };
+    pub use crate::naif_ids::{NaifId, naif_ids_from_name, try_name_from_id};
+    pub use crate::obs_codes::{OBS_CODES, ObsCode, try_obs_code_from_name};
+    pub use crate::propagation::{NonGravModel, propagate_two_body};
     pub use crate::simult_states::SimultaneousStates;
-    pub use crate::spice::{LOADED_PCK, LOADED_SPK};
     pub use crate::state::State;
     pub use crate::time::{TDB, Time, UTC};
 }

@@ -2,7 +2,7 @@
 use kete_core::errors::Error;
 use kete_core::io::FileIO;
 use kete_core::simult_states::SimultaneousStates;
-use kete_core::spice::LOADED_SPK;
+use kete_spice::spice::LOADED_SPK;
 use kete_core::time::TDB;
 use kete_core::time::Time;
 use pyo3::exceptions;

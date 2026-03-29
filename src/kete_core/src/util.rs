@@ -34,10 +34,18 @@ use nom::{
     sequence::delimited,
 };
 
-use crate::{
-    errors::{Error, KeteResult},
-    spice::sclk::parse_num,
-};
+use std::str::FromStr;
+
+use crate::errors::{Error, KeteResult};
+
+/// Parse a number from a string, consuming digits and decimal/exponent characters.
+fn parse_num<T: FromStr>(input: &str) -> nom::IResult<&str, T> {
+    nom::combinator::map_res(
+        take_while1(|c: char| c.is_ascii_digit() || ".Ee+-".contains(c)),
+        |s: &str| s.parse::<T>(),
+    )
+    .parse(input)
+}
 
 /// Degree angle representation.
 ///

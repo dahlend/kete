@@ -111,16 +111,16 @@ impl TryInto<(String, i32)> for NaifIDLike {
                 if s.chars().all(|c| c.is_ascii_digit()) {
                     // If the string is all digits, convert it directly to an integer.
                     if let Ok(id) = s.parse::<i32>() {
-                        return Ok((kete_core::spice::try_name_from_id(id).unwrap_or(s), id));
+                        return Ok((kete_spice::spice::try_name_from_id(id).unwrap_or(s), id));
                     }
                 }
                 // try the spk cache
-                let mut spk = kete_core::spice::LOADED_SPK.write().unwrap();
+                let mut spk = kete_spice::spice::LOADED_SPK.write().unwrap();
                 let id = spk.try_id_from_name(&s)?;
                 Ok((id.name, id.id))
             }
             NaifIDLike::Int(i) => Ok((
-                kete_core::spice::try_name_from_id(i).unwrap_or(i.to_string()),
+                kete_spice::spice::try_name_from_id(i).unwrap_or(i.to_string()),
                 i,
             )),
         }

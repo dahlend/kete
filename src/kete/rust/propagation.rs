@@ -3,10 +3,11 @@ use itertools::Itertools;
 use kete_core::{
     errors::Error,
     frames::Ecliptic,
-    propagation::{self, NonGravModel, moid},
-    spice::{self, LOADED_SPK},
+    propagation::{NonGravModel, moid},
     state::State,
 };
+use kete_spice::propagation as spice_prop;
+use kete_spice::spice::{self, LOADED_SPK};
 use pyo3::{Py, PyAny, PyResult, Python, pyfunction};
 use rayon::prelude::*;
 
@@ -152,7 +153,7 @@ pub fn propagation_n_body_spk_py(
                         ))
                         .change_frame(frame));
                     }
-                    match propagation::propagate_n_body_spk(state, jd, include_asteroids, model) {
+                    match spice_prop::propagate_n_body_spk(state, jd, include_asteroids, model) {
                         Ok(state) => Ok(Into::<PyState>::into(state).change_frame(frame)),
                         Err(er) => {
                             if !suppress_errors {
@@ -265,7 +266,7 @@ pub fn propagation_n_body_py(
             let (chunk_state, chunk_nongrav): (Vec<_>, Vec<Option<NonGravModel>>) =
                 chunk.iter().cloned().unzip();
 
-            propagation::propagate_n_body_vec(chunk_state, jd, planet_states.clone(), chunk_nongrav)
+            spice_prop::propagate_n_body_vec(chunk_state, jd, planet_states.clone(), chunk_nongrav)
                 .map(|(states, planets)| {
                     (
                         states.into_iter().map(PyState::from).collect::<Vec<_>>(),
@@ -344,7 +345,7 @@ pub fn picard(
                     ))
                     .change_frame(frame));
                 }
-                match propagation::propagate_picard_n_body_spk(state, jd, include_asteroids, model)
+                match spice_prop::propagate_picard_n_body_spk(state, jd, include_asteroids, model)
                 {
                     Ok(state) => Ok(Into::<PyState>::into(state).change_frame(frame)),
                     Err(er) => {

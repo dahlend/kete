@@ -6,6 +6,7 @@ use crate::time::PyTime;
 use crate::vector::*;
 use kete_core::frames::InertialFrame;
 use kete_core::prelude::*;
+use kete_spice::spice::LOADED_SPK;
 use pyo3::prelude::*;
 
 /// Representation of the state of an object at a specific moment in time.
@@ -275,9 +276,8 @@ impl PyState {
 
     /// Text representation of the state.
     pub fn __repr__(&self) -> String {
-        let center = Desig::Naif(self.raw.center_id)
-            .try_naif_id_to_name()
-            .to_string();
+        let center =
+            Desig::Naif(self.raw.center_id).try_naif_id_to_name().to_string();
 
         format!(
             "State(desig={:?}, jd={:?}, pos={:?}, vel={:?}, frame={:?}, center={:?})",

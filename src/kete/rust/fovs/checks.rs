@@ -1,5 +1,7 @@
 use super::*;
-use kete_core::{fov::FOV, propagation::propagate_n_body_spk};
+use kete_core::fov::FOV;
+use kete_spice::fov_ext;
+use kete_spice::propagation::propagate_n_body_spk;
 use pyo3::prelude::*;
 use rayon::prelude::*;
 
@@ -96,7 +98,7 @@ pub fn fov_checks_py(
                     .iter()
                     .cloned()
                     .flat_map(|fov| {
-                        fov.check_visible(&states, dt_limit, include_asteroids)
+                        fov_ext::check_visible(&fov, &states, dt_limit, include_asteroids)
                             .into_iter()
                             .filter_map(|pop| pop.map(|p| PySimultaneousStates(Box::new(p))))
                             .collect::<Vec<_>>()
@@ -132,8 +134,7 @@ pub fn fov_spk_checks_py(obj_ids: Vec<i32>, fovs: FOVListLike) -> Vec<PySimultan
 
     fovs.into_par_iter()
         .filter_map(|fov| {
-            let vis: Vec<_> = fov
-                .check_spks(&obj_ids)
+            let vis: Vec<_> = fov_ext::check_spks(&fov, &obj_ids)
                 .into_iter()
                 .filter_map(|pop| pop.map(|p| PySimultaneousStates(Box::new(p))))
                 .collect();

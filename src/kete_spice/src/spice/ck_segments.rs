@@ -27,9 +27,9 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use crate::errors::{Error, KeteResult};
-use crate::frames::NonInertialFrame;
-use crate::time::{TDB, Time};
+use kete_core::errors::{Error, KeteResult};
+use kete_core::frames::NonInertialFrame;
+use kete_core::time::{TDB, Time};
 use nalgebra::{Quaternion, Rotation3, Unit, UnitQuaternion};
 
 use super::CkArray;

@@ -5,9 +5,9 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use kete_core::{
     frames::{Ecliptic, Equatorial},
-    spice::LOADED_SPK,
     state::State,
 };
+use kete_spice::spice::LOADED_SPK;
 use pprof::criterion::{Output, PProfProfiler};
 use std::hint::black_box;
 

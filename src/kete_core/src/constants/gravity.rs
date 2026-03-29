@@ -199,7 +199,7 @@ pub fn registered_masses() -> Vec<(String, i32, f64, f32)> {
         .iter()
         .map(|p| {
             (
-                Desig::Naif(p.naif_id).try_naif_id_to_name().to_string(),
+                Desig::Naif(p.naif_id).to_string(),
                 p.naif_id,
                 p.mass / GMS,
                 p.radius,
@@ -223,7 +223,7 @@ pub fn known_masses() -> Vec<(String, i32, f64, f32)> {
         .iter()
         .map(|p| {
             (
-                Desig::Naif(p.naif_id).try_naif_id_to_name().to_string(),
+                Desig::Naif(p.naif_id).to_string(),
                 p.naif_id,
                 p.mass / GMS,
                 p.radius,

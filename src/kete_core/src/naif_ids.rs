@@ -59,7 +59,7 @@ impl FromStr for NaifId {
     }
 }
 
-const PRELOAD_IDS: &[u8] = include_bytes!("../../data/naif_ids.csv");
+const PRELOAD_IDS: &[u8] = include_bytes!("../data/naif_ids.csv");
 
 /// Observatory Codes
 static NAIF_IDS: std::sync::LazyLock<Box<[NaifId]>> = std::sync::LazyLock::new(|| {

@@ -1,7 +1,7 @@
 use kete_core::constants::AU_KM;
 use kete_core::desigs::Desig;
 use kete_core::frames::geodetic_lat_lon_to_ecef;
-use kete_core::spice::{LOADED_PCK, LOADED_SPK};
+use kete_spice::spice::{LOADED_PCK, LOADED_SPK};
 use pyo3::{PyResult, Python, pyfunction};
 
 use crate::desigs::NaifIDLike;
@@ -152,7 +152,7 @@ pub fn spk_state_py(
         Ok((_, id)) => {
             let spk = &LOADED_SPK.try_read().unwrap();
             let mut state = spk.try_get_state_with_center(id, jd, center)?;
-            state.try_naif_id_to_name();
+            state.desig = state.desig.try_naif_id_to_name();
             Ok(PyState {
                 raw: state,
                 frame,

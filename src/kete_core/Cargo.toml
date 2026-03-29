@@ -31,7 +31,6 @@ pathfinding = "^4.10.0"
 pyo3 = { version =  "^0.28.2", features = ["abi3-py39"], optional=true}
 rayon = "^1.10.0"
 serde = { version = "^1.0.228", features = ["derive"] }
-sgp4 = "^2.2.0"
 
 # bincode is pinned to ensure backward compatibility with saved files, all updates to
 # this version need to be validated that they are forward compatible.
@@ -51,8 +50,4 @@ pprof = { version = "0.14.1", features = ["flamegraph", "criterion", "frame-poin
 
 [[bench]]
 name = "propagation"
-harness = false
-
-[[bench]]
-name = "spice"
 harness = false

@@ -43,12 +43,12 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use super::jd_to_spice_jd;
+use super::spice_jd_to_jd;
 use super::{PckArray, interpolation::chebyshev_evaluate_both};
-use crate::errors::Error;
-use crate::frames::NonInertialFrame;
-use crate::prelude::KeteResult;
-use crate::spice::spice_jd_to_jd;
-use crate::time::{TDB, Time};
+use kete_core::errors::Error;
+use kete_core::frames::NonInertialFrame;
+use kete_core::prelude::KeteResult;
+use kete_core::time::{TDB, Time};
 use std::fmt::Debug;
 
 #[derive(Debug)]

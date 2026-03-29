@@ -40,16 +40,16 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //
-use crate::constants::{C_AU_PER_DAY_INV_SQUARED, EARTH_J2, GMS, JUPITER_J2, SUN_J2};
-use crate::frames::{Ecliptic, Equatorial, InertialFrame};
-use crate::prelude::KeteResult;
-use crate::propagation::nongrav::NonGravModel;
-use crate::propagation::{AccelSPKMeta, spk_accel_cached};
-use crate::spice::LOADED_SPK;
-use crate::time::{TDB, Time};
+use kete_core::constants::{C_AU_PER_DAY_INV_SQUARED, EARTH_J2, GMS, JUPITER_J2, SUN_J2};
+use kete_core::frames::{Ecliptic, Equatorial, InertialFrame};
+use kete_core::prelude::KeteResult;
+use kete_core::propagation::NonGravModel;
+use kete_core::propagation::analytic_2_body;
+use kete_core::time::{TDB, Time};
 use nalgebra::{Matrix3, SVector, Vector3};
 
-use super::analytic_2_body;
+use crate::propagation::{AccelSPKMeta, spk_accel_cached};
+use crate::spice::LOADED_SPK;
 
 /// Perturbation size for finite-difference Jacobians.
 const EPS: f64 = 1e-7;
@@ -286,8 +286,8 @@ fn nongrav_param_partials(
             let mut eval_pos = *pos;
             let pos_hat = pos.normalize();
             let t_hat = (vel - pos_hat * vel.dot(&pos_hat)).normalize();
-            // perpendicular unit vecs -> already unit length
-            let n_hat = t_hat.cross(&pos_hat);
+            // perpendicular unit vecs -> already unit length (R x T = normal in angular momentum direction)
+            let n_hat = pos_hat.cross(&t_hat);
 
             if *dt != 0.0 {
                 (eval_pos, _) = analytic_2_body((-dt).into(), pos, vel, None).unwrap();
@@ -401,12 +401,12 @@ pub(crate) fn stm_augmented_accel(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::GravParams;
-    use crate::frames::Equatorial;
-    use crate::prelude::Desig;
     use crate::propagation::propagate_n_body_spk;
-    use crate::propagation::state_transition::compute_state_transition;
-    use crate::state::State;
+    use crate::state_transition::compute_state_transition;
+    use kete_core::constants::GravParams;
+    use kete_core::frames::Equatorial;
+    use kete_core::prelude::Desig;
+    use kete_core::state::State;
 
     /// Compute da/dr and da/dv via central finite differences of [`spk_accel_cached`].
     ///

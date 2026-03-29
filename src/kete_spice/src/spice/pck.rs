@@ -41,10 +41,10 @@ use std::fs;
 use super::PckArray;
 use super::daf::{DAFType, DafFile};
 use super::pck_segments::PckSegment;
-use crate::cache::cache_path;
-use crate::errors::{Error, KeteResult};
-use crate::frames::NonInertialFrame;
-use crate::time::{TDB, Time};
+use kete_core::cache::cache_path;
+use kete_core::errors::{Error, KeteResult};
+use kete_core::frames::NonInertialFrame;
+use kete_core::time::{TDB, Time};
 use crossbeam::sync::ShardedLock;
 
 /// A collection of segments.

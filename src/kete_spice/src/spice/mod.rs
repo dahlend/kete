@@ -34,8 +34,6 @@ mod ck;
 mod ck_segments;
 mod daf;
 mod interpolation;
-mod naif_ids;
-mod obs_codes;
 mod pck;
 mod pck_segments;
 mod spk;
@@ -46,13 +44,13 @@ pub(crate) mod sclk;
 
 pub use ck::{CkCollection, LOADED_CK};
 pub use daf::{CkArray, DAFType, DafArray, DafFile, PckArray, SpkArray};
-pub use naif_ids::{NaifId, naif_ids_from_name, try_name_from_id};
-pub use obs_codes::{OBS_CODES, ObsCode, try_obs_code_from_name};
+pub use kete_core::naif_ids::{NaifId, naif_ids_from_name, try_name_from_id};
+pub use kete_core::obs_codes::{OBS_CODES, ObsCode, try_obs_code_from_name};
 pub use pck::{LOADED_PCK, PckCollection};
 pub use sclk::{LOADED_SCLK, SclkCollection};
 pub use spk::{LOADED_SPK, SpkCollection};
 
-use crate::time::{TDB, Time};
+use kete_core::time::{TDB, Time};
 
 /// Convert seconds from J2000 into JD.
 ///
