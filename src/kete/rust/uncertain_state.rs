@@ -9,7 +9,7 @@ use crate::nongrav::PyNonGravModel;
 use crate::state::PyState;
 use crate::time::PyTime;
 use kete_core::prelude::*;
-use kete_core::spice::LOADED_SPK;
+use kete_spice::spice::LOADED_SPK;
 use kete_fitting::UncertainState;
 use nalgebra::DMatrix;
 use pyo3::prelude::*;

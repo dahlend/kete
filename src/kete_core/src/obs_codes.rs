@@ -89,7 +89,7 @@ impl FromStr for ObsCode {
     }
 }
 
-const PRELOAD_OBS: &[u8] = include_bytes!("../../data/mpc_obs.tsv");
+const PRELOAD_OBS: &[u8] = include_bytes!("../data/mpc_obs.tsv");
 
 /// Observatory Codes
 pub static OBS_CODES: std::sync::LazyLock<Vec<ObsCode>> = std::sync::LazyLock::new(|| {

@@ -41,7 +41,6 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use crate::errors::{Error, KeteResult};
-use crate::spice::{CkArray, LOADED_CK};
 use crate::time::{TDB, Time};
 use nalgebra::{Matrix3, Rotation3, Vector3};
 use serde::{Deserialize, Serialize};
@@ -202,12 +201,12 @@ impl NonInertialFrame {
 
     /// Return the rotation matrix and rotation rate for this frame in the equatorial frame.
     ///
+    /// This only supports inertial reference frames (Equatorial = 1, Ecliptic = 17).
+    /// For CK-dependent non-inertial reference frames, use
+    /// `kete_spice::frame_ext::rotations_to_equatorial_full`.
+    ///
     /// # Errors
     /// Fails when reference frame is not found or supported.
-    ///
-    /// # Panics
-    /// Panics can occur if a non-inertial reference frame is used but the lock on CK's
-    /// cannot be taken.
     pub fn rotations_to_equatorial(&self) -> KeteResult<(Rotation3<f64>, Matrix3<f64>)> {
         if self.reference_frame_id == 1 {
             // Equatorial frame
@@ -223,37 +222,10 @@ impl NonInertialFrame {
                 *ECLIPTIC_EQUATORIAL_ROT * rot,
                 *ECLIPTIC_EQUATORIAL_ROT * dt_rot,
             ))
-        } else if self.reference_frame_id < 0 {
-            let cks = LOADED_CK.read().unwrap();
-
-            // find the segment in the ck data which matches the reference frame id, with its own reference frame id being either 1 or 17.
-            for segment in &cks.segments {
-                let array: &CkArray = segment.into();
-                if array.instrument_id == self.reference_frame_id {
-                    let frame = segment.try_get_orientation(self.reference_frame_id, self.time);
-                    if frame.is_err() {
-                        continue;
-                    }
-                    let (time, frame) = frame.unwrap();
-                    if (time.jd - self.time.jd).abs() > 1e-8 {
-                        // time mismatch, skip this frame
-                        continue;
-                    }
-                    let (rot, vel) = frame.rotations_to_equatorial()?;
-                    return Ok((
-                        rot * self.rotation,
-                        vel * self.rotation_rate.unwrap_or_else(Matrix3::identity),
-                    ));
-                }
-            }
-            Err(Error::Bounds(format!(
-                "Reference frame ID {} not found in CK data.",
-                self.reference_frame_id
-            )))
         } else {
-            // Unsupported frame
+            // Unsupported frame -- use kete_spice for CK-dependent resolution
             Err(Error::Bounds(format!(
-                "Reference frame ID {} is not supported.",
+                "Reference frame ID {} is not supported in kete_core. Use kete_spice::frame_ext::rotations_to_equatorial_full for CK-dependent frames.",
                 self.reference_frame_id
             )))
         }

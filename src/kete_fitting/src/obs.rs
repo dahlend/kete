@@ -31,7 +31,6 @@
 
 use kete_core::frames::Equatorial;
 use kete_core::prelude::{Error, KeteResult, State};
-use kete_core::propagation::light_time_correct;
 use nalgebra::{DVector, Matrix2x3, Matrix3x1, RowVector6};
 
 /// A single astrometric or radar observation.
@@ -151,7 +150,12 @@ impl AstrometricObservation {
         obj_state: &State<Equatorial>,
     ) -> KeteResult<(DVector<f64>, DVector<f64>)> {
         let obs = self.observer();
-        let obj_lt = light_time_correct(obj_state, &obs.pos)?;
+        let dist = (obj_state.pos - obs.pos).norm();
+        let spk = kete_spice::spice::LOADED_SPK.try_read()?;
+        let mut sun_state = obj_state.clone();
+        spk.try_change_center(&mut sun_state, 10)?;
+        let mut obj_lt = kete_core::propagation::light_time_correct(&sun_state, dist)?;
+        spk.try_change_center(&mut obj_lt, obj_state.center_id)?;
         Ok(self.residual_predicted_from_corrected(&obj_lt))
     }
 
@@ -316,7 +320,7 @@ mod tests {
 
     /// Helper: build a simple state at the given position/velocity.
     fn make_state(pos: [f64; 3], vel: [f64; 3], jd: f64) -> State<Equatorial> {
-        State::new(Desig::Empty, jd.into(), pos.into(), vel.into(), 0)
+        State::new(Desig::Empty, jd.into(), pos.into(), vel.into(), 10)
     }
 
     /// Finite-difference helper: perturb component `idx` of the object state

@@ -5,7 +5,7 @@
 use kete_core::frames::{Equatorial, Vector};
 use kete_core::prelude::*;
 use kete_core::propagation::NonGravModel;
-use kete_core::spice::LOADED_SPK;
+use kete_spice::spice::LOADED_SPK;
 use kete_fitting::{
     AstrometricObservation, OrbitFit, OrbitSamples, fit_orbit, fit_orbit_mcmc, lambert,
 };

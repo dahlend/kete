@@ -1,5 +1,5 @@
 use kete_core::frames::ecef_to_geodetic_lat_lon;
-use kete_core::spice::{LOADED_PCK, LOADED_SPK};
+use kete_spice::spice::{LOADED_PCK, LOADED_SPK};
 use kete_core::{constants, prelude::*};
 use pyo3::{PyResult, pyfunction};
 

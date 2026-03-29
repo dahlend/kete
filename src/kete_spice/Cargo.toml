@@ -1,0 +1,44 @@
+[package]
+name = "kete_spice"
+readme = "README.md"
+keywords = ["physics", "simulation", "astronomy", "spice"]
+categories = ["Aerospace", "Science", "Simulation"]
+description = "SPICE kernel I/O and SPK-dependent propagation for Kete."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "kete_spice"
+
+[lints]
+workspace = true
+
+[dependencies]
+kete_core = { version = "*", path = "../kete_core" }
+crossbeam = "^0.8.4"
+itertools = "^0.14.0"
+nalgebra = { version = "^0.34.1", features = ["rayon"] }
+nom = "8.0.0"
+pathfinding = "^4.10.0"
+rayon = "^1.10.0"
+sgp4 = "^2.2.0"
+
+[dev-dependencies]
+criterion = { version = "^0.5.1", features = ["html_reports"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+pprof = { version = "0.14.1", features = ["flamegraph", "criterion"] }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+pprof = { version = "0.14.1", features = ["flamegraph", "criterion", "frame-pointer"] }
+
+[[bench]]
+name = "spice"
+harness = false
+
+[[bench]]
+name = "propagation"
+harness = false

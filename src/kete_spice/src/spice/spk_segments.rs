@@ -46,12 +46,12 @@ use super::interpolation::{
     chebyshev_evaluate, chebyshev_evaluate_both, hermite_interpolation, lagrange_interpolation,
 };
 use super::{jd_to_spice_jd, spice_jd_to_jd};
-use crate::constants::AU_KM;
-use crate::errors::Error;
-use crate::frames::{Ecliptic, Equatorial, FK4, Galactic, InertialFrame};
-use crate::prelude::{Desig, KeteResult};
-use crate::state::State;
-use crate::time::{TDB, Time};
+use kete_core::constants::AU_KM;
+use kete_core::errors::Error;
+use kete_core::frames::{Ecliptic, Equatorial, FK4, Galactic, InertialFrame};
+use kete_core::prelude::{Desig, KeteResult};
+use kete_core::state::State;
+use kete_core::time::{TDB, Time};
 use itertools::Itertools;
 use sgp4::{Constants, Geopotential, MinutesSinceEpoch, Orbit, julian_years_since_j2000};
 use std::fmt::Debug;

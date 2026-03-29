@@ -27,14 +27,15 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use crate::constants::GravParams;
-use crate::frames::Equatorial;
-use crate::prelude::{KeteResult, State};
+use kete_core::constants::GravParams;
+use kete_core::frames::Equatorial;
+use kete_core::prelude::{KeteResult, State};
+use kete_core::propagation::NonGravModel;
+use kete_core::propagation::RadauIntegrator;
+use kete_core::time::{TDB, Time};
+
+use crate::jacobian::{n_params, stm_augmented_accel};
 use crate::propagation::AccelSPKMeta;
-use crate::propagation::jacobian::{n_params, stm_augmented_accel};
-use crate::propagation::nongrav::NonGravModel;
-use crate::propagation::radau::RadauIntegrator;
-use crate::time::{TDB, Time};
 use nalgebra::{DMatrix, Matrix3, SVector, Vector3};
 
 /// Compute the state transition matrix and optional parameter sensitivities using the
@@ -69,7 +70,7 @@ pub fn compute_state_transition(
     let np = n_params(non_grav_model.as_ref());
 
     if state.center_id != 0 {
-        return Err(crate::errors::Error::ValueError(
+        return Err(kete_core::errors::Error::ValueError(
             "compute_state_transition requires an SSB-centered state (center_id == 0)".into(),
         ));
     }

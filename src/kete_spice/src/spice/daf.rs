@@ -39,13 +39,13 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use crate::io::bytes::{
+use kete_core::io::bytes::{
     bytes_to_f64, bytes_to_f64_vec, bytes_to_i32, bytes_to_i32_vec, bytes_to_string,
     read_bytes_exact, read_f64_vec, read_str,
 };
 
-use crate::errors::{Error, KeteResult};
-use crate::time::{TDB, Time};
+use kete_core::errors::{Error, KeteResult};
+use kete_core::time::{TDB, Time};
 use std::fmt::Debug;
 use std::io::{Cursor, Read, Seek};
 use std::ops::Index;

@@ -34,9 +34,11 @@ use crate::uncertain_state::UncertainState;
 use kete_core::frames::Equatorial;
 use kete_core::prelude::{Error, KeteResult, State};
 use kete_core::propagation::{
-    NonGravModel, analytic_2_body_stm, compute_state_transition, light_time_correct,
-    propagate_n_body_spk,
+    NonGravModel, analytic_2_body_stm, light_time_correct,
 };
+use kete_spice::compute_state_transition;
+use kete_spice::propagation::propagate_n_body_spk;
+use kete_spice::spice::LOADED_SPK;
 use nalgebra::{DMatrix, DVector, Vector3};
 
 /// Result of orbit determination via batch least squares.
@@ -677,7 +679,7 @@ pub fn stm_sweep(
 
             // phi_k is 6 x (6 + Np).
             // phi_state is the 6 x 6 state block.
-            let phi_state = phi_k.columns(0, 6).clone_owned();
+            let phi_state: DMatrix<f64> = phi_k.columns(0, 6).clone_owned();
 
             // Chain the state block: Phi_cum[:, 0:6] = Phi_state * Phi_cum[:, 0:6]
             let new_state_cols = &phi_state * phi_cum.columns(0, 6);
@@ -704,7 +706,12 @@ pub fn stm_sweep(
         // Apply two-body light-time correction once;
         // use the corrected state for both residual and partials.
         let obs_state = observation.observer();
-        let obj_lt = light_time_correct(&state_cur, &obs_state.pos)?;
+        let dist = (state_cur.pos - obs_state.pos).norm();
+        let spk = LOADED_SPK.try_read()?;
+        let mut sun_cur = state_cur.clone();
+        spk.try_change_center(&mut sun_cur, 10)?;
+        let mut obj_lt = light_time_correct(&sun_cur, dist)?;
+        spk.try_change_center(&mut obj_lt, 0)?;
 
         let residual = observation.residual_from_corrected(&obj_lt);
 
@@ -797,7 +804,12 @@ pub(crate) fn stm_sweep_two_body(
         cur_state.epoch = cur_epoch;
 
         let obs_state = observation.observer();
-        let obj_lt = light_time_correct(&cur_state, &obs_state.pos)?;
+        let dist = (cur_state.pos - obs_state.pos).norm();
+        let spk = LOADED_SPK.try_read()?;
+        let mut sun_cur = cur_state.clone();
+        spk.try_change_center(&mut sun_cur, 10)?;
+        let mut obj_lt = light_time_correct(&sun_cur, dist)?;
+        spk.try_change_center(&mut obj_lt, 0)?;
 
         let residual = observation.residual_from_corrected(&obj_lt);
         let h_local = observation.partials(&obj_lt);
@@ -1011,7 +1023,12 @@ fn compute_residuals(
         }
 
         let obs_state = observation.observer();
-        let obj_lt = light_time_correct(&state_cur, &obs_state.pos)?;
+        let dist = (state_cur.pos - obs_state.pos).norm();
+        let spk = LOADED_SPK.try_read()?;
+        let mut sun_cur = state_cur.clone();
+        spk.try_change_center(&mut sun_cur, 10)?;
+        let mut obj_lt = light_time_correct(&sun_cur, dist)?;
+        spk.try_change_center(&mut obj_lt, 0)?;
         let res = observation.residual_from_corrected(&obj_lt);
         residuals.push(res);
     }
@@ -1056,7 +1073,7 @@ mod tests {
     use super::*;
     use kete_core::constants::GMS;
     use kete_core::desigs::Desig;
-    use kete_core::propagation::propagate_n_body_spk;
+    use kete_spice::propagation::propagate_n_body_spk;
     use kete_core::time::{TDB, Time};
 
     /// Helper: build a simple state.
@@ -1088,7 +1105,12 @@ mod tests {
             )
             .unwrap();
 
-            let obj_lt = light_time_correct(&obj_at, &observer.pos).unwrap();
+            let dist = (obj_at.pos - observer.pos).norm();
+            let spk = LOADED_SPK.try_read().unwrap();
+            let mut sun_at = obj_at.clone();
+            spk.try_change_center(&mut sun_at, 10).unwrap();
+            let mut obj_lt = light_time_correct(&sun_at, dist).unwrap();
+            spk.try_change_center(&mut obj_lt, 0).unwrap();
             let (ra, dec) = (obj_lt.pos - observer.pos).to_ra_dec();
 
             observations.push(AstrometricObservation::Optical {

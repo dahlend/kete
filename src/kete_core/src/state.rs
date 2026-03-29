@@ -190,10 +190,7 @@ impl<T: InertialFrame> State<T> {
         Ok(())
     }
 
-    /// Attempt to update the designation from a naif id to a name.
-    pub fn try_naif_id_to_name(&mut self) {
-        self.desig = self.desig.clone().try_naif_id_to_name();
-    }
+
 
     /// Convert the state into a new frame.
     #[inline(always)]
@@ -249,21 +246,6 @@ mod tests {
 
         let b = State::<Equatorial>::new_nan(Desig::Empty, 0.0.into(), 1000);
         assert!(!b.is_finite());
-    }
-
-    #[test]
-    fn naif_name_resolution() {
-        let mut a = State::<Ecliptic>::new(
-            Desig::Naif(1),
-            0.0.into(),
-            [1.0, 0.0, 0.0].into(),
-            [0.0, 1.0, 0.0].into(),
-            0,
-        );
-        a.try_naif_id_to_name();
-        assert!(a.desig == Desig::Name("mercury barycenter".into()));
-        assert!(a.desig.full_string() == "Name(\"mercury barycenter\")");
-        assert!(a.desig.to_string() == "mercury barycenter");
     }
 
     #[test]
