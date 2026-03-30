@@ -122,10 +122,21 @@ impl FovLike for FOV {
         dispatch_fov!(self, corners)
     }
 
-    fn get_child(&self, _: usize) -> Self {
-        panic!(
-            "FOV enum does not have a well defined child FOV. Use the specific FOV type instead."
-        )
+    fn get_child(&self, index: usize) -> Self {
+        match self {
+            Self::Wise(fov) => Self::Wise(fov.get_child(index)),
+            Self::NeosCmos(fov) => Self::NeosCmos(fov.get_child(index)),
+            Self::ZtfCcdQuad(fov) => Self::ZtfCcdQuad(fov.get_child(index)),
+            Self::GenericCone(fov) => Self::GenericCone(fov.get_child(index)),
+            Self::GenericRectangle(fov) => Self::GenericRectangle(fov.get_child(index)),
+            Self::ZtfField(fov) => Self::ZtfCcdQuad(fov.get_child(index)),
+            Self::NeosVisit(fov) => Self::NeosCmos(fov.get_child(index)),
+            Self::OmniDirectional(fov) => Self::OmniDirectional(fov.get_child(index)),
+            Self::PtfCcd(fov) => Self::PtfCcd(fov.get_child(index)),
+            Self::PtfField(fov) => Self::PtfCcd(fov.get_child(index)),
+            Self::SpherexCmos(fov) => Self::SpherexCmos(fov.get_child(index)),
+            Self::SpherexField(fov) => Self::SpherexCmos(fov.get_child(index)),
+        }
     }
 
     fn pointing(&self) -> KeteResult<Vector<Equatorial>> {
