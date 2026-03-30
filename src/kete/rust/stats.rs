@@ -27,7 +27,7 @@ use pyo3::prelude::*;
 /// 3.0
 /// >>> s.quantile(0.5)
 /// 3.0
-#[pyclass(frozen, module = "kete", name = "Data")]
+#[pyclass(frozen, module = "kete", name = "Data", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyData(pub Data<f64>);
 
