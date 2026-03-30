@@ -60,7 +60,7 @@ jobs:
         cargo test --release
     - name: Cargo Docs
       run: |
-        cargo doc
+        cargo doc --workspace --no-deps --document-private-items --all-features
     - name: Build kete
       run: |
         python3 -m pip install '.[dev]' -v

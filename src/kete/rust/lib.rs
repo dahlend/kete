@@ -1,6 +1,14 @@
 //! Core kete library code, which are wrappers over the kete_core rust package.
 //! Primarily enables python interfaces
-
+//!
+//! Doc comments in this crate are written for Sphinx/Python and may contain
+//! reStructuredText, LaTeX math blocks, bare reference URLs, and Python type
+//! names that are not valid rustdoc links.
+#![allow(
+    rustdoc::broken_intra_doc_links,
+    rustdoc::bare_urls,
+    rustdoc::invalid_rust_codeblocks
+)]
 #![deny(
     bad_style,
     dead_code,
