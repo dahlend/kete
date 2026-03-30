@@ -752,7 +752,7 @@ impl KeteWrite for FOV {
 }
 
 /// Read an FOV from the stream. Returns `None` if the tag is unknown
-/// (forward compatibility — unknown variants are skipped).
+/// (forward compatibility -- unknown variants are skipped).
 ///
 /// # Errors
 /// Returns an error if the stream cannot be read or contains invalid data.
@@ -951,7 +951,7 @@ mod tests {
     #[test]
     fn test_char_bool() {
         round_trip_write_read(&'A');
-        round_trip_write_read(&'🚀');
+        round_trip_write_read(&'\u{1F680}');
         round_trip_write_read(&true);
         round_trip_write_read(&false);
     }
