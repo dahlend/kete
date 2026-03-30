@@ -98,8 +98,8 @@ impl FovLike for WiseCmos {
     }
 
     #[inline]
-    fn into_fov(self) -> KeteResult<FOV> {
-        Ok(FOV::Wise(self))
+    fn into_fov(self) -> FOV {
+        FOV::Wise(self)
     }
 
     #[inline]

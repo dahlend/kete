@@ -141,8 +141,8 @@ impl FovLike for PtfCcd {
     }
 
     #[inline]
-    fn into_fov(self) -> KeteResult<FOV> {
-        Ok(FOV::PtfCcd(self))
+    fn into_fov(self) -> FOV {
+        FOV::PtfCcd(self)
     }
 
     #[inline]
@@ -231,8 +231,8 @@ impl FovLike for PtfField {
     }
 
     #[inline]
-    fn into_fov(self) -> KeteResult<FOV> {
-        Ok(FOV::PtfField(self))
+    fn into_fov(self) -> FOV {
+        FOV::PtfField(self)
     }
 
     fn observer(&self) -> &State<Equatorial> {
@@ -256,7 +256,7 @@ impl FovLike for PtfField {
     #[inline]
     fn pointing(&self) -> KeteResult<Vector<Equatorial>> {
         if self.ccds.is_empty() {
-            Err(Error::ValueError("ZtfField has no ccd quads".into()))
+            Err(Error::ValueError("PtfField has no ccd quads".into()))
         } else {
             // return the average pointing of all ccd quads
             Ok(self
@@ -269,7 +269,7 @@ impl FovLike for PtfField {
     #[inline]
     fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
         if self.ccds.is_empty() {
-            Err(Error::ValueError("ZtfField has no ccd quads".into()))
+            Err(Error::ValueError("PtfField has no ccd quads".into()))
         } else {
             // return all the corners of all ccd quads
             Ok(self

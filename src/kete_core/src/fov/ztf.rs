@@ -110,8 +110,8 @@ impl FovLike for ZtfCcdQuad {
     }
 
     #[inline]
-    fn into_fov(self) -> KeteResult<FOV> {
-        Ok(FOV::ZtfCcdQuad(self))
+    fn into_fov(self) -> FOV {
+        FOV::ZtfCcdQuad(self)
     }
 
     #[inline]
@@ -216,8 +216,8 @@ impl FovLike for ZtfField {
     }
 
     #[inline]
-    fn into_fov(self) -> KeteResult<FOV> {
-        Ok(FOV::ZtfField(self))
+    fn into_fov(self) -> FOV {
+        FOV::ZtfField(self)
     }
 
     fn observer(&self) -> &State<Equatorial> {

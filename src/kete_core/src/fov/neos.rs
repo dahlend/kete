@@ -116,8 +116,8 @@ impl FovLike for NeosCmos {
         self.clone()
     }
 
-    fn into_fov(self) -> KeteResult<FOV> {
-        Ok(FOV::NeosCmos(self))
+    fn into_fov(self) -> FOV {
+        FOV::NeosCmos(self)
     }
 
     #[inline]
@@ -375,8 +375,8 @@ impl FovLike for NeosVisit {
     }
 
     #[inline]
-    fn into_fov(self) -> KeteResult<FOV> {
-        Ok(FOV::NeosVisit(self))
+    fn into_fov(self) -> FOV {
+        FOV::NeosVisit(self)
     }
 
     fn observer(&self) -> &State<Equatorial> {

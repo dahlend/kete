@@ -285,18 +285,18 @@ impl AllowedFOV {
     pub fn get_fov(self, idx: Option<usize>) -> fov::FOV {
         let idx = idx.unwrap_or_default();
         match self {
-            AllowedFOV::WISE(fov) => fov.0.get_child(idx).into_fov().unwrap(),
-            AllowedFOV::Rectangle(fov) => fov.0.get_child(idx).into_fov().unwrap(),
-            AllowedFOV::NEOS(fov) => fov.0.get_child(idx).into_fov().unwrap(),
-            AllowedFOV::ZTF(fov) => fov.0.get_child(idx).into_fov().unwrap(),
-            AllowedFOV::ZTFField(fov) => fov.0.get_child(idx).into_fov().unwrap(),
-            AllowedFOV::NEOSVisit(fov) => fov.0.get_child(idx).into_fov().unwrap(),
-            AllowedFOV::Cone(fov) => fov.0.get_child(idx).into_fov().unwrap(),
-            AllowedFOV::OmniDirectional(fov) => fov.0.get_child(idx).into_fov().unwrap(),
-            AllowedFOV::PTF(fov) => fov.0.get_child(idx).into_fov().unwrap(),
-            AllowedFOV::PTFField(fov) => fov.0.get_child(idx).into_fov().unwrap(),
-            AllowedFOV::SPHEREx(fov) => fov.0.get_child(idx).into_fov().unwrap(),
-            AllowedFOV::SPHERExField(fov) => fov.0.get_child(idx).into_fov().unwrap(),
+            AllowedFOV::WISE(fov) => fov.0.get_child(idx).into_fov(),
+            AllowedFOV::Rectangle(fov) => fov.0.get_child(idx).into_fov(),
+            AllowedFOV::NEOS(fov) => fov.0.get_child(idx).into_fov(),
+            AllowedFOV::ZTF(fov) => fov.0.get_child(idx).into_fov(),
+            AllowedFOV::ZTFField(fov) => fov.0.get_child(idx).into_fov(),
+            AllowedFOV::NEOSVisit(fov) => fov.0.get_child(idx).into_fov(),
+            AllowedFOV::Cone(fov) => fov.0.get_child(idx).into_fov(),
+            AllowedFOV::OmniDirectional(fov) => fov.0.get_child(idx).into_fov(),
+            AllowedFOV::PTF(fov) => fov.0.get_child(idx).into_fov(),
+            AllowedFOV::PTFField(fov) => fov.0.get_child(idx).into_fov(),
+            AllowedFOV::SPHEREx(fov) => fov.0.get_child(idx).into_fov(),
+            AllowedFOV::SPHERExField(fov) => fov.0.get_child(idx).into_fov(),
         }
     }
 
@@ -1488,7 +1488,7 @@ impl PySpherexField {
 
     fn __repr__(&self) -> String {
         format!(
-            "PtfField(ccd_quads=<{} frames>, observer={}, obs_id={:?}, observation_id={})",
+            "SpherexField(ccd_quads=<{} frames>, observer={}, obs_id={:?}, observation_id={})",
             self.0.n_patches(),
             self.observer().__repr__(),
             self.obsid(),

@@ -143,8 +143,8 @@ impl FovLike for FOV {
         dispatch_fov!(self, pointing)
     }
 
-    fn into_fov(self) -> KeteResult<FOV> {
-        Ok(self)
+    fn into_fov(self) -> FOV {
+        self
     }
 
     fn observer(&self) -> &State<Equatorial> {

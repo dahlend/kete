@@ -77,7 +77,7 @@ pub trait FovLike: Sync + Sized {
     ///
     /// # Errors
     /// This may fail if the FOV cannot be converted into a known FOV type.
-    fn into_fov(self) -> KeteResult<FOV>;
+    fn into_fov(self) -> FOV;
 }
 
 /// Given a collection of static positions, return the index of the input vector

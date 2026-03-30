@@ -74,11 +74,7 @@ pub fn check_spks<F: FovLike>(fov: &F, obj_ids: &[i32]) -> Vec<Option<Simultaneo
         .into_iter()
         .enumerate()
         .map(|(idx, states_patch)| {
-            SimultaneousStates::new_exact(
-                states_patch,
-                Some(fov.get_child(idx).into_fov().unwrap()),
-            )
-            .ok()
+            SimultaneousStates::new_exact(states_patch, Some(fov.get_child(idx).into_fov())).ok()
         })
         .collect()
 }
@@ -151,7 +147,7 @@ pub fn check_visible<F: FovLike>(
         .into_iter()
         .enumerate()
         .map(|(idx, states)| {
-            SimultaneousStates::new_exact(states, Some(fov.get_child(idx).into_fov().unwrap())).ok()
+            SimultaneousStates::new_exact(states, Some(fov.get_child(idx).into_fov())).ok()
         })
         .collect()
 }

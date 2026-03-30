@@ -79,8 +79,8 @@ impl FovLike for SpherexCmos {
     }
 
     #[inline]
-    fn into_fov(self) -> KeteResult<FOV> {
-        Ok(FOV::SpherexCmos(self))
+    fn into_fov(self) -> FOV {
+        FOV::SpherexCmos(self)
     }
 
     #[inline]
@@ -173,8 +173,8 @@ impl FovLike for SpherexField {
     }
 
     #[inline]
-    fn into_fov(self) -> KeteResult<FOV> {
-        Ok(FOV::SpherexField(self))
+    fn into_fov(self) -> FOV {
+        FOV::SpherexField(self)
     }
 
     fn observer(&self) -> &State<Equatorial> {

@@ -112,8 +112,8 @@ impl FovLike for GenericRectangle {
     }
 
     #[inline]
-    fn into_fov(self) -> KeteResult<FOV> {
-        Ok(FOV::GenericRectangle(self))
+    fn into_fov(self) -> FOV {
+        FOV::GenericRectangle(self)
     }
 
     #[inline]
@@ -166,8 +166,8 @@ impl FovLike for OmniDirectional {
     }
 
     #[inline]
-    fn into_fov(self) -> KeteResult<FOV> {
-        Ok(FOV::OmniDirectional(self))
+    fn into_fov(self) -> FOV {
+        FOV::OmniDirectional(self)
     }
 
     #[inline]
@@ -235,8 +235,8 @@ impl FovLike for GenericCone {
     }
 
     #[inline]
-    fn into_fov(self) -> KeteResult<FOV> {
-        Ok(FOV::GenericCone(self))
+    fn into_fov(self) -> FOV {
+        FOV::GenericCone(self)
     }
 
     #[inline]
