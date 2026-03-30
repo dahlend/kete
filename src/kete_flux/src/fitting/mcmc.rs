@@ -31,6 +31,7 @@
 //! plus parallel batch fitting.
 
 use super::types::{FluxObs, FluxPriors, Model};
+use kete_core::errors::{Error, KeteResult};
 use kete_stats::fitting::{NelderMeadResult, nelder_mead};
 use nalgebra::{DMatrix, DVector};
 use nuts_rs::rand::SeedableRng;
@@ -69,7 +70,7 @@ fn nelder_mead_seed(
     c_hg: f64,
     emissivity: f64,
     priors: &FluxPriors,
-) -> Option<NelderMeadSeed> {
+) -> KeteResult<NelderMeadSeed> {
     let objective = build_neg_log_posterior(model, obs, c_hg, emissivity, priors);
 
     // Derive seed values for H, G from priors.
@@ -169,12 +170,24 @@ fn nelder_mead_seed(
         }
     }
 
-    let (params, _) = best?;
-    Some(NelderMeadSeed { params })
+    let (params, value) = best.ok_or_else(|| {
+        Error::Convergence("Nelder-Mead failed to find a feasible starting point".into())
+    })?;
+    if value >= f64::MAX {
+        return Err(Error::Convergence(
+            "Nelder-Mead converged to an infeasible point (log-posterior = -inf)".into(),
+        ));
+    }
+    Ok(NelderMeadSeed { params })
 }
 
 /// Step size for finite-difference gradients.
 const FINITE_DIFF_STEP: f64 = 1e-5;
+
+/// Fallback gradient value when finite-differences produce non-finite or zero
+/// results. Must be nonzero because nuts-rs rejects zero gradient components
+/// during initialization (`array_all_finite_and_nonzero`).
+const GRAD_FALLBACK: f64 = 1e-10;
 
 /// Result of a full MCMC fit.
 #[derive(Debug, Clone)]
@@ -307,14 +320,19 @@ impl CpuLogpFunc for Posterior {
                 let lp_plus = this.eval_logp(&this.xi_to_x(&buf));
                 buf[j] -= 2.0 * FINITE_DIFF_STEP;
                 let lp_minus = this.eval_logp(&this.xi_to_x(&buf));
-                if lp_plus.is_finite() && lp_minus.is_finite() {
+                let g = if lp_plus.is_finite() && lp_minus.is_finite() {
                     (lp_plus - lp_minus) / (2.0 * FINITE_DIFF_STEP)
                 } else if lp_plus.is_finite() {
                     (lp_plus - lp) / FINITE_DIFF_STEP
                 } else if lp_minus.is_finite() {
                     (lp - lp_minus) / FINITE_DIFF_STEP
                 } else {
-                    0.0
+                    GRAD_FALLBACK
+                };
+                if g.is_finite() && g != 0.0 {
+                    g
+                } else {
+                    GRAD_FALLBACK
                 }
             })
             .collect();
@@ -340,6 +358,9 @@ fn run_chain(
     target_accept: f64,
     chain_seed: u64,
 ) -> Result<(Vec<Vec<f64>>, Vec<bool>), String> {
+    use rand::distr::Uniform;
+    use rand::prelude::Distribution;
+
     let d = posterior.dim();
 
     let mut settings = DiagGradNutsSettings {
@@ -356,25 +377,32 @@ fn run_chain(
     let mut rng = rand::rngs::SmallRng::seed_from_u64(chain_seed);
     let mut sampler = settings.new_chain(chain_seed, math, &mut rng);
 
-    // Initialize at a dispersed point in xi-space.
-    let init: Vec<f64> = {
-        use rand::distr::Uniform;
-        use rand::prelude::Distribution;
-        let uniform = Uniform::new(-1.0_f64, 1.0).expect("valid range");
-        (0..d).map(|_| uniform.sample(&mut rng)).collect()
-    };
-    sampler
-        .set_position(&init)
-        .map_err(|e| format!("NUTS init failed: {e}"))?;
+    // Try initializing at the origin (MAP point), then small perturbations
+    // if the gradient is problematic at the exact MAP.
+    let mut init: Vec<f64> = vec![0.0; d];
+    let mut initialized = false;
+    for attempt in 0..5 {
+        if sampler.set_position(&init).is_ok() {
+            initialized = true;
+            break;
+        }
+        // Perturb away from the exact MAP to avoid boundary gradient issues.
+        let scale = 0.01 * f64::from(1_i32 << attempt);
+        let uniform = Uniform::new(-scale, scale).expect("valid range");
+        init = (0..d).map(|_| uniform.sample(&mut rng)).collect();
+    }
+    if !initialized {
+        return Err("NUTS init failed after retries: bad gradient at MAP point".into());
+    }
 
     let total = num_tune + num_draws;
     let mut draws = Vec::with_capacity(num_draws as usize);
     let mut divergent = Vec::with_capacity(num_draws as usize);
 
     for _ in 0..total {
-        let (position, progress) = sampler
-            .draw()
-            .map_err(|e| format!("NUTS draw failed: {e}"))?;
+        let Ok((position, progress)) = sampler.draw() else {
+            break;
+        };
         if progress.tuning {
             continue;
         }
@@ -437,7 +465,10 @@ fn hessian_whitening_scales(
 ///
 /// `c_hg` is the H-D-pV conversion factor. `emissivity` is a fixed
 /// thermal emissivity (not fitted).
-#[must_use]
+///
+/// # Errors
+/// - If Nelder-Mead fails to find a feasible starting point.
+/// - If all MCMC chains fail to produce valid draws.
 pub fn fit_mcmc(
     model: Model,
     obs: &[FluxObs],
@@ -447,7 +478,7 @@ pub fn fit_mcmc(
     num_chains: usize,
     num_tune: usize,
     num_draws: usize,
-) -> Option<FitResult> {
+) -> KeteResult<FitResult> {
     // 1. Multi-start NM seed.
     let nm = nelder_mead_seed(model, obs, c_hg, emissivity, priors)?;
     let seed = nm.params;
@@ -455,31 +486,29 @@ pub fn fit_mcmc(
     let seed_vec = DVector::from_column_slice(&seed);
 
     // MAP diagnostics at the NM seed.
-    let (reduced_chi2, nobs, best_fit_fluxes, best_fit_residuals, best_fit_reflected_frac) =
-        if let Some(params) = model.unpack(&seed, emissivity, c_hg) {
-            let fwd = model.evaluate_forward_model(&params, obs);
-            let mut chi2 = 0.0;
-            let mut n = 0_usize;
-            let mut residuals = Vec::with_capacity(obs.len());
-            for (i, ob) in obs.iter().enumerate() {
-                let sigma = params.f_sigma * ob.sigma;
-                let r = if sigma > 0.0 {
-                    (ob.flux - fwd.model_fluxes[i]) / sigma
-                } else {
-                    0.0
-                };
-                residuals.push(r);
-                if !ob.is_upper_limit {
-                    chi2 += r * r;
-                    n += 1;
-                }
+    let (reduced_chi2, nobs, best_fit_fluxes, best_fit_residuals, best_fit_reflected_frac) = {
+        let params = model.unpack(&seed, emissivity, c_hg);
+        let fwd = model.evaluate_forward_model(&params, obs);
+        let mut chi2 = 0.0;
+        let mut n = 0_usize;
+        let mut residuals = Vec::with_capacity(obs.len());
+        for (i, ob) in obs.iter().enumerate() {
+            let sigma = params.f_sigma * ob.sigma;
+            let r = if sigma > 0.0 {
+                (ob.flux - fwd.model_fluxes[i]) / sigma
+            } else {
+                0.0
+            };
+            residuals.push(r);
+            if !ob.is_upper_limit {
+                chi2 += r * r;
+                n += 1;
             }
-            let dof = n.saturating_sub(model.dim());
-            let reduced = if dof > 0 { chi2 / dof as f64 } else { f64::NAN };
-            (reduced, n, fwd.model_fluxes, residuals, fwd.reflected_frac)
-        } else {
-            (f64::NAN, 0, vec![], vec![], vec![])
-        };
+        }
+        let dof = n.saturating_sub(model.dim());
+        let reduced = if dof > 0 { chi2 / dof as f64 } else { f64::NAN };
+        (reduced, n, fwd.model_fluxes, residuals, fwd.reflected_frac)
+    };
 
     // Diagonal whitening from FD Hessian of the objective.
     let d = model.dim();
@@ -491,9 +520,9 @@ pub fn fit_mcmc(
     let whiten_l = DMatrix::from_diagonal(&DVector::from_column_slice(&scales));
 
     // 2. Run chains in parallel.
-    let chain_results: Vec<(Vec<Vec<f64>>, Vec<bool>)> = (0..num_chains)
+    let chain_outcomes: Vec<Result<(Vec<Vec<f64>>, Vec<bool>), String>> = (0..num_chains)
         .into_par_iter()
-        .filter_map(|chain_idx| {
+        .map(|chain_idx| {
             let posterior = Posterior {
                 obs: obs.to_vec(),
                 c_hg,
@@ -503,45 +532,60 @@ pub fn fit_mcmc(
                 whiten_l: whiten_l.clone(),
                 model,
             };
-            run_chain(
+            let (xi_draws, div) = run_chain(
                 posterior,
                 num_tune as u64,
                 num_draws as u64,
                 10,
                 0.8,
                 chain_idx as u64,
-            )
-            .ok()
-            .map(|(xi_draws, div)| {
-                let (phys, filtered_div): (Vec<Vec<f64>>, Vec<bool>) = xi_draws
-                    .iter()
-                    .zip(div)
-                    .filter_map(|(xi, d)| {
-                        let xi_dv = DVector::from_column_slice(xi);
-                        let x = &seed_vec + &whiten_l * &xi_dv;
-                        let p = model.unpack(x.as_slice(), emissivity, c_hg)?;
-                        Some((p.to_draw_row(model), d))
-                    })
-                    .unzip();
-                (phys, filtered_div)
-            })
+            )?;
+            let (phys, filtered_div): (Vec<Vec<f64>>, Vec<bool>) = xi_draws
+                .iter()
+                .zip(div)
+                .map(|(xi, d)| {
+                    let xi_dv = DVector::from_column_slice(xi);
+                    let x = &seed_vec + &whiten_l * &xi_dv;
+                    let p = model.unpack(x.as_slice(), emissivity, c_hg);
+                    (p.to_draw_row(model), d)
+                })
+                .unzip();
+            Ok((phys, filtered_div))
         })
         .collect();
 
     let mut all_draws: Vec<Vec<f64>> = Vec::new();
     let mut all_divergent: Vec<bool> = Vec::new();
-    for (draws, div) in chain_results {
-        all_draws.extend(draws);
-        all_divergent.extend(div);
+    let mut chain_errors: Vec<String> = Vec::new();
+    for outcome in chain_outcomes {
+        match outcome {
+            Ok((draws, div)) => {
+                all_draws.extend(draws);
+                all_divergent.extend(div);
+            }
+            Err(e) => chain_errors.push(e),
+        }
     }
 
     if all_draws.is_empty() {
-        return None;
+        let detail = if chain_errors.is_empty() {
+            "all chains produced zero draws".into()
+        } else {
+            format!(
+                "{}/{} chains failed: {}",
+                chain_errors.len(),
+                num_chains,
+                chain_errors[0]
+            )
+        };
+        return Err(Error::Convergence(format!(
+            "MCMC failed to produce valid draws ({detail})"
+        )));
     }
 
     let n_divergent = all_divergent.iter().filter(|&&d| d).count();
 
-    Some(FitResult {
+    Ok(FitResult {
         model,
         draws: all_draws,
         divergent: all_divergent,
@@ -578,9 +622,9 @@ pub struct FitTask {
 /// Fit many objects in parallel using rayon.
 ///
 /// Each task is independent and dispatched to a rayon thread.  Returns one
-/// `Option<FitResult>` per task, in the same order as the input.
+/// `KeteResult<FitResult>` per task, in the same order as the input.
 #[must_use]
-pub fn fit_batch(tasks: &[FitTask]) -> Vec<Option<FitResult>> {
+pub fn fit_batch(tasks: &[FitTask]) -> Vec<KeteResult<FitResult>> {
     tasks
         .par_iter()
         .map(|t| {

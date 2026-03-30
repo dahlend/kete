@@ -77,8 +77,6 @@ pub mod errors;
 pub mod fov;
 pub mod frames;
 pub mod io;
-pub mod naif_ids;
-pub mod obs_codes;
 pub mod propagation;
 pub mod simult_states;
 pub mod state;
@@ -88,11 +86,11 @@ pub mod util;
 /// Common useful imports
 pub mod prelude {
     pub use crate::desigs::Desig;
+    pub use crate::desigs::{NaifId, naif_ids_from_name, try_name_from_id};
+    pub use crate::desigs::{OBS_CODES, ObsCode, try_obs_code_from_name};
     pub use crate::elements::CometElements;
     pub use crate::errors::{Error, KeteResult};
-    pub use crate::frames::{Ecliptic, Equatorial, FK4, Galactic, NonInertialFrame};
-    pub use crate::naif_ids::{NaifId, naif_ids_from_name, try_name_from_id};
-    pub use crate::obs_codes::{OBS_CODES, ObsCode, try_obs_code_from_name};
+    pub use crate::frames::{Ecliptic, Equatorial, FK4, Galactic, InertialFrame, NonInertialFrame};
     pub use crate::propagation::{NonGravModel, propagate_two_body};
     pub use crate::simult_states::SimultaneousStates;
     pub use crate::state::State;

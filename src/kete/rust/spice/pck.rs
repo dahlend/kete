@@ -1,6 +1,6 @@
 use kete_core::frames::ecef_to_geodetic_lat_lon;
-use kete_spice::spice::{LOADED_PCK, LOADED_SPK};
 use kete_core::{constants, prelude::*};
+use kete_spice::spice::{LOADED_PCK, LOADED_SPK};
 use pyo3::{PyResult, pyfunction};
 
 use crate::frame::PyFrames;
@@ -117,4 +117,15 @@ pub fn pck_reset_py() {
 pub fn pck_loaded_objects_py() -> Vec<i32> {
     let loaded = LOADED_PCK.read().unwrap();
     loaded.loaded_objects()
+}
+
+/// Reload the core PCK files.
+#[pyfunction]
+#[pyo3(name = "pck_load_core")]
+pub fn pck_load_core_py() -> PyResult<()> {
+    LOADED_PCK
+        .write()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("PCK lock poisoned"))?
+        .load_core()?;
+    Ok(())
 }

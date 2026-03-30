@@ -1,7 +1,7 @@
 use kete_core::constants::AU_KM;
 use kete_core::desigs::Desig;
 use kete_core::frames::geodetic_lat_lon_to_ecef;
-use kete_spice::spice::{LOADED_PCK, LOADED_SPK};
+use kete_spice::spice::LOADED_SPK;
 use pyo3::{PyResult, Python, pyfunction};
 
 use crate::desigs::NaifIDLike;
@@ -89,17 +89,6 @@ pub fn spk_load_core_py() -> PyResult<()> {
     Ok(())
 }
 
-/// Reload the core PCK files.
-#[pyfunction]
-#[pyo3(name = "pck_load_core")]
-pub fn pck_load_core_py() -> PyResult<()> {
-    LOADED_PCK
-        .write()
-        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("PCK lock poisoned"))?
-        .load_core()?;
-    Ok(())
-}
-
 /// Reload the cache SPK files.
 #[pyfunction]
 #[pyo3(name = "spk_load_cache")]
@@ -149,10 +138,10 @@ pub fn spk_state_py(
     let jd = jd.into();
     let (_, center) = center.try_into()?;
     match id.clone().try_into() {
-        Ok((_, id)) => {
+        Ok((name, id)) => {
             let spk = &LOADED_SPK.try_read().unwrap();
             let mut state = spk.try_get_state_with_center(id, jd, center)?;
-            state.desig = state.desig.try_naif_id_to_name();
+            state.desig = Desig::Name(name);
             Ok(PyState {
                 raw: state,
                 frame,
@@ -161,7 +150,11 @@ pub fn spk_state_py(
         }
         Err(e) => {
             if let NaifIDLike::String(name) = id {
-                let (lat, lon, h, name, _) = find_obs_code_py(&name)?;
+                let (lat, lon, h, name, _) = find_obs_code_py(&name).map_err(|_| {
+                    kete_core::errors::Error::ValueError(format!(
+                        "Failed to resolve the specified object: {name}"
+                    ))
+                })?;
                 let mut ecef = geodetic_lat_lon_to_ecef(lat.to_radians(), lon.to_radians(), h);
                 ecef.iter_mut().for_each(|x| *x /= AU_KM);
 

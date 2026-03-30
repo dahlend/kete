@@ -51,9 +51,9 @@
 use super::daf::DafFile;
 use super::{DAFType, SpkArray, spice_jd_to_jd, spk_segments::SpkSegment};
 use kete_core::cache::cache_path;
+use kete_core::desigs::{NaifId, naif_ids_from_name};
 use kete_core::errors::Error;
 use kete_core::frames::InertialFrame;
-use kete_core::naif_ids::{NaifId, naif_ids_from_name};
 use kete_core::prelude::KeteResult;
 use kete_core::state::State;
 use kete_core::time::{TDB, Time};

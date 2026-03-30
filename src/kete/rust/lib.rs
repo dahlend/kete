@@ -42,6 +42,7 @@ pub mod simult_states;
 pub mod spice;
 pub mod state;
 pub mod state_transition;
+pub mod stats;
 pub mod time;
 pub mod uncertain_state;
 pub mod utils;
@@ -87,7 +88,7 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<flux::PyFluxObs>()?;
     m.add_class::<flux::PyParamPrior>()?;
     m.add_class::<flux::PyFluxPriors>()?;
-    m.add_class::<flux::PySampleStats>()?;
+    m.add_class::<stats::PyData>()?;
     m.add_class::<flux::PyFitResult>()?;
 
     m.add_class::<horizons::HorizonsProperties>()?;
