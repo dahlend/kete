@@ -33,16 +33,14 @@ use super::{Contains, FovLike, OnSkyRectangle, SkyPatch};
 use crate::fov::FOV;
 use crate::prelude::*;
 use crate::{constants::WISE_WIDTH, frames::Vector};
-use serde::{Deserialize, Serialize};
-
 /// WISE or NEOWISE frame data, all bands
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone)]
 pub struct WiseCmos {
     /// State of the observer
-    observer: State<Equatorial>,
+    pub(crate) observer: State<Equatorial>,
 
     /// Patch of sky
-    patch: OnSkyRectangle,
+    pub(crate) patch: OnSkyRectangle,
 
     /// Frame number of the fov
     pub frame_num: u64,

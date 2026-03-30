@@ -33,16 +33,14 @@ use super::patches::closest_inside;
 use super::{Contains, FovLike, OnSkyRectangle, SkyPatch};
 use crate::fov::FOV;
 use crate::{frames::Vector, prelude::*};
-use serde::{Deserialize, Serialize};
-
 /// ZTF frame data, single quad of a single chip
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone)]
 pub struct ZtfCcdQuad {
     /// State of the observer
-    observer: State<Equatorial>,
+    pub(crate) observer: State<Equatorial>,
 
     /// Patch of sky
-    patch: OnSkyRectangle,
+    pub(crate) patch: OnSkyRectangle,
 
     /// Field ID
     pub field: u32,
@@ -141,13 +139,13 @@ impl FovLike for ZtfCcdQuad {
 }
 
 /// ZTF frame data, single quad of a single chip
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone)]
 pub struct ZtfField {
     /// Individual CCD quads
-    ccd_quads: Vec<ZtfCcdQuad>,
+    pub(crate) ccd_quads: Vec<ZtfCcdQuad>,
 
     /// Observer position
-    observer: State<Equatorial>,
+    pub(crate) observer: State<Equatorial>,
 
     /// Field ID
     pub field: u32,

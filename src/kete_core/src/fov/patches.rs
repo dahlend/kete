@@ -29,11 +29,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use crate::{
-    frames::{Equatorial, Vector},
-    io::serde_const_arr,
-};
-use serde::{Deserialize, Serialize};
+use crate::frames::{Equatorial, Vector};
 use std::{f64::consts::FRAC_PI_2, ops::Neg};
 
 /// Bounded areas can either contains a vector or not.
@@ -101,11 +97,10 @@ pub trait SkyPatch: Sized {
 /// Note that the surface normals are defined by planes through the center of the
 /// sphere meaning that constructed polygons can only have great circle edges.
 ///
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone)]
 pub struct SphericalPolygon<const N_SIDES: usize> {
     /// Normal vectors which define the boundary of a polygon.
-    #[serde(with = "serde_const_arr")]
-    edge_normals: [Vector<Equatorial>; N_SIDES],
+    pub(crate) edge_normals: [Vector<Equatorial>; N_SIDES],
 }
 
 /// A rectangular patch of sky.
@@ -295,10 +290,10 @@ impl<const D: usize> SkyPatch for SphericalPolygon<D> {
 }
 
 /// Represent a cone on a sphere.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone)]
 pub struct SphericalCone {
     /// Unit vector which defines the direction of the cone.
-    pointing: Vector<Equatorial>,
+    pub(crate) pointing: Vector<Equatorial>,
 
     /// Size of the cone in degrees.
     pub angle: f64,

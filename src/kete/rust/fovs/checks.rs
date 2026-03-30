@@ -17,7 +17,7 @@ use crate::{simult_states::PySimultaneousStates, vector::VectorLike};
 /// ----------
 /// states: list[State]
 ///     States which do not already have a specified FOV.
-/// fov: FOVList
+/// fov: List[AllowedFOV]
 ///     A field of view from which to subselect objects which are visible.
 /// dt: float
 ///     Length of time in days where 2-body mechanics is a good approximation.
@@ -28,18 +28,19 @@ use crate::{simult_states::PySimultaneousStates, vector::VectorLike};
 pub fn fov_checks_py(
     py: Python<'_>,
     obj_state: PySimultaneousStates,
-    fovs: FOVListLike,
+    mut fovs: Vec<AllowedFOV>,
     dt_limit: f64,
     include_asteroids: bool,
 ) -> PyResult<Vec<PySimultaneousStates>> {
     let pop = obj_state.0;
 
-    let fovs = fovs.into_sorted_vec_fov();
+    fovs.sort_by(|a, b| a.jd().jd.total_cmp(&b.jd().jd));
 
     // break the fovs into groups based upon the dt_limit
     let mut fov_chunks: Vec<Vec<FOV>> = Vec::new();
     let mut chunk: Vec<FOV> = Vec::new();
     for fov in fovs.into_iter() {
+        let fov = fov.unwrap();
         if chunk.is_empty() {
             chunk.push(fov);
             continue;
@@ -129,11 +130,15 @@ pub fn fov_checks_py(
 ///     Collection of Field of Views to check.
 #[pyfunction]
 #[pyo3(name = "fov_spk_check")]
-pub fn fov_spk_checks_py(obj_ids: Vec<i32>, fovs: FOVListLike) -> Vec<PySimultaneousStates> {
-    let fovs = fovs.into_sorted_vec_fov();
+pub fn fov_spk_checks_py(
+    obj_ids: Vec<i32>,
+    mut fovs: Vec<AllowedFOV>,
+) -> Vec<PySimultaneousStates> {
+    fovs.sort_by(|a, b| a.jd().jd.total_cmp(&b.jd().jd));
 
     fovs.into_par_iter()
         .filter_map(|fov| {
+            let fov = fov.unwrap();
             let vis: Vec<_> = fov_checks::check_spks(&fov, &obj_ids)
                 .into_iter()
                 .filter_map(|pop| pop.map(|p| PySimultaneousStates(Box::new(p))))
@@ -169,9 +174,9 @@ pub fn fov_spk_checks_py(obj_ids: Vec<i32>, fovs: FOVListLike) -> Vec<PySimultan
 #[pyo3(name = "fov_static_check")]
 pub fn fov_static_checks_py(
     pos: Vec<VectorLike>,
-    fovs: FOVListLike,
+    mut fovs: Vec<AllowedFOV>,
 ) -> Vec<(Vec<usize>, AllowedFOV)> {
-    let fovs = fovs.into_sorted_vec_fov();
+    fovs.sort_by(|a, b| a.jd().jd.total_cmp(&b.jd().jd));
     let pos: Vec<_> = pos
         .into_iter()
         .map(|p| p.into_vector(crate::frame::PyFrames::Ecliptic))
@@ -179,6 +184,7 @@ pub fn fov_static_checks_py(
 
     fovs.into_par_iter()
         .filter_map(|fov| {
+            let fov = fov.unwrap();
             let vis: Vec<_> = check_statics(&fov, &pos)
                 .into_iter()
                 .filter_map(|pop| pop.map(|(p_vec, fov)| (p_vec, fov.into())))

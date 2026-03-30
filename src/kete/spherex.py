@@ -10,7 +10,7 @@ from astropy.io import fits
 from scipy.interpolate import RegularGridInterpolator
 
 from .cache import download_file
-from .fov import FOVList, SpherexCmos, SpherexField
+from .fov import SpherexCmos, SpherexField
 from .spice import get_state
 from .tap import query_tap
 from .time import Time
@@ -97,8 +97,7 @@ def fetch_fovs(update_cache=False):
     full_fields = []
     for (obs_id, observerid), frames in fields.items():
         full_fields.append(SpherexField(frames, obs_id, observerid))
-    full_fields = FOVList(full_fields)
-    full_fields.sort()
+    full_fields = sorted(full_fields, key=lambda x: x.jd)
     return full_fields
 
 

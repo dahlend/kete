@@ -35,16 +35,14 @@ use crate::constants::{NEOS_HEIGHT, NEOS_WIDTH};
 use crate::fov::FOV;
 use crate::frames::Vector;
 use crate::prelude::*;
-use serde::{Deserialize, Serialize};
-
 /// NEOS frame data, a single detector on a single band
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone)]
 pub struct NeosCmos {
     /// State of the observer
-    observer: State<Equatorial>,
+    pub(crate) observer: State<Equatorial>,
 
     /// Patch of sky
-    patch: OnSkyRectangle,
+    pub(crate) patch: OnSkyRectangle,
 
     /// Rotation of the FOV.
     pub rotation: f64,
@@ -147,13 +145,13 @@ impl FovLike for NeosCmos {
 }
 
 /// NEOS frame data, 4 chips of a visit.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone)]
 pub struct NeosVisit {
     /// Individual CMOS fields
-    chips: Box<[NeosCmos; 4]>,
+    pub(crate) chips: Box<[NeosCmos; 4]>,
 
     /// Observer position
-    observer: State<Equatorial>,
+    pub(crate) observer: State<Equatorial>,
 
     /// Rotation of the FOV.
     pub rotation: f64,

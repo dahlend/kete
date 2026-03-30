@@ -28,7 +28,6 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use nalgebra::Vector3;
-use serde::{Deserialize, Serialize};
 
 /// Reflected light properties of a comet using the MK magnitude system.
 ///
@@ -51,7 +50,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// This model additionally includes a correction for phase effects.
 ///
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug)]
 pub struct CometMKParams {
     /// Designation (name) of the object.
     pub desig: String,

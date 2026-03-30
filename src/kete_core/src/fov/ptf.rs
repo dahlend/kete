@@ -32,11 +32,10 @@ use super::patches::closest_inside;
 use super::{Contains, FovLike, OnSkyRectangle, SkyPatch};
 use crate::fov::FOV;
 use crate::{frames::Vector, prelude::*};
-use serde::{Deserialize, Serialize};
 use std::{fmt::Display, str::FromStr};
 
 /// PTF Filters used over the course of the survey.
-#[derive(PartialEq, Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(PartialEq, Clone, Copy, Debug)]
 pub enum PTFFilter {
     /// G Band Filter
     G,
@@ -78,10 +77,10 @@ impl FromStr for PTFFilter {
 }
 
 /// PTF frame data, single ccd
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone)]
 pub struct PtfCcd {
     /// State of the observer
-    observer: State<Equatorial>,
+    pub(crate) observer: State<Equatorial>,
 
     /// Patch of sky
     pub patch: OnSkyRectangle,
@@ -172,13 +171,13 @@ impl FovLike for PtfCcd {
 }
 
 /// Ptf frame data, full collection of all CCDs
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone)]
 pub struct PtfField {
     /// Individual CCDs
-    ccds: Vec<PtfCcd>,
+    pub(crate) ccds: Vec<PtfCcd>,
 
     /// Observer position
-    observer: State<Equatorial>,
+    pub(crate) observer: State<Equatorial>,
 
     /// Field ID
     pub field: u32,

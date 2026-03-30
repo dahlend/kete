@@ -31,7 +31,6 @@
 
 use super::{Ecliptic, Equatorial, InertialFrame};
 use nalgebra::{Rotation3, UnitVector3, Vector3};
-use serde::{Deserialize, Serialize};
 use std::f64::consts::{PI, TAU};
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -39,7 +38,7 @@ use std::ops::{Add, AddAssign, Div, Index, IndexMut, Mul, Neg, Sub, SubAssign};
 
 /// Vector with frame information.
 /// All vectors are 3D vectors in an inertial frame.
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[must_use]
 pub struct Vector<T: InertialFrame> {
     /// Underlying vector data.

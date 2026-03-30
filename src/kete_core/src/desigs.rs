@@ -57,13 +57,11 @@ use std::fmt::Display;
 use std::str;
 use std::str::FromStr;
 
-use itertools::Itertools;
-use nalgebra::{Rotation3, UnitVector3, Vector3};
-use serde::{Deserialize, Serialize};
-
 use crate::errors::{Error, KeteResult};
 use crate::frames::{EARTH_A, ecef_to_geodetic_lat_lon};
 use crate::util::partial_str_match;
+use itertools::Itertools;
+use nalgebra::{Rotation3, UnitVector3, Vector3};
 
 static MPC_HEX: &str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 static ORDER_CHARS: &str = "ABCDEFGHJKLMNOPQRSTUVWXYZ";
@@ -72,7 +70,7 @@ static ORDER_CHARS: &str = "ABCDEFGHJKLMNOPQRSTUVWXYZ";
 ///
 /// This enum represents all of the different types of designations
 /// which kete can represent.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Hash, Eq)]
+#[derive(Debug, Clone, PartialEq, Hash, Eq)]
 #[must_use]
 pub enum Desig {
     /// No id assigned.
@@ -1162,7 +1160,7 @@ pub fn roman_to_int(roman: &str) -> KeteResult<u32> {
 }
 
 /// NAIF ID information
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct NaifId {
     /// NAIF id
     pub id: i32,
@@ -1217,7 +1215,7 @@ pub fn naif_ids_from_name(name: &str) -> Vec<NaifId> {
 }
 
 /// Observatory information
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct ObsCode {
     /// observatory code
     pub code: Desig,

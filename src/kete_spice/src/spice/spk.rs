@@ -362,6 +362,9 @@ impl SpkCollection {
     /// Given an SPK filename, load all the segments present inside of it.
     /// These segments are added to the SPK singleton in memory.
     ///
+    /// After all files are loaded, the mapping must be rebuilt using the
+    /// `build_mapping` function.
+    ///
     /// # Errors
     /// Loading files may fail for a number of reasons, including incorrect formatted
     /// files or IO errors.
@@ -370,7 +373,7 @@ impl SpkCollection {
 
         if !matches!(file.daf_type, DAFType::Spk) {
             Err(Error::IOError(format!(
-                "File {filename:?} is not a PCK formatted file."
+                "File {filename:?} is not a SPK formatted file."
             )))?;
         }
         for daf_array in file.arrays {
@@ -384,7 +387,6 @@ impl SpkCollection {
                     .push(segment.try_into()?);
             }
         }
-        self.build_mapping();
         Ok(())
     }
 
@@ -428,6 +430,7 @@ impl SpkCollection {
                 eprintln!("Failed to load SPK file {filename}: {err}");
             }
         });
+        self.build_mapping();
         Ok(())
     }
 

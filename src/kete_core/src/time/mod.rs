@@ -40,10 +40,8 @@ use std::{
 mod leap_second;
 mod scales;
 
-use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc};
-use serde::{Deserialize, Serialize};
-
 use crate::prelude::{Error, KeteResult};
+use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc};
 
 // pub use self::leap_second::{};
 pub use self::scales::{JD_TO_MJD, TAI, TDB, TimeScale, UTC};
@@ -68,7 +66,7 @@ pub use self::scales::{JD_TO_MJD, TAI, TDB, TimeScale, UTC};
 /// Any conversions to a single float will by necessity result in some small accuracy
 /// loss due to the nature of the representation of numbers on computers.
 ///
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[must_use]
 pub struct Time<T: TimeScale> {
     /// Julian Date

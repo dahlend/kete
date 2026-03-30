@@ -52,11 +52,9 @@ pub use self::spherex::{SpherexCmos, SpherexField};
 pub use self::wise::WiseCmos;
 pub use self::ztf::{ZtfCcdQuad, ZtfField};
 
-use serde::{Deserialize, Serialize};
-
 /// Allowed FOV objects, either contiguous or joint.
 /// Many of these exist solely to carry additional metadata.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum FOV {
     /// Omni-Directional FOV.
