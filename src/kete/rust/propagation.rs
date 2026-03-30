@@ -345,8 +345,7 @@ pub fn picard(
                     ))
                     .change_frame(frame));
                 }
-                match spice_prop::propagate_picard_n_body_spk(state, jd, include_asteroids, model)
-                {
+                match spice_prop::propagate_picard_n_body_spk(state, jd, include_asteroids, model) {
                     Ok(state) => Ok(Into::<PyState>::into(state).change_frame(frame)),
                     Err(er) => {
                         if !suppress_errors {

@@ -438,10 +438,7 @@ pub fn propagate_two_body<T: InertialFrame>(
 ///
 /// # Errors
 /// Returns an error if `state.center_id != 10` or if the Kepler solver fails.
-pub fn light_time_correct<T: InertialFrame>(
-    state: &State<T>,
-    dist: f64,
-) -> KeteResult<State<T>> {
+pub fn light_time_correct<T: InertialFrame>(state: &State<T>, dist: f64) -> KeteResult<State<T>> {
     if state.center_id != 10 {
         return Err(Error::ValueError(
             "light_time_correct requires center_id = 10 (Sun).".into(),

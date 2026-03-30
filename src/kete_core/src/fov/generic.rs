@@ -244,5 +244,3 @@ impl FovLike for GenericCone {
         ))
     }
 }
-
-

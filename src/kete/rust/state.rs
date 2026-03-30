@@ -276,8 +276,9 @@ impl PyState {
 
     /// Text representation of the state.
     pub fn __repr__(&self) -> String {
-        let center =
-            Desig::Naif(self.raw.center_id).try_naif_id_to_name().to_string();
+        let center = Desig::Naif(self.raw.center_id)
+            .try_naif_id_to_name()
+            .to_string();
 
         format!(
             "State(desig={:?}, jd={:?}, pos={:?}, vel={:?}, frame={:?}, center={:?})",

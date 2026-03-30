@@ -6,8 +6,8 @@ use std::hint::black_box;
 use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use kete_core::prelude::*;
 use kete_core::constants;
+use kete_core::prelude::*;
 use pprof::criterion::{Output, PProfProfiler};
 
 static CIRCULAR: std::sync::LazyLock<State<Ecliptic>> = std::sync::LazyLock::new(|| {

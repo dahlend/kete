@@ -190,8 +190,6 @@ impl<T: InertialFrame> State<T> {
         Ok(())
     }
 
-
-
     /// Convert the state into a new frame.
     #[inline(always)]
     pub fn into_frame<B: InertialFrame>(self) -> State<B> {

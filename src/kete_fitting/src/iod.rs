@@ -643,9 +643,9 @@ mod tests {
     use kete_core::constants::GMS;
     use kete_core::desigs::Desig;
     use kete_core::propagation::{light_time_correct, propagate_two_body};
+    use kete_core::time::{TDB, Time};
     use kete_spice::propagation::propagate_n_body_spk;
     use kete_spice::spice::LOADED_SPK;
-    use kete_core::time::{TDB, Time};
 
     fn make_state(pos: [f64; 3], vel: [f64; 3], jd: f64) -> State<Equatorial> {
         State::new(Desig::Empty, jd.into(), pos.into(), vel.into(), 0)
@@ -1034,8 +1034,8 @@ mod tests {
                 let mut sun_at = obj_at.clone();
                 spk.try_change_center(&mut sun_at, 10)
                     .expect("SPK center change failed");
-                let mut obj_lt = light_time_correct(&sun_at, dist)
-                    .expect("light-time correction failed");
+                let mut obj_lt =
+                    light_time_correct(&sun_at, dist).expect("light-time correction failed");
                 spk.try_change_center(&mut obj_lt, 0)
                     .expect("SPK center change failed");
 
