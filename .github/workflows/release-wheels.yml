@@ -53,7 +53,6 @@ jobs:
             sdist: 
     steps:
       - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
       - name: Cache downloaded files
         id: cache-kete
         uses: actions/cache@v4

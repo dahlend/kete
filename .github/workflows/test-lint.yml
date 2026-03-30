@@ -53,18 +53,18 @@ jobs:
         python3 -m mypy src/kete/
 
     # Build and run pytest
+    - name: Test with cargo
+      run: |
+        cargo test --release
+    - name: Cargo Docs
+      run: |
+        cargo doc
     - name: Build kete
       run: |
         python3 -m pip install '.[dev]' -v
     - name: Test with pytest
       run: |
         python3 -m pytest --cov-report term-missing --cov=kete
-    - name: Test with cargo
-      run: |
-        cargo test
-    - name: Cargo Docs
-      run: |
-        cargo doc
 
     # Build documentation and push artifact
     - name: Build Docs
