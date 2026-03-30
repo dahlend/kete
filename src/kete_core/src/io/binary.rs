@@ -2,8 +2,8 @@
 //!
 //! Defines [`KeteWrite`] / [`KeteRead`] traits and implementations for all types
 //! that participate in the kete binary file format. Also provides file-level
-//! [`write_kete_file`] and [`read_kete_file`] functions that handle the header
-//! (magic bytes, version, content type, entry count).
+//! [`write_single_kete_file`], [`write_vec_kete_file`], and [`read_kete_file`]
+//! functions that handle the header (magic bytes, version, content type, entry count).
 // BSD 3-Clause License
 //
 // Copyright (c) 2026, Dar Dahlen
