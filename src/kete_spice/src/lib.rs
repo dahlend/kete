@@ -5,7 +5,7 @@
 //! This crate provides:
 //! - SPICE kernel reading (SPK, PCK, CK, SCLK) via the [`spice`] module
 //! - SPK-dependent N-body propagation via the [`propagation`] module
-//! - FOV SPICE-dependent visibility checks via the [`fov_ext`] module
+//! - FOV SPICE-dependent visibility checks via the [`fov_checks`] module
 //! - CK-dependent frame rotation via the [`frame_ext`] module
 //!
 //! Dependency direction: `kete_spice -> kete_core` (one-way, no cycles).

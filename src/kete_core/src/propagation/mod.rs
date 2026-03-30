@@ -1,5 +1,5 @@
 //! # Propagation
-//! The motion of objects (represented by a [`State`]) as a function of time.
+//! The motion of objects (represented by a [`crate::state::State`]) as a function of time.
 //! There are multiple levels of precision available, each with different pros/cons
 //! (usually performance related).
 // BSD 3-Clause License

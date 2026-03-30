@@ -81,7 +81,7 @@ impl CkCollection {
     /// Get the closest record to the given JD for the specified instrument ID.
     ///
     /// # Errors
-    /// [`crate::prelude::Error::Bounds`] if the instrument ID does not have a record for the
+    /// [`kete_core::errors::Error::Bounds`] if the instrument ID does not have a record for the
     ///   target JD.
     ///
     pub fn try_get_frame(
