@@ -13,7 +13,7 @@
 #![deny(missing_docs)]
 #![deny(missing_debug_implementations)]
 
-pub mod fov_ext;
+pub mod fov_checks;
 pub mod frame_ext;
 pub mod propagation;
 pub mod spice;
