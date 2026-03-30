@@ -503,7 +503,7 @@ fn select_scoring_cluster(sorted_obs: &[AstrometricObservation], ref_jd: f64) ->
 /// Compute the eccentricity of a candidate state.
 ///
 /// Uses the vis-viva relation to get the eccentricity vector directly from
-/// Cartesian pos/vel, avoiding the full [`CometElements`] construction.
+/// Cartesian pos/vel, avoiding the full [`CometElements`](kete_core::elements::CometElements) construction.
 fn compute_eccentricity(state: &State<Equatorial>) -> f64 {
     let r = state.pos.norm();
     let vel_scaled = state.vel / GMS_SQRT;

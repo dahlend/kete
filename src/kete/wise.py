@@ -19,7 +19,7 @@ from ._core import (
 )
 from .cache import cache_path, download_file
 from .deprecation import rename
-from .fov import FOVList, WiseCmos
+from .fov import WiseCmos
 from .plot import annotate_plot, plot_fits_image, zoom_plot
 from .tap import IRSA_URL, query_tap
 from .time import Time
@@ -607,8 +607,7 @@ def fetch_fovs(phase):
         )
 
         fovs.append(fov)
-    fovs = FOVList(fovs)
-    fovs.sort()
+    fovs = sorted(fovs, key=lambda x: x.jd)
     return fovs
 
 

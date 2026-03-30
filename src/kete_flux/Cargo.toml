@@ -23,7 +23,6 @@ nalgebra = {version = "^0.34.1"}
 nuts-rs = {version = "0.17"}
 rand = {version = "^0.10.0"}
 rayon = "^1.10.0"
-serde = { version = "^1.0.228", features = ["derive"] }
 
 [dev-dependencies]
 criterion = { version = "^0.5.1", features = ["html_reports"] }

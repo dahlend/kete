@@ -46,7 +46,6 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 
 use crate::desigs::Desig;
@@ -60,7 +59,7 @@ use crate::time::{TDB, Time};
 /// coordinate frame and a center point.
 ///
 /// This state object assumes no uncertainty in its values.
-#[derive(Debug, Serialize, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 #[must_use]
 pub struct State<T>
 where

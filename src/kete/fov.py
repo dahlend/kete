@@ -6,7 +6,6 @@ FOVs.
 from . import spice
 from ._core import (
     ConeFOV,
-    FOVList,
     NeosCmos,
     NeosVisit,
     OmniDirectionalFOV,
@@ -37,7 +36,6 @@ __all__ = [
     "RectangleFOV",
     "ConeFOV",
     "OmniDirectionalFOV",
-    "FOVList",
     "SpherexCmos",
     "SpherexField",
     "fov_static_check",

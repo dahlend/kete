@@ -12,7 +12,7 @@ from astropy.io import fits
 
 from . import spice
 from .cache import download_file
-from .fov import FOVList, PtfCcd, PtfField
+from .fov import PtfCcd, PtfField
 from .mpc import find_obs_code
 from .tap import query_tap
 from .time import Time
@@ -124,9 +124,8 @@ def fetch_fovs(year: int):
         fov = PtfField(value)
         final_fovs.append(fov)
 
-    # return the result
-    fov_list = FOVList(final_fovs)
-    return fov_list
+    final_fovs = sorted(final_fovs, key=lambda x: x.jd)
+    return final_fovs
 
 
 def fetch_frame(

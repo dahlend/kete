@@ -5,7 +5,6 @@ use crate::vector::PyVector;
 use crate::{fovs::AllowedFOV, state::PyState};
 use kete_core::errors::Error;
 use kete_core::fov::FovLike;
-use kete_core::io::FileIO;
 use kete_core::simult_states::SimultaneousStates;
 use kete_core::time::TDB;
 use kete_core::time::Time;
@@ -116,7 +115,7 @@ impl PySimultaneousStates {
 
     /// Save a single SimultaneousStates to a file.
     pub fn save(&self, filename: String) -> PyResult<()> {
-        let _ = self.0.save(filename)?;
+        self.0.save(filename)?;
         Ok(())
     }
 

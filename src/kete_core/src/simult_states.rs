@@ -33,15 +33,12 @@
 
 use crate::fov::{FOV, FovLike};
 use crate::frames::{Equatorial, Vector};
-use crate::io::FileIO;
 use crate::prelude::{Error, KeteResult, State};
 use crate::time::{TDB, Time};
 use nalgebra::Vector3;
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
-use serde::{Deserialize, Serialize};
-
 /// Collection of [`State`] at the same time.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct SimultaneousStates {
     /// Collection of states
     pub states: Vec<State<Equatorial>>,
@@ -55,8 +52,6 @@ pub struct SimultaneousStates {
     /// An optional field of view.
     pub fov: Option<FOV>,
 }
-
-impl FileIO for SimultaneousStates {}
 
 impl SimultaneousStates {
     /// Create a new Exact `SimultaneousStates`
@@ -162,5 +157,71 @@ impl SimultaneousStates {
     )]
     pub fn len(&self) -> usize {
         self.states.len()
+    }
+
+    /// Save into a binary file.
+    ///
+    /// # Errors
+    /// Saving is fallible due to filesystem calls.
+    pub fn save(&self, filename: String) -> KeteResult<()> {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use std::fs::File;
+        use std::io::BufWriter;
+        let f = BufWriter::new(File::create(filename)?);
+        let mut gz = GzEncoder::new(f, Compression::default());
+        crate::io::binary::write_single_kete_file(self, &mut gz)?;
+        let _ = gz.finish()?;
+        Ok(())
+    }
+
+    /// Load from a binary file.
+    ///
+    /// # Errors
+    /// Loading is fallible due to filesystem calls.
+    pub fn load(filename: String) -> KeteResult<Self> {
+        use flate2::read::GzDecoder;
+        use std::fs::File;
+        use std::io::BufReader;
+        let mut f = BufReader::new(GzDecoder::new(File::open(filename)?));
+        match crate::io::binary::read_kete_file(&mut f)? {
+            crate::io::binary::KeteFileType::Single(s) => Ok(*s),
+            crate::io::binary::KeteFileType::Vec(v) => Err(Error::ValueError(format!(
+                "Expected a single SimultaneousStates, but found a vector of length {}.",
+                v.len()
+            ))),
+        }
+    }
+
+    /// Save a vector of `SimultaneousStates` into a binary file.
+    ///
+    /// # Errors
+    /// Saving is fallible due to filesystem calls.
+    pub fn save_vec(vec: &[Self], filename: String) -> KeteResult<()> {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use std::fs::File;
+        use std::io::BufWriter;
+        let f = BufWriter::new(File::create(filename)?);
+        let mut gz = GzEncoder::new(f, Compression::default());
+        crate::io::binary::write_vec_kete_file(vec, &mut gz)?;
+        let _ = gz.finish()?;
+        Ok(())
+    }
+
+    /// Load a vector of `SimultaneousStates` from a binary file.
+    ///
+    /// # Errors
+    /// Loading is fallible due to filesystem calls.
+    pub fn load_vec(filename: String) -> KeteResult<Vec<Self>> {
+        use flate2::read::GzDecoder;
+        use std::fs::File;
+        use std::io::BufReader;
+        let mut f = BufReader::new(GzDecoder::new(File::open(filename)?));
+
+        match crate::io::binary::read_kete_file(&mut f)? {
+            crate::io::binary::KeteFileType::Single(s) => Ok(vec![*s]),
+            crate::io::binary::KeteFileType::Vec(v) => Ok(v),
+        }
     }
 }

@@ -32,8 +32,6 @@
 
 use std::fmt::Debug;
 
-use serde::{Deserialize, Serialize};
-
 use super::{Contains, FovLike, OnSkyRectangle, SkyPatch, SphericalCone};
 use crate::{
     errors::{Error, KeteResult},
@@ -43,12 +41,12 @@ use crate::{
 };
 
 /// Generic rectangular FOV
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone)]
 pub struct GenericRectangle {
-    observer: State<Equatorial>,
+    pub(crate) observer: State<Equatorial>,
 
     /// Patch of sky
-    patch: OnSkyRectangle,
+    pub(crate) patch: OnSkyRectangle,
 
     /// Rotation of the FOV.
     pub rotation: f64,
@@ -143,9 +141,9 @@ impl FovLike for GenericRectangle {
 }
 
 /// Generic rectangular FOV
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone)]
 pub struct OmniDirectional {
-    observer: State<Equatorial>,
+    pub(crate) observer: State<Equatorial>,
 }
 
 impl OmniDirectional {
@@ -201,9 +199,9 @@ impl FovLike for OmniDirectional {
 }
 
 /// Generic rectangular FOV
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone)]
 pub struct GenericCone {
-    observer: State<Equatorial>,
+    pub(crate) observer: State<Equatorial>,
 
     /// Patch of sky
     pub patch: SphericalCone,

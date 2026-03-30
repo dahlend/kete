@@ -43,7 +43,6 @@
 use crate::errors::{Error, KeteResult};
 use crate::time::{TDB, Time};
 use nalgebra::{Matrix3, Rotation3, Vector3};
-use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 use std::fmt::Debug;
 
@@ -78,7 +77,7 @@ pub trait InertialFrame: Sized + Sync + Send + Clone + Copy + Debug + PartialEq 
 }
 
 /// Equatorial frame.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[must_use]
 pub struct Equatorial {}
 
@@ -104,7 +103,7 @@ impl InertialFrame for Equatorial {
 }
 
 /// Ecliptic frame.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Ecliptic {}
 
 impl InertialFrame for Ecliptic {
@@ -115,7 +114,7 @@ impl InertialFrame for Ecliptic {
 }
 
 /// Galactic frame.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Galactic {}
 
 impl InertialFrame for Galactic {
@@ -126,7 +125,7 @@ impl InertialFrame for Galactic {
 }
 
 /// FK4 frame.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FK4 {}
 
 impl InertialFrame for FK4 {

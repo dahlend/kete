@@ -32,16 +32,14 @@ use super::{Contains, FovLike, OnSkyRectangle, SkyPatch};
 use crate::fov::{FOV, patches::closest_inside};
 use crate::frames::Vector;
 use crate::prelude::*;
-use serde::{Deserialize, Serialize};
-
 /// Spherex frame data, both optical assemblies
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone)]
 pub struct SpherexCmos {
     /// State of the observer
-    observer: State<Equatorial>,
+    pub(crate) observer: State<Equatorial>,
 
     /// Patch of sky
-    patch: OnSkyRectangle,
+    pub(crate) patch: OnSkyRectangle,
 
     /// uri indicating where the frame is stored in IRSA
     pub uri: Box<str>,
@@ -110,13 +108,13 @@ impl FovLike for SpherexCmos {
 }
 
 /// Spherex frame data, multiple individual CMOS at one instant.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone)]
 pub struct SpherexField {
     /// Individual CMOS quads
-    cmos_frames: Vec<SpherexCmos>,
+    pub(crate) cmos_frames: Vec<SpherexCmos>,
 
     /// Observer position
-    observer: State<Equatorial>,
+    pub(crate) observer: State<Equatorial>,
 
     /// obsid UUID
     pub obsid: Box<str>,

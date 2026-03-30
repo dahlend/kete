@@ -32,13 +32,11 @@
 use itertools::Itertools;
 use std::str::FromStr;
 
-use serde::Deserialize;
-
 use crate::prelude::{Error, KeteResult};
 
 /// Leap Second Information
 /// This is parsed from the contents of the `leap_second.dat` file.
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 struct LeapSecond {
     ///  MJD
     pub mjd: f64,

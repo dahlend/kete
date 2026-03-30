@@ -25,10 +25,13 @@ jobs:
     strategy:
       fail-fast: false
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
+    - uses: Swatinem/rust-cache@v2
+      with:
+        cache-on-failure: true
     - name: Cache downloaded files
       id: cache-kete
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       env:
         cache-name: cache-kete
       with:
@@ -52,26 +55,25 @@ jobs:
         python3 -m mypy src/kete/
 
     # Build and run pytest
+    - name: Test with cargo
+      run: |
+        cargo test --release
+    - name: Cargo Docs
+      run: |
+        cargo doc --workspace --no-deps --document-private-items --all-features
     - name: Build kete
       run: |
         python3 -m pip install '.[dev]' -v
     - name: Test with pytest
       run: |
         python3 -m pytest --cov-report term-missing --cov=kete
-    - name: Test with cargo
-      run: |
-        cargo test
-    - name: Cargo Docs
-      run: |
-        cargo doc
 
     # Build documentation and push artifact
     - name: Build Docs
       run: |
         cd docs
-        make clean
-        make doctest
         make html
+        make doctest
     - name: Fix permissions
       run: |
         chmod -c -R +rX "docs/" | while read line; do

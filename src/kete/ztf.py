@@ -17,7 +17,7 @@ from astropy.io import fits
 from . import spice
 from .cache import cache_path, download_file
 from .deprecation import rename
-from .fov import FOVList, ZtfCcdQuad, ZtfField
+from .fov import ZtfCcdQuad, ZtfField
 from .mpc import find_obs_code
 from .tap import query_tap
 from .time import Time
@@ -135,10 +135,8 @@ def fetch_fovs(year: int):
         fov = ZtfField(value)
         final_fovs.append(fov)
 
-    # finally save and return the result
-    fov_list = FOVList(final_fovs)
-    fov_list.sort()
-    return fov_list
+    final_fovs = sorted(final_fovs, key=lambda x: x.jd)
+    return final_fovs
 
 
 fetch_ztf_fovs = rename(
