@@ -1,5 +1,5 @@
 use super::*;
-use kete_core::fov::FOV;
+use kete_core::fov::{FOV, FovLike, check_statics};
 use kete_spice::fov_ext;
 use kete_spice::propagation::propagate_n_body_spk;
 use pyo3::prelude::*;
@@ -179,8 +179,7 @@ pub fn fov_static_checks_py(
 
     fovs.into_par_iter()
         .filter_map(|fov| {
-            let vis: Vec<_> = fov
-                .check_statics(&pos)
+            let vis: Vec<_> = check_statics(&fov, &pos)
                 .into_iter()
                 .filter_map(|pop| pop.map(|(p_vec, fov)| (p_vec, fov.into())))
                 .collect();

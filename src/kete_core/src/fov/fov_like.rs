@@ -30,20 +30,26 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use super::{Contains, FOV};
+use super::Contains;
 
 use crate::constants::C_AU_PER_DAY_INV;
+use crate::fov::FOV;
 use crate::frames::{Equatorial, Vector};
 use crate::prelude::*;
+use crate::propagation::light_time_correct;
 
 /// Field of View like objects.
 /// These may contain multiple unique sky patches, so as a result the expected
 /// behavior is to return the index as well as the [`Contains`] for the closest
 /// sky patch.
 pub trait FovLike: Sync + Sized {
+    /// The type of the child FOV, which is the FOV of a single patch. For example,
+    /// a ZTF field contains 16 CCD quads, so the child FOV of a ZTF field is a ZTF CCD.
+    type ChildFov: FovLike;
+
     /// Return the FOV of the patch at the specified index.
     /// This will panic if the index is out of allowed bounds.
-    fn get_fov(&self, index: usize) -> FOV;
+    fn get_child(&self, index: usize) -> Self::ChildFov;
 
     /// Position of the observer.
     fn observer(&self) -> &State<Equatorial>;
@@ -67,61 +73,93 @@ pub trait FovLike: Sync + Sized {
     /// Not all ``FoVs`` contain corners, such as a Cone.
     fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>>;
 
-    /// Check if a static source is visible. This assumes the vector passed in is at an
-    /// infinite distance from the observer.
-    #[inline]
-    fn check_static(&self, pos: &Vector<Equatorial>) -> (usize, Contains) {
-        self.contains(pos)
-    }
+    /// Convert this into an FOV Enum.
+    ///
+    /// # Errors
+    /// This may fail if the FOV cannot be converted into a known FOV type.
+    fn into_fov(self) -> KeteResult<FOV>;
+}
 
-    /// Assuming the object undergoes linear motion, check to see if it is within the
-    /// field of view.
-    #[inline]
-    fn check_linear(&self, state: &State<Equatorial>) -> (usize, Contains, State<Equatorial>) {
-        let pos = state.pos;
-        let vel = state.vel;
-        let obs = self.observer();
+/// Given a collection of static positions, return the index of the input vector
+/// which was visible.
+pub fn check_statics<F: FovLike>(
+    fov: &F,
+    pos: &[Vector<Equatorial>],
+) -> Vec<Option<(Vec<usize>, F::ChildFov)>> {
+    let mut visible: Vec<Vec<usize>> = vec![Vec::new(); fov.n_patches()];
 
-        let obs_pos = obs.pos;
+    pos.iter().enumerate().for_each(|(vec_idx, p)| {
+        if let (patch_idx, Contains::Inside) = fov.contains(p) {
+            visible[patch_idx].push(vec_idx);
+        }
+    });
 
-        let rel_pos = pos - obs_pos;
-
-        // This also accounts for first order light delay.
-        let dt = obs.epoch.jd - state.epoch.jd - rel_pos.norm() * C_AU_PER_DAY_INV;
-        let new_pos = pos + vel * dt;
-        let new_rel_pos = new_pos - obs_pos;
-        let (idx, contains) = self.contains(&new_rel_pos);
-        let new_state = State::new(
-            state.desig.clone(),
-            obs.epoch + dt,
-            new_pos,
-            vel,
-            obs.center_id,
-        );
-        (idx, contains, new_state)
-    }
-
-    /// Given a collection of static positions, return the index of the input vector
-    /// which was visible.
-    fn check_statics(&self, pos: &[Vector<Equatorial>]) -> Vec<Option<(Vec<usize>, FOV)>> {
-        let mut visible: Vec<Vec<usize>> = vec![Vec::new(); self.n_patches()];
-
-        pos.iter().enumerate().for_each(|(vec_idx, p)| {
-            if let (patch_idx, Contains::Inside) = self.check_static(p) {
-                visible[patch_idx].push(vec_idx);
+    visible
+        .into_iter()
+        .enumerate()
+        .map(|(idx, vis_patch)| {
+            if vis_patch.is_empty() {
+                None
+            } else {
+                Some((vis_patch, fov.get_child(idx)))
             }
-        });
+        })
+        .collect()
+}
 
-        visible
-            .into_iter()
-            .enumerate()
-            .map(|(idx, vis_patch)| {
-                if vis_patch.is_empty() {
-                    None
-                } else {
-                    Some((vis_patch, self.get_fov(idx)))
-                }
-            })
-            .collect()
+/// Assuming the object undergoes linear motion, check to see if it is within the
+/// field of view.
+#[inline]
+pub fn check_linear<F: FovLike>(
+    fov: &F,
+    state: &State<Equatorial>,
+) -> (usize, Contains, State<Equatorial>) {
+    let pos = state.pos;
+    let vel = state.vel;
+    let obs = fov.observer();
+
+    let obs_pos = obs.pos;
+
+    let rel_pos = pos - obs_pos;
+
+    // This also accounts for first order light delay.
+    let dt = obs.epoch.jd - state.epoch.jd - rel_pos.norm() * C_AU_PER_DAY_INV;
+    let new_pos = pos + vel * dt;
+    let new_rel_pos = new_pos - obs_pos;
+    let (idx, contains) = fov.contains(&new_rel_pos);
+    let new_state = State::new(
+        state.desig.clone(),
+        obs.epoch + dt,
+        new_pos,
+        vel,
+        obs.center_id,
+    );
+    (idx, contains, new_state)
+}
+
+/// Assuming the object undergoes two-body motion, check to see if it is within the
+/// field of view.
+///
+/// Both the state and the FOV observer must be Sun-centered (`center_id = 10`).
+///
+/// # Errors
+/// Returns an error if `state.center_id != 10` or if the Kepler solver fails.
+pub fn check_two_body<F: FovLike>(
+    fov: &F,
+    state: &State<Equatorial>,
+) -> KeteResult<(usize, Contains, State<Equatorial>)> {
+    if state.center_id != 10 {
+        return Err(Error::ValueError(
+            "check_two_body requires center_id = 10 (Sun).".into(),
+        ));
     }
+    let obs = fov.observer();
+
+    let final_state = propagate_two_body(state, obs.epoch)?;
+    let dist = (final_state.pos - obs.pos).norm();
+    let final_state = light_time_correct(&final_state, dist)?;
+    let rel_pos = final_state.pos - obs.pos;
+
+    let (idx, contains) = fov.contains(&rel_pos);
+    Ok((idx, contains, final_state))
 }

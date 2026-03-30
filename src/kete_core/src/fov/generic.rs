@@ -34,9 +34,10 @@ use std::fmt::Debug;
 
 use serde::{Deserialize, Serialize};
 
-use super::{Contains, FOV, FovLike, OnSkyRectangle, SkyPatch, SphericalCone};
+use super::{Contains, FovLike, OnSkyRectangle, SkyPatch, SphericalCone};
 use crate::{
     errors::{Error, KeteResult},
+    fov::FOV,
     frames::{Equatorial, Vector},
     state::State,
 };
@@ -102,10 +103,17 @@ impl GenericRectangle {
 }
 
 impl FovLike for GenericRectangle {
+    type ChildFov = Self;
+
     #[inline]
-    fn get_fov(&self, index: usize) -> FOV {
+    fn get_child(&self, index: usize) -> Self {
         assert!(index == 0, "FOV only has a single patch");
-        FOV::GenericRectangle(self.clone())
+        self.clone()
+    }
+
+    #[inline]
+    fn into_fov(self) -> KeteResult<FOV> {
+        Ok(FOV::GenericRectangle(self))
     }
 
     #[inline]
@@ -149,10 +157,17 @@ impl OmniDirectional {
 }
 
 impl FovLike for OmniDirectional {
+    type ChildFov = Self;
+
     #[inline]
-    fn get_fov(&self, index: usize) -> FOV {
+    fn get_child(&self, index: usize) -> Self {
         assert!(index == 0, "FOV only has a single patch");
-        FOV::OmniDirectional(self.clone())
+        self.clone()
+    }
+
+    #[inline]
+    fn into_fov(self) -> KeteResult<FOV> {
+        Ok(FOV::OmniDirectional(self))
     }
 
     #[inline]
@@ -211,10 +226,17 @@ impl GenericCone {
 }
 
 impl FovLike for GenericCone {
+    type ChildFov = Self;
+
     #[inline]
-    fn get_fov(&self, index: usize) -> FOV {
+    fn get_child(&self, index: usize) -> Self {
         assert!(index == 0, "FOV only has a single patch");
-        FOV::GenericCone(self.clone())
+        self.clone()
+    }
+
+    #[inline]
+    fn into_fov(self) -> KeteResult<FOV> {
+        Ok(FOV::GenericCone(self))
     }
 
     #[inline]

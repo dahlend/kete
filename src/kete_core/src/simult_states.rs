@@ -31,7 +31,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use crate::fov::FOV;
+use crate::fov::{FOV, FovLike};
 use crate::frames::{Equatorial, Vector};
 use crate::io::FileIO;
 use crate::prelude::{Error, KeteResult, State};

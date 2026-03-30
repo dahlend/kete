@@ -28,8 +28,8 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use super::{Contains, FOV, FovLike, OnSkyRectangle, SkyPatch};
-use crate::fov::patches::closest_inside;
+use super::{Contains, FovLike, OnSkyRectangle, SkyPatch};
+use crate::fov::{FOV, patches::closest_inside};
 use crate::frames::Vector;
 use crate::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -70,10 +70,17 @@ impl SpherexCmos {
 }
 
 impl FovLike for SpherexCmos {
+    type ChildFov = Self;
+
     #[inline]
-    fn get_fov(&self, index: usize) -> FOV {
+    fn get_child(&self, index: usize) -> Self::ChildFov {
         assert!(index == 0, "SPHEREx FOV only has a single patch");
-        FOV::SpherexCmos(self.clone())
+        self.clone()
+    }
+
+    #[inline]
+    fn into_fov(self) -> KeteResult<FOV> {
+        Ok(FOV::SpherexCmos(self))
     }
 
     #[inline]
@@ -159,8 +166,15 @@ impl SpherexField {
 }
 
 impl FovLike for SpherexField {
-    fn get_fov(&self, index: usize) -> FOV {
-        FOV::SpherexCmos(self.cmos_frames[index].clone())
+    type ChildFov = SpherexCmos;
+
+    fn get_child(&self, index: usize) -> Self::ChildFov {
+        self.cmos_frames[index].clone()
+    }
+
+    #[inline]
+    fn into_fov(self) -> KeteResult<FOV> {
+        Ok(FOV::SpherexField(self))
     }
 
     fn observer(&self) -> &State<Equatorial> {

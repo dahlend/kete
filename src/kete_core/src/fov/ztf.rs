@@ -30,7 +30,8 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use super::patches::closest_inside;
-use super::{Contains, FOV, FovLike, OnSkyRectangle, SkyPatch};
+use super::{Contains, FovLike, OnSkyRectangle, SkyPatch};
+use crate::fov::FOV;
 use crate::{frames::Vector, prelude::*};
 use serde::{Deserialize, Serialize};
 
@@ -101,9 +102,16 @@ impl ZtfCcdQuad {
 }
 
 impl FovLike for ZtfCcdQuad {
-    fn get_fov(&self, index: usize) -> FOV {
+    type ChildFov = Self;
+
+    fn get_child(&self, index: usize) -> Self::ChildFov {
         assert!(index == 0, "FOV only has a single patch");
-        FOV::ZtfCcdQuad(self.clone())
+        self.clone()
+    }
+
+    #[inline]
+    fn into_fov(self) -> KeteResult<FOV> {
+        Ok(FOV::ZtfCcdQuad(self))
     }
 
     #[inline]
@@ -201,8 +209,15 @@ impl ZtfField {
 }
 
 impl FovLike for ZtfField {
-    fn get_fov(&self, index: usize) -> FOV {
-        FOV::ZtfCcdQuad(self.ccd_quads[index].clone())
+    type ChildFov = ZtfCcdQuad;
+
+    fn get_child(&self, index: usize) -> Self::ChildFov {
+        self.ccd_quads[index].clone()
+    }
+
+    #[inline]
+    fn into_fov(self) -> KeteResult<FOV> {
+        Ok(FOV::ZtfField(self))
     }
 
     fn observer(&self) -> &State<Equatorial> {

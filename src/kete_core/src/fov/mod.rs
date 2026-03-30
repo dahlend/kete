@@ -39,7 +39,11 @@ mod spherex;
 mod wise;
 mod ztf;
 
-pub use self::fov_like::FovLike;
+use crate::errors::KeteResult;
+use crate::frames::{Equatorial, Vector};
+use crate::state::State;
+
+pub use self::fov_like::{FovLike, check_linear, check_statics, check_two_body};
 pub use self::generic::{GenericCone, GenericRectangle, OmniDirectional};
 pub use self::neos::{NeosCmos, NeosVisit};
 pub use self::patches::{Contains, OnSkyRectangle, SkyPatch, SphericalCone, SphericalPolygon};
@@ -49,13 +53,6 @@ pub use self::wise::WiseCmos;
 pub use self::ztf::{ZtfCcdQuad, ZtfField};
 
 use serde::{Deserialize, Serialize};
-
-use crate::{
-    errors::Error,
-    frames::{Equatorial, Vector},
-    prelude::*,
-    propagation::{light_time_correct, propagate_two_body},
-};
 
 /// Allowed FOV objects, either contiguous or joint.
 /// Many of these exist solely to carry additional metadata.
@@ -99,45 +96,6 @@ pub enum FOV {
     SpherexField(SpherexField),
 }
 
-impl FOV {
-    /// Observer position in this FOV
-    pub fn observer(&self) -> &State<Equatorial> {
-        match self {
-            Self::Wise(fov) => fov.observer(),
-            Self::NeosCmos(fov) => fov.observer(),
-            Self::ZtfCcdQuad(fov) => fov.observer(),
-            Self::GenericCone(fov) => fov.observer(),
-            Self::GenericRectangle(fov) => fov.observer(),
-            Self::ZtfField(fov) => fov.observer(),
-            Self::NeosVisit(fov) => fov.observer(),
-            Self::OmniDirectional(fov) => fov.observer(),
-            Self::PtfCcd(fov) => fov.observer(),
-            Self::PtfField(fov) => fov.observer(),
-            Self::SpherexCmos(fov) => fov.observer(),
-            Self::SpherexField(fov) => fov.observer(),
-        }
-    }
-
-    /// Check if static sources are visible in this FOV.
-    #[must_use]
-    pub fn check_statics(&self, pos: &[Vector<Equatorial>]) -> Vec<Option<(Vec<usize>, Self)>> {
-        match self {
-            Self::Wise(fov) => fov.check_statics(pos),
-            Self::NeosCmos(fov) => fov.check_statics(pos),
-            Self::ZtfCcdQuad(fov) => fov.check_statics(pos),
-            Self::GenericCone(fov) => fov.check_statics(pos),
-            Self::GenericRectangle(fov) => fov.check_statics(pos),
-            Self::ZtfField(fov) => fov.check_statics(pos),
-            Self::NeosVisit(fov) => fov.check_statics(pos),
-            Self::OmniDirectional(fov) => fov.check_statics(pos),
-            Self::PtfCcd(fov) => fov.check_statics(pos),
-            Self::PtfField(fov) => fov.check_statics(pos),
-            Self::SpherexCmos(fov) => fov.check_statics(pos),
-            Self::SpherexField(fov) => fov.check_statics(pos),
-        }
-    }
-}
-
 macro_rules! dispatch_fov {
     ($self:expr, $method:ident $(, $arg:expr)*) => {
         match $self {
@@ -158,8 +116,24 @@ macro_rules! dispatch_fov {
 }
 
 impl FovLike for FOV {
-    fn get_fov(&self, index: usize) -> FOV {
-        dispatch_fov!(self, get_fov, index)
+    type ChildFov = Self;
+
+    fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
+        dispatch_fov!(self, corners)
+    }
+
+    fn get_child(&self, _: usize) -> Self {
+        panic!(
+            "FOV enum does not have a well defined child FOV. Use the specific FOV type instead."
+        )
+    }
+
+    fn pointing(&self) -> KeteResult<Vector<Equatorial>> {
+        dispatch_fov!(self, pointing)
+    }
+
+    fn into_fov(self) -> KeteResult<FOV> {
+        Ok(self)
     }
 
     fn observer(&self) -> &State<Equatorial> {
@@ -173,65 +147,4 @@ impl FovLike for FOV {
     fn n_patches(&self) -> usize {
         dispatch_fov!(self, n_patches)
     }
-
-    fn pointing(&self) -> KeteResult<Vector<Equatorial>> {
-        match self {
-            Self::Wise(fov) => fov.pointing(),
-            Self::NeosCmos(fov) => fov.pointing(),
-            Self::ZtfCcdQuad(fov) => fov.pointing(),
-            Self::GenericCone(fov) => fov.pointing(),
-            Self::GenericRectangle(fov) => fov.pointing(),
-            Self::ZtfField(fov) => fov.pointing(),
-            Self::NeosVisit(fov) => <NeosVisit as FovLike>::pointing(fov),
-            Self::OmniDirectional(fov) => fov.pointing(),
-            Self::PtfCcd(fov) => fov.pointing(),
-            Self::PtfField(fov) => fov.pointing(),
-            Self::SpherexCmos(fov) => fov.pointing(),
-            Self::SpherexField(fov) => fov.pointing(),
-        }
-    }
-
-    fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
-        match self {
-            Self::Wise(fov) => fov.corners(),
-            Self::NeosCmos(fov) => fov.corners(),
-            Self::ZtfCcdQuad(fov) => fov.corners(),
-            Self::GenericCone(fov) => fov.corners(),
-            Self::GenericRectangle(fov) => fov.corners(),
-            Self::ZtfField(fov) => fov.corners(),
-            Self::NeosVisit(fov) => <NeosVisit as FovLike>::corners(fov),
-            Self::OmniDirectional(fov) => fov.corners(),
-            Self::PtfCcd(fov) => fov.corners(),
-            Self::PtfField(fov) => fov.corners(),
-            Self::SpherexCmos(fov) => fov.corners(),
-            Self::SpherexField(fov) => fov.corners(),
-        }
-    }
-}
-
-/// Assuming the object undergoes two-body motion, check to see if it is within the
-/// field of view.
-///
-/// Both the state and the FOV observer must be Sun-centered (`center_id = 10`).
-///
-/// # Errors
-/// Returns an error if `state.center_id != 10` or if the Kepler solver fails.
-pub fn check_two_body<F: FovLike>(
-    fov: &F,
-    state: &State<Equatorial>,
-) -> KeteResult<(usize, Contains, State<Equatorial>)> {
-    if state.center_id != 10 {
-        return Err(Error::ValueError(
-            "check_two_body requires center_id = 10 (Sun).".into(),
-        ));
-    }
-    let obs = fov.observer();
-
-    let final_state = propagate_two_body(state, obs.epoch)?;
-    let dist = (final_state.pos - obs.pos).norm();
-    let final_state = light_time_correct(&final_state, dist)?;
-    let rel_pos = final_state.pos - obs.pos;
-
-    let (idx, contains) = fov.contains(&rel_pos);
-    Ok((idx, contains, final_state))
 }

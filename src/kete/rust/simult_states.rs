@@ -1,5 +1,10 @@
 //! Python support for simultaneous States.
+use crate::maybe_vec::MaybeVec;
+use crate::time::PyTime;
+use crate::vector::PyVector;
+use crate::{fovs::AllowedFOV, state::PyState};
 use kete_core::errors::Error;
+use kete_core::fov::FovLike;
 use kete_core::io::FileIO;
 use kete_core::simult_states::SimultaneousStates;
 use kete_core::time::TDB;
@@ -8,11 +13,6 @@ use kete_spice::spice::LOADED_SPK;
 use pyo3::exceptions;
 use pyo3::prelude::*;
 use pyo3::{PyResult, pyclass, pymethods};
-
-use crate::maybe_vec::MaybeVec;
-use crate::time::PyTime;
-use crate::vector::PyVector;
-use crate::{fovs::AllowedFOV, state::PyState};
 
 /// Representation of a collection of [`State`] at a single point in time.
 ///

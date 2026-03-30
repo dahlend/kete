@@ -30,8 +30,9 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use super::patches::closest_inside;
-use super::{Contains, FOV, FovLike, OnSkyRectangle, SkyPatch};
+use super::{Contains, FovLike, OnSkyRectangle, SkyPatch};
 use crate::constants::{NEOS_HEIGHT, NEOS_WIDTH};
+use crate::fov::FOV;
 use crate::frames::Vector;
 use crate::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -108,9 +109,15 @@ impl NeosCmos {
 }
 
 impl FovLike for NeosCmos {
-    fn get_fov(&self, index: usize) -> FOV {
+    type ChildFov = Self;
+
+    fn get_child(&self, index: usize) -> Self {
         assert!(index == 0, "FOV only has a single patch");
-        FOV::NeosCmos(self.clone())
+        self.clone()
+    }
+
+    fn into_fov(self) -> KeteResult<FOV> {
+        Ok(FOV::NeosCmos(self))
     }
 
     #[inline]
@@ -358,20 +365,18 @@ impl NeosVisit {
             band,
         }
     }
-
-    /// Return the central pointing vector.
-    pub fn pointing(&self) -> Vector<Equatorial> {
-        let mut pointing = Vector::new([0.0; 3]);
-        self.chips
-            .iter()
-            .for_each(|chip| pointing += &chip.patch.pointing());
-        pointing.normalize()
-    }
 }
 
 impl FovLike for NeosVisit {
-    fn get_fov(&self, index: usize) -> FOV {
-        FOV::NeosCmos(self.chips[index].clone())
+    type ChildFov = NeosCmos;
+
+    fn get_child(&self, index: usize) -> Self::ChildFov {
+        self.chips[index].clone()
+    }
+
+    #[inline]
+    fn into_fov(self) -> KeteResult<FOV> {
+        Ok(FOV::NeosVisit(self))
     }
 
     fn observer(&self) -> &State<Equatorial> {

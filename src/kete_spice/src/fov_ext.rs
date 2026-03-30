@@ -3,7 +3,7 @@
 //! These functions provide SPK-dependent visibility checking for FOV types.
 //! The `FovLike` trait and FOV types remain in `kete_core`.
 
-use kete_core::fov::{Contains, FovLike, check_two_body};
+use kete_core::fov::{Contains, FovLike, check_linear, check_two_body};
 use kete_core::frames::Equatorial;
 use kete_core::prelude::{KeteResult, SimultaneousStates, State};
 use kete_core::propagation::light_time_correct;
@@ -45,7 +45,10 @@ pub fn check_n_body<F: FovLike>(
 /// This will fail silently if the object is not found.
 ///
 /// # Panics
-/// Panics if the SPK read lock is poisoned.
+///
+/// - Panics if the SPK read lock is poisoned.
+/// - Panics if the Fov cannot be converted into an FOV enum.
+///
 pub fn check_spks<F: FovLike>(fov: &F, obj_ids: &[i32]) -> Vec<Option<SimultaneousStates>> {
     let obs = fov.observer();
     let spk = &LOADED_SPK.try_read().unwrap();
@@ -71,7 +74,11 @@ pub fn check_spks<F: FovLike>(fov: &F, obj_ids: &[i32]) -> Vec<Option<Simultaneo
         .into_iter()
         .enumerate()
         .map(|(idx, states_patch)| {
-            SimultaneousStates::new_exact(states_patch, Some(fov.get_fov(idx))).ok()
+            SimultaneousStates::new_exact(
+                states_patch,
+                Some(fov.get_child(idx).into_fov().unwrap()),
+            )
+            .ok()
         })
         .collect()
 }
@@ -84,6 +91,11 @@ pub fn check_spks<F: FovLike>(fov: &F, obj_ids: &[i32]) -> Vec<Option<Simultaneo
 /// This does progressively more exact checks. For objects close in time (< `dt_limit`),
 /// linear then two-body checks are used. For objects further in time, two-body then
 /// n-body propagation is used.
+///
+/// # Panics
+///
+/// - Panics if the SPK read lock is poisoned.
+/// - Panics if the Fov cannot be converted into an FOV enum.
 pub fn check_visible<F: FovLike>(
     fov: &F,
     states: &[State<Equatorial>],
@@ -103,7 +115,7 @@ pub fn check_visible<F: FovLike>(
             }
 
             if (state.epoch - obs_state.epoch).elapsed.abs() < dt_limit {
-                let (_, contains, _) = fov.check_linear(state);
+                let (_, contains, _) = check_linear(fov, state);
                 if let Contains::Outside(dist) = contains
                     && dist > max_dist
                 {
@@ -138,7 +150,9 @@ pub fn check_visible<F: FovLike>(
     detector_states
         .into_iter()
         .enumerate()
-        .map(|(idx, states)| SimultaneousStates::new_exact(states, Some(fov.get_fov(idx))).ok())
+        .map(|(idx, states)| {
+            SimultaneousStates::new_exact(states, Some(fov.get_child(idx).into_fov().unwrap())).ok()
+        })
         .collect()
 }
 
