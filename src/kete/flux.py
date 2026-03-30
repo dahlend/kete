@@ -32,7 +32,6 @@ from ._core import (
     FluxPriors,
     ModelResults,
     ParamPrior,
-    SampleStats,
     black_body_flux,
     comet_apparent_mags,
     comet_dust_phase_curve_correction,
@@ -69,7 +68,6 @@ __all__ = [
     "neatm_model_flux",
     "ParamPrior",
     "resolve_hg_params",
-    "SampleStats",
     "solar_flux",
     "sub_solar_temperature",
 ]

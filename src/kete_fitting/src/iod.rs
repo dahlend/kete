@@ -596,14 +596,22 @@ fn dedup_states(states: &mut Vec<State<Equatorial>>) {
 fn observation_residual(state: &State<Equatorial>, obs: &[AstrometricObservation]) -> Option<f64> {
     let mut residuals: Vec<f64> = Vec::with_capacity(obs.len());
 
+    // Convert to Sun-centered for two-body propagation and light-time correction.
+    let spk = kete_spice::spice::LOADED_SPK.try_read().ok()?;
+    let mut sun_state = state.clone();
+    if sun_state.center_id != 10 {
+        spk.try_change_center(&mut sun_state, 10).ok()?;
+    }
+
     for ob in obs {
         let Ok((ra_obs, dec_obs, obs_state)) = ob.as_optical() else {
             continue;
         };
-        let Ok(predicted) = propagate_two_body(state, obs_state.epoch) else {
+        let Ok(predicted) = propagate_two_body(&sun_state, obs_state.epoch) else {
             continue;
         };
-        let Ok(predicted) = light_time_correct(&predicted, &obs_state.pos) else {
+        let dist = (predicted.pos - obs_state.pos).norm();
+        let Ok(predicted) = light_time_correct(&predicted, dist) else {
             continue;
         };
         let los_pred = predicted.pos - obs_state.pos;
@@ -634,9 +642,10 @@ mod tests {
     use super::*;
     use kete_core::constants::GMS;
     use kete_core::desigs::Desig;
-    use kete_core::propagation::{propagate_n_body_spk, propagate_two_body};
-    use kete_core::spice::LOADED_SPK;
+    use kete_core::propagation::{light_time_correct, propagate_two_body};
     use kete_core::time::{TDB, Time};
+    use kete_spice::propagation::propagate_n_body_spk;
+    use kete_spice::spice::LOADED_SPK;
 
     fn make_state(pos: [f64; 3], vel: [f64; 3], jd: f64) -> State<Equatorial> {
         State::new(Desig::Empty, jd.into(), pos.into(), vel.into(), 0)
@@ -1021,8 +1030,14 @@ mod tests {
                     .try_get_state_with_center(399, Time::<TDB>::new(jd), 0)
                     .expect("Earth SPK lookup failed");
 
-                let obj_lt = light_time_correct(&obj_at, &observer.pos)
-                    .expect("light-time correction failed");
+                let dist = (obj_at.pos - observer.pos).norm();
+                let mut sun_at = obj_at.clone();
+                spk.try_change_center(&mut sun_at, 10)
+                    .expect("SPK center change failed");
+                let mut obj_lt =
+                    light_time_correct(&sun_at, dist).expect("light-time correction failed");
+                spk.try_change_center(&mut obj_lt, 0)
+                    .expect("SPK center change failed");
 
                 let d = obj_lt.pos - observer.pos;
                 let (ra, dec) = d.to_ra_dec();

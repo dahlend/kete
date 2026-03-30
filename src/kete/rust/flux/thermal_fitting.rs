@@ -4,9 +4,11 @@
 //! `kete.flux`.
 
 use crate::frame::PyFrames;
+use crate::stats::PyData;
 use crate::vector::VectorLike;
 use kete_flux::BandInfo;
 use kete_flux::fitting::{self, FitResult, FluxObs, FluxPriors, Model, ParamPrior};
+use kete_stats::prelude::Data;
 use pyo3::prelude::*;
 
 /// Accept either a WISE band name ("W1"-"W4", "NEOS1", "NEOS2", "V") or a wavelength in
@@ -216,7 +218,7 @@ impl PyParamPrior {
 ///         r_ir       = (0.5, 2.0, 1.6, 0.3),
 ///         h_mag      = (-5.0, 35.0),
 ///         g_param    = (-0.3, 0.7, 0.2, 0.05),
-///         vis_albedo = (0.0, 1.0),
+///         vis_albedo = (0.01, 1.0),
 ///     )
 ///
 /// Each prior is a :class:`ParamPrior` specifying ``bounds`` (logistic
@@ -317,53 +319,17 @@ impl PyFluxPriors {
     }
 }
 
-/// Summary statistics for a single fitted parameter (posterior).
-#[pyclass(
-    frozen,
-    module = "kete.flux",
-    name = "SampleStats",
-    skip_from_py_object
-)]
-#[derive(Clone, Debug)]
-pub struct PySampleStats {
-    #[pyo3(get)]
-    median: f64,
-    #[pyo3(get)]
-    std: f64,
-    #[pyo3(get)]
-    ci_lo: f64,
-    #[pyo3(get)]
-    ci_hi: f64,
-}
-
-#[pymethods]
-impl PySampleStats {
-    fn __repr__(&self) -> String {
-        format!("{self}")
-    }
-}
-
-impl std::fmt::Display for PySampleStats {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "SampleStats(median={:.4}, std={:.4}, ci=[{:.4}, {:.4}])",
-            self.median, self.std, self.ci_lo, self.ci_hi
-        )
-    }
-}
-
-/// Compute summary statistics from a single column of MCMC draws.
-fn stats_from_column(draws: &[Vec<f64>], col: usize) -> PySampleStats {
-    let vals: Vec<f64> = draws.iter().map(|r| r[col]).collect();
-    let sorted = kete_stats::prelude::SortedData::try_from(vals)
-        .expect("draws should be non-empty with finite values");
-    PySampleStats {
-        median: sorted.median(),
-        std: sorted.std(),
-        ci_lo: sorted.quantile(0.025),
-        ci_hi: sorted.quantile(0.975),
-    }
+/// Build a [`PyData`] from a single column of non-divergent MCMC draws.
+fn stats_from_column(draws: &[Vec<f64>], divergent: &[bool], col: usize) -> PyData {
+    let vals: Vec<f64> = draws
+        .iter()
+        .zip(divergent.iter())
+        .filter(|(_, div)| !**div)
+        .map(|(r, _)| r[col])
+        .collect();
+    let data =
+        Data::try_from(vals).expect("non-divergent draws should be non-empty with finite values");
+    PyData(data)
 }
 
 /// Full MCMC fitting result.
@@ -374,73 +340,102 @@ pub struct PyFitResult(pub FitResult);
 #[pymethods]
 impl PyFitResult {
     /// Posterior statistics for diameter (km).  ``None`` for HG model.
+    /// Only non-divergent draws are included.
     #[getter]
-    fn diameter(&self) -> Option<PySampleStats> {
-        (!self.0.model.is_hg()).then(|| stats_from_column(&self.0.draws, 0))
+    fn diameter(&self) -> Option<PyData> {
+        (!self.0.model.is_hg()).then(|| stats_from_column(&self.0.draws, &self.0.divergent, 0))
     }
+
     /// Posterior statistics for visual geometric albedo.  ``None`` for HG model.
+    /// Only non-divergent draws are included.
     #[getter]
-    fn vis_albedo(&self) -> Option<PySampleStats> {
-        (!self.0.model.is_hg()).then(|| stats_from_column(&self.0.draws, 1))
+    fn vis_albedo(&self) -> Option<PyData> {
+        (!self.0.model.is_hg()).then(|| stats_from_column(&self.0.draws, &self.0.divergent, 1))
     }
+
     /// Posterior statistics for beaming (NEATM only).  ``None`` for FRM/HG.
+    /// Only non-divergent draws are included.
     #[getter]
-    fn beaming(&self) -> Option<PySampleStats> {
+    fn beaming(&self) -> Option<PyData> {
         self.0
             .model
             .is_neatm()
-            .then(|| stats_from_column(&self.0.draws, 2))
+            .then(|| stats_from_column(&self.0.draws, &self.0.divergent, 2))
     }
+
     /// Posterior statistics for H magnitude.
+    /// Only non-divergent draws are included.
     #[getter]
-    fn h_mag(&self) -> PySampleStats {
+    fn h_mag(&self) -> PyData {
         let col = match self.0.model {
             Model::Neatm => 3,
             Model::Frm => 2,
             Model::Hg => 0,
         };
-        stats_from_column(&self.0.draws, col)
+        stats_from_column(&self.0.draws, &self.0.divergent, col)
     }
+
     /// Posterior statistics for G parameter.
+    /// Only non-divergent draws are included.
     #[getter]
-    fn g_param(&self) -> PySampleStats {
+    fn g_param(&self) -> PyData {
         let col = match self.0.model {
             Model::Neatm => 4,
             Model::Frm => 3,
             Model::Hg => 1,
         };
-        stats_from_column(&self.0.draws, col)
+        stats_from_column(&self.0.draws, &self.0.divergent, col)
     }
+
     /// Posterior statistics for uncertainty inflation factor.
+    /// Only non-divergent draws are included.
     #[getter]
-    fn f_sigma(&self) -> PySampleStats {
+    fn f_sigma(&self) -> PyData {
         let col = match self.0.model {
             Model::Neatm => 6,
             Model::Frm => 5,
             Model::Hg => 2,
         };
-        stats_from_column(&self.0.draws, col)
+        stats_from_column(&self.0.draws, &self.0.divergent, col)
     }
+
     /// Posterior statistics for IR-to-visible albedo ratio.  ``None`` for HG model.
+    /// Only non-divergent draws are included.
     #[getter]
-    fn ir_albedo_ratio(&self) -> Option<PySampleStats> {
+    fn ir_albedo_ratio(&self) -> Option<PyData> {
         if self.0.model.is_hg() {
             return None;
         }
         let col = if self.0.model.is_neatm() { 5 } else { 4 };
-        Some(stats_from_column(&self.0.draws, col))
+        Some(stats_from_column(&self.0.draws, &self.0.divergent, col))
     }
+
     /// Model name (``"Neatm"``, ``"Frm"``, or ``"Hg"``).
     #[getter]
     fn model(&self) -> String {
         format!("{:?}", self.0.model)
     }
-    /// Raw MCMC posterior draws.  Each row is one sample; column layout
+
+    /// Non-divergent MCMC posterior draws.  Each row is one sample; column layout
     /// depends on the model (see :attr:`columns`).
     #[getter]
     fn draws(&self) -> Vec<Vec<f64>> {
+        self.0
+            .draws
+            .iter()
+            .zip(self.0.divergent.iter())
+            .filter(|(_, div)| !**div)
+            .map(|(row, _)| row.clone())
+            .collect()
+    }
+
+    /// All MCMC posterior draws including divergent transitions.
+    /// Use :attr:`divergent` to identify which rows diverged.
+    #[getter]
+    fn draws_all(&self) -> Vec<Vec<f64>> {
         self.0.draws.clone()
     }
+
     /// Column names for each element of a draw vector.
     #[getter]
     fn columns(&self) -> Vec<&'static str> {
@@ -470,26 +465,31 @@ impl PyFitResult {
     fn divergent(&self) -> Vec<bool> {
         self.0.divergent.clone()
     }
+
     /// Total number of divergent transitions.
     #[getter]
     fn n_divergent(&self) -> usize {
         self.0.n_divergent
     }
+
     /// Reduced chi-squared at the MAP point using inflated uncertainties.
     #[getter]
     fn chi2_best(&self) -> f64 {
         self.0.reduced_chi2
     }
+
     /// Number of non-upper-limit observations.
     #[getter]
     fn nobs(&self) -> usize {
         self.0.nobs
     }
+
     /// Model fluxes at the MAP point for each observation (Jy).
     #[getter]
     fn best_fit_fluxes(&self) -> Vec<f64> {
         self.0.best_fit_fluxes.clone()
     }
+
     /// Standardized residuals ``(obs - model) / (f_sigma * sigma)`` at the MAP.
     #[getter]
     fn best_fit_residuals(&self) -> Vec<f64> {
@@ -502,36 +502,33 @@ impl PyFitResult {
     }
 
     fn __repr__(&self) -> String {
+        let div = &self.0.divergent;
+        let n_good = div.iter().filter(|&&d| !d).count();
         if self.0.model.is_hg() {
-            let h = stats_from_column(&self.0.draws, 0);
-            let g = stats_from_column(&self.0.draws, 1);
+            let h = stats_from_column(&self.0.draws, div, 0);
+            let g = stats_from_column(&self.0.draws, div, 1);
             return format!(
-                "FitResult(model=Hg, H={}, G={}, n_draws={}, n_div={})",
-                h,
-                g,
-                self.0.draws.len(),
-                self.0.n_divergent,
+                "FitResult(model=Hg, h_mag={}, g_param={}, n_draws={}, n_divergent={})",
+                h, g, n_good, self.0.n_divergent,
             );
         }
-        let d = stats_from_column(&self.0.draws, 0);
-        let pv = stats_from_column(&self.0.draws, 1);
+        let d = stats_from_column(&self.0.draws, div, 0);
+        let pv = stats_from_column(&self.0.draws, div, 1);
         let (beaming, h_col) = if self.0.model.is_neatm() {
-            (Some(stats_from_column(&self.0.draws, 2)), 3)
+            (Some(stats_from_column(&self.0.draws, div, 2)), 3)
         } else {
             (None, 2)
         };
-        let h = stats_from_column(&self.0.draws, h_col);
-        let g = stats_from_column(&self.0.draws, h_col + 1);
-        let rir = stats_from_column(&self.0.draws, h_col + 2);
+        let h = stats_from_column(&self.0.draws, div, h_col);
+        let g = stats_from_column(&self.0.draws, div, h_col + 1);
+        let rir = stats_from_column(&self.0.draws, div, h_col + 2);
 
         let beaming_str = beaming
             .map(|b| format!("\n  beaming={b},"))
             .unwrap_or_default();
         format!(
-            "FitResult(model={:?},\n  D={d},\n  pV={pv},{beaming_str}\n  H={h},\n  G={g},\n  R_IR={rir},\n  n_draws={}, n_div={})",
-            self.0.model,
-            self.0.draws.len(),
-            self.0.n_divergent,
+            "FitResult(model={:?},\n  diameter={d},\n  vis_albedo={pv},{beaming_str}\n  h_mag={h},\n  g_param={g},\n  ir_albedo_ratio={rir},\n  n_draws={}, n_divergent={})",
+            self.0.model, n_good, self.0.n_divergent,
         )
     }
 }
@@ -583,8 +580,13 @@ fn parse_model(model: &str) -> PyResult<Model> {
 ///
 /// Returns
 /// -------
-/// FitResult or None
-///     MCMC posterior results, or ``None`` if the fit fails.
+/// FitResult
+///     MCMC posterior results.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If the fit fails to converge.
 #[pyfunction]
 #[pyo3(name = "fit_model", signature = (model, obs, h_mag=None, g_param=None,
     emissivity=0.9, priors=None, num_chains=10, num_tune=200, num_draws=500,
@@ -601,7 +603,7 @@ pub fn fit_model_py(
     num_tune: usize,
     num_draws: usize,
     c_hg: Option<f64>,
-) -> PyResult<Option<PyFitResult>> {
+) -> PyResult<PyFitResult> {
     let tm = parse_model(model)?;
     let mut priors = priors.map_or_else(FluxPriors::default, |p| p.0);
     let c_hg_val = c_hg.unwrap_or(kete_core::constants::C_V);
@@ -617,8 +619,7 @@ pub fn fit_model_py(
     }
 
     let raw_obs = extract_obs(&obs);
-    Ok(fitting::fit_mcmc(
+    Ok(PyFitResult(fitting::fit_mcmc(
         tm, &raw_obs, c_hg_val, emissivity, &priors, num_chains, num_tune, num_draws,
-    )
-    .map(PyFitResult))
+    )?))
 }

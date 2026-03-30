@@ -43,10 +43,10 @@ use nom::{
 };
 use std::{collections::HashMap, fs, str::FromStr};
 
-use crate::{
+use super::spice_jd_to_jd;
+use kete_core::{
     cache::cache_path,
     errors::{Error, KeteResult},
-    spice::spice_jd_to_jd,
     time::{TDB, Time},
 };
 

@@ -118,7 +118,7 @@ impl PyCometElements {
     pub fn desig(&self) -> String {
         match &self.0.desig {
             prelude::Desig::Naif(s) => {
-                kete_core::spice::try_name_from_id(*s).unwrap_or(s.to_string())
+                kete_spice::spice::try_name_from_id(*s).unwrap_or(s.to_string())
             }
             _ => self.0.desig.to_string(),
         }

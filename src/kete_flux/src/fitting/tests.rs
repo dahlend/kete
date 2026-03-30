@@ -68,9 +68,7 @@ fn make_neg_log_likelihood(
 ) -> impl Fn(&[f64]) -> f64 {
     let obs = obs.to_vec();
     move |x: &[f64]| -> f64 {
-        let Some(params) = model.unpack(x, emissivity, c_hg) else {
-            return f64::MAX;
-        };
+        let params = model.unpack(x, emissivity, c_hg);
         let ll = model.log_likelihood(&params, &obs);
         if ll.is_finite() { -ll } else { f64::MAX }
     }
@@ -379,7 +377,7 @@ fn test_neatm_batch() {
     let results = fit_batch(&tasks);
     assert_eq!(results.len(), 2, "batch should return one result per task");
     for (i, r) in results.iter().enumerate() {
-        assert!(r.is_some(), "batch task {i} should succeed");
+        assert!(r.is_ok(), "batch task {i} should succeed");
     }
 }
 
@@ -431,7 +429,7 @@ fn test_frm_batch() {
     }];
     let results = fit_batch(&tasks);
     assert_eq!(results.len(), 1);
-    assert!(results[0].is_some(), "single FRM batch task should succeed");
+    assert!(results[0].is_ok(), "single FRM batch task should succeed");
 }
 
 #[test]
@@ -810,7 +808,7 @@ fn test_hg_batch() {
     let results = fit_batch(&tasks);
     assert_eq!(results.len(), 2, "batch should return one result per task");
     for (i, r) in results.iter().enumerate() {
-        assert!(r.is_some(), "HG batch task {i} should succeed");
+        assert!(r.is_ok(), "HG batch task {i} should succeed");
         assert!(r.as_ref().unwrap().model.is_hg());
     }
 }

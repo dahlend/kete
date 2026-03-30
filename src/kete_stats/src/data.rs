@@ -171,6 +171,8 @@ where
 
     /// Find the k-th smallest element in the dataset.
     ///
+    /// This mutates the internal data order but is O(n) average case.
+    ///
     /// If k is larger than the length of the data, it returns the final element.
     #[must_use]
     pub fn kth_smallest(&mut self, k: usize) -> T {
@@ -244,6 +246,8 @@ where
     }
 
     /// Compute the standard deviation estimate from the MAD value.
+    ///
+    /// This mutates the internal data order.
     ///
     /// This is not the std, or MAD, but an estimate of the std based on the MAD
     /// assuming that the data is normally distributed. This is more robust to outliers

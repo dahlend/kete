@@ -18,7 +18,7 @@ workspace = true
 
 [dependencies]
 kete_core = {version = "*", path = "../kete_core"}
-kete_stats = {version = "*", path = "../kete_stats"}
+kete_spice = {version = "*", path = "../kete_spice"}
 nalgebra = {version = "^0.34.1", features = ["rayon"]}
 nuts-rs = "0.17"
 rand = "^0.10.0"

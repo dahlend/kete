@@ -22,6 +22,7 @@ from . import (
     wise,
     ztf,
 )
+from ._core import Data
 from .conversion import (
     compute_albedo,
     compute_aphelion,
@@ -86,6 +87,7 @@ __all__ = [
     "spice",
     "state_transition",
     "SimultaneousStates",
+    "Data",
     "propagate_n_body",
     "propagate_two_body",
     "shape",

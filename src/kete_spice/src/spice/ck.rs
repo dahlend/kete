@@ -34,7 +34,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use crate::{
+use kete_core::{
     errors::{Error, KeteResult},
     frames::NonInertialFrame,
     time::{TDB, Time},
@@ -81,7 +81,7 @@ impl CkCollection {
     /// Get the closest record to the given JD for the specified instrument ID.
     ///
     /// # Errors
-    /// [`crate::prelude::Error::Bounds`] if the instrument ID does not have a record for the
+    /// [`kete_core::errors::Error::Bounds`] if the instrument ID does not have a record for the
     ///   target JD.
     ///
     pub fn try_get_frame(

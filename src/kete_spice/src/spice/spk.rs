@@ -7,7 +7,7 @@
 //!
 //! Here is a small worked example:
 //! ```
-//!     use kete_core::spice::LOADED_SPK;
+//!     use kete_spice::spice::LOADED_SPK;
 //!     use kete_core::frames::Ecliptic;
 //!
 //!     // get a read-only reference to the [`SpkCollection`]
@@ -50,13 +50,13 @@
 
 use super::daf::DafFile;
 use super::{DAFType, SpkArray, spice_jd_to_jd, spk_segments::SpkSegment};
-use super::{NaifId, naif_ids_from_name};
-use crate::cache::cache_path;
-use crate::errors::Error;
-use crate::frames::InertialFrame;
-use crate::prelude::KeteResult;
-use crate::state::State;
-use crate::time::{TDB, Time};
+use kete_core::cache::cache_path;
+use kete_core::desigs::{NaifId, naif_ids_from_name};
+use kete_core::errors::Error;
+use kete_core::frames::InertialFrame;
+use kete_core::prelude::KeteResult;
+use kete_core::state::State;
+use kete_core::time::{TDB, Time};
 use pathfinding::prelude::dijkstra;
 use std::collections::{HashMap, HashSet};
 use std::fs;

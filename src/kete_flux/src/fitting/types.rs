@@ -30,8 +30,8 @@
 //! Core types and helper functions shared across the fitting submodules.
 
 use crate::{
-    BandInfo, ModelResults, albedo_from_h_mag_diam, flux_to_mag, frm_total_flux, hg_apparent_flux,
-    hg_apparent_mag, mag_to_flux, neatm_total_flux,
+    BandInfo, ModelResults, flux_to_mag, frm_total_flux, hg_apparent_flux, hg_apparent_mag,
+    mag_to_flux, neatm_total_flux,
 };
 use kete_core::constants::V_MAG_ZERO;
 use nalgebra::Vector3;
@@ -40,7 +40,7 @@ use nalgebra::Vector3;
 pub(super) const STUDENT_NU: f64 = 5.0;
 
 /// Steepness of logistic barriers (sharper = closer to hard wall).
-pub(super) const BARRIER_K: f64 = 30.0;
+pub(super) const BARRIER_K: f64 = 50.0;
 
 /// Which model to fit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,12 +119,12 @@ impl Model {
     /// - NEATM: `[diameter, beaming, h_mag, g_param, f_sigma, r_ir]`
     /// - FRM:   `[diameter, h_mag, g_param, f_sigma, r_ir]`
     /// - HG:    `[h_mag, g_param, f_sigma]`
-    pub(crate) fn unpack(self, x: &[f64], emissivity: f64, c_hg: f64) -> Option<ModelParams> {
+    pub(crate) fn unpack(self, x: &[f64], emissivity: f64, c_hg: f64) -> ModelParams {
         if self.is_hg() {
             let h_mag = x[0];
             let vis_albedo = 1.0;
             let diameter = c_hg * 10.0_f64.powf(-h_mag / 5.0);
-            return Some(ModelParams {
+            return ModelParams {
                 diameter,
                 beaming: f64::NAN,
                 h_mag,
@@ -133,7 +133,7 @@ impl Model {
                 f_sigma: x[2],
                 r_ir: f64::NAN,
                 vis_albedo,
-            });
+            };
         }
 
         // Thermal models share the same trailing layout:
@@ -147,12 +147,18 @@ impl Model {
         };
 
         let h_mag = x[h];
-        let vis_albedo = albedo_from_h_mag_diam(h_mag, diameter, c_hg);
-        if !vis_albedo.is_finite() || vis_albedo <= 0.0 || vis_albedo > 2.0 {
-            return None;
-        }
+        // Compute raw (unclamped) albedo so the logistic-barrier prior can
+        // see the true derived value and properly penalize out-of-bounds
+        // regions. The clamped version in `albedo_from_h_mag_diam` would
+        // create a flat plateau that fools the prior and produces ridge
+        // artifacts in the posterior.
+        let vis_albedo = if diameter > 0.0 {
+            (c_hg * 10_f64.powf(-0.2 * h_mag) / diameter).powi(2)
+        } else {
+            f64::INFINITY
+        };
 
-        Some(ModelParams {
+        ModelParams {
             diameter,
             beaming,
             h_mag,
@@ -161,7 +167,7 @@ impl Model {
             f_sigma: x[h + 2],
             r_ir: x[h + 3],
             vis_albedo,
-        })
+        }
     }
 }
 
@@ -369,9 +375,7 @@ impl Model {
         emissivity: f64,
         priors: &FluxPriors,
     ) -> f64 {
-        let Some(params) = self.unpack(x, emissivity, c_hg) else {
-            return f64::NEG_INFINITY;
-        };
+        let params = self.unpack(x, emissivity, c_hg);
         let ll = self.log_likelihood(&params, obs);
         if !ll.is_finite() {
             return f64::NEG_INFINITY;
@@ -493,7 +497,7 @@ impl Default for FluxPriors {
     /// - `r_ir` in [0.5, 2.0], Gaussian(1.6, 0.3)
     /// - `h_mag` in [-5, 35] (bounds only)
     /// - `g_param` in [-0.3, 0.7], Gaussian(0.2, 0.05)
-    /// - `vis_albedo` in [0, 1] (bounds only)
+    /// - `vis_albedo` in [0.01, 1] (bounds only)
     /// - `f_sigma` in [0.5, 5.0] (bounds only)
     fn default() -> Self {
         Self {
@@ -502,7 +506,7 @@ impl Default for FluxPriors {
             r_ir: ParamPrior::with_gaussian(0.5, 2.0, 1.6, 0.3),
             h_mag: ParamPrior::bounds_only(-5.0, 35.0),
             g_param: ParamPrior::with_gaussian(-0.3, 0.7, 0.2, 0.05),
-            vis_albedo: ParamPrior::bounds_only(0.0, 1.0),
+            vis_albedo: ParamPrior::bounds_only(0.01, 1.0),
             f_sigma: ParamPrior::bounds_only(0.5, 5.0),
         }
     }

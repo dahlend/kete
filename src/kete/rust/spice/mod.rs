@@ -7,7 +7,7 @@ mod spk;
 
 pub use ck::*;
 pub use daf::*;
-use kete_core::spice::try_obs_code_from_name;
+use kete_spice::spice::try_obs_code_from_name;
 pub use pck::*;
 pub use sclk::*;
 use sgp4::Constants;
@@ -23,7 +23,7 @@ use crate::time::PyTime;
 #[pyo3(name = "observatory_codes")]
 pub fn obs_codes() -> Vec<(f64, f64, f64, String, String)> {
     let mut codes = Vec::new();
-    for row in kete_core::spice::OBS_CODES.iter() {
+    for row in kete_spice::spice::OBS_CODES.iter() {
         codes.push((
             row.lat,
             row.lon,

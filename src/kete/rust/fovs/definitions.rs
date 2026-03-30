@@ -285,18 +285,18 @@ impl AllowedFOV {
     pub fn get_fov(self, idx: Option<usize>) -> fov::FOV {
         let idx = idx.unwrap_or_default();
         match self {
-            AllowedFOV::WISE(fov) => fov.0.get_fov(idx),
-            AllowedFOV::Rectangle(fov) => fov.0.get_fov(idx),
-            AllowedFOV::NEOS(fov) => fov.0.get_fov(idx),
-            AllowedFOV::ZTF(fov) => fov.0.get_fov(idx),
-            AllowedFOV::ZTFField(fov) => fov.0.get_fov(idx),
-            AllowedFOV::NEOSVisit(fov) => fov.0.get_fov(idx),
-            AllowedFOV::Cone(fov) => fov.0.get_fov(idx),
-            AllowedFOV::OmniDirectional(fov) => fov.0.get_fov(idx),
-            AllowedFOV::PTF(fov) => fov.0.get_fov(idx),
-            AllowedFOV::PTFField(fov) => fov.0.get_fov(idx),
-            AllowedFOV::SPHEREx(fov) => fov.0.get_fov(idx),
-            AllowedFOV::SPHERExField(fov) => fov.0.get_fov(idx),
+            AllowedFOV::WISE(fov) => fov.0.get_child(idx).into_fov(),
+            AllowedFOV::Rectangle(fov) => fov.0.get_child(idx).into_fov(),
+            AllowedFOV::NEOS(fov) => fov.0.get_child(idx).into_fov(),
+            AllowedFOV::ZTF(fov) => fov.0.get_child(idx).into_fov(),
+            AllowedFOV::ZTFField(fov) => fov.0.get_child(idx).into_fov(),
+            AllowedFOV::NEOSVisit(fov) => fov.0.get_child(idx).into_fov(),
+            AllowedFOV::Cone(fov) => fov.0.get_child(idx).into_fov(),
+            AllowedFOV::OmniDirectional(fov) => fov.0.get_child(idx).into_fov(),
+            AllowedFOV::PTF(fov) => fov.0.get_child(idx).into_fov(),
+            AllowedFOV::PTFField(fov) => fov.0.get_child(idx).into_fov(),
+            AllowedFOV::SPHEREx(fov) => fov.0.get_child(idx).into_fov(),
+            AllowedFOV::SPHERExField(fov) => fov.0.get_child(idx).into_fov(),
         }
     }
 
@@ -801,8 +801,8 @@ impl PyNeosVisit {
 
     /// Direction that the observer is looking.
     #[getter]
-    pub fn pointing(&self) -> PyVector {
-        self.0.pointing().into()
+    pub fn pointing(&self) -> PyResult<PyVector> {
+        Ok(self.0.pointing()?.into())
     }
 
     /// JD of the observer location.
@@ -864,16 +864,13 @@ impl PyNeosVisit {
             return Err(PyErr::new::<exceptions::PyIndexError, _>(""));
         }
 
-        Ok(PyNeosCmos(match self.0.get_fov(idx) {
-            fov::FOV::NeosCmos(fov) => fov,
-            _ => unreachable!(),
-        }))
+        Ok(PyNeosCmos(self.0.get_child(idx)))
     }
 
     fn __repr__(&self) -> String {
         format!(
             "NEOSVisit(pointing={}, rotation={}, observer={}, side_id={}, stack_id={}, quad_id={}, loop_id={}, subloop_id={}, exposure_id={})",
-            self.pointing().__repr__(),
+            self.pointing().unwrap().__repr__(),
             self.rotation(),
             self.observer().__repr__(),
             self.side_id(),
@@ -1096,12 +1093,7 @@ impl PyZtfField {
     #[getter]
     pub fn ccd_quads(&self) -> Vec<PyZtfCcdQuad> {
         (0..self.0.n_patches())
-            .map(|idx| {
-                PyZtfCcdQuad(match self.0.get_fov(idx) {
-                    fov::FOV::ZtfCcdQuad(fov) => fov,
-                    _ => unreachable!(),
-                })
-            })
+            .map(|idx| PyZtfCcdQuad(self.0.get_child(idx)))
             .collect()
     }
 
@@ -1116,10 +1108,7 @@ impl PyZtfField {
             return Err(PyErr::new::<exceptions::PyIndexError, _>(""));
         }
 
-        Ok(PyZtfCcdQuad(match self.0.get_fov(idx) {
-            fov::FOV::ZtfCcdQuad(fov) => fov,
-            _ => unreachable!(),
-        }))
+        Ok(PyZtfCcdQuad(self.0.get_child(idx)))
     }
 
     fn __repr__(&self) -> String {
@@ -1312,12 +1301,7 @@ impl PyPtfField {
     #[getter]
     pub fn ccds(&self) -> Vec<PyPtfCcd> {
         (0..self.0.n_patches())
-            .map(|idx| {
-                PyPtfCcd(match self.0.get_fov(idx) {
-                    fov::FOV::PtfCcd(fov) => fov,
-                    _ => unreachable!(),
-                })
-            })
+            .map(|idx| PyPtfCcd(self.0.get_child(idx)))
             .collect()
     }
 
@@ -1332,10 +1316,7 @@ impl PyPtfField {
             return Err(PyErr::new::<exceptions::PyIndexError, _>(""));
         }
 
-        Ok(PyPtfCcd(match self.0.get_fov(idx) {
-            fov::FOV::PtfCcd(fov) => fov,
-            _ => unreachable!(),
-        }))
+        Ok(PyPtfCcd(self.0.get_child(idx)))
     }
 
     fn __repr__(&self) -> String {
@@ -1487,12 +1468,7 @@ impl PySpherexField {
     #[getter]
     pub fn cmos(&self) -> Vec<PySpherexCmos> {
         (0..self.0.n_patches())
-            .map(|idx| {
-                PySpherexCmos(match self.0.get_fov(idx) {
-                    fov::FOV::SpherexCmos(fov) => fov,
-                    _ => unreachable!(),
-                })
-            })
+            .map(|idx| PySpherexCmos(self.0.get_child(idx)))
             .collect()
     }
 
@@ -1507,15 +1483,12 @@ impl PySpherexField {
             return Err(PyErr::new::<exceptions::PyIndexError, _>(""));
         }
 
-        Ok(PySpherexCmos(match self.0.get_fov(idx) {
-            fov::FOV::SpherexCmos(fov) => fov,
-            _ => unreachable!(),
-        }))
+        Ok(PySpherexCmos(self.0.get_child(idx)))
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "PtfField(ccd_quads=<{} frames>, observer={}, obs_id={:?}, observation_id={})",
+            "SpherexField(ccd_quads=<{} frames>, observer={}, obs_id={:?}, observation_id={})",
             self.0.n_patches(),
             self.observer().__repr__(),
             self.obsid(),

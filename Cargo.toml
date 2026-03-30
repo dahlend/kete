@@ -12,8 +12,8 @@ license.workspace = true
 repository.workspace = true
 
 [workspace]
-members = ["src/kete_core", "src/kete_stats", "src/kete_fitting", "src/kete_flux"]
-default-members = ["src/kete_core", "src/kete_stats", "src/kete_fitting", "src/kete_flux"]
+members = ["src/kete_core", "src/kete_stats", "src/kete_fitting", "src/kete_flux", "src/kete_spice"]
+default-members = ["src/kete_core", "src/kete_stats", "src/kete_fitting", "src/kete_flux", "src/kete_spice"]
 
 [workspace.package]
 version = "2.1.6"
@@ -25,6 +25,7 @@ repository = "https://github.com/dahlend/kete"
 
 [dependencies]
 kete_core = { version = "*", path = "src/kete_core", features=["pyo3", "polars"]}
+kete_spice = { version = "*", path = "src/kete_spice"}
 kete_flux = { version = "*", path = "src/kete_flux"}
 kete_stats = { version = "*", path = "src/kete_stats"}
 kete_fitting = { version = "*", path = "src/kete_fitting"}

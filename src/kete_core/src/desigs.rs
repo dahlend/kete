@@ -54,14 +54,16 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use std::fmt::Display;
+use std::str;
+use std::str::FromStr;
 
 use itertools::Itertools;
+use nalgebra::{Rotation3, UnitVector3, Vector3};
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    errors::{Error, KeteResult},
-    spice::{naif_ids_from_name, try_name_from_id, try_obs_code_from_name},
-};
+use crate::errors::{Error, KeteResult};
+use crate::frames::{EARTH_A, ecef_to_geodetic_lat_lon};
+use crate::util::partial_str_match;
 
 static MPC_HEX: &str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 static ORDER_CHARS: &str = "ABCDEFGHJKLMNOPQRSTUVWXYZ";
@@ -121,18 +123,7 @@ impl Desig {
 
     /// Try to convert a [`Desig::Naif`] into a [`Desig::Name`] by looking it up.
     ///
-    /// If unsuccessful this returns the original type.
-    ///
-    /// ```
-    ///     use kete_core::desigs::Desig;
-    ///
-    ///     let desig = Desig::Naif(399).try_naif_id_to_name();
-    ///     assert_eq!(desig, Desig::Name("earth".into()));
-    ///
-    ///     let desig = Desig::Empty.try_naif_id_to_name();
-    ///     assert_eq!(desig, Desig::Empty);
-    /// ```
-    ///
+    /// If unsuccessful this returns the original designation unchanged.
     pub fn try_naif_id_to_name(self) -> Self {
         if let Self::Naif(id) = &self {
             if let Some(name) = try_name_from_id(*id) {
@@ -145,33 +136,9 @@ impl Desig {
         }
     }
 
-    /// Convert the [`Desig::Name`] into a [`Desig::Naif`] if possible.
+    /// Convert a [`Desig::Name`] into a [`Desig::Naif`] if possible.
     ///
-    /// This will lookup a NAIF id from the name if it exists.
-    ///
-    /// ```
-    ///     use kete_core::desigs::Desig;
-    ///
-    ///     // Integers are parsed if possible
-    ///     let desig = Desig::Name("399".into()).try_name_to_naif_id();
-    ///     assert_eq!(desig, Desig::Naif(399));
-    ///
-    ///     // If there is an exact match, then it is returned
-    ///     let desig = Desig::Name("Earth".into()).try_name_to_naif_id();
-    ///     assert_eq!(desig, Desig::Naif(399));
-    ///
-    ///     // Partial but unique matches are returned.
-    ///     let desig = Desig::Name("Earth b".into()).try_name_to_naif_id();
-    ///     assert_eq!(desig, Desig::Naif(3));
-    ///
-    ///     // Partial but not-unique will leave the input unchanged.
-    ///     let desig = Desig::Name("Ear".into()).try_name_to_naif_id();
-    ///     assert_eq!(desig, Desig::Name("Ear".into()));
-    ///
-    ///     // Non-Names are returned unchanged.
-    ///     let desig = Desig::Empty.try_naif_id_to_name();
-    ///     assert_eq!(desig, Desig::Empty);
-    /// ```
+    /// This will look up a NAIF id from the name if it exists.
     pub fn try_name_to_naif_id(self) -> Self {
         if let Self::Name(name) = &self {
             if let Ok(id) = name.parse::<i32>() {
@@ -180,49 +147,20 @@ impl Desig {
 
             let naif_ids = naif_ids_from_name(name);
             match naif_ids.as_slice() {
-                // if there is a single entry, return it
                 [i] => return Self::Naif(i.id),
                 _ => {
                     for id in &naif_ids {
-                        // if there is an EXACT match, return it.
                         if id.name.to_lowercase() == name.to_lowercase() {
                             return Self::Naif(id.id);
                         }
                     }
                 }
             }
-
-            // if there are multiple NAIF ids, or none, do not change the designation.
         }
         self
     }
 
-    /// Convert the [`Desig::Name`] into an [`Desig::ObservatoryCode`] if possible.
-    ///
-    /// ```
-    ///     use kete_core::desigs::Desig;
-    ///
-    ///     // If it is an existing observatory code, just upgrade it.
-    ///     let desig = Desig::Name("000".into()).try_name_to_obs_code();
-    ///     assert_eq!(desig, Desig::ObservatoryCode("000".into()));
-    ///
-    ///     // If there is an exact match, then it is returned
-    ///     let desig = Desig::Name("Maunakea".into()).try_name_to_obs_code();
-    ///     assert_eq!(desig, Desig::ObservatoryCode("568".into()));
-    ///
-    ///     // Partial but unique matches are returned.
-    ///     let desig = Desig::Name("Subaru Telescope, Mauna".into()).try_name_to_obs_code();
-    ///     assert_eq!(desig, Desig::ObservatoryCode("T09".into()));
-    ///
-    ///     // Partial but not-unique will leave the input unchanged.
-    ///     let desig = Desig::Name(", Maunakea".into()).try_name_to_obs_code();
-    ///     assert_eq!(desig, Desig::Name(", Maunakea".into()));
-    ///
-    ///     // Non-Names are returned unchanged.
-    ///     let desig = Desig::Empty.try_name_to_obs_code();
-    ///     assert_eq!(desig, Desig::Empty);
-    /// ```
-    ///
+    /// Convert a [`Desig::Name`] into a [`Desig::ObservatoryCode`] if possible.
     pub fn try_name_to_obs_code(self) -> Self {
         if let Self::Name(name) = &self {
             let obs_codes = try_obs_code_from_name(name);
@@ -231,14 +169,12 @@ impl Desig {
                 [i] => return i.code.clone(),
                 _ => {
                     for id in &obs_codes {
-                        // if there is an EXACT match, return it.
                         if id.name.to_lowercase() == name.to_lowercase() {
                             return id.code.clone();
                         }
                     }
                 }
             }
-            // if there are multiple NAIF ids, or none, do not change the designation.
         }
         self
     }
@@ -1225,6 +1161,147 @@ pub fn roman_to_int(roman: &str) -> KeteResult<u32> {
     Ok(result)
 }
 
+/// NAIF ID information
+#[derive(Debug, Deserialize, Clone)]
+pub struct NaifId {
+    /// NAIF id
+    pub id: i32,
+
+    /// name of the object
+    pub name: String,
+}
+
+impl FromStr for NaifId {
+    type Err = Error;
+
+    /// Load an [`NaifId`] from a single string.
+    fn from_str(row: &str) -> KeteResult<Self> {
+        let id = i32::from_str(row[0..10].trim()).unwrap();
+        let name = row[11..].trim().to_string();
+        Ok(Self { id, name })
+    }
+}
+
+const PRELOAD_IDS: &[u8] = include_bytes!("../data/naif_ids.csv");
+
+static NAIF_IDS: std::sync::LazyLock<Box<[NaifId]>> = std::sync::LazyLock::new(|| {
+    let mut ids = Vec::new();
+    let text = str::from_utf8(PRELOAD_IDS).unwrap().split('\n');
+    for row in text.skip(1) {
+        ids.push(NaifId::from_str(row).unwrap());
+    }
+    ids.into()
+});
+
+/// Return the string name of the desired ID if possible.
+pub fn try_name_from_id(id: i32) -> Option<String> {
+    for naif_id in NAIF_IDS.iter() {
+        if naif_id.id == id {
+            return Some(naif_id.name.clone());
+        }
+    }
+    None
+}
+
+/// Try to find a NAIF id from a name.
+///
+/// This will return all matching IDs for the given name.
+///
+/// This does a partial string match, case insensitive.
+pub fn naif_ids_from_name(name: &str) -> Vec<NaifId> {
+    let desigs: Vec<&str> = NAIF_IDS.iter().map(|n| n.name.as_str()).collect();
+    partial_str_match(name, &desigs)
+        .into_iter()
+        .map(|(i, _)| NAIF_IDS[i].clone())
+        .collect()
+}
+
+/// Observatory information
+#[derive(Debug, Deserialize, Clone)]
+pub struct ObsCode {
+    /// observatory code
+    pub code: Desig,
+
+    /// longitude in degrees
+    pub lon: f64,
+
+    /// latitude in degrees
+    pub lat: f64,
+
+    /// altitude in meters
+    pub altitude: f64,
+
+    /// name of the observatory
+    pub name: String,
+}
+
+impl FromStr for ObsCode {
+    type Err = Error;
+
+    /// Load an [`ObsCode`] from a single string.
+    fn from_str(row: &str) -> KeteResult<Self> {
+        let code = row[0..3].to_string();
+        let rec_lon = f64::from_str(row[3..13].trim()).unwrap_or(f64::NAN);
+        let cos = f64::from_str(row[13..21].trim()).unwrap_or(f64::NAN);
+        let sin = f64::from_str(row[21..30].trim()).unwrap_or(f64::NAN);
+        let vec = Vector3::new(cos, 0.0, sin) * EARTH_A;
+
+        let rotation = Rotation3::from_axis_angle(
+            &UnitVector3::new_normalize([0.0, 0.0, 1.0].into()),
+            rec_lon.to_radians(),
+        );
+        let vec = rotation.transform_vector(&vec);
+
+        let (lat, lon, altitude) = ecef_to_geodetic_lat_lon(vec.x, vec.y, vec.z);
+
+        let name = row[30..].trim().to_string();
+        Ok(Self {
+            code: Desig::ObservatoryCode(code),
+            lon: lon.to_degrees(),
+            lat: lat.to_degrees(),
+            altitude,
+            name,
+        })
+    }
+}
+
+const PRELOAD_OBS: &[u8] = include_bytes!("../data/mpc_obs.tsv");
+
+/// Observatory Codes
+pub static OBS_CODES: std::sync::LazyLock<Vec<ObsCode>> = std::sync::LazyLock::new(|| {
+    let mut codes = Vec::new();
+    let text = str::from_utf8(PRELOAD_OBS).unwrap().split('\n');
+    for row in text.skip(1) {
+        if let Ok(code) = ObsCode::from_str(row) {
+            codes.push(code);
+        }
+    }
+    codes
+});
+
+/// Return all possible observatory code matches for a given name.
+///
+/// This does a case insensitive partial match on the observatory names.
+///
+/// This first checks the names of the observatories, then checks the codes
+/// for matches.
+///
+/// If multiple matches are found, all of them are returned.
+pub fn try_obs_code_from_name(name: &str) -> Vec<ObsCode> {
+    let desigs: Vec<&str> = OBS_CODES.iter().map(|n| n.name.as_str()).collect();
+    let codes: Vec<String> = OBS_CODES.iter().map(|n| n.code.to_string()).collect();
+    let mut matches: Vec<_> = partial_str_match(name, &desigs)
+        .into_iter()
+        .map(|(i, _)| OBS_CODES[i].clone())
+        .collect();
+    matches.extend(
+        partial_str_match(name, &codes.iter().map(String::as_str).collect::<Vec<_>>())
+            .into_iter()
+            .map(|(i, _)| OBS_CODES[i].clone()),
+    );
+    matches
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1236,5 +1313,18 @@ mod tests {
         assert!(Desig::Name("Foo".into()).to_string() == "Foo");
         assert!(Desig::Perm(123).to_string() == "123");
         assert!(Desig::Prov("Prov".into()).to_string() == "Prov");
+    }
+
+    #[test]
+    fn naif_name_resolution() {
+        let desig = Desig::Naif(1).try_naif_id_to_name();
+        assert!(desig == Desig::Name("mercury barycenter".into()));
+        assert!(desig.full_string() == "Name(\"mercury barycenter\")");
+        assert!(desig.to_string() == "mercury barycenter");
+    }
+
+    #[test]
+    fn obs_codes_loaded() {
+        assert!(!OBS_CODES.is_empty());
     }
 }

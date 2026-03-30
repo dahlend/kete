@@ -34,9 +34,10 @@ use std::fmt::Debug;
 
 use serde::{Deserialize, Serialize};
 
-use super::{Contains, FOV, FovLike, OnSkyRectangle, SkyPatch, SphericalCone};
+use super::{Contains, FovLike, OnSkyRectangle, SkyPatch, SphericalCone};
 use crate::{
     errors::{Error, KeteResult},
+    fov::FOV,
     frames::{Equatorial, Vector},
     state::State,
 };
@@ -102,10 +103,17 @@ impl GenericRectangle {
 }
 
 impl FovLike for GenericRectangle {
+    type ChildFov = Self;
+
     #[inline]
-    fn get_fov(&self, index: usize) -> FOV {
+    fn get_child(&self, index: usize) -> Self {
         assert!(index == 0, "FOV only has a single patch");
-        FOV::GenericRectangle(self.clone())
+        self.clone()
+    }
+
+    #[inline]
+    fn into_fov(self) -> FOV {
+        FOV::GenericRectangle(self)
     }
 
     #[inline]
@@ -149,10 +157,17 @@ impl OmniDirectional {
 }
 
 impl FovLike for OmniDirectional {
+    type ChildFov = Self;
+
     #[inline]
-    fn get_fov(&self, index: usize) -> FOV {
+    fn get_child(&self, index: usize) -> Self {
         assert!(index == 0, "FOV only has a single patch");
-        FOV::OmniDirectional(self.clone())
+        self.clone()
+    }
+
+    #[inline]
+    fn into_fov(self) -> FOV {
+        FOV::OmniDirectional(self)
     }
 
     #[inline]
@@ -211,10 +226,17 @@ impl GenericCone {
 }
 
 impl FovLike for GenericCone {
+    type ChildFov = Self;
+
     #[inline]
-    fn get_fov(&self, index: usize) -> FOV {
+    fn get_child(&self, index: usize) -> Self {
         assert!(index == 0, "FOV only has a single patch");
-        FOV::GenericCone(self.clone())
+        self.clone()
+    }
+
+    #[inline]
+    fn into_fov(self) -> FOV {
+        FOV::GenericCone(self)
     }
 
     #[inline]
@@ -242,127 +264,5 @@ impl FovLike for GenericCone {
         Err(Error::ValueError(
             "GenericCone does not have corners.".into(),
         ))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::constants::{self, GMS_SQRT};
-    use crate::desigs::Desig;
-    use crate::prelude::*;
-
-    #[test]
-    fn test_check_rectangle_visible() {
-        let circular = State::new(
-            Desig::Empty,
-            2451545.0.into(),
-            [0.0, 1., 0.0].into(),
-            [-GMS_SQRT, 0.0, 0.0].into(),
-            0,
-        );
-        let circular_back = State::new(
-            Desig::Empty,
-            2451545.0.into(),
-            [1.0, 0.0, 0.0].into(),
-            [0.0, GMS_SQRT, 0.0].into(),
-            0,
-        );
-
-        for offset in [-10.0_f64, -5.0, 0.0, 5.0, 10.0] {
-            let off_state = propagate_n_body_spk(
-                circular_back.clone(),
-                circular_back.epoch - offset,
-                false,
-                None,
-            )
-            .unwrap();
-
-            let vec = circular_back.pos - circular.pos;
-
-            let fov = GenericRectangle::new(vec, 0.0001, 0.01, 0.01, circular.clone());
-            assert!(fov.check_two_body(&off_state).is_ok());
-            assert!(fov.check_n_body(&off_state, false).is_ok());
-
-            assert!(
-                fov.check_visible(&[off_state], 6.0, false)
-                    .first()
-                    .unwrap()
-                    .is_some()
-            );
-        }
-    }
-
-    /// Test the light delay computations for the different checks
-    #[test]
-    fn test_check_omni_visible() {
-        // Build an observer, and check the observability of ceres with different offsets from the observer time.
-        // this will exercise the position, velocity, and time offsets due to light delay.
-        let spk = &LOADED_SPK.read().unwrap();
-        let observer = State::new(
-            Desig::Empty,
-            2451545.0.into(),
-            [0.0, 1., 0.0].into(),
-            [-GMS_SQRT, 0.0, 0.0].into(),
-            10,
-        );
-
-        for offset in [-10.0, -5.0, 0.0, 5.0, 10.0] {
-            let ceres = spk
-                .try_get_state_with_center(20000001, observer.epoch + offset, 10)
-                .unwrap();
-
-            let fov = OmniDirectional::new(observer.clone());
-
-            // Check two body approximation calculation
-            let two_body = fov.check_two_body(&ceres);
-            assert!(two_body.is_ok());
-            let (_, _, two_body) = two_body.unwrap();
-            let dist = (two_body.pos - observer.pos).norm();
-            assert!(
-                (observer.epoch.jd - two_body.epoch.jd - dist * constants::C_AU_PER_DAY_INV).abs()
-                    < 1e-6
-            );
-            let ceres_exact = spk
-                .try_get_state_with_center(20000001, two_body.epoch, 10)
-                .unwrap();
-            // check that we are within about 150km - not bad for 2 body
-            assert!((two_body.pos - ceres_exact.pos).norm() < 1e-6);
-
-            // Check n body approximation calculation
-            let n_body = fov.check_n_body(&ceres, false);
-            assert!(n_body.is_ok());
-            let (_, _, n_body) = n_body.unwrap();
-            assert!(
-                (observer.epoch.jd - n_body.epoch.jd - dist * constants::C_AU_PER_DAY_INV).abs()
-                    < 1e-6
-            );
-            let ceres_exact = spk
-                .try_get_state_with_center(20000001, n_body.epoch, 10)
-                .unwrap();
-            // check that we are within about 150m
-            assert!((n_body.pos - ceres_exact.pos).norm() < 1e-9);
-
-            // Check spk queries
-            let spk_check = &fov.check_spks(&[20000001])[0];
-            assert!(spk_check.is_some());
-            let spk_check = &spk_check.as_ref().unwrap().states[0];
-            assert!(
-                (observer.epoch.jd - spk_check.epoch.jd - dist * constants::C_AU_PER_DAY_INV).abs()
-                    < 1e-6
-            );
-            let ceres_exact = spk
-                .try_get_state_with_center(20000001, spk_check.epoch, 10)
-                .unwrap();
-            // check that we are within about 150 micron
-            assert!((spk_check.pos - ceres_exact.pos).norm() < 1e-12);
-
-            assert!(
-                fov.check_visible(&[ceres], 6.0, false)
-                    .first()
-                    .unwrap()
-                    .is_some()
-            );
-        }
     }
 }

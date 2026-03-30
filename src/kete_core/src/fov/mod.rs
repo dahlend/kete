@@ -39,7 +39,11 @@ mod spherex;
 mod wise;
 mod ztf;
 
-pub use self::fov_like::FovLike;
+use crate::errors::KeteResult;
+use crate::frames::{Equatorial, Vector};
+use crate::state::State;
+
+pub use self::fov_like::{FovLike, check_linear, check_statics, check_two_body};
 pub use self::generic::{GenericCone, GenericRectangle, OmniDirectional};
 pub use self::neos::{NeosCmos, NeosVisit};
 pub use self::patches::{Contains, OnSkyRectangle, SkyPatch, SphericalCone, SphericalPolygon};
@@ -49,8 +53,6 @@ pub use self::wise::WiseCmos;
 pub use self::ztf::{ZtfCcdQuad, ZtfField};
 
 use serde::{Deserialize, Serialize};
-
-use crate::{frames::Vector, prelude::*};
 
 /// Allowed FOV objects, either contiguous or joint.
 /// Many of these exist solely to carry additional metadata.
@@ -94,84 +96,66 @@ pub enum FOV {
     SpherexField(SpherexField),
 }
 
-impl FOV {
-    /// Check if a collection of states are visible to this FOV using orbital propagation
-    #[must_use]
-    pub fn check_visible(
-        self,
-        states: &[State<Equatorial>],
-        dt_limit: f64,
-        include_asteroids: bool,
-    ) -> Vec<Option<SimultaneousStates>> {
+macro_rules! dispatch_fov {
+    ($self:expr, $method:ident $(, $arg:expr)*) => {
+        match $self {
+            Self::Wise(fov) => fov.$method($($arg),*),
+            Self::NeosCmos(fov) => fov.$method($($arg),*),
+            Self::ZtfCcdQuad(fov) => fov.$method($($arg),*),
+            Self::GenericCone(fov) => fov.$method($($arg),*),
+            Self::GenericRectangle(fov) => fov.$method($($arg),*),
+            Self::ZtfField(fov) => fov.$method($($arg),*),
+            Self::NeosVisit(fov) => fov.$method($($arg),*),
+            Self::OmniDirectional(fov) => fov.$method($($arg),*),
+            Self::PtfCcd(fov) => fov.$method($($arg),*),
+            Self::PtfField(fov) => fov.$method($($arg),*),
+            Self::SpherexCmos(fov) => fov.$method($($arg),*),
+            Self::SpherexField(fov) => fov.$method($($arg),*),
+        }
+    };
+}
+
+impl FovLike for FOV {
+    type ChildFov = Self;
+
+    fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
+        dispatch_fov!(self, corners)
+    }
+
+    fn get_child(&self, index: usize) -> Self {
         match self {
-            Self::Wise(fov) => fov.check_visible(states, dt_limit, include_asteroids),
-            Self::NeosCmos(fov) => fov.check_visible(states, dt_limit, include_asteroids),
-            Self::ZtfCcdQuad(fov) => fov.check_visible(states, dt_limit, include_asteroids),
-            Self::GenericCone(fov) => fov.check_visible(states, dt_limit, include_asteroids),
-            Self::GenericRectangle(fov) => fov.check_visible(states, dt_limit, include_asteroids),
-            Self::ZtfField(fov) => fov.check_visible(states, dt_limit, include_asteroids),
-            Self::NeosVisit(fov) => fov.check_visible(states, dt_limit, include_asteroids),
-            Self::OmniDirectional(fov) => fov.check_visible(states, dt_limit, include_asteroids),
-            Self::PtfCcd(fov) => fov.check_visible(states, dt_limit, include_asteroids),
-            Self::PtfField(fov) => fov.check_visible(states, dt_limit, include_asteroids),
-            Self::SpherexCmos(fov) => fov.check_visible(states, dt_limit, include_asteroids),
-            Self::SpherexField(fov) => fov.check_visible(states, dt_limit, include_asteroids),
+            Self::Wise(fov) => Self::Wise(fov.get_child(index)),
+            Self::NeosCmos(fov) => Self::NeosCmos(fov.get_child(index)),
+            Self::ZtfCcdQuad(fov) => Self::ZtfCcdQuad(fov.get_child(index)),
+            Self::GenericCone(fov) => Self::GenericCone(fov.get_child(index)),
+            Self::GenericRectangle(fov) => Self::GenericRectangle(fov.get_child(index)),
+            Self::ZtfField(fov) => Self::ZtfCcdQuad(fov.get_child(index)),
+            Self::NeosVisit(fov) => Self::NeosCmos(fov.get_child(index)),
+            Self::OmniDirectional(fov) => Self::OmniDirectional(fov.get_child(index)),
+            Self::PtfCcd(fov) => Self::PtfCcd(fov.get_child(index)),
+            Self::PtfField(fov) => Self::PtfCcd(fov.get_child(index)),
+            Self::SpherexCmos(fov) => Self::SpherexCmos(fov.get_child(index)),
+            Self::SpherexField(fov) => Self::SpherexCmos(fov.get_child(index)),
         }
     }
 
-    /// Observer position in this FOV
-    pub fn observer(&self) -> &State<Equatorial> {
-        match self {
-            Self::Wise(fov) => fov.observer(),
-            Self::NeosCmos(fov) => fov.observer(),
-            Self::ZtfCcdQuad(fov) => fov.observer(),
-            Self::GenericCone(fov) => fov.observer(),
-            Self::GenericRectangle(fov) => fov.observer(),
-            Self::ZtfField(fov) => fov.observer(),
-            Self::NeosVisit(fov) => fov.observer(),
-            Self::OmniDirectional(fov) => fov.observer(),
-            Self::PtfCcd(fov) => fov.observer(),
-            Self::PtfField(fov) => fov.observer(),
-            Self::SpherexCmos(fov) => fov.observer(),
-            Self::SpherexField(fov) => fov.observer(),
-        }
+    fn pointing(&self) -> KeteResult<Vector<Equatorial>> {
+        dispatch_fov!(self, pointing)
     }
 
-    /// Check if any loaded SPK objects are visible to this FOV
-    #[must_use]
-    pub fn check_spks(&self, obj_ids: &[i32]) -> Vec<Option<SimultaneousStates>> {
-        match self {
-            Self::Wise(fov) => fov.check_spks(obj_ids),
-            Self::NeosCmos(fov) => fov.check_spks(obj_ids),
-            Self::ZtfCcdQuad(fov) => fov.check_spks(obj_ids),
-            Self::GenericCone(fov) => fov.check_spks(obj_ids),
-            Self::GenericRectangle(fov) => fov.check_spks(obj_ids),
-            Self::ZtfField(fov) => fov.check_spks(obj_ids),
-            Self::NeosVisit(fov) => fov.check_spks(obj_ids),
-            Self::OmniDirectional(fov) => fov.check_spks(obj_ids),
-            Self::PtfCcd(fov) => fov.check_spks(obj_ids),
-            Self::PtfField(fov) => fov.check_spks(obj_ids),
-            Self::SpherexCmos(fov) => fov.check_spks(obj_ids),
-            Self::SpherexField(fov) => fov.check_spks(obj_ids),
-        }
+    fn into_fov(self) -> FOV {
+        self
     }
 
-    /// Check if static sources are visible in this FOV.
-    #[must_use]
-    pub fn check_statics(&self, pos: &[Vector<Equatorial>]) -> Vec<Option<(Vec<usize>, Self)>> {
-        match self {
-            Self::Wise(fov) => fov.check_statics(pos),
-            Self::NeosCmos(fov) => fov.check_statics(pos),
-            Self::ZtfCcdQuad(fov) => fov.check_statics(pos),
-            Self::GenericCone(fov) => fov.check_statics(pos),
-            Self::GenericRectangle(fov) => fov.check_statics(pos),
-            Self::ZtfField(fov) => fov.check_statics(pos),
-            Self::NeosVisit(fov) => fov.check_statics(pos),
-            Self::OmniDirectional(fov) => fov.check_statics(pos),
-            Self::PtfCcd(fov) => fov.check_statics(pos),
-            Self::PtfField(fov) => fov.check_statics(pos),
-            Self::SpherexCmos(fov) => fov.check_statics(pos),
-            Self::SpherexField(fov) => fov.check_statics(pos),
-        }
+    fn observer(&self) -> &State<Equatorial> {
+        dispatch_fov!(self, observer)
+    }
+
+    fn contains(&self, obs_to_obj: &Vector<Equatorial>) -> (usize, Contains) {
+        dispatch_fov!(self, contains, obs_to_obj)
+    }
+
+    fn n_patches(&self) -> usize {
+        dispatch_fov!(self, n_patches)
     }
 }
