@@ -13,7 +13,7 @@ use kete_core::propagation::{
 use kete_core::state::State;
 use kete_core::time::{TDB, Time};
 
-use crate::spice::LOADED_SPK;
+use crate::spice::{LOADED_SPK, SpkCollection};
 
 use itertools::Itertools;
 use nalgebra::{DVector, SMatrix, SVector, Vector3};
@@ -36,6 +36,10 @@ pub struct AccelSPKMeta<'a> {
     /// radius of the object. Mass is given in fractions of solar mass and radius is
     /// in AU.
     pub massive_obj: &'a [GravParams],
+
+    /// Reference to the loaded SPK collection.
+    /// Stored here so the lock is acquired once and reused for the entire integration.
+    pub spk: &'a SpkCollection,
 }
 
 /// Compute the accel on an object which experiences acceleration due to all massive
@@ -73,7 +77,7 @@ pub fn spk_accel(
 ) -> KeteResult<Vector3<f64>> {
     let mut accel = Vector3::<f64>::zeros();
 
-    let spk = &LOADED_SPK.try_read()?;
+    let spk = meta.spk;
 
     for grav_params in meta.massive_obj {
         let id = grav_params.naif_id;
@@ -200,6 +204,7 @@ pub fn propagate_n_body_spk(
         close_approach: None,
         non_grav_model,
         massive_obj: mass_list,
+        spk,
     };
 
     let (pos, vel, _meta) = {
@@ -330,6 +335,7 @@ pub fn propagate_picard_n_body_spk(
         close_approach: None,
         non_grav_model,
         massive_obj: mass_list,
+        spk,
     };
 
     let integrator = &PC15;
@@ -518,6 +524,7 @@ mod tests {
                 close_approach: None,
                 non_grav_model: None,
                 massive_obj: &GravParams::planets(),
+                spk,
             },
             false,
         )

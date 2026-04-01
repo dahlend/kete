@@ -52,14 +52,16 @@ pub fn moid_py(
                 10,
             )?);
 
-    let moids: Vec<f64> = states
-        .into_par_iter()
-        .with_min_len(30)
-        .map(|state| {
-            let state = state.raw;
-            moid(state, state_b.clone()).unwrap_or(f64::NAN)
-        })
-        .collect::<Vec<_>>();
+    let moids: Vec<f64> = py.detach(|| {
+        states
+            .into_par_iter()
+            .with_min_len(30)
+            .map(|state| {
+                let state = state.raw;
+                moid(state, state_b.clone()).unwrap_or(f64::NAN)
+            })
+            .collect::<Vec<_>>()
+    });
 
     maybe_vec_to_pyobj(py, moids, was_vec)
 }
@@ -130,9 +132,14 @@ pub fn propagation_n_body_spk_py(
     {
         py.check_signals()?;
 
-        let mut proc_chunk =
-            chunk
-                .to_owned()
+        let chunk_owned = chunk.to_owned();
+
+        // Release the GIL during CPU-intensive parallel work. All data here is
+        // pure Rust — no Python objects cross into rayon threads.
+        // Errors are collected as KeteResult (Rust) rather than PyResult to avoid
+        // creating PyErr objects inside rayon threads (which would require the GIL).
+        let proc_chunk: PyResult<Vec<_>> = py.detach(|| {
+            chunk_owned
                 .into_par_iter()
                 .with_min_len(5)
                 .map(|(state, model)| {
@@ -183,8 +190,9 @@ pub fn propagation_n_body_spk_py(
                         }
                     }
                 })
-                .collect::<PyResult<Vec<_>>>()?;
-        res.append(&mut proc_chunk);
+                .collect()
+        });
+        res.append(&mut proc_chunk?);
     }
 
     maybe_vec_to_pyobj(py, res, was_vec)
@@ -323,62 +331,63 @@ pub fn picard(
     {
         py.check_signals()?;
 
-        let mut proc_chunk = chunk
-            .to_owned()
-            .into_par_iter()
-            .with_min_len(5)
-            .map(|(state, model)| {
-                let model = model.map(|x| x.0);
-                let center = state.center_id();
-                let frame = state.frame;
-                let state = state.raw;
-                let desig = state.desig.clone();
+        let chunk_owned = chunk.to_owned();
+        let proc_chunk: PyResult<Vec<_>> = py.detach(|| {
+            chunk_owned
+                .into_par_iter()
+                .with_min_len(5)
+                .map(|(state, model)| {
+                    let model = model.map(|x| x.0);
+                    let center = state.center_id();
+                    let frame = state.frame;
+                    let state = state.raw;
+                    let desig = state.desig.clone();
 
-                // if the input has a NAN in it, skip the propagation entirely and return
-                // the nans.
-                if !state.is_finite() {
-                    if !suppress_errors {
-                        Err(Error::ValueError("Input state contains NaNs.".into()))?;
-                    };
-                    return Ok(Into::<PyState>::into(State::<Ecliptic>::new_nan(
-                        desig, jd, center,
-                    ))
-                    .change_frame(frame));
-                }
-                match spice_prop::propagate_picard_n_body_spk(state, jd, include_asteroids, model) {
-                    Ok(state) => Ok(Into::<PyState>::into(state).change_frame(frame)),
-                    Err(er) => {
+                    if !state.is_finite() {
                         if !suppress_errors {
-                            Err(er)?
-                        } else if let Error::Impact(id, time) = er {
-                            if !suppress_impact_errors {
-                                eprintln!(
-                                    "Impact detected between ({}) <-> {} at time {} ({})",
-                                    desig,
-                                    spice::try_name_from_id(id).unwrap_or(id.to_string()),
-                                    time.jd,
-                                    time.utc().to_iso().unwrap()
-                                );
-                            }
-                            // if we get an impact, we return a state with NaNs
-                            // but put the impact time into the new state.
-                            Ok(Into::<PyState>::into(State::<Ecliptic>::new_nan(
-                                desig, time, center,
-                            ))
-                            .change_frame(frame))
-                        } else {
-                            Ok(
-                                Into::<PyState>::into(State::<Ecliptic>::new_nan(
+                            Err(Error::ValueError("Input state contains NaNs.".into()))?;
+                        };
+                        return Ok(Into::<PyState>::into(State::<Ecliptic>::new_nan(
+                            desig, jd, center,
+                        ))
+                        .change_frame(frame));
+                    }
+                    match spice_prop::propagate_picard_n_body_spk(
+                        state,
+                        jd,
+                        include_asteroids,
+                        model,
+                    ) {
+                        Ok(state) => Ok(Into::<PyState>::into(state).change_frame(frame)),
+                        Err(er) => {
+                            if !suppress_errors {
+                                Err(er)?
+                            } else if let Error::Impact(id, time) = er {
+                                if !suppress_impact_errors {
+                                    eprintln!(
+                                        "Impact detected between ({}) <-> {} at time {} ({})",
+                                        desig,
+                                        spice::try_name_from_id(id).unwrap_or(id.to_string()),
+                                        time.jd,
+                                        time.utc().to_iso().unwrap()
+                                    );
+                                }
+                                Ok(Into::<PyState>::into(State::<Ecliptic>::new_nan(
+                                    desig, time, center,
+                                ))
+                                .change_frame(frame))
+                            } else {
+                                Ok(Into::<PyState>::into(State::<Ecliptic>::new_nan(
                                     desig, jd, center,
                                 ))
-                                .change_frame(frame),
-                            )
+                                .change_frame(frame))
+                            }
                         }
                     }
-                }
-            })
-            .collect::<PyResult<Vec<_>>>()?;
-        res.append(&mut proc_chunk);
+                })
+                .collect()
+        });
+        res.append(&mut proc_chunk?);
     }
 
     maybe_vec_to_pyobj(py, res, was_vec)

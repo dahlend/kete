@@ -36,6 +36,7 @@ use kete_core::time::{TDB, Time};
 
 use crate::jacobian::{n_params, stm_augmented_accel};
 use crate::propagation::AccelSPKMeta;
+use crate::spice::LOADED_SPK;
 use nalgebra::{DMatrix, Matrix3, SVector, Vector3};
 
 /// Compute the state transition matrix and optional parameter sensitivities using the
@@ -103,10 +104,12 @@ pub fn compute_state_transition(
         GravParams::planets()
     };
 
+    let spk = &LOADED_SPK.try_read()?;
     let metadata = AccelSPKMeta {
         close_approach: None,
         non_grav_model,
         massive_obj: &mass_list,
+        spk,
     };
 
     let (pos_f, vel_f, _meta) = RadauIntegrator::integrate(
