@@ -49,7 +49,6 @@ use kete_core::time::{TDB, Time};
 use nalgebra::{Matrix3, SVector, Vector3};
 
 use crate::propagation::{AccelSPKMeta, spk_accel_cached};
-use crate::spice::LOADED_SPK;
 
 /// Perturbation size for finite-difference Jacobians.
 const EPS: f64 = 1e-7;
@@ -343,16 +342,14 @@ pub(crate) fn stm_augmented_accel(
 
     // Cache planet states once  -  reused by the base acceleration evaluation,
     // the analytical Jacobians, and the non-grav parameter partials.
-    let cached_states: Vec<(Vector3<f64>, Vector3<f64>)> = {
-        let spk = &LOADED_SPK.try_read()?;
-        meta.massive_obj
-            .iter()
-            .map(|g| {
-                let state = spk.try_get_state_with_center::<Equatorial>(g.naif_id, time, 0)?;
-                Ok((Vector3::from(state.pos), Vector3::from(state.vel)))
-            })
-            .collect::<KeteResult<_>>()?
-    };
+    let cached_states: Vec<(Vector3<f64>, Vector3<f64>)> = meta
+        .massive_obj
+        .iter()
+        .map(|g| {
+            let state = meta.spk.try_get_state_with_center::<Equatorial>(g.naif_id, time, 0)?;
+            Ok((Vector3::from(state.pos), Vector3::from(state.vel)))
+        })
+        .collect::<KeteResult<_>>()?;
 
     // Physical acceleration
     let accel = spk_accel_cached(time, &pos, &vel, &cached_states, meta, exact_eval)?;
@@ -402,6 +399,7 @@ pub(crate) fn stm_augmented_accel(
 mod tests {
     use super::*;
     use crate::propagation::propagate_n_body_spk;
+    use crate::spice::LOADED_SPK;
     use crate::state_transition::compute_state_transition;
     use kete_core::constants::GravParams;
     use kete_core::frames::Equatorial;
@@ -722,23 +720,22 @@ mod tests {
         let vel: Vector3<f64> = state.vel.into();
         let planets = GravParams::planets();
 
-        let cached_states: Vec<(Vector3<f64>, Vector3<f64>)> = {
-            let spk = &LOADED_SPK.try_read().unwrap();
-            planets
-                .iter()
-                .map(|g| {
-                    let s = spk
-                        .try_get_state_with_center::<Equatorial>(g.naif_id, time, 0)
-                        .unwrap();
-                    (Vector3::from(s.pos), Vector3::from(s.vel))
-                })
-                .collect()
-        };
+        let spk = &LOADED_SPK.try_read().unwrap();
+        let cached_states: Vec<(Vector3<f64>, Vector3<f64>)> = planets
+            .iter()
+            .map(|g| {
+                let s = spk
+                    .try_get_state_with_center::<Equatorial>(g.naif_id, time, 0)
+                    .unwrap();
+                (Vector3::from(s.pos), Vector3::from(s.vel))
+            })
+            .collect();
 
         let mut meta = AccelSPKMeta {
             close_approach: None,
             non_grav_model: non_grav,
             massive_obj: &planets,
+            spk,
         };
 
         let (fd_dr, fd_dv) =

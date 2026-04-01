@@ -63,7 +63,7 @@ pub fn fov_checks_py(
     let mut states = pop.states;
     let mut big_step_states = states.clone();
     let mut visible = Vec::new();
-    for fovs in fov_chunks.into_iter() {
+    for fovs in fov_chunks {
         let jd_mean = (fovs.last().unwrap().observer().epoch.jd
             + fovs.first().unwrap().observer().epoch.jd)
             / 2.0;
@@ -92,25 +92,29 @@ pub fn fov_checks_py(
                 .collect();
         };
 
-        let vis: Vec<PySimultaneousStates> = fovs
-            .par_chunks(100)
-            .flat_map(|chunk| {
-                chunk
-                    .iter()
-                    .cloned()
-                    .flat_map(|fov| {
-                        fov_checks::check_visible(&fov, &states, dt_limit, include_asteroids)
-                            .into_iter()
-                            .filter_map(|pop| pop.map(|p| PySimultaneousStates(Box::new(p))))
-                            .collect::<Vec<_>>()
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
+        // Release the GIL during CPU-intensive parallel work so Python can
+        // handle signals and other threads can proceed.
+        py.detach(|| {
+            let vis: Vec<PySimultaneousStates> = fovs
+                .par_chunks(100)
+                .flat_map(|chunk| {
+                    chunk
+                        .iter()
+                        .cloned()
+                        .flat_map(|fov| {
+                            fov_checks::check_visible(&fov, &states, dt_limit, include_asteroids)
+                                .into_iter()
+                                .filter_map(|pop| pop.map(|p| PySimultaneousStates(Box::new(p))))
+                                .collect::<Vec<_>>()
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
 
-        if !vis.is_empty() {
-            visible.push(vis);
-        }
+            if !vis.is_empty() {
+                visible.push(vis);
+            }
+        });
 
         py.check_signals()?;
     }
