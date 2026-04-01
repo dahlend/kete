@@ -43,14 +43,12 @@ pub fn moid_py(
         ))?;
     }
 
-    let state_b =
-        state_b
-            .map(|x| x.raw)
-            .unwrap_or(LOADED_SPK.read().unwrap().try_get_state_with_center(
-                399,
-                states[0].raw.epoch,
-                10,
-            )?);
+    let state_b = state_b.map(|x| x.raw).unwrap_or(
+        LOADED_SPK
+            .try_read()
+            .map_err(Error::from)?
+            .try_get_state_with_center(399, states[0].raw.epoch, 10)?,
+    );
 
     let moids: Vec<f64> = py.detach(|| {
         states
@@ -172,7 +170,7 @@ pub fn propagation_n_body_spk_py(
                                         desig,
                                         spice::try_name_from_id(id).unwrap_or(id.to_string()),
                                         time.jd,
-                                        time.utc().to_iso().unwrap()
+                                        time.utc().to_iso().unwrap_or_default()
                                     );
                                 }
                                 // if we get an impact, we return a state with NaNs
@@ -250,6 +248,7 @@ pub fn propagation_n_body_spk_py(
 #[pyfunction]
 #[pyo3(name = "propagate_n_body_long", signature = (states, jd_final, planet_states=None, non_gravs=None, batch_size=10))]
 pub fn propagation_n_body_py(
+    py: Python<'_>,
     states: Vec<PyState>,
     jd_final: PyTime,
     planet_states: Option<Vec<PyState>>,
@@ -265,24 +264,32 @@ pub fn propagation_n_body_py(
         non_gravs.into_iter().map(|y| y.map(|z| z.0)).collect();
 
     let jd = jd_final.into();
-    let res = states
-        .into_iter()
-        .zip(non_gravs.into_iter())
-        .collect_vec()
-        .par_chunks(batch_size)
-        .map(|chunk| {
-            let (chunk_state, chunk_nongrav): (Vec<_>, Vec<Option<NonGravModel>>) =
-                chunk.iter().cloned().unzip();
+    let res: Result<Vec<_>, _> = py.detach(|| {
+        states
+            .into_iter()
+            .zip(non_gravs)
+            .collect_vec()
+            .par_chunks(batch_size)
+            .map(|chunk| {
+                let (chunk_state, chunk_nongrav): (Vec<_>, Vec<Option<NonGravModel>>) =
+                    chunk.iter().cloned().unzip();
 
-            spice_prop::propagate_n_body_vec(chunk_state, jd, planet_states.clone(), chunk_nongrav)
+                spice_prop::propagate_n_body_vec(
+                    chunk_state,
+                    jd,
+                    planet_states.clone(),
+                    chunk_nongrav,
+                )
                 .map(|(states, planets)| {
                     (
                         states.into_iter().map(PyState::from).collect::<Vec<_>>(),
                         planets.into_iter().map(PyState::from).collect::<Vec<_>>(),
                     )
                 })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+            })
+            .collect()
+    });
+    let res = res?;
 
     let mut final_states = Vec::new();
     let mut final_planets = Vec::new();
@@ -369,7 +376,7 @@ pub fn picard(
                                         desig,
                                         spice::try_name_from_id(id).unwrap_or(id.to_string()),
                                         time.jd,
-                                        time.utc().to_iso().unwrap()
+                                        time.utc().to_iso().unwrap_or_default()
                                     );
                                 }
                                 Ok(Into::<PyState>::into(State::<Ecliptic>::new_nan(

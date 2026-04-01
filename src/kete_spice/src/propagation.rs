@@ -22,10 +22,6 @@ use rayon::prelude::*;
 /// Metadata for the [`spk_accel`] function.
 #[derive(Debug)]
 pub struct AccelSPKMeta<'a> {
-    /// Closest approach to a massive object.
-    /// This records the ID of the object, time, and distance in AU.
-    pub close_approach: Option<(i32, Time<TDB>, f64)>,
-
     /// The non-gravitational forces.
     /// If this is not provided, only standard gravitational model is applied.
     /// If this are provided, then the effects of the Non-Grav terms are added.
@@ -88,11 +84,6 @@ pub fn spk_accel(
 
         if exact_eval {
             let r = rel_pos.norm();
-            if let Some(close_approach) = meta.close_approach.as_mut()
-                && r <= close_approach.2
-            {
-                *close_approach = (id, time, r);
-            }
 
             if r as f32 <= radius {
                 Err(Error::Impact(id, time))?;
@@ -133,11 +124,6 @@ pub(crate) fn spk_accel_cached(
 
         if exact_eval {
             let r = rel_pos.norm();
-            if let Some(close_approach) = meta.close_approach.as_mut()
-                && r <= close_approach.2
-            {
-                *close_approach = (grav_params.naif_id, time, r);
-            }
 
             if r as f32 <= radius {
                 Err(Error::Impact(grav_params.naif_id, time))?;
@@ -201,7 +187,6 @@ pub fn propagate_n_body_spk(
     };
 
     let metadata = AccelSPKMeta {
-        close_approach: None,
         non_grav_model,
         massive_obj: mass_list,
         spk,
@@ -332,7 +317,6 @@ pub fn propagate_picard_n_body_spk(
     };
 
     let mut metadata = AccelSPKMeta {
-        close_approach: None,
         non_grav_model,
         massive_obj: mass_list,
         spk,
@@ -403,16 +387,16 @@ pub fn propagate_n_body_vec(
     let mut desigs: Vec<Desig> = Vec::new();
     let spk = &LOADED_SPK.try_read()?;
 
-    let planet_states = planet_states.unwrap_or_else(|| {
+    let planet_states = if let Some(ps) = planet_states {
+        ps
+    } else {
         let mut planet_states = Vec::new();
         for obj in GravParams::simplified_planets() {
-            let planet = spk
-                .try_get_state_with_center::<Equatorial>(obj.naif_id, jd_init, 10)
-                .expect("Failed to find state for the provided initial jd");
+            let planet = spk.try_get_state_with_center::<Equatorial>(obj.naif_id, jd_init, 10)?;
             planet_states.push(planet);
         }
         planet_states
-    });
+    };
 
     if planet_states.len() != GravParams::simplified_planets().len() {
         Err(Error::ValueError(
@@ -521,7 +505,6 @@ mod tests {
             &[0.0, 0.0, 0.5].into(),
             &[0.0, 0.0, 1.0].into(),
             &mut AccelSPKMeta {
-                close_approach: None,
                 non_grav_model: None,
                 massive_obj: &GravParams::planets(),
                 spk,

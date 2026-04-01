@@ -346,7 +346,9 @@ pub(crate) fn stm_augmented_accel(
         .massive_obj
         .iter()
         .map(|g| {
-            let state = meta.spk.try_get_state_with_center::<Equatorial>(g.naif_id, time, 0)?;
+            let state = meta
+                .spk
+                .try_get_state_with_center::<Equatorial>(g.naif_id, time, 0)?;
             Ok((Vector3::from(state.pos), Vector3::from(state.vel)))
         })
         .collect::<KeteResult<_>>()?;
@@ -423,7 +425,6 @@ mod tests {
         cached_states: &[(Vector3<f64>, Vector3<f64>)],
         meta: &mut AccelSPKMeta<'_>,
     ) -> KeteResult<(Matrix3<f64>, Matrix3<f64>)> {
-        let saved_ca = meta.close_approach;
         let mut da_dr = Matrix3::<f64>::zeros();
         let mut da_dv = Matrix3::<f64>::zeros();
         let inv_2eps = 0.5 / EPS;
@@ -448,7 +449,6 @@ mod tests {
             da_dv.set_column(i, &((a_p - a_m) * inv_2eps));
         }
 
-        meta.close_approach = saved_ca;
         Ok((da_dr, da_dv))
     }
 
@@ -732,7 +732,6 @@ mod tests {
             .collect();
 
         let mut meta = AccelSPKMeta {
-            close_approach: None,
             non_grav_model: non_grav,
             massive_obj: &planets,
             spk,
