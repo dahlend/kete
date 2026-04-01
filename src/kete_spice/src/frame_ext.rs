@@ -27,7 +27,7 @@ pub fn rotations_to_equatorial_full(
         ok @ Ok(_) => ok,
         Err(_) if frame.reference_frame_id < 0 => {
             // CK-dependent resolution
-            let cks = LOADED_CK.read().unwrap();
+            let cks = LOADED_CK.try_read()?;
 
             for segment in &cks.segments {
                 let array: &CkArray = segment.into();

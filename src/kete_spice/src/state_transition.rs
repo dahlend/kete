@@ -106,7 +106,6 @@ pub fn compute_state_transition(
 
     let spk = &LOADED_SPK.try_read()?;
     let metadata = AccelSPKMeta {
-        close_approach: None,
         non_grav_model,
         massive_obj: &mass_list,
         spk,
