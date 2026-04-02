@@ -56,7 +56,7 @@ use nalgebra::{DefaultAllocator, Dim, Matrix3, OVector, U1, U2, Vector3};
 use std::ops::AddAssign;
 
 /// Metadata object used by the [`central_accel`] function below.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CentralAccelMeta {
     /// A vector of times where the central accel function was evaluated at.
     pub times: Vec<Time<TDB>>,
