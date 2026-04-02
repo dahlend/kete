@@ -36,7 +36,7 @@ use crate::time::{TDB, Time};
 use itertools::izip;
 use nalgebra::Matrix;
 use nalgebra::allocator::Allocator;
-use nalgebra::{DefaultAllocator, Dim, OMatrix, OVector, RowSVector, SMatrix, SVector, U1, U7};
+use nalgebra::{DefaultAllocator, Dim, OMatrix, OVector, RowSVector, SMatrix, U1, U7};
 
 /// Integrator will return a result of this type.
 type RadauResult<MType, D> = KeteResult<(OVector<f64, D>, OVector<f64, D>, MType)>;
@@ -82,6 +82,36 @@ static C_MAT: std::sync::LazyLock<SMatrix<f64, 7, 7>> = std::sync::LazyLock::new
         }
     }
     c
+});
+
+// Precomputed w_pow and u_pow tables for each Gauss-Radau substep.
+// W_POW_TABLE[j][k] = h_{j+1}^{k+1} * W_VEC[k]
+// where h_{j+1} = GAUSS_RADAU_SPACINGS[j+1].
+// Eliminates per-iteration powi calls and SVector construction.
+static W_POW_TABLE: std::sync::LazyLock<[RowSVector<f64, 7>; 7]> = std::sync::LazyLock::new(|| {
+    let w = &*W_VEC;
+    let mut table = [RowSVector::<f64, 7>::zeros(); 7];
+    for (j, h) in GAUSS_RADAU_SPACINGS.iter().enumerate().skip(1) {
+        let mut hp = *h;
+        for k in 0..7 {
+            table[j - 1][k] = hp * w[k];
+            hp *= h;
+        }
+    }
+    table
+});
+
+static U_POW_TABLE: std::sync::LazyLock<[RowSVector<f64, 7>; 7]> = std::sync::LazyLock::new(|| {
+    let u = &*U_VEC;
+    let mut table = [RowSVector::<f64, 7>::zeros(); 7];
+    for (j, h) in GAUSS_RADAU_SPACINGS.iter().enumerate().skip(1) {
+        let mut hp = *h;
+        for k in 0..7 {
+            table[j - 1][k] = hp * u[k];
+            hp *= h;
+        }
+    }
+    table
 });
 
 const MIN_RATIO: f64 = 0.25;
@@ -210,8 +240,24 @@ where
                 integrator.metadata,
             ));
         }
-        let mut next_step_size: f64 =
-            0.1_f64.copysign((integrator.final_time - integrator.cur_time).elapsed);
+        let mut next_step_size: f64 = {
+            // Estimate a reasonable first step from the initial acceleration.
+            // h0 = min(0.1, (epsilon / |a0|)^(1/3)) keeps the first step's
+            // cubic truncation term O(epsilon).  The 1/3 exponent is
+            // deliberately conservative (lower order than the 1/7 used by
+            // the step-size controller) so the very first step doesn't
+            // overshoot on extreme orbits like sun-grazers.
+            let a0_norm = integrator
+                .cur_state_der_der
+                .rows(0, integrator.control_dim)
+                .amax();
+            let h0 = if a0_norm > 0.0 {
+                (EPSILON / a0_norm).powf(1.0 / 3.0).min(0.1)
+            } else {
+                0.1
+            };
+            h0.copysign((integrator.final_time - integrator.cur_time).elapsed)
+        };
 
         // Allow callers to control convergence using a subset of dimensions.
         integrator.control_dim = control_dim.unwrap_or(integrator.control_dim);
@@ -281,18 +327,10 @@ where
                 // Update each parameter using the current B as a guess to estimate the
                 // state of the integrator at the current time + the Gauss-Radau spacing.
 
-                let w_pow = SVector::from_iterator(
-                    W_VEC
-                        .iter()
-                        .enumerate()
-                        .map(|(idx, w)| gauss_radau_frac.powi(1 + idx as i32) * w),
-                );
-                let u_pow = SVector::from_iterator(
-                    U_VEC
-                        .iter()
-                        .enumerate()
-                        .map(|(idx, u)| gauss_radau_frac.powi(1 + idx as i32) * u),
-                );
+                let w_pow = &W_POW_TABLE[idj - 1];
+                let u_pow = &U_POW_TABLE[idj - 1];
+                let h1 = gauss_radau_frac * step_size;
+                let h2 = h1 * h1;
 
                 izip!(
                     self.state_scratch.iter_mut(),
@@ -302,12 +340,7 @@ where
                     self.cur_b.row_iter(),
                 )
                 .for_each(|(out, state, der, derder, b)| {
-                    let bw = b * w_pow;
-                    *out = state
-                        + gauss_radau_frac * der * step_size
-                        + gauss_radau_frac.powi(2)
-                            * step_size.powi(2)
-                            * (derder / 2.0 + unsafe { bw.get_unchecked(0) });
+                    *out = state + h1 * der + h2 * (derder / 2.0 + b.dot(w_pow));
                 });
 
                 izip!(
@@ -317,9 +350,7 @@ where
                     self.cur_b.row_iter(),
                 )
                 .for_each(|(out, der, derder, b)| {
-                    let bu = b * u_pow;
-                    *out = der
-                        + gauss_radau_frac * step_size * (derder + unsafe { bu.get_unchecked(0) });
+                    *out = der + h1 * (derder + b.dot(u_pow));
                 });
 
                 // Evaluate the function at this new intermediate state.
@@ -370,12 +401,12 @@ where
             // This is using the convergence criterion as defined in
             // https://arxiv.org/pdf/1409.4779.pdf  equation (8)
             if b_diff_ctrl.component_div(&func_ctrl).max() < 1e-14 {
+                let ss = step_size * step_size;
                 for idx in 0..self.cur_state.len() {
                     unsafe {
                         self.cur_state[idx] += self.cur_state_der.get_unchecked(idx) * step_size
-                            + step_size.powi(2)
-                                * (self.cur_state_der_der.get_unchecked(idx) * 0.5
-                                    + self.cur_b.row(idx).dot(&W_VEC));
+                            + ss * (self.cur_state_der_der.get_unchecked(idx) * 0.5
+                                + self.cur_b.row(idx).dot(&W_VEC));
                         self.cur_state_der[idx] += step_size
                             * (self.cur_state_der_der.get_unchecked(idx)
                                 + self.cur_b.row(idx).dot(&U_VEC));
