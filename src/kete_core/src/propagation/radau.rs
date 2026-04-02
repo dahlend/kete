@@ -420,10 +420,17 @@ where
                     &mut self.metadata,
                     true,
                 )?;
-                let f_max_ctrl = func_ctrl.max();
-                let b6_ctrl = self.cur_b.column(6).rows(0, cd).abs().max();
+                // Step-size controller: component-wise ratio max(|b6_i|/|a_i|)
+                // ensures the worst-resolved component drives the step size.
+                let error_ratio = self
+                    .cur_b
+                    .column(6)
+                    .rows(0, cd)
+                    .abs()
+                    .component_div(&func_ctrl)
+                    .max();
                 return Ok(step_size
-                    * (EPSILON * f_max_ctrl / b6_ctrl)
+                    * (EPSILON / error_ratio)
                         .powf(1.0 / 7.0)
                         .clamp(MIN_RATIO, MIN_RATIO.recip()));
             }
