@@ -299,8 +299,8 @@ pub fn lambert<T: InertialFrame>(
 mod tests {
     use super::*;
     use kete_core::frames::Equatorial;
+    use kete_core::kepler::propagate_two_body;
     use kete_core::prelude::State;
-    use kete_core::propagation::propagate_two_body;
     use kete_core::time::{TDB, Time};
 
     /// Helper: create Vector<Equatorial>.

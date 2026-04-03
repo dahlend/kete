@@ -35,8 +35,8 @@ use super::Contains;
 use crate::constants::C_AU_PER_DAY_INV;
 use crate::fov::FOV;
 use crate::frames::{Equatorial, Vector};
+use crate::kepler::light_time_correct;
 use crate::prelude::*;
-use crate::propagation::light_time_correct;
 
 /// Field of View like objects.
 /// These may contain multiple unique sky patches, so as a result the expected

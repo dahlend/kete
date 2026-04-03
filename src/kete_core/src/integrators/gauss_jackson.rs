@@ -32,9 +32,9 @@
 // CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+use crate::integrators::radau::RadauIntegrator;
+use crate::integrators::util::SecondOrderODE;
 use crate::prelude::KeteResult;
-use crate::propagation::radau::RadauIntegrator;
-use crate::propagation::util::SecondOrderODE;
 use crate::time::{TDB, Time};
 use nalgebra::allocator::Allocator;
 use nalgebra::{DefaultAllocator, Dim, Matrix, OVector, U1, U7};
@@ -128,7 +128,7 @@ const AM: [f64; ORDER] = [
 /// This method typically uses one force evaluation per accepted step (after
 /// the bootstrap), making it extremely efficient when the step size is
 /// constrained by short-period bodies (e.g., the Moon's 27-day orbit).
-/// The corrector can iterate up to [`MAX_CORRECTOR_ITER`] times if needed,
+/// The corrector can iterate up to 3 times if needed,
 /// but in practice it nearly always converges on the first pass.
 ///
 /// References:
@@ -415,8 +415,8 @@ mod tests {
     use nalgebra::Vector3;
 
     use super::*;
-    use crate::propagation::analytic_2_body;
-    use crate::propagation::{CentralAccelMeta, central_accel};
+    use crate::forces::{CentralAccelMeta, central_accel};
+    use crate::kepler::analytic_2_body;
 
     /// Two-body orbit validated against the analytic Kepler solution.
     #[test]
@@ -613,7 +613,7 @@ mod tests {
     #[test]
     #[ignore = "expensive diagnostic, run manually"]
     fn compare_integrators() {
-        use crate::propagation::BulirschStoerIntegrator;
+        use crate::integrators::BulirschStoerIntegrator;
 
         let gms = crate::constants::GMS;
 

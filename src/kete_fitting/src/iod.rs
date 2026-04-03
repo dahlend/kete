@@ -38,8 +38,8 @@
 
 use kete_core::constants::GMS_SQRT;
 use kete_core::frames::{Equatorial, Vector};
+use kete_core::kepler::{light_time_correct, propagate_two_body};
 use kete_core::prelude::{Error, KeteResult, State};
-use kete_core::propagation::{light_time_correct, propagate_two_body};
 use kete_core::time::{TDB, Time};
 use rayon::prelude::*;
 
@@ -642,7 +642,7 @@ mod tests {
     use super::*;
     use kete_core::constants::GMS;
     use kete_core::desigs::Desig;
-    use kete_core::propagation::{light_time_correct, propagate_two_body};
+    use kete_core::kepler::{light_time_correct, propagate_two_body};
     use kete_core::time::{TDB, Time};
     use kete_spice::propagation::propagate_n_body_spk;
     use kete_spice::spice::LOADED_SPK;

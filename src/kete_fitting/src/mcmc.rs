@@ -40,9 +40,10 @@
 use crate::obs::AstrometricObservation;
 use crate::orbit_fitting::{StmObs, accumulate_normal_equations, stm_sweep, stm_sweep_two_body};
 use kete_core::constants::GMS;
+use kete_core::forces::NonGravModel;
 use kete_core::frames::Equatorial;
+use kete_core::kepler::propagate_two_body;
 use kete_core::prelude::{Error, KeteResult, State};
-use kete_core::propagation::{NonGravModel, propagate_two_body};
 use nalgebra::{DMatrix, DVector};
 use nuts_rs::rand::SeedableRng;
 use nuts_rs::{

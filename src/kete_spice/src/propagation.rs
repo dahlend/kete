@@ -1,15 +1,16 @@
 //! SPK-dependent propagation functions.
 //!
 //! These functions require loaded SPICE kernels (SPK files) to query planet states.
-//! Pure math propagation functions remain in `kete_core::propagation`.
+//! Pure math integrators and force models remain in `kete_core::integrators`,
+//! `kete_core::forces`, and `kete_core::kepler`.
 
-use kete_core::constants::GravParams;
 use kete_core::errors::Error;
+use kete_core::forces::GravParams;
+use kete_core::forces::{AccelVecMeta, NonGravModel, vec_accel};
 use kete_core::frames::Equatorial;
+use kete_core::integrators::{PC15, RadauIntegrator};
+use kete_core::kepler::analytic_2_body;
 use kete_core::prelude::{Desig, KeteResult, SimultaneousStates};
-use kete_core::propagation::{
-    AccelVecMeta, NonGravModel, PC15, RadauIntegrator, analytic_2_body, vec_accel,
-};
 use kete_core::state::State;
 use kete_core::time::{TDB, Time};
 
@@ -428,7 +429,7 @@ mod tests {
     use itertools::Itertools;
 
     use super::*;
-    use kete_core::propagation::{AccelVecMeta, vec_accel};
+    use kete_core::forces::{AccelVecMeta, vec_accel};
 
     #[test]
     fn check_accelerations_equal() {

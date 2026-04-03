@@ -1,3 +1,5 @@
+//! Runge-Kutta-Fehlberg 4(5) adaptive-step integrator for first-order ODEs.
+
 // BSD 3-Clause License
 //
 // Copyright (c) 2025, California Institute of Technology
@@ -29,8 +31,8 @@
 
 use crate::{
     errors::Error,
+    integrators::util::FirstOrderODE,
     prelude::KeteResult,
-    propagation::util::FirstOrderODE,
     time::{TDB, Time},
 };
 use nalgebra::SVector;
@@ -183,8 +185,8 @@ impl<'a, MType, const D: usize> RK45Integrator<'a, MType, D> {
 mod tests {
     use nalgebra::Vector1;
 
+    use crate::integrators::RK45Integrator;
     use crate::prelude::KeteResult;
-    use crate::propagation::RK45Integrator;
     use crate::time::{TDB, Time};
 
     #[test]
