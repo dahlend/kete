@@ -133,7 +133,7 @@ pub fn propagation_n_body_spk_py(
         let chunk_owned = chunk.to_owned();
 
         // Release the GIL during CPU-intensive parallel work. All data here is
-        // pure Rust — no Python objects cross into rayon threads.
+        // pure Rust -- no Python objects cross into rayon threads.
         // Errors are collected as KeteResult (Rust) rather than PyResult to avoid
         // creating PyErr objects inside rayon threads (which would require the GIL).
         let proc_chunk: PyResult<Vec<_>> = py.detach(|| {
