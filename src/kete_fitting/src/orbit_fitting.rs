@@ -31,9 +31,10 @@
 
 use crate::obs::AstrometricObservation;
 use crate::uncertain_state::UncertainState;
+use kete_core::forces::NonGravModel;
 use kete_core::frames::Equatorial;
+use kete_core::kepler::{analytic_2_body_stm, light_time_correct};
 use kete_core::prelude::{Error, KeteResult, State};
-use kete_core::propagation::{NonGravModel, analytic_2_body_stm, light_time_correct};
 use kete_spice::compute_state_transition;
 use kete_spice::propagation::propagate_n_body_spk;
 use kete_spice::spice::LOADED_SPK;

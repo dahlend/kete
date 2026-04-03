@@ -31,7 +31,7 @@
     unused_results
 )]
 
-use kete_core::constants::{known_masses, register_custom_mass, register_mass, registered_masses};
+use kete_core::forces::{known_masses, register_custom_mass, register_mass, registered_masses};
 use pyo3::prelude::*;
 use state::PyState;
 

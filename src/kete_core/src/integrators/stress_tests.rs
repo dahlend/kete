@@ -4,16 +4,15 @@
 /// analytic solution, then runs every integrator through it and reports errors.
 ///
 /// Run all scenarios (prints a comparison table):
-///   `cargo test -p kete_core --lib propagation::stress_tests -- --nocapture --ignored`
+///   `cargo test -p kete_core --lib integrators::stress_tests -- --nocapture --ignored`
 use std::time::Instant;
 
 use nalgebra::{SMatrix, Vector3};
 
-use super::{
-    BulirschStoerIntegrator, CentralAccelMeta, GaussJacksonIntegrator, PC15, RadauIntegrator,
-    analytic_2_body, central_accel,
-};
+use super::{BulirschStoerIntegrator, GaussJacksonIntegrator, PC15, RadauIntegrator};
 use crate::constants::GMS;
+use crate::forces::{CentralAccelMeta, central_accel};
+use crate::kepler::analytic_2_body;
 use crate::time::{TDB, Time};
 
 /// Two-body analytic init for the second-order Picard integrator.

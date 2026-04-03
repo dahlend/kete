@@ -5,8 +5,8 @@
 
 use kete_core::fov::{Contains, FovLike, check_linear, check_two_body};
 use kete_core::frames::Equatorial;
+use kete_core::kepler::light_time_correct;
 use kete_core::prelude::{KeteResult, SimultaneousStates, State};
-use kete_core::propagation::light_time_correct;
 
 use crate::propagation::propagate_n_body_spk;
 use crate::spice::LOADED_SPK;

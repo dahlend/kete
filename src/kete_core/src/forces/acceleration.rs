@@ -4,8 +4,9 @@
 //!
 //! There are several functions defined here, which enable various levels of accuracy.
 //!
-//! These functions have a strict function signature, defined as [`SecondOrderODE`] in
-//! the [`util`] module. This function signature contains 5 terms:
+//! These functions have a strict function signature, defined as
+//! [`SecondOrderODE`](crate::integrators::util::SecondOrderODE).
+//! This function signature contains 5 terms:
 //!
 //! `(time, x, x_der, &mut MetaData, exact_eval) -> KeteResult<x_der_der>`
 //!
@@ -49,9 +50,10 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+use crate::forces::GravParams;
 use crate::prelude::KeteResult;
 use crate::time::{TDB, Time};
-use crate::{constants, errors::Error, propagation::nongrav::NonGravModel};
+use crate::{constants, errors::Error, forces::nongrav::NonGravModel};
 use nalgebra::allocator::Allocator;
 use nalgebra::{DefaultAllocator, Dim, Matrix3, OVector, U1, U2, Vector3};
 use std::ops::AddAssign;
@@ -130,7 +132,7 @@ pub struct AccelVecMeta<'a> {
     /// This list contains the ID of the object in the SPK along with the mass and
     /// radius of the object. Mass is given in fractions of solar mass and radius is
     /// in AU.
-    pub massive_obj: &'a [constants::GravParams],
+    pub massive_obj: &'a [GravParams],
 }
 
 /// Compute the accel on an object which experiences acceleration due to all massive

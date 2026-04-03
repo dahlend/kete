@@ -2,7 +2,7 @@
 use itertools::Itertools;
 use kete_core::frames::{Ecliptic, Equatorial, Vector};
 use kete_core::state::State;
-use kete_core::{constants, propagation};
+use kete_core::{constants, kepler};
 use pyo3::{Py, PyAny, PyErr, Python, exceptions};
 use pyo3::{PyResult, pyfunction};
 use rayon::prelude::*;
@@ -41,7 +41,7 @@ pub fn compute_eccentric_anomaly_py(
         .collect_vec()
         .par_iter()
         .map(|((e, anom), peri)| {
-            propagation::compute_eccentric_anomaly(**e, *anom, *peri).unwrap_or(f64::NAN)
+            kepler::compute_eccentric_anomaly(**e, *anom, *peri).unwrap_or(f64::NAN)
         })
         .collect())
 }
@@ -89,8 +89,7 @@ pub fn propagation_kepler_py(
                 return nan_state.change_frame(frame);
             };
 
-            let Some(mut new_state) = propagation::propagate_two_body(&state.raw, epoch).ok()
-            else {
+            let Some(mut new_state) = kepler::propagate_two_body(&state.raw, epoch).ok() else {
                 let nan_state: PyState =
                     State::<Ecliptic>::new_nan(state.raw.desig.clone(), epoch, center).into();
                 return nan_state.change_frame(frame);
@@ -99,11 +98,10 @@ pub fn propagation_kepler_py(
             if let Some(observer_pos) = &observer_pos {
                 let observer_pos: Vector<Equatorial> = observer_pos.clone().into();
                 let delay = -(new_state.pos - observer_pos).norm() / constants::C_AU_PER_DAY;
-                new_state =
-                    match propagation::propagate_two_body(&new_state, new_state.epoch + delay) {
-                        Ok(state) => state,
-                        Err(_) => State::new_nan(state.raw.desig.clone(), epoch, center),
-                    };
+                new_state = match kepler::propagate_two_body(&new_state, new_state.epoch + delay) {
+                    Ok(state) => state,
+                    Err(_) => State::new_nan(state.raw.desig.clone(), epoch, center),
+                };
             }
             let new_pystate: PyState = new_state.into();
 

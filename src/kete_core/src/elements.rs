@@ -31,10 +31,11 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use crate::constants::{GMS_SQRT, GravParams};
+use crate::constants::GMS_SQRT;
+use crate::forces::GravParams;
 use crate::frames::Ecliptic;
+use crate::kepler::{PARABOLIC_ECC_LIMIT, compute_eccentric_anomaly, compute_true_anomaly};
 use crate::prelude::{Desig, KeteResult, State};
-use crate::propagation::{PARABOLIC_ECC_LIMIT, compute_eccentric_anomaly, compute_true_anomaly};
 use crate::time::{TDB, Time};
 
 use nalgebra::Vector3;

@@ -2,9 +2,9 @@
 //!
 //! Wraps `kete_fitting` types and functions for use from Python.
 
+use kete_core::forces::NonGravModel;
 use kete_core::frames::{Equatorial, Vector};
 use kete_core::prelude::*;
-use kete_core::propagation::NonGravModel;
 use kete_fitting::{
     AstrometricObservation, OrbitFit, OrbitSamples, fit_orbit, fit_orbit_mcmc, lambert,
 };

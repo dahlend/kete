@@ -58,7 +58,7 @@ use itertools::Itertools;
 use nalgebra::{SMatrix, SVector};
 
 use crate::errors::{Error, KeteResult};
-use crate::propagation::util::FirstOrderODE;
+use crate::integrators::util::FirstOrderODE;
 use crate::time::{TDB, Time};
 
 /// Initialization function which fills the integrators initial guess.

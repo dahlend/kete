@@ -1,11 +1,7 @@
 //! Python support for n body propagation
 use itertools::Itertools;
-use kete_core::{
-    errors::Error,
-    frames::Ecliptic,
-    propagation::{NonGravModel, moid},
-    state::State,
-};
+use kete_core::kepler::moid;
+use kete_core::{errors::Error, forces::NonGravModel, frames::Ecliptic, state::State};
 use kete_spice::propagation as spice_prop;
 use kete_spice::spice::{self, LOADED_SPK};
 use pyo3::{Py, PyAny, PyResult, Python, pyfunction};

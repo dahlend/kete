@@ -30,8 +30,8 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 use crate::errors::Error;
+use crate::integrators::util::SecondOrderODE;
 use crate::prelude::KeteResult;
-use crate::propagation::util::SecondOrderODE;
 use crate::time::{TDB, Time};
 use nalgebra::allocator::Allocator;
 use nalgebra::{DefaultAllocator, Dim, Matrix, OVector, U1};
@@ -448,8 +448,8 @@ mod tests {
     use nalgebra::Vector3;
 
     use super::*;
-    use crate::propagation::analytic_2_body;
-    use crate::propagation::{CentralAccelMeta, central_accel};
+    use crate::forces::{CentralAccelMeta, central_accel};
+    use crate::kepler::analytic_2_body;
 
     /// Two-body orbit validated against the analytic Kepler solution.
     #[test]

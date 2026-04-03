@@ -1,8 +1,8 @@
 //! Python support for orbital elements
-use kete_core::constants::{GMS_SQRT, GravParams};
 use kete_core::elements;
 use kete_core::frames::Ecliptic;
 use kete_core::prelude;
+use kete_core::{constants::GMS_SQRT, forces::GravParams};
 use pyo3::{PyResult, pyclass, pymethods};
 
 use crate::{state::PyState, time::PyTime};

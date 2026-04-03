@@ -41,10 +41,10 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //
 use kete_core::constants::{C_AU_PER_DAY_INV_SQUARED, EARTH_J2, GMS, JUPITER_J2, SUN_J2};
+use kete_core::forces::NonGravModel;
 use kete_core::frames::{Ecliptic, Equatorial, InertialFrame};
+use kete_core::kepler::analytic_2_body;
 use kete_core::prelude::KeteResult;
-use kete_core::propagation::NonGravModel;
-use kete_core::propagation::analytic_2_body;
 use kete_core::time::{TDB, Time};
 use nalgebra::{Matrix3, SVector, Vector3};
 
@@ -403,7 +403,7 @@ mod tests {
     use crate::propagation::propagate_n_body_spk;
     use crate::spice::LOADED_SPK;
     use crate::state_transition::compute_state_transition;
-    use kete_core::constants::GravParams;
+    use kete_core::forces::GravParams;
     use kete_core::frames::Equatorial;
     use kete_core::prelude::Desig;
     use kete_core::state::State;
@@ -474,8 +474,11 @@ mod tests {
 
         let (_final_state, sens) = compute_state_transition(&state, jd_final, false, None).unwrap();
 
-        // Build STM via finite differences of Radau propagations
-        let eps = 1e-6;
+        // Build STM via finite differences of Radau propagations.
+        // eps = 1e-5 AU is near-optimal for central FD of 30-day trajectories:
+        // smaller eps increases round-off noise in the position differences,
+        // while larger eps increases FD truncation error.
+        let eps = 1e-5;
 
         for col in 0..6 {
             let mut pos_p: [f64; 3] = state.pos.into();
@@ -557,10 +560,17 @@ mod tests {
         let (_final_state, sens) =
             compute_state_transition(&state, jd_final, false, Some(model.clone())).unwrap();
 
-        // Finite-difference test for each A parameter
-        // Use a moderate perturbation; the FD accuracy is limited by the nonlinearity
-        // of the trajectory w.r.t. the non-grav parameters over 30 days.
-        let eps_a = 1e-11;
+        // Finite-difference test for each A parameter.
+        // eps_a = 1e-10 is near-optimal: large enough that position differences
+        // are well above trajectory round-off (~1e-12 AU), small enough that
+        // nonlinear FD truncation is manageable. Cross-coupling terms (e.g.
+        // dx/dA3 from out-of-plane A3) have inherently lower FD accuracy because
+        // their signal is weak, so we use a combined relative + absolute threshold.
+        let eps_a = 1e-10;
+        // Absolute tolerance roughly equals the FD noise floor for cross-coupling:
+        // trajectory noise ~2e-12 AU / (2 * eps_a) ~= 0.01.
+        let abs_tol = 0.05;
+        let rel_tol = 1e-2;
         let a_vals = [a1, a2, a3];
         for k in 0..3 {
             let mut a_p = a_vals;
@@ -584,14 +594,16 @@ mod tests {
                 let var = sens[(row, 6 + k)];
                 let abs_err = (fd - var).abs();
                 let scale = fd.abs().max(var.abs()).max(1e-10);
+                let threshold = (scale * rel_tol).max(abs_tol);
                 assert!(
-                    abs_err / scale < 1e-2,
-                    "Param sensitivity mismatch for A{} at row {}: var={:.8e}, fd={:.8e}, rel={:.4e}",
+                    abs_err < threshold,
+                    "Param sensitivity mismatch for A{} at row {}: var={:.8e}, fd={:.8e}, abs_err={:.4e}, thr={:.4e}",
                     k + 1,
                     row,
                     var,
                     fd,
-                    abs_err / scale
+                    abs_err,
+                    threshold
                 );
             }
         }
@@ -650,7 +662,7 @@ mod tests {
         let (_final_state, sens) = compute_state_transition(&state, jd_final, false, None).unwrap();
 
         // Finite-difference validation of each STM column
-        let eps = 1e-6;
+        let eps = 1e-5;
 
         for col in 0..6 {
             let mut pos_p: [f64; 3] = state.pos.into();

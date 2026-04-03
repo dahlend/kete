@@ -1,7 +1,7 @@
 //! Python support for non-gravitational forces
 use std::collections::HashMap;
 
-use kete_core::{errors::Error, propagation::NonGravModel};
+use kete_core::{errors::Error, forces::NonGravModel};
 use pyo3::{PyResult, exceptions::PyValueError, pyclass, pymethods};
 
 /// Non-gravitational force models.

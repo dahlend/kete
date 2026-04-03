@@ -33,7 +33,7 @@ use pathfinding::num_traits::Zero;
 
 use crate::constants::{C_AU_PER_DAY_INV_SQUARED, GMS};
 
-use super::analytic_2_body;
+use crate::kepler::analytic_2_body;
 
 /// Non-Gravitational models.
 /// These are used during integration to model non-gravitational forces on particles in
