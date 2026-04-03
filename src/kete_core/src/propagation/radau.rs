@@ -1,5 +1,5 @@
-/// Gauss-Radau Spacing Numerical Integrator
-/// This solves a second-order initial value problem.
+//! Gauss-Radau Spacing Numerical Integrator
+//! This solves a second-order initial value problem.
 // BSD 3-Clause License
 //
 // Copyright (c) 2026, Dar Dahlen
@@ -133,8 +133,8 @@ const MIN_STEP: f64 = 0.005;
 /// This uses the 15th-order integrator as seen in the original RADAU code, however
 /// many changes and improvements have been made. Some variable names have been chosen
 /// to match the original Fortran implementation. After some experimentation it was
-/// found that the correction and prediction steps turned out to in general help such to
-/// a small degree that they were not worth the added complexity.
+/// found that the correction and prediction steps turned out to help to such a small
+/// degree in general that they were not worth the added complexity.
 #[allow(missing_debug_implementations, reason = "No debug impl needed")]
 pub struct RadauIntegrator<'a, MType, D: Dim>
 where
@@ -240,6 +240,16 @@ where
                 integrator.metadata,
             ));
         }
+        // Allow callers to control convergence using a subset of dimensions.
+        integrator.control_dim = control_dim.unwrap_or(integrator.control_dim);
+        if integrator.control_dim > integrator.cur_state.len() {
+            return Err(Error::ValueError(format!(
+                "control_dim ({}) exceeds state dimension ({})",
+                integrator.control_dim,
+                integrator.cur_state.len(),
+            )))?;
+        }
+
         let mut next_step_size: f64 = {
             // Estimate a reasonable first step from the initial acceleration.
             // h0 = min(0.1, (epsilon / |a0|)^(1/3)) keeps the first step's
@@ -258,16 +268,6 @@ where
             };
             h0.copysign((integrator.final_time - integrator.cur_time).elapsed)
         };
-
-        // Allow callers to control convergence using a subset of dimensions.
-        integrator.control_dim = control_dim.unwrap_or(integrator.control_dim);
-        if integrator.control_dim > integrator.cur_state.len() {
-            return Err(Error::ValueError(format!(
-                "control_dim ({}) exceeds state dimension ({})",
-                integrator.control_dim,
-                integrator.cur_state.len(),
-            )))?;
-        }
 
         let mut step_failures = 0;
         loop {
@@ -307,10 +307,11 @@ where
         }
     }
 
-    /// If this function fails, then the step guess is almost certainly too large.
+    /// Attempt a single integration step of size `step_size`.
     ///
-    /// This function will update the current b matrices to be correct for the
-    /// step guess provided.
+    /// Returns the recommended next step size on success.  Failure can occur
+    /// if the step size is too large for convergence, or if the ODE function
+    /// itself returns an error.
     ///
     fn step(&mut self, step_size: f64) -> KeteResult<f64> {
         self.g_scratch.fill(0.0);
@@ -384,8 +385,8 @@ where
                 });
             }
 
-            // Compute the largest b value and compare it to the last b value.
-            // convergence is decided if B stops changing.
+            // Update B from G via the C matrix, then check relative
+            // convergence: B has converged when max(|delta_b| / |a|) < 1e-14.
             self.g_scratch.mul_to(&C_MAT, &mut self.cur_b);
             let b_diff = (self.cur_b.column(6) - &self.b_scratch).abs();
             let func_eval_max = self.eval_scratch.abs().add_scalar(1e-6);

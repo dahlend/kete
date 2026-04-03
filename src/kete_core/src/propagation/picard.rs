@@ -1,30 +1,28 @@
-/// # Picard-Chebyshev Numerical Integrator
-///
-/// First Order ODE Integrator.
-///
-/// This is based on a whole slew of papers, though this implementation leans heavily
-/// on the algorithm described in:
-///
-/// "Surfing Chaotic Perturbations in Interplanetary Multi-Flyby Trajectories:
-/// Augmented Picard-Chebyshev Integration for Parallel and GPU Computing
-/// Architectures", 2022, `<https://doi.org/10.2514/6.2022-1275>`
-///
-/// Though that paper appears to have a typo in its `A` matrix definition, so some of
-/// the thesis written by Darin Koblick "Parallel High-Precision Orbit Propagation
-/// Using The Modified Picard-Chebyshev Method", 2012
-/// was used to correct the matrix definition.
-///
-/// This is not a GPU implementation, though some small simplifications were applied to
-/// the mathematics. This implementation is designed to reduce the total number of
-/// SPICE kernel calls to a minimum, as it was found that the Radau integration time
-/// was dominated by these queries.
-///
-/// Since this integrator fits Chebyshev polynomials at the same time that it performs
-/// the integration, the integrator is designed to record the polynomial coefficients.
-/// These are stored in the [`PicardStep`], which exposes a function allowing the
-/// user to query the state of the system at any point between the start of the
-/// integration and the end.
-///
+//! # Picard-Chebyshev Numerical Integrator
+//!
+//! Integrator for first- and second-order ODEs.
+//!
+//! This is based on a whole slew of papers, though this implementation leans heavily
+//! on the algorithm described in:
+//!
+//! "Surfing Chaotic Perturbations in Interplanetary Multi-Flyby Trajectories:
+//! Augmented Picard-Chebyshev Integration for Parallel and GPU Computing
+//! Architectures", 2022, `<https://doi.org/10.2514/6.2022-1275>`
+//!
+//! Though that paper appears to have a typo in its `A` matrix definition, so some of
+//! the thesis written by Darin Koblick "Parallel High-Precision Orbit Propagation
+//! Using The Modified Picard-Chebyshev Method", 2012
+//! was used to correct the matrix definition.
+//!
+//! This is not a GPU implementation, though some small simplifications were applied to
+//! the mathematics.
+//!
+//! Since this integrator fits Chebyshev polynomials at the same time that it performs
+//! the integration, the integrator is designed to record the polynomial coefficients.
+//! These are stored in [`PicardStep`] (first-order) or [`PicardStepSecondOrder`]
+//! (second-order), which expose functions allowing the user to query the state of the
+//! system at any point between the start and end of the integration.
+//!
 // BSD 3-Clause License
 //
 // Copyright (c) 2026, Dar Dahlen
@@ -138,14 +136,15 @@ pub fn dumb_picard_init_second_order<const DIM: usize, const N: usize>(
 /// state at any point along the integration.
 ///
 /// This integrator has a set of matrices which are pre-computed and stored.
-/// It is recommended to use one of the pre-build integrators [`PC15`] or [`PC25`] to
+/// It is recommended to use one of the pre-built integrators [`PC15`] or [`PC25`] to
 /// avoid having to reconstruct these matrices every time the integrator is used.
 ///
 /// The mathematics for this integrator can be found in a number of papers, but
 /// `<https://doi.org/10.2514/6.2022-1275>` is a good place to start.
 ///
-/// The primary entry-point for the integrator is the [`PicardIntegrator::integrate`]
-/// function. See that function for more details on its use.
+/// The primary entry-point for first-order ODEs is [`PicardIntegrator::integrate`],
+/// and for second-order ODEs is [`PicardIntegrator::integrate_second_order`].
+/// See those functions for more details on their use.
 ///
 #[derive(Debug, Clone)]
 pub struct PicardIntegrator<const N: usize, const NM1: usize> {
