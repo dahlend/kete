@@ -16,7 +16,7 @@ use kete_core::time::{TDB, Time};
 use crate::spice::{LOADED_SPK, SpkCollection};
 
 use itertools::Itertools;
-use nalgebra::{DVector, SMatrix, SVector, Vector3};
+use nalgebra::{DVector, SMatrix, Vector3};
 use rayon::prelude::*;
 
 /// Metadata for the [`spk_accel`] function.
@@ -140,29 +140,6 @@ pub(crate) fn spk_accel_cached(
     Ok(accel)
 }
 
-/// Convert the second order ODE acceleration function into a first order.
-/// This allows the second order ODE to be used with the picard integrator.
-///
-/// The `state_vec` is made up of concatenated position and velocity vectors.
-/// Otherwise this is just a thin wrapper over the [`spk_accel`] function.
-///
-/// # Errors
-/// Fails when SPK queries fail.
-pub fn spk_accel_first_order(
-    time: Time<TDB>,
-    state_vec: &SVector<f64, 6>,
-    meta: &mut AccelSPKMeta<'_>,
-    exact_eval: bool,
-) -> KeteResult<SVector<f64, 6>> {
-    let pos: Vector3<f64> = state_vec.fixed_rows::<3>(0).into();
-    let vel: Vector3<f64> = state_vec.fixed_rows::<3>(3).into();
-    let accel = spk_accel(time, &pos, &vel, meta, exact_eval)?;
-    let mut res = SVector::<f64, 6>::zeros();
-    res.fixed_rows_mut::<3>(0).set_column(0, &vel);
-    res.fixed_rows_mut::<3>(3).set_column(0, &accel);
-    Ok(res)
-}
-
 /// Propagate an object using full N-Body physics with the Radau 15th order integrator.
 ///
 /// # Errors
@@ -269,28 +246,27 @@ pub fn propagation_n_body_spk_par(
     SimultaneousStates::new_exact(res?, None)
 }
 
-/// Initialization function for the picard integrator which initializes the state
-/// using two body mechanics.
-fn picard_two_body_init<const N: usize>(
+/// Initialization function for the second-order picard integrator which initializes
+/// the state using two body mechanics.
+fn picard_two_body_init_second_order<const N: usize>(
     times: &[Time<TDB>; N],
-    init_pos: &SVector<f64, 6>,
-) -> SMatrix<f64, 6, N> {
-    let pos: Vector3<f64> = init_pos.fixed_rows::<3>(0).into();
-    let vel: Vector3<f64> = init_pos.fixed_rows::<3>(3).into();
+    init_pos: &Vector3<f64>,
+    init_vel: &Vector3<f64>,
+) -> (SMatrix<f64, 3, N>, SMatrix<f64, 3, N>) {
     let t0 = times[0];
 
-    let mut res: SMatrix<f64, 6, N> = SMatrix::zeros();
-    res.fixed_rows_mut::<3>(0).set_column(0, &pos);
-    res.fixed_rows_mut::<3>(3).set_column(0, &vel);
+    let mut pos_mat: SMatrix<f64, 3, N> = SMatrix::zeros();
+    let mut vel_mat: SMatrix<f64, 3, N> = SMatrix::zeros();
+    pos_mat.set_column(0, init_pos);
+    vel_mat.set_column(0, init_vel);
 
     for (idx, t) in times.iter().enumerate().skip(1) {
         let dt = *t - t0;
-        let (p, v) = analytic_2_body(dt, &pos, &vel, None).unwrap();
-
-        res.fixed_rows_mut::<3>(0).set_column(idx, &p);
-        res.fixed_rows_mut::<3>(3).set_column(idx, &v);
+        let (p, v) = analytic_2_body(dt, init_pos, init_vel, None).unwrap();
+        pos_mat.set_column(idx, &p);
+        vel_mat.set_column(idx, &v);
     }
-    res
+    (pos_mat, vel_mat)
 }
 
 /// Propagate an object using the Picard integrator with full N-Body physics.
@@ -324,28 +300,16 @@ pub fn propagate_picard_n_body_spk(
 
     let integrator = &PC15;
 
-    let mut state_vec = SVector::<f64, 6>::zeros();
-    state_vec
-        .fixed_rows_mut::<3>(0)
-        .set_column(0, &state.pos.into());
-    state_vec
-        .fixed_rows_mut::<3>(3)
-        .set_column(0, &state.vel.into());
-
-    let final_state_vec = {
-        integrator.integrate(
-            &spk_accel_first_order,
-            &picard_two_body_init,
-            state_vec,
-            state.epoch,
-            jd_final,
-            1.0,
-            &mut metadata,
-        )?
-    };
-
-    let pos: Vector3<f64> = final_state_vec.fixed_rows::<3>(0).into();
-    let vel: Vector3<f64> = final_state_vec.fixed_rows::<3>(3).into();
+    let (pos, vel) = integrator.integrate_second_order(
+        &spk_accel,
+        &picard_two_body_init_second_order,
+        state.pos.into(),
+        state.vel.into(),
+        state.epoch,
+        jd_final,
+        1.0,
+        &mut metadata,
+    )?;
 
     let mut new_state = State::new(state.desig.clone(), jd_final, pos.into(), vel.into(), 0);
     spk.try_change_center(&mut new_state, center)?;
