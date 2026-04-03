@@ -69,6 +69,9 @@ pub struct CentralAccelMeta {
 
     /// Scaling factor for central mass.
     pub mass_scaling: f64,
+
+    /// Total number of function evaluations.
+    pub eval_count: usize,
 }
 
 impl Default for CentralAccelMeta {
@@ -78,6 +81,7 @@ impl Default for CentralAccelMeta {
             pos: Vec::new(),
             vel: Vec::new(),
             mass_scaling: 1.0,
+            eval_count: 0,
         }
     }
 }
@@ -103,6 +107,7 @@ pub fn central_accel(
     meta: &mut CentralAccelMeta,
     exact_eval: bool,
 ) -> KeteResult<Vector3<f64>> {
+    meta.eval_count += 1;
     if exact_eval {
         meta.times.push(time);
         meta.pos.push(*pos);
