@@ -33,6 +33,8 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 mod acceleration;
+mod bulirsch_stoer;
+mod gauss_jackson;
 mod kepler;
 mod nongrav;
 mod picard;
@@ -43,6 +45,8 @@ mod util;
 pub use acceleration::{
     AccelVecMeta, CentralAccelMeta, accel_grad, central_accel, central_accel_grad, vec_accel,
 };
+pub use bulirsch_stoer::BulirschStoerIntegrator;
+pub use gauss_jackson::GaussJacksonIntegrator;
 pub use kepler::{
     PARABOLIC_ECC_LIMIT, analytic_2_body, analytic_2_body_stm, compute_eccentric_anomaly,
     compute_true_anomaly, eccentric_anomaly_from_true, light_time_correct, moid,
@@ -50,8 +54,11 @@ pub use kepler::{
 };
 pub use nongrav::NonGravModel;
 pub use picard::{
-PC15, PC25, PicardIntegrator, PicardStep, PicardStepSecondOrder, dumb_picard_init,
-dumb_picard_init_second_order,
+    PC15, PC25, PicardIntegrator, PicardStep, PicardStepSecondOrder, dumb_picard_init,
+    dumb_picard_init_second_order,
 };
 pub use radau::RadauIntegrator;
 pub use runge_kutta::RK45Integrator;
+
+#[cfg(test)]
+mod stress_tests;
