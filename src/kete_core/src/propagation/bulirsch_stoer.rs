@@ -1,6 +1,6 @@
-/// Gragg-Bulirsch-Stoer Extrapolation Integrator.
-/// This solves a second-order initial value problem using modified midpoint
-/// (Stoermer form) with Richardson extrapolation.
+//! Gragg-Bulirsch-Stoer Extrapolation Integrator.
+//! This solves a second-order initial value problem using modified midpoint
+//! (Stoermer form) with Richardson extrapolation.
 // BSD 3-Clause License
 //
 // Copyright (c) 2026, Dar Dahlen
@@ -41,7 +41,7 @@ type BSResult<MType, D> = KeteResult<(OVector<f64, D>, OVector<f64, D>, MType)>;
 
 // Relative tolerance target for the local extrapolation error estimate.
 // The increment-based modified midpoint lowers the roundoff floor, allowing
-// a tighter tolerance than the previous 1e-13.
+// a tighter tolerance.
 const RTOL: f64 = 1e-14;
 
 // Floor value added to scaling denominator to prevent division by zero when

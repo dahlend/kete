@@ -1,9 +1,9 @@
-/// Gauss-Jackson (Stoermer-Cowell) 8th-order multi-step integrator.
-///
-/// This is a fixed-step predictor-corrector method optimized for second-order
-/// ODEs where the force depends on position (and optionally velocity). It uses
-/// one force evaluation per step, making it ideal when the Moon or other
-/// short-period bodies force small step sizes regardless of orbit eccentricity.
+//! Gauss-Jackson (Stoermer-Cowell) 8th-order multi-step integrator.
+//!
+//! This is a fixed-step predictor-corrector method optimized for second-order
+//! ODEs where the force depends on position (and optionally velocity). It uses
+//! one force evaluation per step.
+//!
 // BSD 3-Clause License
 //
 // Copyright (c) 2026, Dar Dahlen
@@ -120,14 +120,16 @@ const AM: [f64; ORDER] = [
 ///
 /// The method requires ORDER = 8 back-values of the acceleration. These are
 /// generated during a bootstrap phase using the Radau integrator, which
-/// provides the startup values at machine precision.
+/// provides the startup values.
 ///
 /// Compensated (Kahan) summation is used for both position and velocity
 /// updates to limit roundoff growth over million-step integrations.
 ///
-/// This method uses exactly one force evaluation per accepted step (after
+/// This method typically uses one force evaluation per accepted step (after
 /// the bootstrap), making it extremely efficient when the step size is
 /// constrained by short-period bodies (e.g., the Moon's 27-day orbit).
+/// The corrector can iterate up to [`MAX_CORRECTOR_ITER`] times if needed,
+/// but in practice it nearly always converges on the first pass.
 ///
 /// References:
 /// - Berry, Healy (2004): "Implementation of Gauss-Jackson Integration

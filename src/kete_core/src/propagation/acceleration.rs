@@ -4,14 +4,15 @@
 //!
 //! There are several functions defined here, which enable various levels of accuracy.
 //!
-//! These functions have a strict function signature, which is defined inside of the
-//! radau integrator class. This function signature contains 4 terms:
+//! These functions have a strict function signature, defined as [`SecondOrderODE`] in
+//! the [`util`] module. This function signature contains 5 terms:
 //!
-//! `(time, x, x_der, &mut MetaData, exact_eval) -> NeosResult<x_der_der>`
+//! `(time, x, x_der, &mut MetaData, exact_eval) -> KeteResult<x_der_der>`
 //!
 //! Where `x` and its derivative `x_der` are vectors. This also accepts a mutable
 //! reference to a metadata collection. Metadata may include things like object
 //! specific orbit parameters such as the non-grav terms, or keep track of close
+//! encounters.
 //!
 //! `exact_eval` is a bool which is passed when the integrator is passing values where
 //! the `x` and `x_der` are being evaluated at true locations. IE: where the integrator
