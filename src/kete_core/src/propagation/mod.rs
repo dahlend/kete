@@ -49,6 +49,9 @@ pub use kepler::{
     propagate_two_body,
 };
 pub use nongrav::NonGravModel;
-pub use picard::{PC15, PC25, PicardIntegrator, PicardStep, dumb_picard_init};
+pub use picard::{
+PC15, PC25, PicardIntegrator, PicardStep, PicardStepSecondOrder, dumb_picard_init,
+dumb_picard_init_second_order,
+};
 pub use radau::RadauIntegrator;
 pub use runge_kutta::RK45Integrator;
