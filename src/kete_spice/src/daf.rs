@@ -117,9 +117,6 @@ pub struct DafFile {
     /// Number of chars in the descriptor string of each array.
     pub n_chars: i32,
 
-    /// Is the file little endian.
-    pub little_endian: bool,
-
     /// Internal Descriptor.
     pub internal_desc: String,
 
@@ -190,19 +187,26 @@ impl DafFile {
                 "Expected little or big endian in DAF file, found neither".into(),
             ))?,
         };
+        if !little_endian {
+            return Err(Error::IOError(
+                "Big-endian DAF files are not supported. \
+                 Use the NAIF `bingo` utility to convert to little-endian."
+                    .into(),
+            ));
+        }
 
-        let n_doubles = bytes_to_i32(&bytes[8..12], little_endian)?;
-        let n_ints = bytes_to_i32(&bytes[12..16], little_endian)?;
+        let n_doubles = bytes_to_i32(&bytes[8..12])?;
+        let n_ints = bytes_to_i32(&bytes[12..16])?;
         let n_chars = 8 * (n_doubles + (n_ints + 1) / 2);
 
         // record index of the first summary record in the file
         // records are 1024 long, and 1 indexed because fortran.
-        let init_summary_record_index = bytes_to_i32(&bytes[76..80], little_endian)?.abs();
+        let init_summary_record_index = bytes_to_i32(&bytes[76..80])?.abs();
 
         // the following values are not used, so are not stored.
         let internal_desc = bytes_to_string(&bytes[16..76]);
-        let final_summary_record_index = bytes_to_i32(&bytes[80..84], little_endian)?;
-        let first_free = bytes_to_i32(&bytes[84..88], little_endian)?;
+        let final_summary_record_index = bytes_to_i32(&bytes[80..84])?;
+        let first_free = bytes_to_i32(&bytes[84..88])?;
 
         let ftp_validation_str = bytes_to_string(&bytes[699..699 + 28]);
 
@@ -234,7 +238,6 @@ impl DafFile {
             n_doubles,
             n_ints,
             n_chars,
-            little_endian,
             internal_desc,
             init_summary_record_index,
             final_summary_record_index,
@@ -277,7 +280,6 @@ impl DafFile {
             n_doubles: 2,
             n_ints: 6,
             n_chars: 40,
-            little_endian: true,
             internal_desc: internal_desc.to_string(),
             init_summary_record_index: 0,
             final_summary_record_index: 0,
@@ -299,7 +301,6 @@ impl DafFile {
             n_doubles: 2,
             n_ints: 5,
             n_chars: 40,
-            little_endian: true,
             internal_desc: internal_desc.to_string(),
             init_summary_record_index: 0,
             final_summary_record_index: 0,
@@ -321,7 +322,6 @@ impl DafFile {
             n_doubles: 2,
             n_ints: 6,
             n_chars: 40,
-            little_endian: true,
             internal_desc: internal_desc.to_string(),
             init_summary_record_index: 0,
             final_summary_record_index: 0,
@@ -364,8 +364,6 @@ impl DafFile {
             0x10, 0xCE, 0x3A, // 0x10 0xCE:
             0x45, 0x4E, 0x44, 0x46, 0x54, 0x50, // ENDFTP
         ];
-
-        let le = self.little_endian;
 
         // --- Comment area ---
         // Convert comment text: newlines -> \x00 separators, append \x04 EOT.
@@ -447,17 +445,17 @@ impl DafFile {
         // Magic: "DAF/XXX "
         rec[0..8].copy_from_slice(&self.daf_type.magic_bytes());
         // ND, NI
-        rec[8..12].copy_from_slice(&i32_to_bytes(self.n_doubles, le));
-        rec[12..16].copy_from_slice(&i32_to_bytes(self.n_ints, le));
+        rec[8..12].copy_from_slice(&i32_to_bytes(self.n_doubles));
+        rec[12..16].copy_from_slice(&i32_to_bytes(self.n_ints));
         // Internal filename (60 chars, space-padded)
         let desc_bytes = string_to_padded_bytes(&self.internal_desc, 60);
         rec[16..76].copy_from_slice(&desc_bytes);
         // FWARD, BWARD, FREE
-        rec[76..80].copy_from_slice(&i32_to_bytes(fward, le));
-        rec[80..84].copy_from_slice(&i32_to_bytes(bward, le));
-        rec[84..88].copy_from_slice(&i32_to_bytes(free, le));
+        rec[76..80].copy_from_slice(&i32_to_bytes(fward));
+        rec[80..84].copy_from_slice(&i32_to_bytes(bward));
+        rec[84..88].copy_from_slice(&i32_to_bytes(free));
         // Endianness string
-        let endian_str = if le { "LTL-IEEE" } else { "BIG-IEEE" };
+        let endian_str = "LTL-IEEE";
         rec[88..96].copy_from_slice(endian_str.as_bytes());
         // FTPSTR at offset 699
         rec[699..727].copy_from_slice(&FTPSTR);
@@ -515,13 +513,13 @@ impl DafFile {
             } else {
                 0.0
             };
-            srec[0..8].copy_from_slice(&f64_vec_to_bytes(&[next_sr], le));
-            srec[8..16].copy_from_slice(&f64_vec_to_bytes(&[prev_sr], le));
-            srec[16..24].copy_from_slice(&f64_vec_to_bytes(&[count as f64], le));
+            srec[0..8].copy_from_slice(f64_vec_to_bytes(&[next_sr]));
+            srec[8..16].copy_from_slice(f64_vec_to_bytes(&[prev_sr]));
+            srec[16..24].copy_from_slice(f64_vec_to_bytes(&[count as f64]));
 
             for j in 0..count {
                 let (a_start, a_end) = all_addresses[arr_idx];
-                let summary = self.arrays[arr_idx].summary_to_bytes(a_start, a_end, le);
+                let summary = self.arrays[arr_idx].summary_to_bytes(a_start, a_end);
                 // Use word-aligned stride for summary placement in record.
                 let s_off = 24 + j * summary_stride;
                 srec[s_off..s_off + summary_bytes].copy_from_slice(&summary);
@@ -539,7 +537,7 @@ impl DafFile {
 
             // --- Data for this batch's segments ---
             for j in 0..count {
-                w.write_all(&self.arrays[arr_idx - count + j].data_to_bytes(le))?;
+                w.write_all(self.arrays[arr_idx - count + j].data_to_bytes())?;
             }
 
             // Pad to record boundary after each batch.
@@ -606,9 +604,9 @@ impl DafFile {
             let current_idx = next_idx;
             let bytes = Self::try_load_record(file, current_idx as u64)?;
 
-            next_idx = bytes_to_f64(&bytes[0..8], self.little_endian)? as i32;
-            // let prev_idx = bytes_to_f64(&bytes[8..16], daf.little_endian)? as i32;
-            let n_summaries = bytes_to_f64(&bytes[16..24], self.little_endian)? as i32;
+            next_idx = bytes_to_f64(&bytes[0..8])? as i32;
+            // let prev_idx = bytes_to_f64(&bytes[8..16])? as i32;
+            let n_summaries = bytes_to_f64(&bytes[16..24])? as i32;
 
             // Name record immediately follows each summary record.
             let name_bytes = Self::try_load_record(file, (current_idx + 1) as u64)?;
@@ -619,14 +617,11 @@ impl DafFile {
 
             for idy in 0..n_summaries {
                 let sum_start = (3 * 8 + idy * summary_size * 8) as usize;
-                let floats = bytes_to_f64_vec(
-                    &bytes[sum_start..sum_start + 8 * self.n_doubles as usize],
-                    self.little_endian,
-                )?;
+                let floats =
+                    bytes_to_f64_vec(&bytes[sum_start..sum_start + 8 * self.n_doubles as usize])?;
                 let ints = bytes_to_i32_vec(
                     &bytes[sum_start + 8 * self.n_doubles as usize
                         ..sum_start + (8 * self.n_doubles + 4 * self.n_ints) as usize],
-                    self.little_endian,
                 )?;
 
                 // Extract segment name from name record.
@@ -636,14 +631,7 @@ impl DafFile {
                     .trim()
                     .to_string();
 
-                let array = DafArray::try_load_array(
-                    file,
-                    floats,
-                    ints,
-                    self.daf_type,
-                    self.little_endian,
-                    name,
-                );
+                let array = DafArray::try_load_array(file, floats, ints, self.daf_type, name);
                 self.arrays.push(array?);
             }
         }
@@ -692,7 +680,6 @@ impl DafArray {
         summary_floats: Box<[f64]>,
         summary_ints: Box<[i32]>,
         daf_type: DAFType,
-        little_endian: bool,
         name: String,
     ) -> KeteResult<Self> {
         let n_ints = summary_ints.len();
@@ -714,7 +701,7 @@ impl DafArray {
 
         let n_floats = (array_end - array_start + 1) as usize;
 
-        let data = read_f64_vec(buffer, n_floats, little_endian)?;
+        let data = read_f64_vec(buffer, n_floats)?;
 
         Ok(Self {
             summary_floats,
@@ -760,12 +747,7 @@ impl DafArray {
     /// double-precision addresses of the array data in the file; these are provided
     /// by the caller since they depend on file layout.
     #[must_use]
-    pub fn summary_to_bytes(
-        &self,
-        array_start: i32,
-        array_end: i32,
-        little_endian: bool,
-    ) -> Vec<u8> {
+    pub fn summary_to_bytes(&self, array_start: i32, array_end: i32) -> Vec<u8> {
         let n_ints = self.summary_ints.len();
         // Build a copy of summary_ints with the last two replaced by addresses.
         let mut ints = self.summary_ints.to_vec();
@@ -773,15 +755,15 @@ impl DafArray {
             ints[n_ints - 2] = array_start;
             ints[n_ints - 1] = array_end;
         }
-        let mut out = f64_vec_to_bytes(&self.summary_floats, little_endian);
-        out.extend_from_slice(&i32_vec_to_bytes(&ints, little_endian));
+        let mut out = f64_vec_to_bytes(&self.summary_floats).to_vec();
+        out.extend_from_slice(i32_vec_to_bytes(&ints));
         out
     }
 
-    /// Serialize the data array as bytes.
+    /// View the data array as bytes (zero-copy).
     #[must_use]
-    pub fn data_to_bytes(&self, little_endian: bool) -> Vec<u8> {
-        f64_vec_to_bytes(&self.data, little_endian)
+    pub fn data_to_bytes(&self) -> &[u8] {
+        f64_vec_to_bytes(&self.data)
     }
 }
 
@@ -831,18 +813,17 @@ mod tests {
         let data: Box<[f64]> = vec![99.0].into();
         let arr = DafArray::new(floats, ints, data, DAFType::Spk, String::new());
 
-        let le = true;
         let start_addr: i32 = 501;
         let end_addr: i32 = 501;
-        let bytes = arr.summary_to_bytes(start_addr, end_addr, le);
+        let bytes = arr.summary_to_bytes(start_addr, end_addr);
 
         // Parse back: 2 f64s then 6 i32s
-        let f0 = bytes_to_f64(&bytes[0..8], le).unwrap();
-        let f1 = bytes_to_f64(&bytes[8..16], le).unwrap();
+        let f0 = bytes_to_f64(&bytes[0..8]).unwrap();
+        let f1 = bytes_to_f64(&bytes[8..16]).unwrap();
         assert_eq!(f0, 1.5);
         assert_eq!(f1, 2.5);
 
-        let parsed_ints = bytes_to_i32_vec(&bytes[16..], le).unwrap();
+        let parsed_ints = bytes_to_i32_vec(&bytes[16..]).unwrap();
         assert_eq!(parsed_ints[0], 10);
         assert_eq!(parsed_ints[1], 20);
         assert_eq!(parsed_ints[2], 30);
@@ -862,26 +843,23 @@ mod tests {
             String::new(),
         );
 
-        for le in [true, false] {
-            let bytes = arr.data_to_bytes(le);
-            let back = bytes_to_f64_vec(&bytes, le).unwrap();
-            assert_eq!(&*back, &*data);
-        }
+        let bytes = arr.data_to_bytes();
+        let back = bytes_to_f64_vec(bytes).unwrap();
+        assert_eq!(&*back, &*data);
     }
 
     #[test]
-    fn daf_array_summary_big_endian() {
+    fn daf_array_summary_to_bytes() {
         let floats: Box<[f64]> = vec![10.0].into();
         let ints: Box<[i32]> = vec![5, 0, 0].into();
         let arr = DafArray::new(floats, ints, vec![].into(), DAFType::Pck, String::new());
 
-        let le = false;
-        let bytes = arr.summary_to_bytes(100, 200, le);
+        let bytes = arr.summary_to_bytes(100, 200);
 
-        let f0 = bytes_to_f64(&bytes[0..8], le).unwrap();
+        let f0 = bytes_to_f64(&bytes[0..8]).unwrap();
         assert_eq!(f0, 10.0);
 
-        let parsed_ints = bytes_to_i32_vec(&bytes[8..], le).unwrap();
+        let parsed_ints = bytes_to_i32_vec(&bytes[8..]).unwrap();
         assert_eq!(parsed_ints[0], 5);
         assert_eq!(parsed_ints[1], 100);
         assert_eq!(parsed_ints[2], 200);
@@ -921,7 +899,6 @@ mod tests {
         assert_eq!(read_back.daf_type, DAFType::Spk);
         assert_eq!(read_back.n_doubles, 2);
         assert_eq!(read_back.n_ints, 6);
-        assert!(read_back.little_endian);
         assert_eq!(read_back.internal_desc.trim(), "test_roundtrip");
         assert_eq!(read_back.comments, "a comment\nsecond line");
         assert_eq!(read_back.arrays.len(), 1);
