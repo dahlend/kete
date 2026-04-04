@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Added comprehensive MCMC thermal and reflected light fitting.
+- Added comprehensive MCMC based NEATM/FRM/HG flux fitting.
 - Added orbit determination, including Initial Orbit Determination (IOD), State
   Transition Matrices, and support for non-gravitational parameter fitting.
 
@@ -18,7 +18,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - API for NEATM/FRM and generally all flux functions were re-written to support the new
   fitting methods. No functionality was lost, but this was a significant restructuring.
+- Remove Bincode (the crate we were using for writing binary files of 
+  SimultaneousStates), this has been replaced with a custom format which should support
+  future improvements while being backward compatible.
+- Implemented several state of the art orbit integrators, tested them, found some small
+  improvements in radau, and found it out performed all others. These integrators have
+  been left in place but are not hooked up (for anyone who is curious).
+- Restructured kete_core `propagation` into `integrators` and `forces`.
+- Huge SPICE re-write, well not so much a re-write as a significant restructure and
+  adding support for writing spice files. This support currently only exists in the rust
+  backend, but may eventually make its way to the python.
+- Removed FOVList from the python front-end as it was dead weight.
 
+### Fixed
+- SPICE SPK Type 10 (used by hubble only as far as I know) uses a older time format
+  from modern TLEs, the kete implementation was using the modern standard leading to a
+  small (~10-20km) position offset in the modern era. This has been fixed.
+- Radau had poor initial starting step size for objects which were undergoing a close
+  encounter, this step size is now adaptive and performance in these edge cases is much
+  improved.
+- Two-body calculations got a once-over and they now are effectively unbiased and
+  accurate to within numerical machine precision, and are a tiny bit faster.
 
 ## [v2.1.6]
 
