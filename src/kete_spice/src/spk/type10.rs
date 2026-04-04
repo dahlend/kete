@@ -8,7 +8,10 @@ use itertools::Itertools;
 use kete_core::constants::AU_KM;
 use kete_core::errors::Error;
 use kete_core::prelude::KeteResult;
-use sgp4::{Constants, Geopotential, MinutesSinceEpoch, Orbit, julian_years_since_j2000};
+use sgp4::{
+    Constants, Geopotential, MinutesSinceEpoch, Orbit,
+    julian_years_since_j2000_afspc_compatibility_mode,
+};
 
 /// Space Command two-line elements
 ///
@@ -57,7 +60,7 @@ impl SpkSegmentType10 {
             _,
         ] = *rec;
 
-        let epoch = julian_years_since_j2000(
+        let epoch = julian_years_since_j2000_afspc_compatibility_mode(
             &spice_jd_to_jd(epoch)
                 .utc()
                 .to_datetime()
@@ -78,7 +81,7 @@ impl SpkSegmentType10 {
         .expect("Failed to load orbit values");
         Constants::new(
             self.geopotential,
-            sgp4::iau_epoch_to_sidereal_time,
+            sgp4::afspc_epoch_to_sidereal_time,
             epoch,
             b_star,
             orbit_0,
