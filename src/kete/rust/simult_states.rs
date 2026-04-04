@@ -8,7 +8,7 @@ use kete_core::fov::FovLike;
 use kete_core::simult_states::SimultaneousStates;
 use kete_core::time::TDB;
 use kete_core::time::Time;
-use kete_spice::spice::LOADED_SPK;
+use kete_spice::prelude::LOADED_SPK;
 use pyo3::exceptions;
 use pyo3::prelude::*;
 use pyo3::{PyResult, pyclass, pymethods};

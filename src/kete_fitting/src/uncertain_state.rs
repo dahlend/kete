@@ -32,9 +32,9 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use kete_core::elements::CometElements;
+use kete_core::forces::NonGravModel;
 use kete_core::frames::Equatorial;
 use kete_core::prelude::{Error, KeteResult, State};
-use kete_core::propagation::NonGravModel;
 use nalgebra::DMatrix;
 use rand::SeedableRng;
 use rand_distr::{Distribution, StandardNormal};

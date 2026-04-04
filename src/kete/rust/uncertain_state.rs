@@ -10,7 +10,7 @@ use crate::state::PyState;
 use crate::time::PyTime;
 use kete_core::prelude::*;
 use kete_fitting::UncertainState;
-use kete_spice::spice::LOADED_SPK;
+use kete_spice::spk::LOADED_SPK;
 use nalgebra::DMatrix;
 use pyo3::prelude::*;
 

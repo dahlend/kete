@@ -4,14 +4,16 @@
 //!
 //! There are several functions defined here, which enable various levels of accuracy.
 //!
-//! These functions have a strict function signature, which is defined inside of the
-//! radau integrator class. This function signature contains 4 terms:
+//! These functions have a strict function signature, defined as
+//! `SecondOrderODE`.
+//! This function signature contains 5 terms:
 //!
-//! `(time, x, x_der, &mut MetaData, exact_eval) -> NeosResult<x_der_der>`
+//! `(time, x, x_der, &mut MetaData, exact_eval) -> KeteResult<x_der_der>`
 //!
 //! Where `x` and its derivative `x_der` are vectors. This also accepts a mutable
 //! reference to a metadata collection. Metadata may include things like object
 //! specific orbit parameters such as the non-grav terms, or keep track of close
+//! encounters.
 //!
 //! `exact_eval` is a bool which is passed when the integrator is passing values where
 //! the `x` and `x_der` are being evaluated at true locations. IE: where the integrator
@@ -48,15 +50,16 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+use crate::forces::GravParams;
 use crate::prelude::KeteResult;
 use crate::time::{TDB, Time};
-use crate::{constants, errors::Error, propagation::nongrav::NonGravModel};
+use crate::{constants, errors::Error, forces::nongrav::NonGravModel};
 use nalgebra::allocator::Allocator;
 use nalgebra::{DefaultAllocator, Dim, Matrix3, OVector, U1, U2, Vector3};
 use std::ops::AddAssign;
 
 /// Metadata object used by the [`central_accel`] function below.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CentralAccelMeta {
     /// A vector of times where the central accel function was evaluated at.
     pub times: Vec<Time<TDB>>,
@@ -69,6 +72,9 @@ pub struct CentralAccelMeta {
 
     /// Scaling factor for central mass.
     pub mass_scaling: f64,
+
+    /// Total number of function evaluations.
+    pub eval_count: usize,
 }
 
 impl Default for CentralAccelMeta {
@@ -78,6 +84,7 @@ impl Default for CentralAccelMeta {
             pos: Vec::new(),
             vel: Vec::new(),
             mass_scaling: 1.0,
+            eval_count: 0,
         }
     }
 }
@@ -103,6 +110,7 @@ pub fn central_accel(
     meta: &mut CentralAccelMeta,
     exact_eval: bool,
 ) -> KeteResult<Vector3<f64>> {
+    meta.eval_count += 1;
     if exact_eval {
         meta.times.push(time);
         meta.pos.push(*pos);
@@ -124,7 +132,7 @@ pub struct AccelVecMeta<'a> {
     /// This list contains the ID of the object in the SPK along with the mass and
     /// radius of the object. Mass is given in fractions of solar mass and radius is
     /// in AU.
-    pub massive_obj: &'a [constants::GravParams],
+    pub massive_obj: &'a [GravParams],
 }
 
 /// Compute the accel on an object which experiences acceleration due to all massive

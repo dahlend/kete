@@ -1,31 +1,28 @@
 //! SPK-dependent propagation functions.
 //!
 //! These functions require loaded SPICE kernels (SPK files) to query planet states.
-//! Pure math propagation functions remain in `kete_core::propagation`.
+//! Pure math integrators and force models remain in `kete_core::integrators`,
+//! `kete_core::forces`, and `kete_core::kepler`.
 
-use kete_core::constants::GravParams;
 use kete_core::errors::Error;
+use kete_core::forces::GravParams;
+use kete_core::forces::{AccelVecMeta, NonGravModel, vec_accel};
 use kete_core::frames::Equatorial;
+use kete_core::integrators::{PC15, RadauIntegrator};
+use kete_core::kepler::analytic_2_body;
 use kete_core::prelude::{Desig, KeteResult, SimultaneousStates};
-use kete_core::propagation::{
-    AccelVecMeta, NonGravModel, PC15, RadauIntegrator, analytic_2_body, vec_accel,
-};
 use kete_core::state::State;
 use kete_core::time::{TDB, Time};
 
-use crate::spice::LOADED_SPK;
+use crate::spk::{LOADED_SPK, SpkCollection};
 
 use itertools::Itertools;
-use nalgebra::{DVector, SMatrix, SVector, Vector3};
+use nalgebra::{DVector, SMatrix, Vector3};
 use rayon::prelude::*;
 
 /// Metadata for the [`spk_accel`] function.
 #[derive(Debug)]
 pub struct AccelSPKMeta<'a> {
-    /// Closest approach to a massive object.
-    /// This records the ID of the object, time, and distance in AU.
-    pub close_approach: Option<(i32, Time<TDB>, f64)>,
-
     /// The non-gravitational forces.
     /// If this is not provided, only standard gravitational model is applied.
     /// If this are provided, then the effects of the Non-Grav terms are added.
@@ -36,6 +33,10 @@ pub struct AccelSPKMeta<'a> {
     /// radius of the object. Mass is given in fractions of solar mass and radius is
     /// in AU.
     pub massive_obj: &'a [GravParams],
+
+    /// Reference to the loaded SPK collection.
+    /// Stored here so the lock is acquired once and reused for the entire integration.
+    pub spk: &'a SpkCollection,
 }
 
 /// Compute the accel on an object which experiences acceleration due to all massive
@@ -73,7 +74,7 @@ pub fn spk_accel(
 ) -> KeteResult<Vector3<f64>> {
     let mut accel = Vector3::<f64>::zeros();
 
-    let spk = &LOADED_SPK.try_read()?;
+    let spk = meta.spk;
 
     for grav_params in meta.massive_obj {
         let id = grav_params.naif_id;
@@ -84,11 +85,6 @@ pub fn spk_accel(
 
         if exact_eval {
             let r = rel_pos.norm();
-            if let Some(close_approach) = meta.close_approach.as_mut()
-                && r <= close_approach.2
-            {
-                *close_approach = (id, time, r);
-            }
 
             if r as f32 <= radius {
                 Err(Error::Impact(id, time))?;
@@ -129,11 +125,6 @@ pub(crate) fn spk_accel_cached(
 
         if exact_eval {
             let r = rel_pos.norm();
-            if let Some(close_approach) = meta.close_approach.as_mut()
-                && r <= close_approach.2
-            {
-                *close_approach = (grav_params.naif_id, time, r);
-            }
 
             if r as f32 <= radius {
                 Err(Error::Impact(grav_params.naif_id, time))?;
@@ -148,29 +139,6 @@ pub(crate) fn spk_accel_cached(
         }
     }
     Ok(accel)
-}
-
-/// Convert the second order ODE acceleration function into a first order.
-/// This allows the second order ODE to be used with the picard integrator.
-///
-/// The `state_vec` is made up of concatenated position and velocity vectors.
-/// Otherwise this is just a thin wrapper over the [`spk_accel`] function.
-///
-/// # Errors
-/// Fails when SPK queries fail.
-pub fn spk_accel_first_order(
-    time: Time<TDB>,
-    state_vec: &SVector<f64, 6>,
-    meta: &mut AccelSPKMeta<'_>,
-    exact_eval: bool,
-) -> KeteResult<SVector<f64, 6>> {
-    let pos: Vector3<f64> = state_vec.fixed_rows::<3>(0).into();
-    let vel: Vector3<f64> = state_vec.fixed_rows::<3>(3).into();
-    let accel = spk_accel(time, &pos, &vel, meta, exact_eval)?;
-    let mut res = SVector::<f64, 6>::zeros();
-    res.fixed_rows_mut::<3>(0).set_column(0, &vel);
-    res.fixed_rows_mut::<3>(3).set_column(0, &accel);
-    Ok(res)
 }
 
 /// Propagate an object using full N-Body physics with the Radau 15th order integrator.
@@ -197,9 +165,9 @@ pub fn propagate_n_body_spk(
     };
 
     let metadata = AccelSPKMeta {
-        close_approach: None,
         non_grav_model,
         massive_obj: mass_list,
+        spk,
     };
 
     let (pos, vel, _meta) = {
@@ -279,28 +247,27 @@ pub fn propagation_n_body_spk_par(
     SimultaneousStates::new_exact(res?, None)
 }
 
-/// Initialization function for the picard integrator which initializes the state
-/// using two body mechanics.
-fn picard_two_body_init<const N: usize>(
+/// Initialization function for the second-order picard integrator which initializes
+/// the state using two body mechanics.
+fn picard_two_body_init_second_order<const N: usize>(
     times: &[Time<TDB>; N],
-    init_pos: &SVector<f64, 6>,
-) -> SMatrix<f64, 6, N> {
-    let pos: Vector3<f64> = init_pos.fixed_rows::<3>(0).into();
-    let vel: Vector3<f64> = init_pos.fixed_rows::<3>(3).into();
+    init_pos: &Vector3<f64>,
+    init_vel: &Vector3<f64>,
+) -> (SMatrix<f64, 3, N>, SMatrix<f64, 3, N>) {
     let t0 = times[0];
 
-    let mut res: SMatrix<f64, 6, N> = SMatrix::zeros();
-    res.fixed_rows_mut::<3>(0).set_column(0, &pos);
-    res.fixed_rows_mut::<3>(3).set_column(0, &vel);
+    let mut pos_mat: SMatrix<f64, 3, N> = SMatrix::zeros();
+    let mut vel_mat: SMatrix<f64, 3, N> = SMatrix::zeros();
+    pos_mat.set_column(0, init_pos);
+    vel_mat.set_column(0, init_vel);
 
     for (idx, t) in times.iter().enumerate().skip(1) {
         let dt = *t - t0;
-        let (p, v) = analytic_2_body(dt, &pos, &vel, None).unwrap();
-
-        res.fixed_rows_mut::<3>(0).set_column(idx, &p);
-        res.fixed_rows_mut::<3>(3).set_column(idx, &v);
+        let (p, v) = analytic_2_body(dt, init_pos, init_vel, None).unwrap();
+        pos_mat.set_column(idx, &p);
+        vel_mat.set_column(idx, &v);
     }
-    res
+    (pos_mat, vel_mat)
 }
 
 /// Propagate an object using the Picard integrator with full N-Body physics.
@@ -327,35 +294,23 @@ pub fn propagate_picard_n_body_spk(
     };
 
     let mut metadata = AccelSPKMeta {
-        close_approach: None,
         non_grav_model,
         massive_obj: mass_list,
+        spk,
     };
 
     let integrator = &PC15;
 
-    let mut state_vec = SVector::<f64, 6>::zeros();
-    state_vec
-        .fixed_rows_mut::<3>(0)
-        .set_column(0, &state.pos.into());
-    state_vec
-        .fixed_rows_mut::<3>(3)
-        .set_column(0, &state.vel.into());
-
-    let final_state_vec = {
-        integrator.integrate(
-            &spk_accel_first_order,
-            &picard_two_body_init,
-            state_vec,
-            state.epoch,
-            jd_final,
-            1.0,
-            &mut metadata,
-        )?
-    };
-
-    let pos: Vector3<f64> = final_state_vec.fixed_rows::<3>(0).into();
-    let vel: Vector3<f64> = final_state_vec.fixed_rows::<3>(3).into();
+    let (pos, vel) = integrator.integrate_second_order(
+        &spk_accel,
+        &picard_two_body_init_second_order,
+        state.pos.into(),
+        state.vel.into(),
+        state.epoch,
+        jd_final,
+        1.0,
+        &mut metadata,
+    )?;
 
     let mut new_state = State::new(state.desig.clone(), jd_final, pos.into(), vel.into(), 0);
     spk.try_change_center(&mut new_state, center)?;
@@ -397,16 +352,16 @@ pub fn propagate_n_body_vec(
     let mut desigs: Vec<Desig> = Vec::new();
     let spk = &LOADED_SPK.try_read()?;
 
-    let planet_states = planet_states.unwrap_or_else(|| {
+    let planet_states = if let Some(ps) = planet_states {
+        ps
+    } else {
         let mut planet_states = Vec::new();
         for obj in GravParams::simplified_planets() {
-            let planet = spk
-                .try_get_state_with_center::<Equatorial>(obj.naif_id, jd_init, 10)
-                .expect("Failed to find state for the provided initial jd");
+            let planet = spk.try_get_state_with_center::<Equatorial>(obj.naif_id, jd_init, 10)?;
             planet_states.push(planet);
         }
         planet_states
-    });
+    };
 
     if planet_states.len() != GravParams::simplified_planets().len() {
         Err(Error::ValueError(
@@ -474,7 +429,7 @@ mod tests {
     use itertools::Itertools;
 
     use super::*;
-    use kete_core::propagation::{AccelVecMeta, vec_accel};
+    use kete_core::forces::{AccelVecMeta, vec_accel};
 
     #[test]
     fn check_accelerations_equal() {
@@ -515,9 +470,9 @@ mod tests {
             &[0.0, 0.0, 0.5].into(),
             &[0.0, 0.0, 1.0].into(),
             &mut AccelSPKMeta {
-                close_approach: None,
                 non_grav_model: None,
                 massive_obj: &GravParams::planets(),
+                spk,
             },
             false,
         )

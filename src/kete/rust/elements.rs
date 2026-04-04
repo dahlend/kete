@@ -1,8 +1,8 @@
 //! Python support for orbital elements
-use kete_core::constants::{GMS_SQRT, GravParams};
 use kete_core::elements;
 use kete_core::frames::Ecliptic;
 use kete_core::prelude;
+use kete_core::{constants::GMS_SQRT, forces::GravParams};
 use pyo3::{PyResult, pyclass, pymethods};
 
 use crate::{state::PyState, time::PyTime};
@@ -118,7 +118,7 @@ impl PyCometElements {
     pub fn desig(&self) -> String {
         match &self.0.desig {
             prelude::Desig::Naif(s) => {
-                kete_spice::spice::try_name_from_id(*s).unwrap_or(s.to_string())
+                kete_core::desigs::try_name_from_id(*s).unwrap_or(s.to_string())
             }
             _ => self.0.desig.to_string(),
         }

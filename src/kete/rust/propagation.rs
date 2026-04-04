@@ -1,13 +1,9 @@
 //! Python support for n body propagation
 use itertools::Itertools;
+use kete_core::kepler::moid;
 use kete_core::{
-    errors::Error,
-    frames::Ecliptic,
-    propagation::{NonGravModel, moid},
-    state::State,
+    desigs::try_name_from_id, errors::Error, forces::NonGravModel, frames::Ecliptic, state::State,
 };
-use kete_spice::propagation as spice_prop;
-use kete_spice::spice::{self, LOADED_SPK};
 use pyo3::{Py, PyAny, PyResult, Python, pyfunction};
 use rayon::prelude::*;
 
@@ -43,23 +39,23 @@ pub fn moid_py(
         ))?;
     }
 
-    let state_b =
-        state_b
-            .map(|x| x.raw)
-            .unwrap_or(LOADED_SPK.read().unwrap().try_get_state_with_center(
-                399,
-                states[0].raw.epoch,
-                10,
-            )?);
+    let state_b = state_b.map(|x| x.raw).unwrap_or(
+        kete_spice::prelude::LOADED_SPK
+            .try_read()
+            .map_err(Error::from)?
+            .try_get_state_with_center(399, states[0].raw.epoch, 10)?,
+    );
 
-    let moids: Vec<f64> = states
-        .into_par_iter()
-        .with_min_len(30)
-        .map(|state| {
-            let state = state.raw;
-            moid(state, state_b.clone()).unwrap_or(f64::NAN)
-        })
-        .collect::<Vec<_>>();
+    let moids: Vec<f64> = py.detach(|| {
+        states
+            .into_par_iter()
+            .with_min_len(30)
+            .map(|state| {
+                let state = state.raw;
+                moid(state, state_b.clone()).unwrap_or(f64::NAN)
+            })
+            .collect::<Vec<_>>()
+    });
 
     maybe_vec_to_pyobj(py, moids, was_vec)
 }
@@ -130,9 +126,14 @@ pub fn propagation_n_body_spk_py(
     {
         py.check_signals()?;
 
-        let mut proc_chunk =
-            chunk
-                .to_owned()
+        let chunk_owned = chunk.to_owned();
+
+        // Release the GIL during CPU-intensive parallel work. All data here is
+        // pure Rust -- no Python objects cross into rayon threads.
+        // Errors are collected as KeteResult (Rust) rather than PyResult to avoid
+        // creating PyErr objects inside rayon threads (which would require the GIL).
+        let proc_chunk: PyResult<Vec<_>> = py.detach(|| {
+            chunk_owned
                 .into_par_iter()
                 .with_min_len(5)
                 .map(|(state, model)| {
@@ -153,7 +154,12 @@ pub fn propagation_n_body_spk_py(
                         ))
                         .change_frame(frame));
                     }
-                    match spice_prop::propagate_n_body_spk(state, jd, include_asteroids, model) {
+                    match kete_spice::prelude::propagate_n_body_spk(
+                        state,
+                        jd,
+                        include_asteroids,
+                        model,
+                    ) {
                         Ok(state) => Ok(Into::<PyState>::into(state).change_frame(frame)),
                         Err(er) => {
                             if !suppress_errors {
@@ -163,9 +169,9 @@ pub fn propagation_n_body_spk_py(
                                     eprintln!(
                                         "Impact detected between ({}) <-> {} at time {} ({})",
                                         desig,
-                                        spice::try_name_from_id(id).unwrap_or(id.to_string()),
+                                        try_name_from_id(id).unwrap_or(id.to_string()),
                                         time.jd,
-                                        time.utc().to_iso().unwrap()
+                                        time.utc().to_iso().unwrap_or_default()
                                     );
                                 }
                                 // if we get an impact, we return a state with NaNs
@@ -183,8 +189,9 @@ pub fn propagation_n_body_spk_py(
                         }
                     }
                 })
-                .collect::<PyResult<Vec<_>>>()?;
-        res.append(&mut proc_chunk);
+                .collect()
+        });
+        res.append(&mut proc_chunk?);
     }
 
     maybe_vec_to_pyobj(py, res, was_vec)
@@ -242,6 +249,7 @@ pub fn propagation_n_body_spk_py(
 #[pyfunction]
 #[pyo3(name = "propagate_n_body_long", signature = (states, jd_final, planet_states=None, non_gravs=None, batch_size=10))]
 pub fn propagation_n_body_py(
+    py: Python<'_>,
     states: Vec<PyState>,
     jd_final: PyTime,
     planet_states: Option<Vec<PyState>>,
@@ -257,24 +265,32 @@ pub fn propagation_n_body_py(
         non_gravs.into_iter().map(|y| y.map(|z| z.0)).collect();
 
     let jd = jd_final.into();
-    let res = states
-        .into_iter()
-        .zip(non_gravs.into_iter())
-        .collect_vec()
-        .par_chunks(batch_size)
-        .map(|chunk| {
-            let (chunk_state, chunk_nongrav): (Vec<_>, Vec<Option<NonGravModel>>) =
-                chunk.iter().cloned().unzip();
+    let res: Result<Vec<_>, _> = py.detach(|| {
+        states
+            .into_iter()
+            .zip(non_gravs)
+            .collect_vec()
+            .par_chunks(batch_size)
+            .map(|chunk| {
+                let (chunk_state, chunk_nongrav): (Vec<_>, Vec<Option<NonGravModel>>) =
+                    chunk.iter().cloned().unzip();
 
-            spice_prop::propagate_n_body_vec(chunk_state, jd, planet_states.clone(), chunk_nongrav)
+                kete_spice::propagation::propagate_n_body_vec(
+                    chunk_state,
+                    jd,
+                    planet_states.clone(),
+                    chunk_nongrav,
+                )
                 .map(|(states, planets)| {
                     (
                         states.into_iter().map(PyState::from).collect::<Vec<_>>(),
                         planets.into_iter().map(PyState::from).collect::<Vec<_>>(),
                     )
                 })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+            })
+            .collect()
+    });
+    let res = res?;
 
     let mut final_states = Vec::new();
     let mut final_planets = Vec::new();
@@ -283,103 +299,4 @@ pub fn propagation_n_body_py(
         final_planets = planet;
     }
     Ok((final_states, final_planets))
-}
-
-/// Debugging for picard
-#[pyfunction]
-#[pyo3(name = "picard", signature = (states, jd, include_asteroids=false,
-    non_gravs=None, suppress_errors=true, suppress_impact_errors=false))]
-pub fn picard(
-    py: Python<'_>,
-    states: MaybeVec<PyState>,
-    jd: PyTime,
-    include_asteroids: bool,
-    non_gravs: Option<MaybeVec<Option<PyNonGravModel>>>,
-    suppress_errors: bool,
-    suppress_impact_errors: bool,
-) -> PyResult<Py<PyAny>> {
-    let (states, was_vec): (Vec<_>, bool) = states.into();
-    let non_gravs: Option<Vec<Option<PyNonGravModel>>> = non_gravs.map(|x| x.into());
-    let non_gravs = non_gravs.unwrap_or(vec![None; states.len()]);
-
-    if states.len() != non_gravs.len() {
-        Err(Error::ValueError(
-            "non_gravs must be the same length as states.".into(),
-        ))?;
-    }
-
-    let mut res: Vec<PyState> = Vec::new();
-    let jd = jd.into();
-
-    // propagation is broken into chunks, every time a chunk is completed
-    // python is checked for signals. This allows keyboard interrupts to be caught
-    // and the process interrupted.
-
-    for chunk in states
-        .into_iter()
-        .zip(non_gravs.into_iter())
-        .collect_vec()
-        .chunks(1000)
-    {
-        py.check_signals()?;
-
-        let mut proc_chunk = chunk
-            .to_owned()
-            .into_par_iter()
-            .with_min_len(5)
-            .map(|(state, model)| {
-                let model = model.map(|x| x.0);
-                let center = state.center_id();
-                let frame = state.frame;
-                let state = state.raw;
-                let desig = state.desig.clone();
-
-                // if the input has a NAN in it, skip the propagation entirely and return
-                // the nans.
-                if !state.is_finite() {
-                    if !suppress_errors {
-                        Err(Error::ValueError("Input state contains NaNs.".into()))?;
-                    };
-                    return Ok(Into::<PyState>::into(State::<Ecliptic>::new_nan(
-                        desig, jd, center,
-                    ))
-                    .change_frame(frame));
-                }
-                match spice_prop::propagate_picard_n_body_spk(state, jd, include_asteroids, model) {
-                    Ok(state) => Ok(Into::<PyState>::into(state).change_frame(frame)),
-                    Err(er) => {
-                        if !suppress_errors {
-                            Err(er)?
-                        } else if let Error::Impact(id, time) = er {
-                            if !suppress_impact_errors {
-                                eprintln!(
-                                    "Impact detected between ({}) <-> {} at time {} ({})",
-                                    desig,
-                                    spice::try_name_from_id(id).unwrap_or(id.to_string()),
-                                    time.jd,
-                                    time.utc().to_iso().unwrap()
-                                );
-                            }
-                            // if we get an impact, we return a state with NaNs
-                            // but put the impact time into the new state.
-                            Ok(Into::<PyState>::into(State::<Ecliptic>::new_nan(
-                                desig, time, center,
-                            ))
-                            .change_frame(frame))
-                        } else {
-                            Ok(
-                                Into::<PyState>::into(State::<Ecliptic>::new_nan(
-                                    desig, jd, center,
-                                ))
-                                .change_frame(frame),
-                            )
-                        }
-                    }
-                }
-            })
-            .collect::<PyResult<Vec<_>>>()?;
-        res.append(&mut proc_chunk);
-    }
-
-    maybe_vec_to_pyobj(py, res, was_vec)
 }

@@ -41,7 +41,7 @@ use crate::time::{Duration, TDB, Time};
 use argmin::core::{CostFunction, Error as ArgminErr, Executor};
 use argmin::solver::neldermead::NelderMead;
 use core::f64;
-use kete_stats::fitting::{ConvergenceError, newton_raphson};
+use kete_stats::fitting::{ConvergenceError, halley, newton_raphson};
 use nalgebra::{ComplexField, Vector3};
 use std::f64::consts::TAU;
 
@@ -211,10 +211,13 @@ fn g_2(s: f64, beta: f64) -> f64 {
     }
     let beta_sqrt = beta.abs().sqrt() * s;
     if beta >= 0.0 {
-        2.0 * (beta_sqrt / 2.0).sin().powf(2.0) / beta
-        // (1.0 - beta_sqrt.cos()) / beta
+        let half_sin = (beta_sqrt / 2.0).sin();
+        2.0 * half_sin * half_sin / beta
     } else {
-        (1.0 - (beta_sqrt).cosh()) / beta
+        // Use -2*sinh^2(x/2)/beta instead of (1-cosh(x))/beta
+        // to avoid cancellation when |x| is small.
+        let half_sinh = (beta_sqrt / 2.0).sinh();
+        -2.0 * half_sinh * half_sinh / beta
     }
 }
 
@@ -246,7 +249,8 @@ fn solve_kepler_universal(mut dt: f64, r0: f64, v0: f64, rv0: f64) -> KeteResult
             // elliptical orbits
             let f = |x: f64| {
                 let g1 = (b_sqrt * x).sin() / b_sqrt;
-                let g2 = 2.0 * (b_sqrt * x / 2.0).sin().powf(2.0) / beta;
+                let half_sin = (b_sqrt * x / 2.0).sin();
+                let g2 = 2.0 * half_sin * half_sin / beta;
                 let g3 = (x - g1) / beta;
                 r0 * g1 + rv0 * g2 + GMS * g3 - dt
             };
@@ -255,9 +259,26 @@ fn solve_kepler_universal(mut dt: f64, r0: f64, v0: f64, rv0: f64) -> KeteResult
                 let g3d = (1.0 - g1d) / beta;
                 r0 * g1d + rv0 * g2d + GMS * g3d
             };
-            // Significantly better initial guess.
-            let guess = b_sqrt.recip() * dt / period;
-            newton_raphson(f, d, guess, 1e-11)
+            let dd = |x: f64| {
+                let (sin_v, cos_v) = (b_sqrt * x).sin_cos();
+                -r0 * beta * sin_v / b_sqrt - rv0 * cos_v + GMS * sin_v / b_sqrt
+            };
+            // Halley initial guess via one Halley step on the
+            // modified Kepler equation starting from dM.
+            let ec = 1.0 - r0 * beta / GMS;
+            let es = rv0 * b_sqrt / GMS;
+            let dm = dt / period;
+            let (sin_dm, cos_dm) = dm.sin_cos();
+            let num = ec * sin_dm - es * (1.0 - cos_dm);
+            let den = 1.0 - ec * cos_dm + es * sin_dm;
+            let fpp = ec * sin_dm + es * cos_dm;
+            let halley_denom = 2.0 * den * den + num * fpp;
+            let guess = if halley_denom.abs() > den.abs() * 1e-6 {
+                (dm + 2.0 * num * den / halley_denom) / b_sqrt
+            } else {
+                (dm + num) / b_sqrt
+            };
+            halley(f, d, dd, guess, 1e-11)
         } else if beta.abs() < PARABOLIC_BETA {
             // This is for parabolic orbits.
             // solve a cubic of the form:
@@ -274,7 +295,8 @@ fn solve_kepler_universal(mut dt: f64, r0: f64, v0: f64, rv0: f64) -> KeteResult
             // hyperbolic orbits
             let f = |x: f64| {
                 let g1 = (b_sqrt * x).sinh() / b_sqrt;
-                let g2 = (1.0 - (b_sqrt * x).cosh()) / beta;
+                let half_sinh = (b_sqrt * x / 2.0).sinh();
+                let g2 = -2.0 * half_sinh * half_sinh / beta;
                 let g3 = (x - g1) / beta;
                 r0 * g1 + rv0 * g2 + GMS * g3 - dt
             };
@@ -342,13 +364,16 @@ pub fn analytic_2_body(
     if let Ok((universal_s, beta)) = solve_kepler_universal(time, r0, v0, rv0) {
         let g1 = g_1(universal_s, beta);
         let g2 = g_2(universal_s, beta);
-        let f = 1.0 - GMS / r0 * g2;
+        // f-hat / g-dot-hat formulation (WHFAST eqs 37-39).
+        // Compute the small corrections separately, then add the initial values
+        // last to avoid catastrophic cancellation when f ~ 1 and g_dot ~ 1.
+        let f_hat = -GMS * g2 / r0;
         let g = r0 * g1 + rv0 * g2;
-        let new_pos = pos * f + vel * g;
+        let new_pos = (pos * f_hat + vel * g) + pos;
         let new_r0 = new_pos.norm();
         let f_dot = -GMS / (new_r0 * r0) * g1;
-        let g_dot = 1.0 - (GMS / new_r0) * g2;
-        let new_vel = pos * f_dot + vel * g_dot;
+        let g_dot_hat = -GMS * g2 / new_r0;
+        let new_vel = (pos * f_dot + vel * g_dot_hat) + vel;
         Ok((new_pos, new_vel))
     } else {
         let (inter_pos, inter_vel) = analytic_2_body((0.5 * time).into(), pos, vel, Some(depth))?;
@@ -684,5 +709,68 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Measure energy error growth over many orbits to detect solver bias.
+    ///
+    /// A biased solver will show linear (or worse) energy drift, while an
+    /// unbiased solver should show only random-walk (~sqrt(N)) growth.
+    /// We propagate a Jupiter-like orbit forward in fixed time steps and
+    /// check that the relative energy error remains small.
+    #[test]
+    fn test_kepler_bias() {
+        // Jupiter-like: a = 5.2 AU, e = 0.048
+        let a = 5.2;
+        let ecc = 0.048;
+        let r0 = a * (1.0 - ecc); // perihelion
+        let v0 = (GMS * (2.0 / r0 - 1.0 / a)).sqrt();
+        let pos = Vector3::new(r0, 0.0, 0.0);
+        let vel = Vector3::new(0.0, v0, 0.0);
+
+        let energy_0 = 0.5 * v0 * v0 - GMS / r0;
+
+        let dt = 200.0; // days per step
+        let n_steps = 10_000;
+
+        let mut p = pos;
+        let mut v = vel;
+        for _ in 0..n_steps {
+            let (np, nv) = analytic_2_body(dt.into(), &p, &v, None).unwrap();
+            p = np;
+            v = nv;
+        }
+
+        let energy_final = 0.5 * v.norm_squared() - GMS / p.norm();
+        let rel_err = ((energy_final - energy_0) / energy_0).abs();
+
+        // Also test with a higher eccentricity orbit (e=0.5)
+        let a2 = 2.5;
+        let ecc2 = 0.5;
+        let r0_2 = a2 * (1.0 - ecc2);
+        let v0_2 = (GMS * (2.0 / r0_2 - 1.0 / a2)).sqrt();
+        let pos2 = Vector3::new(r0_2, 0.0, 0.0);
+        let vel2 = Vector3::new(0.0, v0_2, 0.0);
+        let energy_02 = 0.5 * v0_2 * v0_2 - GMS / r0_2;
+
+        let mut p2 = pos2;
+        let mut v2 = vel2;
+        for _ in 0..n_steps {
+            let (np, nv) = analytic_2_body(dt.into(), &p2, &v2, None).unwrap();
+            p2 = np;
+            v2 = nv;
+        }
+        let energy_f2 = 0.5 * v2.norm_squared() - GMS / p2.norm();
+        let rel_err2 = ((energy_f2 - energy_02) / energy_02).abs();
+
+        // With the f-hat formulation the energy error after 10k steps
+        // (~548 orbits) should be very small (< 4e-14 relative).
+        assert!(
+            rel_err < 4e-14,
+            "e=0.048: Energy drift too large after {n_steps} steps: {rel_err:.3e}"
+        );
+        assert!(
+            rel_err2 < 4e-14,
+            "e=0.5: Energy drift too large after {n_steps} steps: {rel_err2:.3e}"
+        );
     }
 }

@@ -1,4 +1,4 @@
-use kete_spice::spice::LOADED_SCLK;
+use kete_spice::prelude::LOADED_SCLK;
 use pyo3::{PyResult, pyfunction};
 
 use crate::time::PyTime;

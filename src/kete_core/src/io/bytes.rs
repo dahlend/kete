@@ -31,6 +31,9 @@
 use crate::errors::{Error, KeteResult};
 use std::io::Read;
 
+#[cfg(target_endian = "big")]
+compile_error!("kete requires a little-endian target");
+
 /// Read the exact number of specified bytes from the file.
 ///
 /// # Errors
@@ -45,64 +48,70 @@ pub fn read_bytes_exact<T: Read>(buffer: T, n_bytes: usize) -> KeteResult<Box<[u
     Ok(bytes.into())
 }
 
-/// Change a collection of bytes into a f64.
+/// Change a collection of bytes into a f64 (little-endian).
 ///
 /// # Errors
 /// Returns an error if the slice is not exactly 8 bytes.
-pub fn bytes_to_f64(bytes: &[u8], little_endian: bool) -> KeteResult<f64> {
+pub fn bytes_to_f64(bytes: &[u8]) -> KeteResult<f64> {
     let bytes: [u8; 8] = bytes
         .try_into()
         .map_err(|_| Error::IOError("File is not correctly formatted".into()))?;
-    if little_endian {
-        Ok(f64::from_le_bytes(bytes))
-    } else {
-        Ok(f64::from_be_bytes(bytes))
-    }
+    Ok(f64::from_le_bytes(bytes))
 }
 
-/// Change a collection of bytes into a vector of f64s.
+/// Change a collection of bytes into a vector of f64s (little-endian).
 ///
 /// # Errors
 /// Returns an error if the byte length is not a multiple of 8.
-pub fn bytes_to_f64_vec(bytes: &[u8], little_endian: bool) -> KeteResult<Box<[f64]>> {
+#[allow(
+    clippy::missing_panics_doc,
+    reason = "chunks_exact(8) guarantees each chunk is exactly 8 bytes"
+)]
+pub fn bytes_to_f64_vec(bytes: &[u8]) -> KeteResult<Box<[f64]>> {
     let byte_len = bytes.len();
     if !byte_len.is_multiple_of(8) {
         Err(Error::IOError("File is not correctly formatted".into()))?;
     }
-    let res: Box<[f64]> = (0..byte_len / 8)
-        .map(|idx| bytes_to_f64(&bytes[8 * idx..(8 + 8 * idx)], little_endian))
-        .collect::<KeteResult<_>>()?;
-    Ok(res)
+    let n = byte_len / 8;
+    let mut res = Vec::with_capacity(n);
+    // SAFETY: bytes length is verified to be a multiple of 8.
+    // On little-endian targets this is a direct memcpy; on big-endian
+    // targets (not supported) it would need byte-swapping.
+    for chunk in bytes.chunks_exact(8) {
+        res.push(f64::from_le_bytes(chunk.try_into().unwrap()));
+    }
+    Ok(res.into())
 }
 
-/// Change a collection of bytes into a vector of i32s.
+/// Change a collection of bytes into a vector of i32s (little-endian).
 ///
 /// # Errors
 /// Returns an error if the byte length is not a multiple of 4.
-pub fn bytes_to_i32_vec(bytes: &[u8], little_endian: bool) -> KeteResult<Box<[i32]>> {
+#[allow(
+    clippy::missing_panics_doc,
+    reason = "chunks_exact(4) guarantees each chunk is exactly 4 bytes"
+)]
+pub fn bytes_to_i32_vec(bytes: &[u8]) -> KeteResult<Box<[i32]>> {
     let byte_len = bytes.len();
     if !byte_len.is_multiple_of(4) {
         Err(Error::IOError("File is not correctly formatted".into()))?;
     }
-    let res: Box<[i32]> = (0..byte_len / 4)
-        .map(|idx| bytes_to_i32(&bytes[4 * idx..(4 + 4 * idx)], little_endian))
-        .collect::<KeteResult<_>>()?;
-    Ok(res)
+    let mut res = Vec::with_capacity(byte_len / 4);
+    for chunk in bytes.chunks_exact(4) {
+        res.push(i32::from_le_bytes(chunk.try_into().unwrap()));
+    }
+    Ok(res.into())
 }
 
-/// Change a collection of bytes into a i32.
+/// Change a collection of bytes into a i32 (little-endian).
 ///
 /// # Errors
 /// Returns an error if the slice is not exactly 4 bytes.
-pub fn bytes_to_i32(bytes: &[u8], little_endian: bool) -> KeteResult<i32> {
+pub fn bytes_to_i32(bytes: &[u8]) -> KeteResult<i32> {
     let bytes: [u8; 4] = bytes
         .try_into()
         .map_err(|_| Error::IOError("File is not correctly formatted".into()))?;
-    if little_endian {
-        Ok(i32::from_le_bytes(bytes))
-    } else {
-        Ok(i32::from_be_bytes(bytes))
-    }
+    Ok(i32::from_le_bytes(bytes))
 }
 
 /// Change a collection of bytes into a String.
@@ -117,17 +126,20 @@ pub fn bytes_to_string(bytes: &[u8]) -> String {
     String::from_utf8_lossy(&bytes).to_string()
 }
 
-/// Read a multiple contiguous f64s from the file.
+/// Read a multiple contiguous f64s from the file (little-endian).
+///
+/// Allocates as `f64` and reads directly into the byte view, avoiding
+/// a separate conversion step.
 ///
 /// # Errors
-/// Returns an error if the read or conversion fails.
-pub fn read_f64_vec<T: Read>(
-    buffer: T,
-    n_floats: usize,
-    little_endian: bool,
-) -> KeteResult<Box<[f64]>> {
-    let bytes = read_bytes_exact(buffer, 8 * n_floats)?;
-    bytes_to_f64_vec(&bytes, little_endian)
+/// Returns an error if the read fails.
+pub fn read_f64_vec<T: Read>(mut buffer: T, n_floats: usize) -> KeteResult<Box<[f64]>> {
+    let mut floats = vec![0.0_f64; n_floats];
+    let bytes: &mut [u8] = bytemuck::cast_slice_mut(&mut floats);
+    buffer
+        .read_exact(bytes)
+        .map_err(|_| Error::IOError("Unexpected end of file.".into()))?;
+    Ok(floats.into_boxed_slice())
 }
 
 /// Read a string of the specified length from the file.
@@ -139,4 +151,112 @@ pub fn read_f64_vec<T: Read>(
 pub fn read_str<T: Read>(buffer: T, length: usize) -> KeteResult<String> {
     let bytes = read_bytes_exact(buffer, length)?;
     Ok(bytes_to_string(&bytes))
+}
+
+/// Encode an f64 as 8 little-endian bytes.
+#[must_use]
+pub fn f64_to_bytes(value: f64) -> [u8; 8] {
+    value.to_le_bytes()
+}
+
+/// Encode an i32 as 4 little-endian bytes.
+#[must_use]
+pub fn i32_to_bytes(value: i32) -> [u8; 4] {
+    value.to_le_bytes()
+}
+
+/// View a slice of f64s as bytes (zero-copy).
+#[must_use]
+pub fn f64_vec_to_bytes(values: &[f64]) -> &[u8] {
+    bytemuck::cast_slice(values)
+}
+
+/// View a slice of i32s as bytes (zero-copy).
+#[must_use]
+pub fn i32_vec_to_bytes(values: &[i32]) -> &[u8] {
+    bytemuck::cast_slice(values)
+}
+
+/// Write a fixed-width string, padded with spaces to `width` bytes.
+/// Truncates if the string is longer than `width`.
+#[must_use]
+pub fn string_to_padded_bytes(s: &str, width: usize) -> Vec<u8> {
+    let s_bytes = s.as_bytes();
+    let copy_len = s_bytes.len().min(width);
+    let mut out = vec![b' '; width];
+    out[..copy_len].copy_from_slice(&s_bytes[..copy_len]);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn f64_round_trip_le() {
+        let values = [0.0, 1.0, -1.0, f64::MIN, f64::MAX, std::f64::consts::PI];
+        for &v in &values {
+            let bytes = f64_to_bytes(v);
+            let back = bytes_to_f64(&bytes).unwrap();
+            assert_eq!(v, back);
+        }
+    }
+
+    #[test]
+    fn i32_round_trip_le() {
+        let values = [0, 1, -1, i32::MIN, i32::MAX, 42, -999];
+        for &v in &values {
+            let bytes = i32_to_bytes(v);
+            let back = bytes_to_i32(&bytes).unwrap();
+            assert_eq!(v, back);
+        }
+    }
+
+    #[test]
+    fn f64_vec_round_trip() {
+        let values = vec![1.0, 2.0, 3.0, std::f64::consts::E, -0.0];
+        let bytes = f64_vec_to_bytes(&values);
+        assert_eq!(bytes.len(), values.len() * 8);
+        let back = bytes_to_f64_vec(bytes).unwrap();
+        assert_eq!(&*back, &values[..]);
+    }
+
+    #[test]
+    fn i32_vec_round_trip() {
+        let values = vec![10, -20, 0, i32::MAX, i32::MIN];
+        let bytes = i32_vec_to_bytes(&values);
+        assert_eq!(bytes.len(), values.len() * 4);
+        let back = bytes_to_i32_vec(bytes).unwrap();
+        assert_eq!(&*back, &values[..]);
+    }
+
+    #[test]
+    fn string_to_padded_exact_width() {
+        let out = string_to_padded_bytes("hello", 5);
+        assert_eq!(&out, b"hello");
+    }
+
+    #[test]
+    fn string_to_padded_shorter() {
+        let out = string_to_padded_bytes("hi", 8);
+        assert_eq!(&out, b"hi      ");
+    }
+
+    #[test]
+    fn string_to_padded_truncates() {
+        let out = string_to_padded_bytes("hello world", 5);
+        assert_eq!(&out, b"hello");
+    }
+
+    #[test]
+    fn string_to_padded_empty() {
+        let out = string_to_padded_bytes("", 4);
+        assert_eq!(&out, b"    ");
+    }
+
+    #[test]
+    fn string_to_padded_zero_width() {
+        let out = string_to_padded_bytes("anything", 0);
+        assert!(out.is_empty());
+    }
 }

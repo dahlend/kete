@@ -1,4 +1,4 @@
-use kete_spice::spice::LOADED_CK;
+use kete_spice::prelude::LOADED_CK;
 use pyo3::{PyResult, pyfunction};
 
 use crate::{

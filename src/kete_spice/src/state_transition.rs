@@ -1,3 +1,4 @@
+//! State Transition matrix computation
 // BSD 3-Clause License
 //
 // Copyright (c) 2026, Dar Dahlen
@@ -27,15 +28,15 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use kete_core::constants::GravParams;
+use kete_core::forces::{GravParams, NonGravModel};
 use kete_core::frames::Equatorial;
+use kete_core::integrators::RadauIntegrator;
 use kete_core::prelude::{KeteResult, State};
-use kete_core::propagation::NonGravModel;
-use kete_core::propagation::RadauIntegrator;
 use kete_core::time::{TDB, Time};
 
 use crate::jacobian::{n_params, stm_augmented_accel};
 use crate::propagation::AccelSPKMeta;
+use crate::spk::LOADED_SPK;
 use nalgebra::{DMatrix, Matrix3, SVector, Vector3};
 
 /// Compute the state transition matrix and optional parameter sensitivities using the
@@ -103,10 +104,11 @@ pub fn compute_state_transition(
         GravParams::planets()
     };
 
+    let spk = &LOADED_SPK.try_read()?;
     let metadata = AccelSPKMeta {
-        close_approach: None,
         non_grav_model,
         massive_obj: &mass_list,
+        spk,
     };
 
     let (pos_f, vel_f, _meta) = RadauIntegrator::integrate(

@@ -33,7 +33,7 @@
 //! - [`fov::FOV`] - A field of view, which is a representation of an
 //!   area of sky that a telescope can see. This is used to calculate
 //!   whether an object is visible from a given location at a given time.
-//! - [`propagation::propagate_two_body`] - If only an approximate position is
+//! - [`kepler::propagate_two_body`] - If only an approximate position is
 //!   required over a short time period, this function can be used as it is about 50x
 //!   faster.
 //!
@@ -74,10 +74,12 @@ pub mod constants;
 pub mod desigs;
 pub mod elements;
 pub mod errors;
+pub mod forces;
 pub mod fov;
 pub mod frames;
+pub mod integrators;
 pub mod io;
-pub mod propagation;
+pub mod kepler;
 pub mod simult_states;
 pub mod state;
 pub mod time;
@@ -90,8 +92,9 @@ pub mod prelude {
     pub use crate::desigs::{OBS_CODES, ObsCode, try_obs_code_from_name};
     pub use crate::elements::CometElements;
     pub use crate::errors::{Error, KeteResult};
+    pub use crate::forces::NonGravModel;
     pub use crate::frames::{Ecliptic, Equatorial, FK4, Galactic, InertialFrame, NonInertialFrame};
-    pub use crate::propagation::{NonGravModel, propagate_two_body};
+    pub use crate::kepler::propagate_two_body;
     pub use crate::simult_states::SimultaneousStates;
     pub use crate::state::State;
     pub use crate::time::{TDB, Time, UTC};

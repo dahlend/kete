@@ -6,7 +6,7 @@ use kete_core::errors::{Error, KeteResult};
 use kete_core::frames::NonInertialFrame;
 use nalgebra::{Matrix3, Rotation3};
 
-use crate::spice::{CkArray, LOADED_CK};
+use crate::ck::{CkArray, LOADED_CK};
 
 /// Resolve `rotations_to_equatorial` for a [`NonInertialFrame`] including CK data.
 ///
@@ -27,7 +27,7 @@ pub fn rotations_to_equatorial_full(
         ok @ Ok(_) => ok,
         Err(_) if frame.reference_frame_id < 0 => {
             // CK-dependent resolution
-            let cks = LOADED_CK.read().unwrap();
+            let cks = LOADED_CK.try_read()?;
 
             for segment in &cks.segments {
                 let array: &CkArray = segment.into();

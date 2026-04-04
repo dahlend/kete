@@ -6,8 +6,8 @@ use crate::state::PyState;
 use crate::uncertain_state::PyUncertainState;
 use kete_core::constants::GMS_SQRT;
 use kete_core::elements::CometElements;
+use kete_core::forces::NonGravModel;
 use kete_core::prelude;
-use kete_core::propagation::NonGravModel;
 use nalgebra::DMatrix;
 use pyo3::prelude::*;
 

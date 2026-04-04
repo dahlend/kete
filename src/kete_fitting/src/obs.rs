@@ -151,10 +151,10 @@ impl AstrometricObservation {
     ) -> KeteResult<(DVector<f64>, DVector<f64>)> {
         let obs = self.observer();
         let dist = (obj_state.pos - obs.pos).norm();
-        let spk = kete_spice::spice::LOADED_SPK.try_read()?;
+        let spk = kete_spice::prelude::LOADED_SPK.try_read()?;
         let mut sun_state = obj_state.clone();
         spk.try_change_center(&mut sun_state, 10)?;
-        let mut obj_lt = kete_core::propagation::light_time_correct(&sun_state, dist)?;
+        let mut obj_lt = kete_core::kepler::light_time_correct(&sun_state, dist)?;
         spk.try_change_center(&mut obj_lt, obj_state.center_id)?;
         Ok(self.residual_predicted_from_corrected(&obj_lt))
     }
@@ -315,8 +315,8 @@ mod tests {
     use kete_core::constants::C_AU_PER_DAY_INV;
     use kete_core::desigs::Desig;
     use kete_core::frames::Equatorial;
+    use kete_core::kepler::propagate_two_body;
     use kete_core::prelude::State;
-    use kete_core::propagation::propagate_two_body;
 
     /// Helper: build a simple state at the given position/velocity.
     fn make_state(pos: [f64; 3], vel: [f64; 3], jd: f64) -> State<Equatorial> {

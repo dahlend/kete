@@ -63,3 +63,38 @@ pub const V_MAG_ZERO: f64 = 3597.28;
 
 /// V-band constant for the relationship between `D`, `H_V`, and `p_v`, in km.
 pub const C_V: f64 = 1329.0;
+
+/// Standard Gravitational Constants of the Sun
+/// AU^3 / (Day^2 * Solar Mass)
+pub const GMS: f64 = 0.00029591220828411956;
+
+/// Gaussian gravitational constant, equivalent to sqrt of GMS.
+/// AU^(3/2) per (Day sqrt(Solar Mass))
+pub const GMS_SQRT: f64 = 0.01720209894996;
+
+/// Sun J2 Parameter
+///
+/// This paper below is a source, however there are several papers which all put
+/// the Sun's J2 at 2.2e-7.
+///
+/// "Prospects of Dynamical Determination of General Relativity Parameter beta and Solar
+/// Quadrupole Moment J2 with Asteroid Radar Astronomy"
+/// The Astrophysical Journal, 845:166 (5pp), 2017 August 20
+pub const SUN_J2: f64 = 2.2e-7;
+
+/// Earth J2 Parameter
+/// See "Revisiting Spacetrack Report #3" - Final page of appendix.
+pub const EARTH_J2: f64 = 0.00108262998905;
+
+/// Earth J3 Parameter
+pub const EARTH_J3: f64 = -0.00000253215306;
+
+/// Earth J4 Parameter
+pub const EARTH_J4: f64 = -0.00000161098761;
+
+/// Jupiter J2 Parameter
+///
+/// "Measurement of Jupiter's asymmetric gravity field"
+/// <https://www.nature.com/articles/nature25776>
+/// Nature 555, 220-220, 2018 March 8
+pub const JUPITER_J2: f64 = 0.014696572;

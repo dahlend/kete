@@ -34,14 +34,27 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+mod array;
+pub(crate) mod segments;
+/// CK Type 2: Discrete pointing, constant rotation rate.
+pub mod type2;
+/// CK Type 3: Discrete pointing, linear interpolation.
+pub mod type3;
+
+pub use array::CkArray;
+pub use type2::CkSegmentType2;
+pub use type3::CkSegmentType3;
+
 use kete_core::{
     errors::{Error, KeteResult},
     frames::NonInertialFrame,
     time::{TDB, Time},
 };
 
-use super::{CkArray, DAFType, DafFile, LOADED_SCLK, ck_segments::CkSegment};
+use crate::daf::{DAFType, DafFile};
+use crate::sclk::LOADED_SCLK;
 use crossbeam::sync::ShardedLock;
+use segments::CkSegment;
 
 /// A collection of segments.
 #[derive(Debug, Default)]

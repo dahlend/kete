@@ -9,7 +9,7 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use kete_core::constants;
 use kete_core::prelude::*;
 use kete_spice::propagation::{propagate_n_body_spk, propagate_n_body_vec};
-use kete_spice::spice::LOADED_SPK;
+use kete_spice::spk::LOADED_SPK;
 use pprof::criterion::{Output, PProfProfiler};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
