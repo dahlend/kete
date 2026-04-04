@@ -5,7 +5,7 @@
 //! There are several functions defined here, which enable various levels of accuracy.
 //!
 //! These functions have a strict function signature, defined as
-//! [`SecondOrderODE`](crate::integrators::util::SecondOrderODE).
+//! `SecondOrderODE`.
 //! This function signature contains 5 terms:
 //!
 //! `(time, x, x_der, &mut MetaData, exact_eval) -> KeteResult<x_der_der>`
