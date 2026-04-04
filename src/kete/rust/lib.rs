@@ -124,7 +124,6 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(propagation::propagation_n_body_spk_py, m)?)?;
     m.add_function(wrap_pyfunction!(propagation::propagation_n_body_py, m)?)?;
     m.add_function(wrap_pyfunction!(propagation::moid_py, m)?)?;
-    m.add_function(wrap_pyfunction!(propagation::picard, m)?)?;
 
     m.add_function(wrap_pyfunction!(fovs::fov_checks_py, m)?)?;
     m.add_function(wrap_pyfunction!(fovs::fov_spk_checks_py, m)?)?;
