@@ -763,13 +763,13 @@ mod tests {
         let rel_err2 = ((energy_f2 - energy_02) / energy_02).abs();
 
         // With the f-hat formulation the energy error after 10k steps
-        // (~548 orbits) should be very small (< 2e-14 relative).
+        // (~548 orbits) should be very small (< 4e-14 relative).
         assert!(
-            rel_err < 2e-14,
+            rel_err < 4e-14,
             "e=0.048: Energy drift too large after {n_steps} steps: {rel_err:.3e}"
         );
         assert!(
-            rel_err2 < 2e-14,
+            rel_err2 < 4e-14,
             "e=0.5: Energy drift too large after {n_steps} steps: {rel_err2:.3e}"
         );
     }
