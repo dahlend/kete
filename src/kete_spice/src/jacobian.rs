@@ -401,7 +401,7 @@ pub(crate) fn stm_augmented_accel(
 mod tests {
     use super::*;
     use crate::propagation::propagate_n_body_spk;
-    use crate::spice::LOADED_SPK;
+    use crate::spk::LOADED_SPK;
     use crate::state_transition::compute_state_transition;
     use kete_core::forces::GravParams;
     use kete_core::frames::Equatorial;

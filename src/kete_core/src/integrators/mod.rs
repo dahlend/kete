@@ -9,7 +9,7 @@
 //! but when testing a diverse set of realistic orbits, Radau was typically the best.
 //!
 //! The next best was actually the Picard integrator, however its accuracy came at a
-//! higher cpu cost than Radau. It is am integrator which maps very well to GPUs, so
+//! higher cpu cost than Radau. It is an integrator which maps very well to GPUs, so
 //! it may be revisited in the future if GPU support is added to kete.
 //!
 //! These integrators are being left here for completeness, and users may want to

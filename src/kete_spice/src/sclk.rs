@@ -1,4 +1,4 @@
-/// Parsing text of SPICE SCLK kernels.
+//! Parsing text of SPICE SCLK kernels.
 // BSD 3-Clause License
 //
 // Copyright (c) 2026, Dar Dahlen
@@ -43,14 +43,14 @@ use nom::{
 };
 use std::{collections::HashMap, fs, str::FromStr};
 
-use super::spice_jd_to_jd;
+use crate::spice_jd_to_jd;
 use kete_core::{
     cache::cache_path,
     errors::{Error, KeteResult},
     time::{TDB, Time},
 };
 
-use super::jd_to_spice_jd;
+use crate::jd_to_spice_jd;
 
 /// A collection of segments.
 #[derive(Debug, Default)]

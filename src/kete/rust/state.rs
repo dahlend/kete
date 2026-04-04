@@ -6,7 +6,7 @@ use crate::time::PyTime;
 use crate::vector::*;
 use kete_core::frames::InertialFrame;
 use kete_core::prelude::*;
-use kete_spice::spice::LOADED_SPK;
+use kete_spice::spk::LOADED_SPK;
 use pyo3::prelude::*;
 
 /// Representation of the state of an object at a specific moment in time.

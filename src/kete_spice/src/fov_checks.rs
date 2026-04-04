@@ -9,7 +9,7 @@ use kete_core::kepler::light_time_correct;
 use kete_core::prelude::{KeteResult, SimultaneousStates, State};
 
 use crate::propagation::propagate_n_body_spk;
-use crate::spice::LOADED_SPK;
+use crate::spk::LOADED_SPK;
 
 use rayon::prelude::*;
 

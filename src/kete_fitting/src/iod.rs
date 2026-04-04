@@ -597,7 +597,7 @@ fn observation_residual(state: &State<Equatorial>, obs: &[AstrometricObservation
     let mut residuals: Vec<f64> = Vec::with_capacity(obs.len());
 
     // Convert to Sun-centered for two-body propagation and light-time correction.
-    let spk = kete_spice::spice::LOADED_SPK.try_read().ok()?;
+    let spk = kete_spice::prelude::LOADED_SPK.try_read().ok()?;
     let mut sun_state = state.clone();
     if sun_state.center_id != 10 {
         spk.try_change_center(&mut sun_state, 10).ok()?;
@@ -644,8 +644,7 @@ mod tests {
     use kete_core::desigs::Desig;
     use kete_core::kepler::{light_time_correct, propagate_two_body};
     use kete_core::time::{TDB, Time};
-    use kete_spice::propagation::propagate_n_body_spk;
-    use kete_spice::spice::LOADED_SPK;
+    use kete_spice::prelude::{LOADED_SPK, propagate_n_body_spk};
 
     fn make_state(pos: [f64; 3], vel: [f64; 3], jd: f64) -> State<Equatorial> {
         State::new(Desig::Empty, jd.into(), pos.into(), vel.into(), 0)

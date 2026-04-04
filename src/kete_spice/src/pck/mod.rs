@@ -8,7 +8,6 @@
 // BSD 3-Clause License
 //
 // Copyright (c) 2026, Dar Dahlen
-// Copyright (c) 2025, California Institute of Technology
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:
@@ -35,17 +34,24 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+mod array;
+pub(crate) mod segments;
+/// PCK Type 2: Chebyshev polynomials (Euler angles).
+pub mod type2;
+
+pub use array::PckArray;
+pub use type2::PckSegmentType2;
+
 use std::collections::HashSet;
 use std::fs;
 
-use super::PckArray;
-use super::daf::{DAFType, DafFile};
-use super::pck_segments::PckSegment;
+use crate::daf::{DAFType, DafFile};
 use crossbeam::sync::ShardedLock;
 use kete_core::cache::cache_path;
 use kete_core::errors::{Error, KeteResult};
 use kete_core::frames::NonInertialFrame;
 use kete_core::time::{TDB, Time};
+use segments::PckSegment;
 
 /// A collection of segments.
 #[derive(Debug, Default)]

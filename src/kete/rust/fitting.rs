@@ -8,7 +8,7 @@ use kete_core::prelude::*;
 use kete_fitting::{
     AstrometricObservation, OrbitFit, OrbitSamples, fit_orbit, fit_orbit_mcmc, lambert,
 };
-use kete_spice::spice::LOADED_SPK;
+use kete_spice::prelude::LOADED_SPK;
 use pyo3::{PyResult, pyclass, pyfunction, pymethods};
 
 use crate::nongrav::PyNonGravModel;

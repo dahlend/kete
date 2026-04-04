@@ -6,7 +6,7 @@ use kete_core::errors::{Error, KeteResult};
 use kete_core::frames::NonInertialFrame;
 use nalgebra::{Matrix3, Rotation3};
 
-use crate::spice::{CkArray, LOADED_CK};
+use crate::ck::{CkArray, LOADED_CK};
 
 /// Resolve `rotations_to_equatorial` for a [`NonInertialFrame`] including CK data.
 ///

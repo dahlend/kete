@@ -1,9 +1,9 @@
 //! Python support for n body propagation
 use itertools::Itertools;
 use kete_core::kepler::moid;
-use kete_core::{errors::Error, forces::NonGravModel, frames::Ecliptic, state::State};
-use kete_spice::propagation as spice_prop;
-use kete_spice::spice::{self, LOADED_SPK};
+use kete_core::{
+    desigs::try_name_from_id, errors::Error, forces::NonGravModel, frames::Ecliptic, state::State,
+};
 use pyo3::{Py, PyAny, PyResult, Python, pyfunction};
 use rayon::prelude::*;
 
@@ -40,7 +40,7 @@ pub fn moid_py(
     }
 
     let state_b = state_b.map(|x| x.raw).unwrap_or(
-        LOADED_SPK
+        kete_spice::prelude::LOADED_SPK
             .try_read()
             .map_err(Error::from)?
             .try_get_state_with_center(399, states[0].raw.epoch, 10)?,
@@ -154,7 +154,12 @@ pub fn propagation_n_body_spk_py(
                         ))
                         .change_frame(frame));
                     }
-                    match spice_prop::propagate_n_body_spk(state, jd, include_asteroids, model) {
+                    match kete_spice::prelude::propagate_n_body_spk(
+                        state,
+                        jd,
+                        include_asteroids,
+                        model,
+                    ) {
                         Ok(state) => Ok(Into::<PyState>::into(state).change_frame(frame)),
                         Err(er) => {
                             if !suppress_errors {
@@ -164,7 +169,7 @@ pub fn propagation_n_body_spk_py(
                                     eprintln!(
                                         "Impact detected between ({}) <-> {} at time {} ({})",
                                         desig,
-                                        spice::try_name_from_id(id).unwrap_or(id.to_string()),
+                                        try_name_from_id(id).unwrap_or(id.to_string()),
                                         time.jd,
                                         time.utc().to_iso().unwrap_or_default()
                                     );
@@ -270,7 +275,7 @@ pub fn propagation_n_body_py(
                 let (chunk_state, chunk_nongrav): (Vec<_>, Vec<Option<NonGravModel>>) =
                     chunk.iter().cloned().unzip();
 
-                spice_prop::propagate_n_body_vec(
+                kete_spice::propagation::propagate_n_body_vec(
                     chunk_state,
                     jd,
                     planet_states.clone(),
@@ -355,7 +360,7 @@ pub fn picard(
                         ))
                         .change_frame(frame));
                     }
-                    match spice_prop::propagate_picard_n_body_spk(
+                    match kete_spice::propagation::propagate_picard_n_body_spk(
                         state,
                         jd,
                         include_asteroids,
@@ -370,7 +375,7 @@ pub fn picard(
                                     eprintln!(
                                         "Impact detected between ({}) <-> {} at time {} ({})",
                                         desig,
-                                        spice::try_name_from_id(id).unwrap_or(id.to_string()),
+                                        try_name_from_id(id).unwrap_or(id.to_string()),
                                         time.jd,
                                         time.utc().to_iso().unwrap_or_default()
                                     );

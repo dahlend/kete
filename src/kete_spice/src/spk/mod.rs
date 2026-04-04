@@ -7,7 +7,7 @@
 //!
 //! Here is a small worked example:
 //! ```
-//!     use kete_spice::spice::LOADED_SPK;
+//!     use kete_spice::spk::LOADED_SPK;
 //!     use kete_core::frames::Ecliptic;
 //!
 //!     // get a read-only reference to the [`SpkCollection`]
@@ -18,6 +18,26 @@
 //! ```
 //!
 //!
+
+mod array;
+pub(crate) mod segments;
+pub mod type1;
+pub mod type10;
+pub mod type13;
+pub mod type18;
+pub mod type2;
+pub mod type21;
+pub mod type3;
+pub mod type9;
+
+pub use array::SpkArray;
+pub use type1::SpkSegmentType1;
+pub use type2::SpkSegmentType2;
+pub use type3::SpkSegmentType3;
+pub use type9::SpkSegmentType9;
+pub use type13::SpkSegmentType13;
+pub use type18::SpkSegmentType18;
+pub use type21::SpkSegmentType21;
 // BSD 3-Clause License
 //
 // Copyright (c) 2026, Dar Dahlen
@@ -48,8 +68,9 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use super::daf::DafFile;
-use super::{DAFType, SpkArray, spice_jd_to_jd, spk_segments::SpkSegment};
+use crate::daf::DAFType;
+use crate::daf::DafFile;
+use crate::spice_jd_to_jd;
 use kete_core::cache::cache_path;
 use kete_core::desigs::{NaifId, naif_ids_from_name};
 use kete_core::errors::Error;
@@ -58,6 +79,7 @@ use kete_core::prelude::KeteResult;
 use kete_core::state::State;
 use kete_core::time::{TDB, Time};
 use pathfinding::prelude::dijkstra;
+use segments::SpkSegment;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 

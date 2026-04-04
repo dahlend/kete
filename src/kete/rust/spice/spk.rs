@@ -1,7 +1,7 @@
 use kete_core::constants::AU_KM;
 use kete_core::desigs::Desig;
 use kete_core::frames::geodetic_lat_lon_to_ecef;
-use kete_spice::spice::LOADED_SPK;
+use kete_spice::prelude::LOADED_SPK;
 use pyo3::{PyResult, Python, pyfunction};
 
 use crate::desigs::NaifIDLike;

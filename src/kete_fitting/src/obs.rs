@@ -151,7 +151,7 @@ impl AstrometricObservation {
     ) -> KeteResult<(DVector<f64>, DVector<f64>)> {
         let obs = self.observer();
         let dist = (obj_state.pos - obs.pos).norm();
-        let spk = kete_spice::spice::LOADED_SPK.try_read()?;
+        let spk = kete_spice::prelude::LOADED_SPK.try_read()?;
         let mut sun_state = obj_state.clone();
         spk.try_change_center(&mut sun_state, 10)?;
         let mut obj_lt = kete_core::kepler::light_time_correct(&sun_state, dist)?;

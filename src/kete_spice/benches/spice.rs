@@ -7,7 +7,7 @@ use kete_core::{
     frames::{Ecliptic, Equatorial},
     state::State,
 };
-use kete_spice::spice::LOADED_SPK;
+use kete_spice::spk::LOADED_SPK;
 use pprof::criterion::{Output, PProfProfiler};
 use std::hint::black_box;
 

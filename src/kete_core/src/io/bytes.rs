@@ -140,3 +140,151 @@ pub fn read_str<T: Read>(buffer: T, length: usize) -> KeteResult<String> {
     let bytes = read_bytes_exact(buffer, length)?;
     Ok(bytes_to_string(&bytes))
 }
+
+/// Encode an f64 as 8 bytes.
+#[must_use]
+pub fn f64_to_bytes(value: f64, little_endian: bool) -> [u8; 8] {
+    if little_endian {
+        value.to_le_bytes()
+    } else {
+        value.to_be_bytes()
+    }
+}
+
+/// Encode an i32 as 4 bytes.
+#[must_use]
+pub fn i32_to_bytes(value: i32, little_endian: bool) -> [u8; 4] {
+    if little_endian {
+        value.to_le_bytes()
+    } else {
+        value.to_be_bytes()
+    }
+}
+
+/// Encode a slice of f64s as bytes.
+#[must_use]
+pub fn f64_vec_to_bytes(values: &[f64], little_endian: bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(values.len() * 8);
+    for &v in values {
+        out.extend_from_slice(&f64_to_bytes(v, little_endian));
+    }
+    out
+}
+
+/// Encode a slice of i32s as bytes.
+#[must_use]
+pub fn i32_vec_to_bytes(values: &[i32], little_endian: bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(values.len() * 4);
+    for &v in values {
+        out.extend_from_slice(&i32_to_bytes(v, little_endian));
+    }
+    out
+}
+
+/// Write a fixed-width string, padded with spaces to `width` bytes.
+/// Truncates if the string is longer than `width`.
+#[must_use]
+pub fn string_to_padded_bytes(s: &str, width: usize) -> Vec<u8> {
+    let s_bytes = s.as_bytes();
+    let copy_len = s_bytes.len().min(width);
+    let mut out = vec![b' '; width];
+    out[..copy_len].copy_from_slice(&s_bytes[..copy_len]);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn f64_round_trip_le() {
+        let values = [0.0, 1.0, -1.0, f64::MIN, f64::MAX, std::f64::consts::PI];
+        for &v in &values {
+            let bytes = f64_to_bytes(v, true);
+            let back = bytes_to_f64(&bytes, true).unwrap();
+            assert_eq!(v, back);
+        }
+    }
+
+    #[test]
+    fn f64_round_trip_be() {
+        let values = [0.0, 1.0, -1.0, f64::MIN, f64::MAX, std::f64::consts::PI];
+        for &v in &values {
+            let bytes = f64_to_bytes(v, false);
+            let back = bytes_to_f64(&bytes, false).unwrap();
+            assert_eq!(v, back);
+        }
+    }
+
+    #[test]
+    fn i32_round_trip_le() {
+        let values = [0, 1, -1, i32::MIN, i32::MAX, 42, -999];
+        for &v in &values {
+            let bytes = i32_to_bytes(v, true);
+            let back = bytes_to_i32(&bytes, true).unwrap();
+            assert_eq!(v, back);
+        }
+    }
+
+    #[test]
+    fn i32_round_trip_be() {
+        let values = [0, 1, -1, i32::MIN, i32::MAX, 42, -999];
+        for &v in &values {
+            let bytes = i32_to_bytes(v, false);
+            let back = bytes_to_i32(&bytes, false).unwrap();
+            assert_eq!(v, back);
+        }
+    }
+
+    #[test]
+    fn f64_vec_round_trip() {
+        let values = vec![1.0, 2.0, 3.0, std::f64::consts::E, -0.0];
+        for le in [true, false] {
+            let bytes = f64_vec_to_bytes(&values, le);
+            assert_eq!(bytes.len(), values.len() * 8);
+            let back = bytes_to_f64_vec(&bytes, le).unwrap();
+            assert_eq!(&*back, &values[..]);
+        }
+    }
+
+    #[test]
+    fn i32_vec_round_trip() {
+        let values = vec![10, -20, 0, i32::MAX, i32::MIN];
+        for le in [true, false] {
+            let bytes = i32_vec_to_bytes(&values, le);
+            assert_eq!(bytes.len(), values.len() * 4);
+            let back = bytes_to_i32_vec(&bytes, le).unwrap();
+            assert_eq!(&*back, &values[..]);
+        }
+    }
+
+    #[test]
+    fn string_to_padded_exact_width() {
+        let out = string_to_padded_bytes("hello", 5);
+        assert_eq!(&out, b"hello");
+    }
+
+    #[test]
+    fn string_to_padded_shorter() {
+        let out = string_to_padded_bytes("hi", 8);
+        assert_eq!(&out, b"hi      ");
+    }
+
+    #[test]
+    fn string_to_padded_truncates() {
+        let out = string_to_padded_bytes("hello world", 5);
+        assert_eq!(&out, b"hello");
+    }
+
+    #[test]
+    fn string_to_padded_empty() {
+        let out = string_to_padded_bytes("", 4);
+        assert_eq!(&out, b"    ");
+    }
+
+    #[test]
+    fn string_to_padded_zero_width() {
+        let out = string_to_padded_bytes("anything", 0);
+        assert!(out.is_empty());
+    }
+}

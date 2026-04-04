@@ -14,7 +14,7 @@ use kete_core::prelude::{Desig, KeteResult, SimultaneousStates};
 use kete_core::state::State;
 use kete_core::time::{TDB, Time};
 
-use crate::spice::{LOADED_SPK, SpkCollection};
+use crate::spk::{LOADED_SPK, SpkCollection};
 
 use itertools::Itertools;
 use nalgebra::{DVector, SMatrix, Vector3};

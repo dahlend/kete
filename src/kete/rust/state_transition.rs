@@ -1,7 +1,7 @@
 //! State Transition matrix computation
 use kete_core::prelude::*;
-use kete_spice::compute_state_transition;
-use kete_spice::spice::LOADED_SPK;
+use kete_spice::prelude::compute_state_transition;
+use kete_spice::spk::LOADED_SPK;
 use pyo3::{PyResult, pyfunction};
 
 use crate::nongrav::PyNonGravModel;

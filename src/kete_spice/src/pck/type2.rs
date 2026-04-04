@@ -1,21 +1,6 @@
-//! Most users should interface with `pck.rs`, not this module.
-//!
-//! PCK Files are collections of `Segments`, which are ranges of times where the state
-//! of an object is recorded. These segments are typically made up of many individual
-//! `Records`, with an associated maximum and minimum time where they are valid for.
-//!
-//! There are unique structs for each possible segment type, not all are currently
-//! supported.
-//!
-//! <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/pck.html>
-//!
-//! There is a lot of repetition in this file, as many of the segment types have very
-//! similar internal structures.
-//!
 // BSD 3-Clause License
 //
 // Copyright (c) 2026, Dar Dahlen
-// Copyright (c) 2025, California Institute of Technology
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:
@@ -42,90 +27,22 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use super::jd_to_spice_jd;
-use super::spice_jd_to_jd;
-use super::{PckArray, interpolation::chebyshev_evaluate_both};
+use super::PckArray;
+use crate::interpolation::chebyshev_evaluate_both;
+use crate::spice_jd_to_jd;
+use crate::spk::type2::build_type2_data;
 use kete_core::errors::Error;
 use kete_core::frames::NonInertialFrame;
 use kete_core::prelude::KeteResult;
 use kete_core::time::{TDB, Time};
-use std::fmt::Debug;
-
-#[derive(Debug)]
-pub(in crate::spice) enum PckSegment {
-    Type2(PckSegmentType2),
-}
-
-impl From<PckSegment> for PckArray {
-    fn from(value: PckSegment) -> Self {
-        match value {
-            PckSegment::Type2(seg) => seg.array,
-        }
-    }
-}
-
-impl TryFrom<PckArray> for PckSegment {
-    type Error = Error;
-
-    fn try_from(array: PckArray) -> Result<Self, Self::Error> {
-        match array.segment_type {
-            2 => Ok(Self::Type2(array.try_into()?)),
-            v => Err(Error::IOError(format!(
-                "PCK Segment type {v:?} not supported."
-            ))),
-        }
-    }
-}
-
-impl<'a> From<&'a PckSegment> for &'a PckArray {
-    fn from(value: &'a PckSegment) -> Self {
-        match value {
-            PckSegment::Type2(seg) => &seg.array,
-        }
-    }
-}
-
-impl PckSegment {
-    /// Return the [`NonInertialFrame`] at the specified JD. If the requested time is not within
-    /// the available range, this will fail.
-    pub(in crate::spice) fn try_get_orientation(
-        &self,
-        center_id: i32,
-        epoch: Time<TDB>,
-    ) -> KeteResult<NonInertialFrame> {
-        let arr_ref: &PckArray = self.into();
-
-        if center_id != arr_ref.frame_id {
-            Err(Error::Bounds(
-                "Center ID is not present in this record.".into(),
-            ))?;
-        }
-
-        let jds = jd_to_spice_jd(epoch);
-
-        if jds < arr_ref.jds_start || jds > arr_ref.jds_end {
-            Err(Error::Bounds("JD is not present in this record.".into()))?;
-        }
-        if arr_ref.reference_frame_id != 17 {
-            Err(Error::ValueError(format!(
-                "PCK frame ID {} is not supported. Only 17 (Ecliptic) is supported.",
-                arr_ref.reference_frame_id
-            )))?;
-        }
-
-        match &self {
-            Self::Type2(v) => v.try_get_orientation(jds),
-        }
-    }
-}
 
 /// Chebyshev polynomials (Euler angles only)
 ///
-/// <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/spk.html#Type%201:%20Modified%20Difference%20Arrays>
+/// <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/pck.html#Binary%20PCK%20Kernel>
 ///
 #[derive(Debug)]
-pub(in crate::spice) struct PckSegmentType2 {
-    array: PckArray,
+pub struct PckSegmentType2 {
+    pub(in crate::pck) array: PckArray,
     jd_step: f64,
     n_coef: usize,
     record_len: usize,
@@ -142,7 +59,7 @@ impl PckSegmentType2 {
     }
 
     /// Return the stored orientation, along with the rate of change of the orientation.
-    fn try_get_orientation(&self, jds: f64) -> KeteResult<NonInertialFrame> {
+    pub(in crate::pck) fn try_get_orientation(&self, jds: f64) -> KeteResult<NonInertialFrame> {
         // Records in the segment contain information about the central position of the
         // north pole, as well as the position of the prime meridian. These values for
         // type 2 segments are stored as chebyshev polynomials of the first kind, in
@@ -193,6 +110,47 @@ impl PckSegmentType2 {
 
         Ok(frame)
     }
+
+    /// Create a Type 2 (Chebyshev Euler angles, fixed intervals) PCK array.
+    ///
+    /// # Arguments
+    /// * `frame_id`          - Body-fixed frame ID (e.g., 3000 for Earth).
+    /// * `reference_frame_id`- Reference inertial frame (e.g., 17 for Ecliptic).
+    /// * `cdata`             - Flat Chebyshev coefficients, `(polydg+1)*3` values per record
+    ///   arranged as `[RA_0..RA_d, DEC_0..DEC_d, W_0..W_d]`.
+    /// * `n_records`         - Number of records.
+    /// * `btime`             - Begin time of first interval (SPICE seconds from J2000).
+    /// * `intlen`            - Length of each interval (seconds). Must be > 0.
+    /// * `polydg`            - Polynomial degree, in `[0, 27]`.
+    /// * `jd_start`          - Segment start epoch.
+    /// * `jd_end`            - Segment end epoch.
+    /// * `segment_name`      - Name stored in the DAF name record (max 40 chars).
+    ///
+    /// # Errors
+    /// Returns an error if the data builder rejects the inputs.
+    pub fn new_array(
+        frame_id: i32,
+        reference_frame_id: i32,
+        cdata: &[f64],
+        n_records: usize,
+        btime: f64,
+        intlen: f64,
+        polydg: usize,
+        jd_start: Time<TDB>,
+        jd_end: Time<TDB>,
+        segment_name: &str,
+    ) -> KeteResult<PckArray> {
+        let data = build_type2_data(cdata, n_records, btime, intlen, polydg)?;
+        Ok(PckArray::new(
+            frame_id,
+            reference_frame_id,
+            2,
+            jd_start,
+            jd_end,
+            data,
+            segment_name.to_string(),
+        ))
+    }
 }
 
 impl TryFrom<PckArray> for PckSegmentType2 {
@@ -209,11 +167,13 @@ impl TryFrom<PckArray> for PckSegmentType2 {
 
         let n_coef = (record_len - 2) / 3;
 
-        if n_records * record_len + 4 != array.daf.len() {
-            return Err(Error::IOError(
-                "PCK File not formatted correctly. Number records found in file do not match expected number."
-                    .into(),
-            ));
+        let expected_len = record_len * n_records + n_records + 3;
+
+        if expected_len != array.daf.len() {
+            Err(Error::IOError(format!(
+                "PCK type 2 format error: expected data length {expected_len}, found {}.",
+                array.daf.len()
+            )))?;
         }
 
         Ok(Self {
@@ -222,5 +182,54 @@ impl TryFrom<PckArray> for PckSegmentType2 {
             n_coef,
             record_len,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::daf::DafFile;
+
+    #[test]
+    fn pck_type2_round_trip() {
+        use std::io::Cursor;
+
+        let polydg = 2;
+        let ninrec = (polydg + 1) * 3; // 9
+        let n = 3;
+        let btime = 0.0;
+        let intlen = 86400.0;
+        let cdata: Vec<f64> = (0..ninrec * n).map(|i| i as f64 * 0.01).collect();
+        let jd_start: Time<TDB> = 2451545.0.into();
+        let jd_end: Time<TDB> = (2451545.0 + 3.0).into();
+
+        let mut daf = DafFile::new_pck("test pck", "pck round trip test");
+        let pck_arr = PckSegmentType2::new_array(
+            3000,
+            17,
+            &cdata,
+            n,
+            btime,
+            intlen,
+            polydg,
+            jd_start,
+            jd_end,
+            "Earth orientation",
+        )
+        .unwrap();
+        daf.arrays.push(pck_arr.daf);
+
+        let mut buf = Cursor::new(Vec::new());
+        daf.write_to(&mut buf).unwrap();
+
+        let bytes = buf.into_inner();
+        let daf = DafFile::from_buffer(Cursor::new(&bytes)).unwrap();
+        assert_eq!(daf.daf_type, crate::daf::DAFType::Pck);
+        assert_eq!(daf.arrays.len(), 1);
+        assert_eq!(daf.n_doubles, 2);
+        assert_eq!(daf.n_ints, 5);
+
+        let pck: PckArray = daf.arrays.into_iter().next().unwrap().try_into().unwrap();
+        assert_eq!(pck.frame_id, 3000);
     }
 }
