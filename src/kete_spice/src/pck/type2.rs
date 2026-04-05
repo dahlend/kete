@@ -167,7 +167,7 @@ impl TryFrom<PckArray> for PckSegmentType2 {
 
         let n_coef = (record_len - 2) / 3;
 
-        // Type 2 layout: [n_records × record_len] [btime, intlen, rsize, n]
+        // Type 2 layout: [n_records * record_len] [btime, intlen, rsize, n]
         let expected_len = record_len * n_records + 4;
 
         if expected_len != array.daf.len() {

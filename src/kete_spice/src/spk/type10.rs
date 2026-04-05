@@ -469,7 +469,7 @@ mod tests {
             SpkSegmentType10::new_array(-25544, 399, 1, &consts, &elements, &epochs, "test")
                 .unwrap();
 
-        // Round-trip through GenericSegment → SpkSegmentType10
+        // Round-trip through GenericSegment -> SpkSegmentType10
         let seg: SpkSegmentType10 = array.try_into().unwrap();
 
         // Reference items (epochs) round-trip correctly

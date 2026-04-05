@@ -288,7 +288,7 @@ mod tests {
 
     #[test]
     fn ck_type2_round_trip() {
-        // Build → TryFrom round-trip to verify time_start_idx correctness
+        // Build -> TryFrom round-trip to verify time_start_idx correctness
         let records = vec![
             1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.01, 0.707, 0.707, 0.0, 0.0, 0.0, 0.1, 0.0, 0.02,
         ];
