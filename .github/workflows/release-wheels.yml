@@ -35,7 +35,7 @@ jobs:
           - os: ubuntu-latest
             platform_id: manylinux_x86_64
             manylinux_image: manylinux2014
-            sdist: --sdist
+            sdist: true
 
           # Linux arm
           - os: ubuntu-24.04-arm
@@ -75,7 +75,10 @@ jobs:
           python3 -m pip install --upgrade pip setuptools
           python3 -m pip install maturin
       - name: Build wheels
-        run: python3 -m maturin build --release --out wheelhouse ${{ matrix.sdist }}
+        run: python3 -m maturin build --release --out wheelhouse
+      - name: Build sdist
+        if: matrix.sdist
+        run: python3 -m maturin sdist --out wheelhouse
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-cp-${{ matrix.platform_id }}
