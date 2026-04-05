@@ -6,7 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [Unreleased]
+## [3.0.0]
+
+This is a major release, meaning we are changing the API a little bit.
+
+This was primarily driven by upstream changes to the binary file format that Kete was
+using to write files. This provides an opportunity to update a number of other lower
+priority structural issues in the rust backend. Very little has changed in the python
+code beyond rewriting the binary file format.
+
+The rust backend got a huge restructuring, and if you are a rust user of Kete this is a
+very significant code change.
+
+Be sure to checkout the new addition (these are still beta, but should stabilize soon):
+- Orbit fitting!
+- MCMC based optical and simple thermal model fitting!
 
 ### Added
 

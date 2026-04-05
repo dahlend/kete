@@ -18,7 +18,6 @@ from ._core import (
     w4_color_correction,
 )
 from .cache import cache_path, download_file
-from .deprecation import rename
 from .fov import WiseCmos
 from .plot import annotate_plot, plot_fits_image, zoom_plot
 from .tap import IRSA_URL, query_tap
@@ -609,10 +608,3 @@ def fetch_fovs(phase):
         fovs.append(fov)
     fovs = sorted(fovs, key=lambda x: x.jd)
     return fovs
-
-
-fetch_WISE_fovs = rename(
-    fetch_fovs,
-    "2.0.0",
-    old_name="fetch_WISE_fovs",
-)

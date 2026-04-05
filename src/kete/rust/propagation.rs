@@ -4,9 +4,10 @@ use kete_core::kepler::moid;
 use kete_core::{
     desigs::try_name_from_id, errors::Error, forces::NonGravModel, frames::Ecliptic, state::State,
 };
-use pyo3::{Py, PyAny, PyResult, Python, pyfunction};
+use pyo3::{IntoPyObjectExt, Py, PyAny, PyResult, Python, pyfunction};
 use rayon::prelude::*;
 
+use crate::simult_states::PySimultaneousStates;
 use crate::{
     maybe_vec::{MaybeVec, maybe_vec_to_pyobj},
     nongrav::PyNonGravModel,
@@ -175,9 +176,9 @@ pub fn propagation_n_body_spk_py(
                                     );
                                 }
                                 // if we get an impact, we return a state with NaNs
-                                // but put the impact time into the new state.
+                                // at the requested time.
                                 Ok(Into::<PyState>::into(State::<Ecliptic>::new_nan(
-                                    desig, time, center,
+                                    desig, jd, center,
                                 ))
                                 .change_frame(frame))
                             } else {
@@ -194,7 +195,12 @@ pub fn propagation_n_body_spk_py(
         res.append(&mut proc_chunk?);
     }
 
-    maybe_vec_to_pyobj(py, res, was_vec)
+    // manual maybe vec conversion
+    if was_vec {
+        PySimultaneousStates::new(res, None)?.into_py_any(py)
+    } else {
+        res.into_iter().next().unwrap().into_py_any(py)
+    }
 }
 
 /// It is *STRONGLY* recommended to use `propagate_n_body` instead of this function

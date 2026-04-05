@@ -162,7 +162,7 @@ Plotting
 --------
 
 Now take the same results from above an plot the fits file with the overlaid positions.
-Note again this is only showing the first 20 of 181.
+Note again this is only showing the first 20.
 
 .. code-block:: python
 

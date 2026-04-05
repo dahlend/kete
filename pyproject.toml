@@ -1,6 +1,6 @@
 [project]
 name = "kete"
-version = "2.1.6"
+version = "3.0.0"
 description = "Kete Asteroid Survey Tools"
 readme = "README.md"
 authors = [{name = "Dar Dahlen", email = "dardahlen@gmail.com"},
@@ -99,5 +99,4 @@ select = [
 exclude = ["src/examples/*"]
 
 [tool.mypy]
-plugins = "numpy.typing.mypy_plugin"
 ignore_missing_imports = true

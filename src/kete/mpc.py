@@ -8,10 +8,9 @@ import numpy as np
 import pandas as pd
 import requests
 
-from . import constants, conversion, deprecation, spice
+from . import constants, conversion, spice
 from ._core import _find_obs_code, pack_designation, unpack_designation
 from .cache import download_json
-from .conversion import table_to_states
 from .fitting import Observation
 from .time import Time
 from .vector import Frames, State, Vector
@@ -25,13 +24,6 @@ __all__ = [
     "fetch_mpc_observations",
     "find_obs_code",
 ]
-
-table_to_states = deprecation.rename(
-    table_to_states,
-    "2.0.0",
-    old_name="table_to_states",
-    additional_msg="Use `kete.conversion.table_to_states` instead.",
-)
 
 logger = logging.getLogger(__name__)
 

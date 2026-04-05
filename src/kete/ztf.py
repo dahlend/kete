@@ -16,7 +16,6 @@ from astropy.io import fits
 
 from . import spice
 from .cache import cache_path, download_file
-from .deprecation import rename
 from .fov import ZtfCcdQuad, ZtfField
 from .mpc import find_obs_code
 from .tap import query_tap
@@ -137,13 +136,6 @@ def fetch_fovs(year: int):
 
     final_fovs = sorted(final_fovs, key=lambda x: x.jd)
     return final_fovs
-
-
-fetch_ztf_fovs = rename(
-    fetch_fovs,
-    "2.0.0",
-    old_name="fetch_ztf_fovs",
-)
 
 
 def file_frac_day_split(filefracday):

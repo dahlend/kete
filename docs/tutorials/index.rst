@@ -16,3 +16,4 @@ These are more in-depth worked examples.
    mcmc_near_miss
    spherex
    wise
+   323p
