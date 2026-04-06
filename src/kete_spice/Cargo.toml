@@ -18,6 +18,7 @@ workspace = true
 
 [dependencies]
 kete_core = { version = "*", path = "../kete_core" }
+kete_stats = { version = "*", path = "../kete_stats" }
 crossbeam = "^0.8.4"
 itertools = "^0.14.0"
 nalgebra = { version = "^0.34.2", features = ["rayon"] }

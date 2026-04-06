@@ -35,6 +35,7 @@ use kete_core::forces::{known_masses, register_custom_mass, register_mass, regis
 use pyo3::prelude::*;
 use state::PyState;
 
+pub mod analysis;
 pub mod desigs;
 pub mod elements;
 pub mod fitting;
@@ -121,9 +122,16 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(kepler::compute_eccentric_anomaly_py, m)?)?;
     m.add_function(wrap_pyfunction!(kepler::propagation_kepler_py, m)?)?;
 
+    m.add_function(wrap_pyfunction!(analysis::hill_radius_py, m)?)?;
+    m.add_function(wrap_pyfunction!(analysis::sphere_of_influence_py, m)?)?;
+    m.add_function(wrap_pyfunction!(analysis::specific_energy_py, m)?)?;
+    m.add_function(wrap_pyfunction!(analysis::compute_b_plane_py, m)?)?;
+    m.add_class::<kete_core::analysis::BPlane>()?;
+
     m.add_function(wrap_pyfunction!(propagation::propagation_n_body_spk_py, m)?)?;
     m.add_function(wrap_pyfunction!(propagation::propagation_n_body_py, m)?)?;
     m.add_function(wrap_pyfunction!(propagation::moid_py, m)?)?;
+    m.add_function(wrap_pyfunction!(propagation::closest_approach_py, m)?)?;
 
     m.add_function(wrap_pyfunction!(fovs::fov_checks_py, m)?)?;
     m.add_function(wrap_pyfunction!(fovs::fov_spk_checks_py, m)?)?;

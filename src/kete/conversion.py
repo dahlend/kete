@@ -32,18 +32,93 @@ __all__ = [
     "compute_obliquity",
     "compute_semi_major",
     "compute_tisserand",
-    "table_to_states",
     "dec_degrees_to_dms",
     "dec_dms_to_degrees",
     "earth_precession_rotation",
     "flux_to_mag",
+    "hill_radius",
     "mag_to_flux",
     "ra_degrees_to_hms",
     "ra_hms_to_degrees",
+    "sphere_of_influence",
+    "table_to_states",
 ]
 
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_gm(body: str | int) -> float:
+    """Resolve a body name or NAIF ID to its GM value in AU^3/day^2."""
+    _, naif_id = _core.name_lookup(body)
+    gms = constants.K_SUN**2
+    for _, nid, mass_ratio, _ in _core.known_masses():
+        if nid == naif_id:
+            return mass_ratio * gms
+    raise ValueError(
+        f"No gravitational parameter found for {body!r} (NAIF ID {naif_id})"
+    )
+
+
+def hill_radius(
+    semi_major: float,
+    eccentricity: float,
+    body: str | int,
+    central_body: str | int = "Sun",
+) -> float:
+    """
+    Compute the Hill radius of a body orbiting a more massive central body.
+
+    r_H = a (1 - e) (m / (3 M))^(1/3)
+
+    Parameters
+    ----------
+    semi_major:
+        Semi-major axis of the body's orbit in AU.
+    eccentricity:
+        Eccentricity of the body's orbit.
+    body:
+        Name or NAIF ID of the orbiting body (e.g. ``"Earth"`` or ``399``).
+    central_body:
+        Name or NAIF ID of the central body. Defaults to ``"Sun"``.
+
+    Returns
+    -------
+    float
+        Hill radius in AU.
+    """
+    return _core.hill_radius(
+        semi_major, eccentricity, _resolve_gm(body), _resolve_gm(central_body)
+    )
+
+
+def sphere_of_influence(
+    semi_major: float,
+    body: str | int,
+    central_body: str | int = "Sun",
+) -> float:
+    """
+    Compute the Laplace sphere-of-influence radius.
+
+    r_SOI = a (m / M)^(2/5)
+
+    Parameters
+    ----------
+    semi_major:
+        Semi-major axis of the body's orbit in AU.
+    body:
+        Name or NAIF ID of the orbiting body (e.g. ``"Earth"`` or ``399``).
+    central_body:
+        Name or NAIF ID of the central body. Defaults to ``"Sun"``.
+
+    Returns
+    -------
+    float
+        Sphere of influence radius in AU.
+    """
+    return _core.sphere_of_influence(
+        semi_major, _resolve_gm(body), _resolve_gm(central_body)
+    )
 
 
 def compute_airmass(zenith_angle: float) -> float:

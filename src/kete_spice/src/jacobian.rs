@@ -176,7 +176,7 @@ fn nongrav_jacobians_fd(
 /// - General relativity correction (Sun, Jupiter)
 /// - J2 oblateness (Sun, Jupiter, Earth)
 /// - Non-gravitational forces (Dust: analytical; JPL Comet: targeted FD)
-fn analytical_jacobians(
+pub(crate) fn analytical_jacobians(
     pos: &Vector3<f64>,
     vel: &Vector3<f64>,
     cached_states: &[(Vector3<f64>, Vector3<f64>)],
