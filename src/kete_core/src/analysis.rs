@@ -78,7 +78,6 @@ pub fn sphere_of_influence(semi_major: f64, gm_body: f64, gm_central: f64) -> f6
 /// -------
 /// float
 ///     Tisserand parameter, dimensionless.
-#[cfg_attr(feature = "pyo3", pyo3::pyfunction)]
 #[must_use]
 pub fn tisserand(semi_major: f64, eccentricity: f64, inclination: f64, a_planet: f64) -> f64 {
     a_planet / semi_major

@@ -503,23 +503,26 @@ pub fn closest_approach(
     let mut cur_a = state_at_time(state_a, jd_start, &spk, spk_id_a, center, include_extended)?;
     let mut cur_b = state_at_time(state_b, jd_start, &spk, spk_id_b, center, include_extended)?;
 
-    // Coarse search: step through the time window, recording states.
+    // Coarse search: step through the time window, tracking the best index and
+    // the state one step before it (used as the reference for refinement).
     let mut best_idx = 0;
     let mut best_dist = (Vector3::from(cur_a.pos) - Vector3::from(cur_b.pos)).norm();
-    let mut states_a = vec![cur_a.clone()];
-    let mut states_b = vec![cur_b.clone()];
+    let mut prev_a = cur_a.clone();
+    let mut prev_b = cur_b.clone();
 
     for i in 1..=n_samples {
         let t: Time<TDB> = (jd_start.jd + i as f64 * dt).into();
+        let old_a = cur_a.clone();
+        let old_b = cur_b.clone();
         cur_a = state_at_time(&cur_a, t, &spk, spk_id_a, center, include_extended)?;
         cur_b = state_at_time(&cur_b, t, &spk, spk_id_b, center, include_extended)?;
         let d = (Vector3::from(cur_a.pos) - Vector3::from(cur_b.pos)).norm();
         if d < best_dist {
             best_dist = d;
             best_idx = i;
+            prev_a = old_a;
+            prev_b = old_b;
         }
-        states_a.push(cur_a.clone());
-        states_b.push(cur_b.clone());
     }
 
     // Bracket the minimum: one step on each side.
@@ -535,8 +538,8 @@ pub fn closest_approach(
     let lo_off = lo - base;
     let hi_off = hi - base;
 
-    let ref_a = &states_a[lo_idx];
-    let ref_b = &states_b[lo_idx];
+    let ref_a = &prev_a;
+    let ref_b = &prev_b;
 
     // Capture any propagation error from inside the closure.
     let mut inner_err: Option<Error> = None;
