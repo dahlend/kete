@@ -9,7 +9,7 @@ import logging
 import numpy as np
 from numpy.typing import NDArray
 
-from . import _core, constants
+from . import _core, constants, spice
 from ._core import (
     CometElements,
     compute_obliquity,
@@ -61,63 +61,74 @@ def _resolve_gm(body: str | int) -> float:
 
 
 def hill_radius(
-    semi_major: float,
-    eccentricity: float,
     body: str | int,
     central_body: str | int = "Sun",
+    jd: float | None = None,
 ) -> float:
     """
     Compute the Hill radius of a body orbiting a more massive central body.
 
     r_H = a (1 - e) (m / (3 M))^(1/3)
 
+    The orbital elements are looked up from the loaded SPICE kernels at the
+    given epoch.
+
     Parameters
     ----------
-    semi_major:
-        Semi-major axis of the body's orbit in AU.
-    eccentricity:
-        Eccentricity of the body's orbit.
     body:
         Name or NAIF ID of the orbiting body (e.g. ``"Earth"`` or ``399``).
     central_body:
         Name or NAIF ID of the central body. Defaults to ``"Sun"``.
+    jd:
+        Epoch at which to evaluate the orbit (JD, TDB). Defaults to J2000.
 
     Returns
     -------
     float
         Hill radius in AU.
     """
+    if jd is None:
+        jd = constants.J2000
+    state = spice.get_state(body, jd, center=central_body)
+    gm_body = _resolve_gm(body)
+    gm_central = _resolve_gm(central_body)
     return _core.hill_radius(
-        semi_major, eccentricity, _resolve_gm(body), _resolve_gm(central_body)
+        state.semi_major, state.eccentricity, gm_body, gm_central
     )
 
 
 def sphere_of_influence(
-    semi_major: float,
     body: str | int,
     central_body: str | int = "Sun",
+    jd: float | None = None,
 ) -> float:
     """
     Compute the Laplace sphere-of-influence radius.
 
     r_SOI = a (m / M)^(2/5)
 
+    The semi-major axis is looked up from the loaded SPICE kernels at the
+    given epoch.
+
     Parameters
     ----------
-    semi_major:
-        Semi-major axis of the body's orbit in AU.
     body:
         Name or NAIF ID of the orbiting body (e.g. ``"Earth"`` or ``399``).
     central_body:
         Name or NAIF ID of the central body. Defaults to ``"Sun"``.
+    jd:
+        Epoch at which to evaluate the orbit (JD, TDB). Defaults to J2000.
 
     Returns
     -------
     float
         Sphere of influence radius in AU.
     """
+    if jd is None:
+        jd = constants.J2000
+    state = spice.get_state(body, jd, center=central_body)
     return _core.sphere_of_influence(
-        semi_major, _resolve_gm(body), _resolve_gm(central_body)
+        state.semi_major, _resolve_gm(body), _resolve_gm(central_body)
     )
 
 

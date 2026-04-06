@@ -40,10 +40,10 @@ state = kete.propagate_n_body(obj.state, jd_start)
 #
 # Earth's Hill sphere and sphere of influence.
 
-planet = kete.spice.get_state("Earth", jd_start)
+planet = "Earth"
 
-earth_hill = kete.hill_radius(planet.semi_major, planet.eccentricity, "Earth")
-earth_soi = kete.sphere_of_influence(planet.semi_major, "Earth")
+earth_hill = kete.hill_radius(planet)
+earth_soi = kete.sphere_of_influence(planet)
 
 print(f"Earth Hill radius:     {earth_hill * kete.constants.AU_KM:.0f} km")
 print(f"Earth sphere of influence: {earth_soi * kete.constants.AU_KM:.0f} km")
@@ -60,27 +60,24 @@ times = np.arange(jd_start, jd_end, step)
 
 geo_dist_km = []
 spec_energy = []
-dates = []
 
 for jd in times:
     state = kete.propagate_n_body(state, jd)
 
     # Geocentric state for distance and specific energy
-    geo_state = state.change_center(planet.desig)
+    geo_state = state.change_center(planet)
     r_km = geo_state.pos.r * kete.constants.AU_KM
     geo_dist_km.append(r_km)
 
     energy = kete.specific_energy(geo_state)
     spec_energy.append(energy)
 
-    dates.append(jd)
 
-dates = np.array(dates)
 geo_dist_km = np.array(geo_dist_km)
 spec_energy = np.array(spec_energy)
 
 # Convert JD to fractional year for the x-axis
-t_years = [kete.Time(jd).year_float for jd in dates]
+t_years = [kete.Time(jd).year_float for jd in times]
 
 # %%
 # Plot the results

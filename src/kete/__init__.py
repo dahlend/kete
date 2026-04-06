@@ -98,7 +98,6 @@ __all__ = [
     "Frames",
     "hill_radius",
     "HorizonsProperties",
-
     "mag_to_flux",
     "moid",
     "mpc",
