@@ -626,6 +626,32 @@ impl Desig {
             )))
         }
     }
+
+    /// Try to extract a NAIF ID from this designation.
+    ///
+    /// Returns `Some(id)` for [`Desig::Naif`], or for [`Desig::Name`] if the name
+    /// resolves to exactly one NAIF ID. Returns `None` for all other variants.
+    #[must_use]
+    pub fn naif_id(self) -> Option<i32> {
+        match self {
+            Self::Naif(id) => Some(id),
+            Self::Name(name) => {
+                let resolved = Self::Name(name).try_name_to_naif_id();
+                if let Self::Naif(id) = resolved {
+                    Some(id)
+                } else {
+                    None
+                }
+            }
+            Self::Empty
+            | Self::Perm(_)
+            | Self::Prov(_)
+            | Self::CometPerm(..)
+            | Self::CometProv(..)
+            | Self::PlanetSat(..)
+            | Self::ObservatoryCode(_) => None,
+        }
+    }
 }
 
 impl Display for Desig {

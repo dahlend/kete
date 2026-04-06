@@ -163,8 +163,8 @@ fov
 
 state = kete.HorizonsProperties.fetch("Eros").state
 
-# This accepts many states and many FOVs at once, it is the most efficient when all the
-# requested states and FOVs are provided at the same time.
+# This accepts many states and many FOVs at once, and is designed to be called with all
+# the requested states and FOVs provided at the same time.
 visible = kete.fov_state_check([state], [fov])[0]
 visible
 

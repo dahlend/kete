@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from ._core import (
     NonGravModel,
+    closest_approach,
     moid,
     propagate_n_body,
     propagate_n_body_long,
@@ -14,9 +15,10 @@ from ._core import (
 )
 
 __all__ = [
+    "closest_approach",
+    "moid",
+    "NonGravModel",
     "propagate_n_body",
     "propagate_n_body_long",
     "propagate_two_body",
-    "NonGravModel",
-    "moid",
 ]

@@ -24,7 +24,7 @@ import kete
 # -------------------------------
 # We observe Ceres from Palomar Mountain (MPC code 675) at 10 epochs spread
 # evenly over six months.  We use ``OmniDirectionalFOV`` and
-# ``fov_state_check`` which apply proper light-time correction automatically.
+# ``fov_state_check`` which apply light-time correction automatically.
 
 jd_start = kete.Time.from_ymd(2025, 1, 1).jd
 jd_end = kete.Time.from_ymd(2025, 7, 1).jd

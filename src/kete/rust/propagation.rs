@@ -306,3 +306,48 @@ pub fn propagation_n_body_py(
     }
     Ok((final_states, final_planets))
 }
+
+/// Find the epoch and distance of closest approach between two objects.
+///
+/// Both objects are propagated using full N-body mechanics over the search
+/// window. A coarse grid scan followed by golden-section refinement locates
+/// the minimum separation.
+///
+/// Parameters
+/// ----------
+/// state_a :
+///     Orbital state of the first object.
+/// state_b :
+///     Orbital state of the second object.
+/// jd_start :
+///     Start of the search window (JD, TDB).
+/// jd_end :
+///     End of the search window (JD, TDB).
+/// include_asteroids :
+///     Whether to include asteroid masses in the force model.
+///
+/// Returns
+/// -------
+/// tuple
+///     ``(epoch, distance)`` where *epoch* is a float JD (TDB) and
+///     *distance* is in AU.
+#[pyfunction]
+#[pyo3(name = "closest_approach", signature = (state_a, state_b, jd_start, jd_end, include_asteroids=false))]
+pub fn closest_approach_py(
+    state_a: PyState,
+    state_b: PyState,
+    jd_start: PyTime,
+    jd_end: PyTime,
+    include_asteroids: bool,
+) -> PyResult<(PyTime, f64)> {
+    let raw_a = state_a.raw.into_frame();
+    let raw_b = state_b.raw.into_frame();
+    let (epoch, dist) = kete_spice::propagation::closest_approach(
+        &raw_a,
+        &raw_b,
+        jd_start.into(),
+        jd_end.into(),
+        include_asteroids,
+    )?;
+    Ok((epoch.into(), dist))
+}

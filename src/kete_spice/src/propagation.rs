@@ -4,10 +4,11 @@
 //! Pure math integrators and force models remain in `kete_core::integrators`,
 //! `kete_core::forces`, and `kete_core::kepler`.
 
+use kete_core::elements::CometElements;
 use kete_core::errors::Error;
 use kete_core::forces::GravParams;
 use kete_core::forces::{AccelVecMeta, NonGravModel, vec_accel};
-use kete_core::frames::Equatorial;
+use kete_core::frames::{Ecliptic, Equatorial};
 use kete_core::integrators::{PC15, RadauIntegrator};
 use kete_core::kepler::analytic_2_body;
 use kete_core::prelude::{Desig, KeteResult, SimultaneousStates};
@@ -422,6 +423,157 @@ pub fn propagate_n_body_vec(
     }
     let final_states = all_states.split_off(GravParams::simplified_planets().len());
     Ok((final_states, all_states))
+}
+
+/// Get the state of a body at a given time, using the SPK if possible,
+/// otherwise propagating with N-body.
+fn state_at_time(
+    state: &State<Equatorial>,
+    time: Time<TDB>,
+    spk: &SpkCollection,
+    spk_id: Option<i32>,
+    center: i32,
+    include_extended: bool,
+) -> KeteResult<State<Equatorial>> {
+    if let Some(id) = spk_id {
+        spk.try_get_state_with_center(id, time, center)
+    } else {
+        propagate_n_body_spk(state.clone(), time, include_extended, None)
+    }
+}
+
+/// Find the epoch and distance of closest approach between two objects.
+///
+/// Both objects are propagated using full N-body mechanics over the search
+/// window. If either state's designation corresponds to a body available in
+/// the loaded SPK kernels, the SPK ephemeris is used directly instead of
+/// N-body propagation.
+///
+/// A coarse grid scan followed by golden-section refinement locates the
+/// minimum separation.
+///
+/// # Errors
+/// Returns an error if the states have different center IDs or the time
+/// window is non-positive.
+pub fn closest_approach(
+    state_a: &State<Equatorial>,
+    state_b: &State<Equatorial>,
+    jd_start: Time<TDB>,
+    jd_end: Time<TDB>,
+    include_extended: bool,
+) -> KeteResult<(Time<TDB>, f64)> {
+    if state_a.center_id != state_b.center_id {
+        return Err(Error::ValueError(
+            "Both states must share the same center_id".into(),
+        ));
+    }
+    let center = state_a.center_id;
+
+    let span = jd_end.jd - jd_start.jd;
+    if span <= 0.0 {
+        return Err(Error::ValueError("jd_end must be after jd_start".into()));
+    }
+
+    // If a state represents a body in the SPK, look it up directly instead of
+    // propagating. This avoids the self-impact bug (propagating Earth detects
+    // distance 0 to SPICE body 399) and is more accurate for major bodies.
+    let spk = LOADED_SPK.try_read().map_err(Error::from)?;
+    let spk_id_a = state_a.desig.clone().naif_id().filter(|id| {
+        spk.try_get_state_with_center::<Equatorial>(*id, jd_start, center)
+            .is_ok()
+    });
+    let spk_id_b = state_b.desig.clone().naif_id().filter(|id| {
+        spk.try_get_state_with_center::<Equatorial>(*id, jd_start, center)
+            .is_ok()
+    });
+
+    // Adaptive sample count based on orbital periods.
+    let elem_a = CometElements::from_state(&state_a.clone().into_frame::<Ecliptic>());
+    let elem_b = CometElements::from_state(&state_b.clone().into_frame::<Ecliptic>());
+    let min_period = elem_a.orbital_period().min(elem_b.orbital_period());
+    #[allow(clippy::cast_sign_loss, reason = "always positive by construction")]
+    let n_samples = if min_period.is_finite() && min_period > 0.0 {
+        ((span / min_period) * 20.0).ceil().max(200.0) as usize
+    } else {
+        200
+    };
+    let dt = span / n_samples as f64;
+
+    // Get both objects at jd_start.
+    let mut cur_a = state_at_time(state_a, jd_start, &spk, spk_id_a, center, include_extended)?;
+    let mut cur_b = state_at_time(state_b, jd_start, &spk, spk_id_b, center, include_extended)?;
+
+    // Coarse search: step through the time window, tracking the best index and
+    // the state one step before it (used as the reference for refinement).
+    let mut best_idx = 0;
+    let mut best_dist = (Vector3::from(cur_a.pos) - Vector3::from(cur_b.pos)).norm();
+    let mut prev_a = cur_a.clone();
+    let mut prev_b = cur_b.clone();
+
+    for i in 1..=n_samples {
+        let t: Time<TDB> = (jd_start.jd + i as f64 * dt).into();
+        let old_a = cur_a.clone();
+        let old_b = cur_b.clone();
+        cur_a = state_at_time(&cur_a, t, &spk, spk_id_a, center, include_extended)?;
+        cur_b = state_at_time(&cur_b, t, &spk, spk_id_b, center, include_extended)?;
+        let d = (Vector3::from(cur_a.pos) - Vector3::from(cur_b.pos)).norm();
+        if d < best_dist {
+            best_dist = d;
+            best_idx = i;
+            prev_a = old_a;
+            prev_b = old_b;
+        }
+    }
+
+    // Bracket the minimum: one step on each side.
+    let lo_idx = best_idx.saturating_sub(1);
+    let hi_idx = (best_idx + 1).min(n_samples);
+    let lo = jd_start.jd + lo_idx as f64 * dt;
+    let hi = jd_start.jd + hi_idx as f64 * dt;
+
+    // Golden-section search to refine.
+    // Work in offsets from jd_start to avoid precision loss on large JD values.
+    let tol = 1e-10; // ~0.01 ms
+    let base = jd_start.jd;
+    let lo_off = lo - base;
+    let hi_off = hi - base;
+
+    let ref_a = &prev_a;
+    let ref_b = &prev_b;
+
+    // Capture any propagation error from inside the closure.
+    let mut inner_err: Option<Error> = None;
+    let dist_at = |off: f64| -> f64 {
+        if inner_err.is_some() {
+            return f64::NAN;
+        }
+        let t: Time<TDB> = (base + off).into();
+        let (sa, sb) = match (
+            state_at_time(ref_a, t, &spk, spk_id_a, center, include_extended),
+            state_at_time(ref_b, t, &spk, spk_id_b, center, include_extended),
+        ) {
+            (Ok(a), Ok(b)) => (a, b),
+            (Err(e), _) | (_, Err(e)) => {
+                inner_err = Some(e);
+                return f64::NAN;
+            }
+        };
+        (Vector3::from(sa.pos) - Vector3::from(sb.pos)).norm_squared()
+    };
+
+    let best_off = kete_stats::fitting::golden_section_search(dist_at, lo_off, hi_off, tol)
+        .map_err(|_| {
+            inner_err.unwrap_or_else(|| {
+                Error::ValueError("Golden-section search failed to converge".into())
+            })
+        })?;
+
+    let final_jd: Time<TDB> = (base + best_off).into();
+    let sa = state_at_time(ref_a, final_jd, &spk, spk_id_a, center, include_extended)?;
+    let sb = state_at_time(ref_b, final_jd, &spk, spk_id_b, center, include_extended)?;
+    let final_dist = (Vector3::from(sa.pos) - Vector3::from(sb.pos)).norm();
+
+    Ok((final_jd, final_dist))
 }
 
 #[cfg(test)]
