@@ -2,9 +2,9 @@ import os
 import tempfile
 
 import pytest
+from kete._core import SimultaneousStates
 
 import kete
-from kete._core import SimultaneousStates
 from kete.spitzer import parse_poly, resolve_artifact_url
 from kete.vector import State, Vector
 
