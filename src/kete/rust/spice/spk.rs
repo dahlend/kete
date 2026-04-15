@@ -282,7 +282,8 @@ impl PySpkBuilder {
     /// object_id :
     ///     NAIF ID of the body to repack.
     /// center_id :
-    ///     NAIF ID of the reference center body (default 10 = Sun).
+    ///     NAIF ID of the reference center body. If None (default), the
+    ///     center is preserved from the source segment.
     /// threshold_km :
     ///     Maximum allowable position error in km (default 0.5).
     /// degree :
@@ -298,11 +299,11 @@ impl PySpkBuilder {
     /// ValueError
     ///     If no coverage exists, the degree is out of range, or the threshold
     ///     cannot be met.
-    #[pyo3(signature = (object_id, center_id=10, threshold_km=0.5, degree=None, output_type=2))]
+    #[pyo3(signature = (object_id, center_id=None, threshold_km=0.5, degree=None, output_type=2))]
     pub fn add_repacked_segment(
         &mut self,
         object_id: i32,
-        center_id: i32,
+        center_id: Option<i32>,
         threshold_km: f64,
         degree: Option<usize>,
         output_type: i32,
@@ -310,6 +311,18 @@ impl PySpkBuilder {
         let spk = LOADED_SPK
             .try_read()
             .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("SPK lock poisoned"))?;
+        let center_id = match center_id {
+            Some(c) => c,
+            None => {
+                let info = spk.available_info(object_id);
+                if info.is_empty() {
+                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                        "No SPK coverage for NAIF ID {object_id}, cannot detect center."
+                    )));
+                }
+                info[0].2
+            }
+        };
         let arrays = match output_type {
             2 => {
                 let deg = degree.unwrap_or(15);
@@ -448,13 +461,13 @@ pub fn tle_file_info_py(tle_file: &str) -> PyResult<Vec<(u64, String, usize)>> {
 /// IOError
 ///     If reading the input file or writing the output file fails.
 #[pyfunction]
-#[pyo3(name = "repack_spk", signature = (input_filename, output_filename, object_ids=None, center_id=10, threshold_km=0.5, degree=None, output_type=2))]
+#[pyo3(name = "repack_spk", signature = (input_filename, output_filename, object_ids=None, center_id=None, threshold_km=0.5, degree=None, output_type=2))]
 pub fn repack_spk_py(
     py: Python<'_>,
     input_filename: &str,
     output_filename: &str,
     object_ids: Option<Vec<i32>>,
-    center_id: i32,
+    center_id: Option<i32>,
     threshold_km: f64,
     degree: Option<usize>,
     output_type: i32,
@@ -476,10 +489,17 @@ pub fn repack_spk_py(
     let mut file_ids = HashSet::new();
     let mut segment_types = HashSet::new();
     let mut object_ranges: HashMap<i32, Vec<(f64, f64)>> = HashMap::new();
+    let mut object_centers: HashMap<i32, i32> = HashMap::new();
     for daf_array in &input_daf.arrays {
         if !daf_array.summary_ints.is_empty() && daf_array.summary_floats.len() >= 2 {
             let oid = daf_array.summary_ints[0];
             let _ = file_ids.insert(oid);
+            if daf_array.summary_ints.len() > 1 {
+                // Use the center from the first segment seen for each object.
+                let _ = object_centers
+                    .entry(oid)
+                    .or_insert(daf_array.summary_ints[1]);
+            }
             if daf_array.summary_ints.len() > 3 {
                 let _ = segment_types.insert(daf_array.summary_ints[3]);
             }
@@ -550,15 +570,16 @@ pub fn repack_spk_py(
 
     for &oid in &ids {
         py.check_signals()?;
+        let oid_center = center_id.unwrap_or_else(|| *object_centers.get(&oid).unwrap_or(&10));
         let ranges = object_ranges.get(&oid).map(|v| v.as_slice());
         let arrays = match output_type {
             2 => {
                 let deg = degree.unwrap_or(15);
-                repack_to_type2(&spk, oid, center_id, threshold_km, deg, ranges)
+                repack_to_type2(&spk, oid, oid_center, threshold_km, deg, ranges)
             }
             13 => {
                 let deg = degree.unwrap_or(7);
-                repack_to_type13(&spk, oid, center_id, threshold_km, deg, ranges)
+                repack_to_type13(&spk, oid, oid_center, threshold_km, deg, ranges)
             }
             _ => {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
