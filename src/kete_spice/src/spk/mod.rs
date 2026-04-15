@@ -20,6 +20,7 @@
 //!
 
 mod array;
+pub mod repack;
 pub(crate) mod segments;
 pub mod type1;
 pub mod type10;
@@ -31,6 +32,8 @@ pub mod type3;
 pub mod type9;
 
 pub use array::SpkArray;
+pub use repack::repack_to_type2;
+pub use repack::repack_to_type13;
 pub use type1::SpkSegmentType1;
 pub use type2::SpkSegmentType2;
 pub use type3::SpkSegmentType3;
@@ -251,6 +254,31 @@ impl SpkCollection {
         avail_times
     }
 
+    /// Return the raw `(jds_start, jds_end)` SPICE-second boundaries for every
+    /// loaded segment of the given object, sorted by start time.
+    ///
+    /// These are the exact segment boundaries as stored in the SPK files,
+    /// without any merging or buffering.  Useful for the repacker to know
+    /// precisely where source data exists.
+    #[must_use]
+    pub fn segment_boundaries(&self, id: i32) -> Vec<(f64, f64)> {
+        let mut bounds = Vec::new();
+        for seg in &self.planet_segments {
+            let arr: &SpkArray = seg.into();
+            if arr.object_id == id {
+                bounds.push((arr.jds_start, arr.jds_end));
+            }
+        }
+        if let Some(segs) = self.segments.get(&id) {
+            for seg in segs {
+                let arr: &SpkArray = seg.into();
+                bounds.push((arr.jds_start, arr.jds_end));
+            }
+        }
+        bounds.sort_by(|a, b| a.0.total_cmp(&b.0));
+        bounds
+    }
+
     /// Return a hash set of all unique identifies loaded in the SPKs.
     /// If include centers is true, then this additionally includes the IDs for the
     /// center IDs. For example, if ``include_centers`` is false, then `0` will never
@@ -313,31 +341,19 @@ impl SpkCollection {
     ///
     /// These mappings are used to be able to change the center ID from whatever is saved in
     /// the spks to any possible combination.
-    fn build_mapping(&mut self) {
+    pub fn build_mapping(&mut self) {
         static PRECACHE: &[i32] = &[0, 10, 399];
 
         fn update_nodes(segment: &SpkSegment, nodes: &mut HashMap<i32, HashSet<(i32, i32)>>) {
             let array_ref: &SpkArray = segment.into();
-            if let std::collections::hash_map::Entry::Vacant(e) = nodes.entry(array_ref.object_id) {
-                let mut set = HashSet::new();
-                let _ = set.insert((array_ref.center_id, array_ref.object_id));
-                let _ = e.insert(set);
-            } else {
-                let _ = nodes
-                    .get_mut(&array_ref.object_id)
-                    .unwrap()
-                    .insert((array_ref.center_id, array_ref.object_id));
-            }
-            if let std::collections::hash_map::Entry::Vacant(e) = nodes.entry(array_ref.center_id) {
-                let mut set = HashSet::new();
-                let _ = set.insert((array_ref.object_id, array_ref.object_id));
-                let _ = e.insert(set);
-            } else {
-                let _ = nodes
-                    .get_mut(&array_ref.center_id)
-                    .unwrap()
-                    .insert((array_ref.object_id, array_ref.object_id));
-            }
+            let _ = nodes
+                .entry(array_ref.object_id)
+                .or_default()
+                .insert((array_ref.center_id, array_ref.object_id));
+            let _ = nodes
+                .entry(array_ref.center_id)
+                .or_default()
+                .insert((array_ref.object_id, array_ref.object_id));
         }
 
         let mut nodes: HashMap<i32, HashSet<(i32, i32)>> = HashMap::new();
@@ -363,7 +379,7 @@ impl SpkCollection {
                 }
 
                 let result = dijkstra(
-                    &(start, -100_i32),
+                    &(start, i32::MIN),
                     |&current| match nodes.get(&current.0) {
                         Some(set) => set.iter().map(|p| (*p, 1_i32)).collect(),
                         None => Vec::<((i32, i32), i32)>::new(),

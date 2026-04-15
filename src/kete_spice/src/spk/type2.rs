@@ -18,6 +18,7 @@ pub struct SpkSegmentType2 {
     pub(crate) array: SpkArray,
     jds_step: f64,
     n_coef: usize,
+    n_records: usize,
     record_len: usize,
 }
 
@@ -61,7 +62,9 @@ impl SpkSegmentType2 {
             clippy::cast_sign_loss,
             reason = "This is correct as long as the file is correct."
         )]
-        let record_index = ((jds - jds_start) / self.jds_step).floor() as usize;
+        // Clamp to the last record when jds lands exactly on the segment end boundary.
+        let record_index =
+            (((jds - jds_start) / self.jds_step).floor() as usize).min(self.n_records - 1);
         let record = self.get_record(record_index);
 
         let t_step = record.t_step;
@@ -136,6 +139,11 @@ impl TryFrom<SpkArray> for SpkSegmentType2 {
         )]
         let record_len = array.daf[array.daf.len() - 2] as usize;
         let jds_step = array.daf[array.daf.len() - 3];
+        #[allow(
+            clippy::cast_sign_loss,
+            reason = "This is correct as long as the file is correct."
+        )]
+        let n_records = array.daf[array.daf.len() - 1] as usize;
 
         let n_coef = (record_len - 2) / 3;
 
@@ -147,6 +155,7 @@ impl TryFrom<SpkArray> for SpkSegmentType2 {
             array,
             jds_step,
             n_coef,
+            n_records,
             record_len,
         })
     }

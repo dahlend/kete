@@ -90,18 +90,14 @@ mod tests {
     fn test_quadratic_minimum() {
         let f = |x: f64| (x - 3.0) * (x - 3.0);
         let x_min = golden_section_search(f, 0.0, 5.0, 1e-12).unwrap();
-        assert!(
-            (x_min - 3.0).abs() < 1e-10,
-            "Expected 3.0, got {x_min:.15}"
-        );
+        assert!((x_min - 3.0).abs() < 1e-10, "Expected 3.0, got {x_min:.15}");
     }
 
     #[test]
     fn test_cos_minimum() {
         // cos(x) has minimum at pi on [0, 2*pi]
         let f = |x: f64| x.cos();
-        let x_min =
-            golden_section_search(f, 0.0, 2.0 * std::f64::consts::PI, 1e-12).unwrap();
+        let x_min = golden_section_search(f, 0.0, 2.0 * std::f64::consts::PI, 1e-12).unwrap();
         assert!(
             (x_min - std::f64::consts::PI).abs() < 1e-7,
             "Expected pi, got {x_min:.15}"
@@ -112,10 +108,7 @@ mod tests {
     fn test_narrow_bracket() {
         let f = |x: f64| (x - 1.0).powi(4);
         let x_min = golden_section_search(f, 0.99, 1.01, 1e-14).unwrap();
-        assert!(
-            (x_min - 1.0).abs() < 1e-12,
-            "Expected 1.0, got {x_min:.15}"
-        );
+        assert!((x_min - 1.0).abs() < 1e-12, "Expected 1.0, got {x_min:.15}");
     }
 
     #[test]

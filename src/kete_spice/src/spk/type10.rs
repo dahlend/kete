@@ -13,6 +13,9 @@ use sgp4::{
     julian_years_since_j2000_afspc_compatibility_mode,
 };
 
+/// J2000 Unix timestamp (2000-Jan-1 12:00:00 UTC) for TLE epoch conversion.
+const J2000_UTC_UNIX: f64 = 946_728_000.0;
+
 /// Space Command two-line elements
 ///
 /// <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/spk.html#Type%2010:%20Space%20Command%20Two-Line%20Elements>
@@ -210,6 +213,125 @@ impl SpkSegmentType10 {
             data,
             segment_name.to_string(),
         ))
+    }
+
+    /// Create a Type 10 SPK segment from a slice of TLE `sgp4::Elements` for a
+    /// single object.
+    ///
+    /// All elements must belong to the same satellite. They are sorted by epoch
+    /// before being written. Angle units are converted from degrees (TLE) to
+    /// radians, and mean motion from rev/day to rad/min, as required by SPICE.
+    /// Uses WGS72 geophysical constants.
+    ///
+    /// # Errors
+    /// Returns an error if `elements` is empty or epochs are not strictly
+    /// monotone after sorting.
+    pub fn from_tle_records(
+        elements: &[sgp4::Elements],
+        object_id: i32,
+        center_id: i32,
+        frame_id: i32,
+        segment_name: &str,
+    ) -> KeteResult<SpkArray> {
+        // Unit conversion constants - placed before any let statements to
+        // satisfy clippy::items_after_statements.
+        const DEG2RAD: f64 = std::f64::consts::PI / 180.0;
+        // rev/day  -> rad/min   = 2*pi / 1440
+        const MM_TO_RAD_PER_MIN: f64 = std::f64::consts::PI / 720.0;
+        // rev/day^2 -> rad/min^2  = 2*pi / 1440^2
+        const MMDT_TO_RAD_PER_MIN2: f64 = 2.0 * std::f64::consts::PI / (1440.0 * 1440.0);
+        // rev/day^3 -> rad/min^3  = 2*pi / 1440^3
+        const MMDT2_TO_RAD_PER_MIN3: f64 = 2.0 * std::f64::consts::PI / (1440.0 * 1440.0 * 1440.0);
+
+        if elements.is_empty() {
+            return Err(Error::ValueError(
+                "Type 10: need at least one TLE element set.".into(),
+            ));
+        }
+
+        // Build the 8-element SPICE geophysical constants array from the sgp4
+        // WGS84 model: [j2, j3, j4, ke, qo, so, re, ae].
+        // qo (120.0) and so (78.0) are standard SPICE drag-layer heights (km).
+        // The final 1.0 is a dimensionless distance-unit factor used by SPICE.
+        let geop_consts: [f64; 8] = [
+            sgp4::WGS84.j2,
+            sgp4::WGS84.j3,
+            sgp4::WGS84.j4,
+            sgp4::WGS84.ke,
+            120.0,
+            78.0,
+            sgp4::WGS84.ae,
+            1.0,
+        ];
+        // Sort a local copy by UTC datetime.
+        let mut sorted: Vec<&sgp4::Elements> = elements.iter().collect();
+        sorted.sort_by_key(|e| e.datetime);
+
+        let mut flat_elements: Vec<f64> = Vec::with_capacity(sorted.len() * 10);
+        let mut epochs: Vec<f64> = Vec::with_capacity(sorted.len());
+
+        for elem in &sorted {
+            // Approximate TDB ~= UTC for TLE work (consistent with the existing
+            // time handling in try_get_pos_vel; see issue #66).
+            let et = elem.datetime.and_utc().timestamp() as f64 - J2000_UTC_UNIX;
+            flat_elements.push(elem.mean_motion_dot * MMDT_TO_RAD_PER_MIN2);
+            flat_elements.push(elem.mean_motion_ddot * MMDT2_TO_RAD_PER_MIN3);
+            flat_elements.push(elem.drag_term);
+            flat_elements.push(elem.inclination * DEG2RAD);
+            flat_elements.push(elem.right_ascension * DEG2RAD);
+            flat_elements.push(elem.eccentricity);
+            flat_elements.push(elem.argument_of_perigee * DEG2RAD);
+            flat_elements.push(elem.mean_anomaly * DEG2RAD);
+            flat_elements.push(elem.mean_motion * MM_TO_RAD_PER_MIN);
+            flat_elements.push(et);
+            epochs.push(et);
+        }
+
+        Self::new_array(
+            object_id,
+            center_id,
+            frame_id,
+            &geop_consts,
+            &flat_elements,
+            &epochs,
+            segment_name,
+        )
+    }
+
+    /// Parse a block of TLE text (2-line or 3-line format) and return one
+    /// `SpkArray` per unique NORAD catalog number found.
+    ///
+    /// NAIF object IDs are assigned as `-(norad_id as i32)`. Frame and center
+    /// default to equatorial (frame 1) and Earth (center 399).
+    ///
+    /// Lines that cannot be parsed are silently skipped.
+    ///
+    /// # Errors
+    /// Returns an error if no valid TLEs are found.
+    pub fn arrays_from_tle_text(
+        text: &str,
+        center_id: i32,
+        frame_id: i32,
+    ) -> KeteResult<Vec<SpkArray>> {
+        let groups = parse_tle_text(text);
+        if groups.is_empty() {
+            return Err(Error::ValueError(
+                "No valid TLE records found in the provided text.".into(),
+            ));
+        }
+        let mut arrays = Vec::with_capacity(groups.len());
+        for (norad_id, elements) in &groups {
+            let object_id = -(*norad_id as i32);
+            let name = elements
+                .first()
+                .and_then(|e| e.object_name.as_deref())
+                .unwrap_or("")
+                .to_string();
+            arrays.push(Self::from_tle_records(
+                elements, object_id, center_id, frame_id, &name,
+            )?);
+        }
+        Ok(arrays)
     }
 
     #[inline(always)]
@@ -439,6 +561,64 @@ impl TryFrom<SpkArray> for GenericSegment {
     }
 }
 
+/// Parse a TLE text block (mix of 2-line and 3-line entries) into groups
+/// keyed by NORAD catalog number.
+///
+/// Each group is sorted by epoch (ascending). Lines that fail to parse are
+/// silently skipped.
+pub fn parse_tle_text(text: &str) -> Vec<(u64, Vec<sgp4::Elements>)> {
+    // Collect non-empty, trimmed lines.
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    let mut groups: std::collections::HashMap<u64, Vec<sgp4::Elements>> =
+        std::collections::HashMap::new();
+
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+
+        // Detect line-1 of a TLE: starts with "1 " and is roughly 69 chars.
+        let (name, l1, l2, step) = if line.starts_with("1 ") && line.len() >= 68 {
+            // 2-line format: current line is l1, next is l2.
+            let l2 = match lines.get(i + 1) {
+                Some(l) if l.starts_with("2 ") => *l,
+                _ => {
+                    i += 1;
+                    continue;
+                }
+            };
+            (None, line, l2, 2_usize)
+        } else if i + 2 < lines.len()
+            && lines[i + 1].starts_with("1 ")
+            && lines[i + 1].len() >= 68
+            && lines[i + 2].starts_with("2 ")
+        {
+            // 3-line format: name + l1 + l2.
+            (Some(line.to_string()), lines[i + 1], lines[i + 2], 3_usize)
+        } else {
+            i += 1;
+            continue;
+        };
+
+        if let Ok(elem) = sgp4::Elements::from_tle(name, l1.as_bytes(), l2.as_bytes()) {
+            groups.entry(elem.norad_id).or_default().push(elem);
+        }
+        i += step;
+    }
+
+    // Sort each group by epoch then collect into a deterministically-ordered vec.
+    let mut result: Vec<(u64, Vec<sgp4::Elements>)> = groups.into_iter().collect();
+    for (_, elems) in &mut result {
+        elems.sort_by_key(|e| e.datetime);
+    }
+    result.sort_by_key(|(id, _)| *id);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,5 +690,48 @@ mod tests {
         assert!(
             SpkSegmentType10::new_array(1, 399, 1, &consts, &[0.0; 20], &[1.0, 0.0], "t").is_err()
         );
+    }
+
+    #[test]
+    fn type10_from_tle_text() {
+        // Two ISS TLEs at different epochs; both have valid checksums and are
+        // sourced from the sgp4 crate documentation.
+        let tle_text = "\
+ISS (ZARYA)
+1 25544U 98067A   08264.51782528 -.00002182  00000-0 -11606-4 0  2927
+2 25544  51.6416 247.4627 0006703 130.5360 325.0288 15.72125391563537
+ISS (ZARYA)
+1 25544U 98067A   20194.88612269 -.00002218  00000-0 -31515-4 0  9992
+2 25544  51.6461 221.2784 0001413  89.1723 280.4612 15.49507896236008
+";
+        let groups = parse_tle_text(tle_text);
+        assert_eq!(groups.len(), 1);
+        let (norad_id, elems) = &groups[0];
+        assert_eq!(*norad_id, 25544_u64);
+        assert_eq!(elems.len(), 2);
+        assert!(elems[0].datetime <= elems[1].datetime);
+
+        let array = SpkSegmentType10::from_tle_records(elems, -25544, 399, 1, "ISS").unwrap();
+        let seg: SpkSegmentType10 = array.try_into().unwrap();
+        let times = seg.get_times();
+        assert_eq!(times.len(), 2);
+        assert!(times[0] < times[1]);
+    }
+
+    #[test]
+    fn type10_from_tle_text_two_objects() {
+        // Two different objects using verified TLE pairs from the sgp4 test suite.
+        let tle_text = "\
+VANGUARD 1
+1 00005U 58002B   00179.78495062  .00000023  00000-0  28098-4 0  4753
+2 00005  34.2682 348.7242 1859667 331.7664  19.3264 10.82419157413667
+ISS (ZARYA)
+1 25544U 98067A   20194.88612269 -.00002218  00000-0 -31515-4 0  9992
+2 25544  51.6461 221.2784 0001413  89.1723 280.4612 15.49507896236008
+";
+        let groups = parse_tle_text(tle_text);
+        assert_eq!(groups.len(), 2);
+        let arrays = SpkSegmentType10::arrays_from_tle_text(tle_text, 399, 1).unwrap();
+        assert_eq!(arrays.len(), 2);
     }
 }

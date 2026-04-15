@@ -256,7 +256,7 @@ class MPCObservation:
     obs_code: str
     sun2sc: list[float]
 
-    _UNSUPPORTED = set("WwQqVvRrXx")
+    _UNSUPPORTED = set("WwQqVvRrXxTt")
 
     def __post_init__(self):
         if self.sun2sc is None:
@@ -277,10 +277,10 @@ class MPCObservation:
             idx += 1
             if line is None:
                 continue
-            if line["note2"] == "s" or line["note2"] == "t":
+            if line["note2"] == "s":
                 logger.warning("Second line of spacecraft observation found alone")
                 continue
-            elif line["note2"] == "S" or line["note2"] == "T":
+            elif line["note2"] == "S":
                 if idx >= len(lines):
                     logger.warning("Missing second line of spacecraft observation.")
                     break

@@ -87,6 +87,7 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<fovs::PyPtfField>()?;
     m.add_class::<fovs::PySpherexCmos>()?;
     m.add_class::<fovs::PySpherexField>()?;
+    m.add_class::<fovs::PySpitzerFrame>()?;
     m.add_class::<fovs::PyGenericRectangle>()?;
     m.add_class::<fovs::PyGenericCone>()?;
     m.add_class::<fovs::PyOmniDirectional>()?;
@@ -170,6 +171,9 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(spice::spk_available_info_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::spk_load_cache_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::spk_load_core_py, m)?)?;
+    m.add_class::<spice::PySpkBuilder>()?;
+    m.add_function(wrap_pyfunction!(spice::tle_file_info_py, m)?)?;
+    m.add_function(wrap_pyfunction!(spice::repack_spk_py, m)?)?;
 
     m.add_function(wrap_pyfunction!(spice::pck_reset_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::pck_load_py, m)?)?;
@@ -193,6 +197,7 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(spice::ck_loaded_instruments_py, m)?)?;
 
     m.add_function(wrap_pyfunction!(spice::daf_header_info_py, m)?)?;
+    m.add_function(wrap_pyfunction!(spice::daf_convert_be_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::obs_codes, m)?)?;
     m.add_function(wrap_pyfunction!(spice::find_obs_code_py, m)?)?;
 

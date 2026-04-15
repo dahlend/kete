@@ -194,6 +194,12 @@ pub struct PySpherexField(pub fov::SpherexField);
 #[allow(clippy::upper_case_acronyms)]
 pub struct PySpherexCmos(pub fov::SpherexCmos);
 
+/// Field of view of a Spitzer BCD frame (IRAC or MIPS).
+#[pyclass(module = "kete", frozen, name = "SpitzerFrame", from_py_object)]
+#[derive(Clone, Debug)]
+#[allow(clippy::upper_case_acronyms)]
+pub struct PySpitzerFrame(pub fov::SpitzerFrame);
+
 /// Generic Rectangular Field of view.
 ///
 /// There are other constructors for this, for example the
@@ -260,6 +266,7 @@ pub enum AllowedFOV {
     PTFField(PyPtfField),
     SPHEREx(PySpherexCmos),
     SPHERExField(PySpherexField),
+    Spitzer(PySpitzerFrame),
 }
 
 impl AllowedFOV {
@@ -278,6 +285,7 @@ impl AllowedFOV {
             AllowedFOV::PTFField(fov) => fov.0.observer().epoch,
             AllowedFOV::SPHEREx(fov) => fov.0.observer().epoch,
             AllowedFOV::SPHERExField(fov) => fov.0.observer().epoch,
+            AllowedFOV::Spitzer(fov) => fov.0.observer().epoch,
         }
     }
 
@@ -297,6 +305,7 @@ impl AllowedFOV {
             AllowedFOV::PTFField(fov) => fov.0.get_child(idx).into_fov(),
             AllowedFOV::SPHEREx(fov) => fov.0.get_child(idx).into_fov(),
             AllowedFOV::SPHERExField(fov) => fov.0.get_child(idx).into_fov(),
+            AllowedFOV::Spitzer(fov) => fov.0.get_child(idx).into_fov(),
         }
     }
 
@@ -315,6 +324,7 @@ impl AllowedFOV {
             AllowedFOV::PTFField(fov) => fov::FOV::PtfField(fov.0),
             AllowedFOV::SPHEREx(fov) => fov::FOV::SpherexCmos(fov.0),
             AllowedFOV::SPHERExField(fov) => fov::FOV::SpherexField(fov.0),
+            AllowedFOV::Spitzer(fov) => fov::FOV::Spitzer(fov.0),
         }
     }
 
@@ -333,6 +343,7 @@ impl AllowedFOV {
             AllowedFOV::PTFField(fov) => fov.__repr__(),
             AllowedFOV::SPHEREx(fov) => fov.__repr__(),
             AllowedFOV::SPHERExField(fov) => fov.__repr__(),
+            AllowedFOV::Spitzer(fov) => fov.__repr__(),
         }
     }
 }
@@ -352,6 +363,7 @@ impl From<fov::FOV> for AllowedFOV {
             fov::FOV::PtfField(fov) => AllowedFOV::PTFField(PyPtfField(fov)),
             fov::FOV::SpherexCmos(fov) => AllowedFOV::SPHEREx(PySpherexCmos(fov)),
             fov::FOV::SpherexField(fov) => AllowedFOV::SPHERExField(PySpherexField(fov)),
+            fov::FOV::Spitzer(fov) => AllowedFOV::Spitzer(PySpitzerFrame(fov)),
             _ => panic!("Unsupported FOV type"),
         }
     }
@@ -1493,6 +1505,144 @@ impl PySpherexField {
             self.observer().__repr__(),
             self.obsid(),
             self.observation_id(),
+        )
+    }
+}
+
+#[pymethods]
+impl PySpitzerFrame {
+    /// Construct a Spitzer FOV from a pointing vector, rotation, observer, and explicit
+    /// FOV dimensions.
+    #[staticmethod]
+    pub fn from_pointing(
+        pointing: VectorLike,
+        rotation: f64,
+        observer: PyState,
+        obs_id: String,
+        band: String,
+        artifact_uri: String,
+        width: f64,
+        height: f64,
+        duration: f64,
+    ) -> PyResult<Self> {
+        let pointing = pointing.into_vector(observer.frame());
+        let band: fov::SpitzerBand = band.parse().map_err(|e: kete_core::errors::Error| {
+            PyErr::new::<exceptions::PyValueError, _>(e.to_string())
+        })?;
+        Ok(PySpitzerFrame(fov::SpitzerFrame::new(
+            pointing,
+            rotation.to_radians(),
+            observer.raw,
+            obs_id.into(),
+            band,
+            artifact_uri.into(),
+            width.to_radians(),
+            height.to_radians(),
+            duration,
+        )))
+    }
+
+    /// Construct a Spitzer FOV from the 4 corners and observer state.
+    ///
+    /// Corners must be provided in order (clockwise or counter-clockwise).
+    ///
+    /// Parameters
+    /// ----------
+    /// corners :
+    ///     4 vectors defining the corners of the FOV.
+    /// observer :
+    ///     State of the observer (Spitzer spacecraft position).
+    /// obs_id :
+    ///     IRSA ObsCore observation identifier.
+    /// band :
+    ///     Instrument band name, e.g. ``'IRAC1'``, ``'MIPS24'``.
+    /// artifact_uri :
+    ///     IRSA IBE artifact URI for the BCD FITS file.
+    /// duration :
+    ///     Exposure duration in seconds.
+    #[new]
+    pub fn new(
+        corners: [VectorLike; 4],
+        observer: PyState,
+        obs_id: String,
+        band: String,
+        artifact_uri: String,
+        duration: f64,
+    ) -> PyResult<Self> {
+        let corners: [Vector<_>; 4] = corners.map(|x| x.into_vector(observer.frame()));
+        let band: fov::SpitzerBand = band.parse().map_err(|e: kete_core::errors::Error| {
+            PyErr::new::<exceptions::PyValueError, _>(e.to_string())
+        })?;
+        Ok(PySpitzerFrame(fov::SpitzerFrame::from_corners(
+            corners,
+            observer.raw,
+            obs_id.into(),
+            band,
+            artifact_uri.into(),
+            duration,
+        )))
+    }
+
+    /// Position of the observer in this FOV.
+    #[getter]
+    pub fn observer(&self) -> PyState {
+        self.0.observer().clone().into()
+    }
+
+    /// JD of the observer location.
+    #[getter]
+    pub fn jd(&self) -> PyTime {
+        self.0.observer().epoch.into()
+    }
+
+    /// Direction that the observer is looking.
+    #[getter]
+    pub fn pointing(&self) -> PyVector {
+        self.0.pointing().unwrap().into()
+    }
+
+    /// IRSA ObsCore observation identifier.
+    #[getter]
+    pub fn obs_id(&self) -> String {
+        self.0.obs_id.to_string()
+    }
+
+    /// Instrument band name (e.g. ``'IRAC1'``, ``'MIPS24'``).
+    #[getter]
+    pub fn band(&self) -> String {
+        self.0.band.to_string()
+    }
+
+    /// IRSA IBE artifact URI for the BCD FITS file.
+    #[getter]
+    pub fn artifact_uri(&self) -> String {
+        self.0.artifact_uri.to_string()
+    }
+
+    /// Exposure duration in seconds.
+    #[getter]
+    pub fn duration(&self) -> f64 {
+        self.0.duration
+    }
+
+    /// Corners of this FOV.
+    #[getter]
+    pub fn corners(&self) -> Vec<PyVector> {
+        self.0
+            .corners()
+            .unwrap()
+            .into_iter()
+            .map(|x| x.into())
+            .collect()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SpitzerFrame(pointing={}, observer={}, obs_id={:?}, band={})",
+            self.pointing().__repr__(),
+            self.observer().__repr__(),
+            self.obs_id(),
+            self.band(),
         )
     }
 }

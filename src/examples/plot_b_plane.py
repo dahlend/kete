@@ -131,9 +131,7 @@ for ax in (ax1, ax2):
 
 earth_circle = plt.Circle((0, 0), earth_radius_km, color="green", alpha=0.3)
 ax1.add_patch(earth_circle)
-ax1.annotate(
-    "Earth", (0, 0), ha="center", va="center", fontsize=9, color="darkgreen"
-)
+ax1.annotate("Earth", (0, 0), ha="center", va="center", fontsize=9, color="darkgreen")
 ax1.set_title("Apophis 2029 B-Plane")
 
 # Right panel: zoomed to the sampled region
