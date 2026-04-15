@@ -202,9 +202,11 @@ pub fn spk_raw_state_py(id: NaifIDLike, jd: PyTime) -> PyResult<PyState> {
 ///
 /// Examples
 /// --------
-/// >>> builder = kete.spice.SpkBuilder()
-/// >>> builder.add_tle_segment("iss_tles.txt", -25544, 399)
-/// >>> builder.write("iss.bsp")
+/// .. code-block:: python
+///
+///     builder = kete.spice.SpkBuilder()
+///     builder.add_tle_segment("iss_tles.txt", -25544, 399)
+///     builder.write("iss.bsp")
 ///
 /// Parameters
 /// ----------
