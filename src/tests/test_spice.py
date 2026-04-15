@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from kete import spice, State, Time, Frames
+from kete import spice, State, Time
 from kete.mpc import find_obs_code
 from kete.spice import SpkInfo
 
@@ -70,8 +70,8 @@ class TestSpice:
         info = spice.loaded_object_info("ceres")
         expected = SpkInfo(
             name="ceres",
-            jd_start=Time(2341972.5),
-            jd_end=Time(2524593.5),
+            jd_start=Time(2415020.5),
+            jd_end=Time(2488069.5),
             center=10,
             frame=1,
             spk_type=21,
