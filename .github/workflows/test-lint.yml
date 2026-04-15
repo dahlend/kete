@@ -54,16 +54,19 @@ jobs:
       run: |
         python3 -m mypy src/kete/
 
-    # Build and run pytest
+    # Build and run tests
+    - name: Build kete
+      run: |
+        python3 -m pip install '.[dev]' -v
+    - name: Download SPICE kernels
+      run: |
+        python3 -c "import kete"
     - name: Test with cargo
       run: |
         cargo test --release
     - name: Cargo Docs
       run: |
         cargo doc --workspace --no-deps --document-private-items --all-features
-    - name: Build kete
-      run: |
-        python3 -m pip install '.[dev]' -v
     - name: Test with pytest
       run: |
         python3 -m pytest --cov-report term-missing --cov=kete
