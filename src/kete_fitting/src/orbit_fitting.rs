@@ -1255,6 +1255,8 @@ mod tests {
     use kete_core::time::{TDB, Time};
     use kete_spice::propagation::propagate_n_body_spk;
 
+    use kete_spice::test_data::ensure_test_spk;
+
     /// Helper: build a simple state.
     fn make_state(pos: [f64; 3], vel: [f64; 3], jd: f64) -> State<Equatorial> {
         State::new(Desig::Empty, jd.into(), pos.into(), vel.into(), 0)
@@ -1321,6 +1323,7 @@ mod tests {
 
     #[test]
     fn test_fit_orbit_two_body() {
+        ensure_test_spk();
         // True orbit: circular at 1.5 AU.
         let r = 1.5;
         let v = (GMS / r).sqrt();
@@ -1371,6 +1374,7 @@ mod tests {
 
     #[test]
     fn test_fit_orbit_elliptical() {
+        ensure_test_spk();
         // Moderately eccentric orbit: a = 2.0, r_peri = 1.4, e ~ 0.3.
         let a = 2.0;
         let r_peri = 1.4;
@@ -1412,6 +1416,7 @@ mod tests {
 
     #[test]
     fn test_outlier_rejection() {
+        ensure_test_spk();
         // True orbit: circular at 1.5 AU.
         let r = 1.5;
         let v = (GMS / r).sqrt();
@@ -1453,6 +1458,7 @@ mod tests {
 
     #[test]
     fn test_nongrav_jpl_comet_fitting() {
+        ensure_test_spk();
         // Circular orbit at 1.5 AU with a tangential non-grav force (a2).
         let r = 1.5;
         let v = (GMS / r).sqrt();
@@ -1516,6 +1522,7 @@ mod tests {
 
     #[test]
     fn test_nongrav_dust_fitting() {
+        ensure_test_spk();
         // Object at 1.2 AU with dust model (beta).
         let r = 1.2;
         let v = (GMS / r).sqrt();
@@ -1575,6 +1582,7 @@ mod tests {
 
     #[test]
     fn test_gradual_fit_long_arc() {
+        ensure_test_spk();
         // 2-year arc with a perturbed initial state.
         // The gradual fitting should converge where a direct full-arc
         // fit from the same initial guess would struggle.
@@ -1617,6 +1625,7 @@ mod tests {
 
     #[test]
     fn test_gradual_fit_rejection_reinclusion() {
+        ensure_test_spk();
         // Verify that observations rejected in early windows are
         // re-evaluated in the final pass.
         let r = 1.8;
@@ -1676,6 +1685,7 @@ mod tests {
     /// per-boundary error in `phi_cum` for Ceres-like data.
     #[test]
     fn test_stm_sweep_parallel_matches_sequential() {
+        ensure_test_spk();
         // 100 observations over 2 years -- large enough that multiple
         // segments are created regardless of the thread count, while
         // staying cheap enough for a unit test.

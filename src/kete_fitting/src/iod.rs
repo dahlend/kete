@@ -647,6 +647,8 @@ mod tests {
     use kete_core::time::{TDB, Time};
     use kete_spice::prelude::{LOADED_SPK, propagate_n_body_spk};
 
+    use kete_spice::test_data::ensure_test_spk;
+
     fn make_state(pos: [f64; 3], vel: [f64; 3], jd: f64) -> State<Equatorial> {
         State::new(Desig::Empty, jd.into(), pos.into(), vel.into(), 0)
     }
@@ -734,6 +736,7 @@ mod tests {
 
     #[test]
     fn test_scanning_30min_cadence() {
+        ensure_test_spk();
         let r = 2.0;
         let v = (GMS / r).sqrt();
         let obl = 23.44_f64.to_radians();
@@ -778,6 +781,7 @@ mod tests {
 
     #[test]
     fn test_scanning_20min_cadence_2night() {
+        ensure_test_spk();
         let r = 2.5;
         let v = (GMS / r).sqrt();
         let obl = 23.44_f64.to_radians();
@@ -810,6 +814,7 @@ mod tests {
 
     #[test]
     fn test_scanning_3obs_minimum_2night() {
+        ensure_test_spk();
         let r = 2.0;
         let v = (GMS / r).sqrt();
         let obl = 23.44_f64.to_radians();
@@ -834,6 +839,7 @@ mod tests {
 
     #[test]
     fn test_scanning_long_arc() {
+        ensure_test_spk();
         let r = 2.0;
         let v = (GMS / r).sqrt();
         let i = 10.0_f64.to_radians();
@@ -868,6 +874,7 @@ mod tests {
 
     #[test]
     fn test_scanning_elliptical_long_arc() {
+        ensure_test_spk();
         let a = 2.0;
         let r_peri = 1.4;
         let v_peri = (GMS * (2.0 / r_peri - 1.0 / a)).sqrt();
@@ -903,6 +910,7 @@ mod tests {
 
     #[test]
     fn test_scanning_short_arc() {
+        ensure_test_spk();
         let r = 2.0;
         let v = (GMS / r).sqrt();
         let obl = 23.44_f64.to_radians();
@@ -948,6 +956,7 @@ mod tests {
 
     #[test]
     fn test_scanning_year_long_arc() {
+        ensure_test_spk();
         let r = 2.5;
         let v = (GMS / r).sqrt();
         let obl = 23.44_f64.to_radians();
@@ -987,6 +996,7 @@ mod tests {
 
     #[test]
     fn test_scanning_neo_long_arc() {
+        ensure_test_spk();
         // Bennu-like NEO: a ~ 1.126 AU, e ~ 0.2, i ~ 6 deg.
         // ~200 observations over 2 years with N-body propagation and SPK Earth.
         let a = 1.126;
@@ -1083,6 +1093,7 @@ mod tests {
 
     #[test]
     fn test_scanning_close_encounter_neo() {
+        ensure_test_spk();
         // Apophis-like close encounter: a ~ 0.92 AU, e ~ 0.19, i ~ 3 deg.
         // Object passes ~0.1 AU from Earth with high apparent motion.
         // Observations span ~20 days around closest approach.
@@ -1145,6 +1156,7 @@ mod tests {
 
     #[test]
     fn test_single_night_circular_2au() {
+        ensure_test_spk();
         // Circular orbit at 2 AU, 4 observations over 4 hours on one night.
         let r = 2.0;
         let v = (GMS / r).sqrt();
@@ -1180,6 +1192,7 @@ mod tests {
 
     #[test]
     fn test_single_night_neo() {
+        ensure_test_spk();
         // Apollo-type NEO at ~1.5 AU, 6 observations over 6 hours.
         let a = 1.8;
         let r = 1.5;
@@ -1218,6 +1231,7 @@ mod tests {
 
     #[test]
     fn test_minimum_2obs() {
+        ensure_test_spk();
         // Minimum requirement: 2 observations, 1-hour separation.
         let r = 2.0;
         let v = (GMS / r).sqrt();
@@ -1243,6 +1257,7 @@ mod tests {
 
     #[test]
     fn test_rejects_1obs() {
+        ensure_test_spk();
         // Should fail with only 1 observation.
         let r = 2.0;
         let v = (GMS / r).sqrt();
@@ -1262,6 +1277,7 @@ mod tests {
 
     #[test]
     fn test_epoch_parameter() {
+        ensure_test_spk();
         // Verify that the epoch parameter controls the output epoch.
         let r = 2.0;
         let v = (GMS / r).sqrt();

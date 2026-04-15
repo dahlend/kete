@@ -106,3 +106,40 @@ mod tests {
         assert!((jd_sec - jd_sec_back).abs() < 1e-5);
     }
 }
+
+/// Test-only helpers for loading SPK data from `docs/data/`.
+#[cfg(any(test, feature = "test"))]
+pub mod test_data {
+    use std::sync::Once;
+
+    static INIT: Once = Once::new();
+
+    /// Ensure the test planetary kernel and a sample asteroid SPK are loaded
+    /// into [`LOADED_SPK`](crate::spk::LOADED_SPK).
+    ///
+    /// On CI or fresh checkouts the user cache is empty, so `load_core()`
+    /// yields an empty collection. This helper loads committed test files
+    /// (`de440s_1990_2050.bsp` and `20000042.bsp`) so that all
+    /// SPICE-dependent tests can run without an external cache.
+    ///
+    /// Guarded by `Once` so the files are loaded at most once per binary.
+    ///
+    /// # Panics
+    /// Panics if the test SPK files cannot be loaded.
+    pub fn ensure_test_spk() {
+        INIT.call_once(|| {
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap();
+            let mut spk = crate::spk::LOADED_SPK.write().unwrap();
+            for name in ["de440s_1990_2050.bsp", "20000042.bsp"] {
+                let path = root.join("docs/data").join(name);
+                if let Err(e) = spk.load_file(path.to_str().unwrap()) {
+                    panic!("Failed to load test SPK {name}: {e}");
+                }
+            }
+        });
+    }
+}

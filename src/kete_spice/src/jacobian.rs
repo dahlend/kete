@@ -467,6 +467,7 @@ mod tests {
 
     #[test]
     fn stm_n_body_finite_difference_validation() {
+        crate::test_data::ensure_test_spk();
         // Validate the variational STM against finite-difference-of-trajectory.
         let state = test_state();
         // 30 days
@@ -532,6 +533,7 @@ mod tests {
 
     #[test]
     fn stm_determinant_conservative() {
+        crate::test_data::ensure_test_spk();
         // For conservative forces (no non-grav), det(STM) should be ~1.
         let state = test_state();
         let jd_final = (2451545.0 + 30.0).into();
@@ -549,6 +551,7 @@ mod tests {
 
     #[test]
     fn stm_jpl_comet_param_sensitivity() {
+        crate::test_data::ensure_test_spk();
         // Validate parameter sensitivity columns for JplComet model via finite diffs.
         let a1 = 1e-8;
         let a2 = 1e-9;
@@ -611,6 +614,7 @@ mod tests {
 
     #[test]
     fn stm_dust_param_sensitivity() {
+        crate::test_data::ensure_test_spk();
         // Validate parameter sensitivity column for the Dust (beta) model via FD.
         let beta = 0.01;
         let model = NonGravModel::new_dust(beta);
@@ -654,6 +658,7 @@ mod tests {
 
     #[test]
     fn stm_long_arc_90_day() {
+        crate::test_data::ensure_test_spk();
         // Validate STM over a 90-day arc against finite-difference-of-trajectory.
         let state = test_state();
         // 90 days
@@ -726,6 +731,7 @@ mod tests {
 
     /// Compare analytical Jacobians against the FD reference at a given state.
     fn check_jacobians_match(non_grav: Option<NonGravModel>, tol: f64) {
+        crate::test_data::ensure_test_spk();
         let state = test_state();
         let time = state.epoch;
         let pos: Vector3<f64> = state.pos.into();
