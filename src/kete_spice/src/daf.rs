@@ -188,11 +188,12 @@ impl DafFile {
             ))?,
         };
         if !little_endian {
-            return Err(Error::IOError(
-                "Big-endian DAF files are not supported. \
-                 Use the NAIF `bingo` utility to convert to little-endian."
-                    .into(),
-            ));
+            // Swap in memory and re-parse as little-endian.
+            let _ = buffer.seek(std::io::SeekFrom::Start(0))?;
+            let mut raw = Vec::new();
+            let _ = buffer.read_to_end(&mut raw)?;
+            let swapped = swap_daf_be_to_le(&raw)?;
+            return Self::from_buffer(Cursor::new(swapped));
         }
 
         let n_doubles = bytes_to_i32(&bytes[8..12])?;
@@ -220,7 +221,8 @@ impl DafFile {
         let mut comments: Vec<String> = Vec::with_capacity(n_comment_recs);
         for _ in 0..n_comment_recs {
             let rec = read_bytes_exact(&mut buffer, 1024)?;
-            comments.push(bytes_to_string(&rec));
+            // Only the first 1000 bytes of each 1024-byte record carry comments.
+            comments.push(bytes_to_string(&rec[..1000]));
             raw_comment_records.push(rec);
         }
 
@@ -778,8 +780,162 @@ where
     }
 }
 
-// SpkArray, PckArray, and CkArray have been moved to their respective modules:
-// crate::spk::SpkArray, crate::pck::PckArray, crate::ck::CkArray
+/// Convert a big-endian DAF file to a little-endian copy.
+///
+/// Reads `input_filename`, byte-swaps every numeric field (all f64 and i32
+/// values in the file-record header, summary records, and data arrays), updates
+/// the endianness marker from `"BIG-IEEE"` to `"LTL-IEEE"`, and writes the
+/// result to `output_filename`.
+///
+/// Many older SPK files distributed by NAIF (e.g. Spitzer) are big-endian.
+/// kete can only read little-endian DAF files, so this function is provided
+/// as a one-time conversion step.
+///
+/// # Errors
+/// Returns [`Error::IOError`] if:
+/// - `input_filename` cannot be read.
+/// - The input is not a valid big-endian DAF (wrong endian marker, too small,
+///   or invalid header values).
+/// - `output_filename` cannot be written.
+pub fn convert_daf_big_to_little_endian(
+    input_filename: &str,
+    output_filename: &str,
+) -> KeteResult<()> {
+    let bytes = std::fs::read(input_filename)
+        .map_err(|e| Error::IOError(format!("Failed to read {input_filename}: {e}")))?;
+    let converted = swap_daf_be_to_le(&bytes)?;
+    std::fs::write(output_filename, converted)
+        .map_err(|e| Error::IOError(format!("Failed to write {output_filename}: {e}")))?;
+    Ok(())
+}
+
+/// Byte-swap all numeric fields of a big-endian DAF byte buffer, returning a
+/// little-endian copy.
+///
+/// # Errors
+/// Returns [`Error::IOError`] if the buffer is not a valid big-endian DAF.
+#[allow(
+    clippy::cast_sign_loss,
+    reason = "header values are validated to be non-negative before casting to usize"
+)]
+#[allow(
+    clippy::missing_panics_doc,
+    reason = "slice lengths are validated before .try_into().unwrap() calls"
+)]
+fn swap_daf_be_to_le(input: &[u8]) -> KeteResult<Vec<u8>> {
+    if input.len() < 1024 {
+        return Err(Error::IOError("DAF file is too small to be valid.".into()));
+    }
+
+    if !input[88..96].eq_ignore_ascii_case(b"big-ieee") {
+        return Err(Error::IOError(
+            "Input is not a big-endian DAF file (expected 'BIG-IEEE' at byte offset 88).".into(),
+        ));
+    }
+
+    // Read header values in big-endian before any in-place swapping.
+    let n_doubles = i32::from_be_bytes(input[8..12].try_into().unwrap());
+    let n_ints = i32::from_be_bytes(input[12..16].try_into().unwrap());
+    let init_summary_idx = i32::from_be_bytes(input[76..80].try_into().unwrap()).abs();
+
+    if n_doubles < 0 || n_ints < 2 {
+        return Err(Error::IOError(
+            "DAF header has invalid ND or NI values.".into(),
+        ));
+    }
+    if init_summary_idx < 2 {
+        return Err(Error::IOError(
+            "DAF header has invalid FWARD (first summary record index).".into(),
+        ));
+    }
+
+    let mut buf = input.to_vec();
+
+    // Byte-swap the five i32 fields in the file record.
+    swap4(&mut buf, 8); // ND (n_doubles)
+    swap4(&mut buf, 12); // NI (n_ints)
+    swap4(&mut buf, 76); // FWARD
+    swap4(&mut buf, 80); // BWARD
+    swap4(&mut buf, 84); // FREE
+
+    // Overwrite the endianness tag.
+    buf[88..96].copy_from_slice(b"LTL-IEEE");
+
+    let nd = n_doubles as usize;
+    let ni = n_ints as usize;
+    // Each summary occupies (ND + ceil(NI/2)) 8-byte words, word-aligned.
+    let summary_stride = (nd + ni.div_ceil(2)) * 8;
+
+    // Walk the linked list of summary records.
+    let mut current_idx = init_summary_idx as usize;
+    while current_idx != 0 {
+        let rec_off = 1024 * (current_idx - 1);
+        if rec_off + 24 > buf.len() {
+            break;
+        }
+
+        // Read next-record index and n_summaries from the original BE bytes.
+        let next_f = f64::from_be_bytes(input[rec_off..rec_off + 8].try_into().unwrap());
+        let n_summ =
+            f64::from_be_bytes(input[rec_off + 16..rec_off + 24].try_into().unwrap()) as usize;
+
+        // Swap the three summary-record header f64s.
+        swap8(&mut buf, rec_off); // next summary record
+        swap8(&mut buf, rec_off + 8); // prev summary record
+        swap8(&mut buf, rec_off + 16); // n_summaries
+
+        for j in 0..n_summ {
+            let s_off = rec_off + 24 + j * summary_stride;
+            let ints_off = s_off + nd * 8;
+            if ints_off + ni * 4 > buf.len() {
+                break;
+            }
+
+            // Swap n_doubles f64s.
+            for k in 0..nd {
+                swap8(&mut buf, s_off + k * 8);
+            }
+            // Swap n_ints i32s.
+            for k in 0..ni {
+                swap4(&mut buf, ints_off + k * 4);
+            }
+
+            // Array start/end are the last two ints.  They have already been
+            // byte-swapped above, so read them back as little-endian.
+            let last_two = ints_off + (ni - 2) * 4;
+            let array_start =
+                i32::from_le_bytes(buf[last_two..last_two + 4].try_into().unwrap()) as usize;
+            let array_end =
+                i32::from_le_bytes(buf[last_two + 4..last_two + 8].try_into().unwrap()) as usize;
+
+            if array_start == 0 || array_end < array_start {
+                continue;
+            }
+
+            // Byte-swap every f64 word in the data segment.
+            for word in array_start..=array_end {
+                let byte_off = 8 * (word - 1);
+                if byte_off + 8 <= buf.len() {
+                    swap8(&mut buf, byte_off);
+                }
+            }
+        }
+
+        current_idx = if next_f == 0.0 { 0 } else { next_f as usize };
+    }
+
+    Ok(buf)
+}
+
+#[inline(always)]
+fn swap8(buf: &mut [u8], off: usize) {
+    buf[off..off + 8].reverse();
+}
+
+#[inline(always)]
+fn swap4(buf: &mut [u8], off: usize) {
+    buf[off..off + 4].reverse();
+}
 
 #[cfg(test)]
 mod tests {
@@ -913,6 +1069,34 @@ mod tests {
         assert_eq!(arr2.summary_ints[1], 10);
         assert_eq!(arr2.summary_ints[2], 1);
         assert_eq!(arr2.summary_ints[3], 9);
+    }
+
+    #[test]
+    fn daf_file_long_comment_round_trip() {
+        // A comment longer than 1000 bytes forces multiple comment records.
+        // This verifies that the 24-byte Fortran overhead at the end of each
+        // 1024-byte record is not injected into the comment text.
+        let long_comment: String = (0..120)
+            .map(|i| format!("line {i:04}: abcdefghijklmnopqrstuvwxyz"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(long_comment.len() > 2000, "comment must span >2 records");
+
+        let mut daf = DafFile::new_spk("long_comment", &long_comment);
+        let arr = DafArray::new(
+            vec![0.0, 86400.0].into(),
+            vec![1, 10, 1, 9, 0, 0].into(),
+            vec![1.0, 2.0].into(),
+            DAFType::Spk,
+            "s".into(),
+        );
+        daf.arrays.push(arr);
+
+        let mut buf = Cursor::new(Vec::new());
+        daf.write_to(&mut buf).unwrap();
+        buf.set_position(0);
+        let read_back = DafFile::from_buffer(&mut buf).unwrap();
+        assert_eq!(read_back.comments, long_comment);
     }
 
     #[test]

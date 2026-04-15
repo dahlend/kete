@@ -10,12 +10,15 @@ import requests
 
 from . import _core
 from ._core import (
+    SpkBuilder,
     approx_earth_pos_to_ecliptic,
+    daf_convert_big_to_little_endian,
     get_state,
     instrument_equatorial_to_frame,
     instrument_frame_to_equatorial,
     loaded_objects,
     name_lookup,
+    repack_spk,
     state_to_earth_pos,
 )
 from .cache import cache_path, download_file
@@ -25,6 +28,8 @@ from .vector import State
 
 __all__ = [
     "approx_earth_pos_to_ecliptic",
+    "daf_convert_big_to_little_endian",
+    "SpkBuilder",
     "SpkInfo",
     "get_state",
     "name_lookup",
@@ -40,6 +45,7 @@ __all__ = [
     "moon_illumination_frac",
     "instrument_frame_to_equatorial",
     "instrument_equatorial_to_frame",
+    "repack_spk",
 ]
 
 
@@ -122,13 +128,17 @@ def _download_core_files():
     """
     Download the core files required for the default planetary kernels.
 
-    This includes the de440s, the WISE kernel, and 5 largest main belt asteroids.
+    This includes the de440s planetary ephemeris, the WISE, Spitzer, and SPHEREx
+    spacecraft kernels, and the 5 largest main-belt asteroids.
     """
     cache_files = glob.glob(os.path.join(cache_path(), "kernels/core", "**.bsp"))
 
     # required files:
     de440 = "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de440s.bsp"
     wise = "https://github.com/dahlend/kete/raw/refs/heads/main/docs/data/wise.bsp"
+    spitzer = (
+        "https://github.com/dahlend/kete/raw/refs/heads/main/docs/data/spitzer.bsp"
+    )
     spherex = (
         "https://github.com/dahlend/kete/raw/refs/heads/main/docs/data/spherex.bsp"
     )
@@ -141,8 +151,12 @@ def _download_core_files():
         # Cannot find the wise file, so download it
         with contextlib.suppress(Exception):
             download_file(wise, subfolder="kernels/core")
+    if not any(["spitzer.bsp" in file for file in cache_files]):
+        # Cannot find the spitzer file, so download it
+        with contextlib.suppress(Exception):
+            download_file(spitzer, subfolder="kernels/core")
     if not any(["spherex.bsp" in file for file in cache_files]):
-        # Cannot find the wise file, so download it
+        # Cannot find the spherex file, so download it
         with contextlib.suppress(Exception):
             download_file(spherex, subfolder="kernels/core")
 

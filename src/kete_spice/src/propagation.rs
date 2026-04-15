@@ -585,6 +585,7 @@ mod tests {
 
     #[test]
     fn check_accelerations_equal() {
+        crate::test_data::ensure_test_spk();
         let spk = &LOADED_SPK.try_read().unwrap();
         let jd = 2451545.0.into();
         let mut pos: Vec<f64> = Vec::new();

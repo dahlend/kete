@@ -13,6 +13,9 @@ repository.workspace = true
 [lib]
 name = "kete_spice"
 
+[features]
+test = []
+
 [lints]
 workspace = true
 

@@ -135,10 +135,9 @@ fn scanning_iod_core(
     // are directly comparable.  Use observations near the reference epoch
     // so that scoring reflects fit quality where the user actually cares
     // (typically the last observation for forward prediction).
-    let rescore_indices = select_scoring_cluster(sorted_obs, ref_epoch.jd);
-    let rescore_obs: Vec<AstrometricObservation> = rescore_indices
-        .iter()
-        .map(|&i| sorted_obs[i].clone())
+    let rescore_obs: Vec<AstrometricObservation> = select_distributed_obs(sorted_obs, 20)
+        .into_iter()
+        .map(|i| sorted_obs[i].clone())
         .collect();
 
     for entry in &mut all_refined {
@@ -215,14 +214,15 @@ fn run_ranging_for_pair(
         ));
     }
 
-    // Score against a dense observation cluster near the pair midpoint.
-    // Clusters are short enough that two-body is accurate for any orbit,
-    // and dense enough to average out observation noise.
-    let ref_jd = f64::midpoint(obs_a.epoch.jd, obs_b.epoch.jd);
-    let scoring_indices = select_scoring_cluster(sorted_obs, ref_jd);
-    let scoring_obs: Vec<AstrometricObservation> = scoring_indices
-        .iter()
-        .map(|&i| sorted_obs[i].clone())
+    // Score against observations distributed across the full arc.
+    // Any Lambert orbit passes exactly through the two pair endpoints by
+    // construction, so scoring near only those endpoints cannot distinguish
+    // correct distances from wrong ones.  Distributing scoring observations
+    // across the full arc ensures that wrong-distance orbits (which diverge
+    // at epochs far from the pair) are penalized.
+    let scoring_obs: Vec<AstrometricObservation> = select_distributed_obs(sorted_obs, 15)
+        .into_iter()
+        .map(|i| sorted_obs[i].clone())
         .collect();
 
     // 2-D grid scan over (log rho_a, log rho_b).
@@ -391,7 +391,19 @@ fn select_ranging_pairs(sorted_obs: &[AstrometricObservation]) -> Vec<(usize, us
         return vec![];
     }
 
-    let target_baselines = [3.0, 10.0];
+    let arc_days = sorted_obs[n - 1].epoch().jd - sorted_obs[0].epoch().jd;
+
+    // Short and medium baselines are always tried.  Longer baselines are
+    // added when the arc is long enough to contain them, providing better
+    // heliocentric distance resolution for multi-month arcs.
+    let mut target_baselines = vec![3.0_f64, 10.0];
+    if arc_days > 25.0 {
+        target_baselines.push(30.0);
+    }
+    if arc_days > 80.0 {
+        target_baselines.push(90.0);
+    }
+
     let mut pairs: Vec<(usize, usize)> = Vec::new();
 
     for &target in &target_baselines {
@@ -451,53 +463,42 @@ fn best_pair_near_baseline(
     best
 }
 
-/// Select observations for scoring IOD candidates.
+/// Return up to `n_max` observation indices distributed evenly by time
+/// across the full arc.
 ///
-/// IOD scoring only needs to answer "does this candidate roughly match?"
-/// -- not "is this a good orbit fit?". We want observations spanning enough
-/// arc for distance leverage (>= ~1 day) but short enough that two-body
-/// is reliable at IOD precision.
-///
-/// Uses a 3-day window around `ref_jd`, capped at 10 observations
-/// (whichever limit is reached first).  Always returns at least 2
-/// observations (falling back to the 2 nearest if the window is empty).
-fn select_scoring_cluster(sorted_obs: &[AstrometricObservation], ref_jd: f64) -> Vec<usize> {
-    let mut indices: Vec<usize> = sorted_obs
-        .iter()
-        .enumerate()
-        .filter(|(_, ob)| (ob.epoch().jd - ref_jd).abs() <= 3.0)
-        .map(|(i, _)| i)
-        .collect();
-
-    // Fallback: 2 nearest observations regardless of window.
-    if indices.len() < 2 {
-        let mut by_dist: Vec<(usize, f64)> = sorted_obs
-            .iter()
-            .enumerate()
-            .map(|(i, ob)| (i, (ob.epoch().jd - ref_jd).abs()))
-            .collect();
-        by_dist.sort_by(|a, b| a.1.total_cmp(&b.1));
-        return by_dist
-            .iter()
-            .take(2.min(sorted_obs.len()))
-            .map(|&(i, _)| i)
-            .collect();
+/// Distributing scoring observations across the arc ensures that scoring
+/// reflects fit quality throughout the observation history, not just near
+/// the Lambert pair endpoints where any orbit trivially fits.
+fn select_distributed_obs(sorted_obs: &[AstrometricObservation], n_max: usize) -> Vec<usize> {
+    let n = sorted_obs.len();
+    if n == 0 || n_max == 0 {
+        return vec![];
     }
-
-    // Stride down to 10 if too many observations.
-    if indices.len() > 10 {
-        let n = indices.len();
-        let step = (n - 1) as f64 / 9.0;
-        let mut strided = Vec::with_capacity(10);
-        for k in 0..10 {
-            #[allow(clippy::cast_sign_loss, reason = "product is always positive")]
-            let idx = (f64::from(k) * step).round() as usize;
-            strided.push(indices[idx]);
+    if n <= n_max {
+        return (0..n).collect();
+    }
+    if n_max == 1 {
+        return vec![0];
+    }
+    // Invariant: n > n_max >= 2.
+    let t_start = sorted_obs[0].epoch().jd;
+    let t_end = sorted_obs[n - 1].epoch().jd;
+    let t_span = t_end - t_start;
+    if t_span < 1e-12 {
+        return (0..n_max).collect();
+    }
+    let mut selected: Vec<usize> = Vec::with_capacity(n_max);
+    for k in 0..n_max {
+        let frac = k as f64 / (n_max - 1) as f64;
+        let t_target = t_start + t_span * frac;
+        let idx = sorted_obs
+            .partition_point(|o| o.epoch().jd < t_target)
+            .min(n - 1);
+        if selected.last() != Some(&idx) {
+            selected.push(idx);
         }
-        indices = strided;
     }
-
-    indices
+    selected
 }
 
 /// Compute the eccentricity of a candidate state.
@@ -646,6 +647,8 @@ mod tests {
     use kete_core::time::{TDB, Time};
     use kete_spice::prelude::{LOADED_SPK, propagate_n_body_spk};
 
+    use kete_spice::test_data::ensure_test_spk;
+
     fn make_state(pos: [f64; 3], vel: [f64; 3], jd: f64) -> State<Equatorial> {
         State::new(Desig::Empty, jd.into(), pos.into(), vel.into(), 0)
     }
@@ -733,6 +736,7 @@ mod tests {
 
     #[test]
     fn test_scanning_30min_cadence() {
+        ensure_test_spk();
         let r = 2.0;
         let v = (GMS / r).sqrt();
         let obl = 23.44_f64.to_radians();
@@ -777,6 +781,7 @@ mod tests {
 
     #[test]
     fn test_scanning_20min_cadence_2night() {
+        ensure_test_spk();
         let r = 2.5;
         let v = (GMS / r).sqrt();
         let obl = 23.44_f64.to_radians();
@@ -809,6 +814,7 @@ mod tests {
 
     #[test]
     fn test_scanning_3obs_minimum_2night() {
+        ensure_test_spk();
         let r = 2.0;
         let v = (GMS / r).sqrt();
         let obl = 23.44_f64.to_radians();
@@ -833,6 +839,7 @@ mod tests {
 
     #[test]
     fn test_scanning_long_arc() {
+        ensure_test_spk();
         let r = 2.0;
         let v = (GMS / r).sqrt();
         let i = 10.0_f64.to_radians();
@@ -867,6 +874,7 @@ mod tests {
 
     #[test]
     fn test_scanning_elliptical_long_arc() {
+        ensure_test_spk();
         let a = 2.0;
         let r_peri = 1.4;
         let v_peri = (GMS * (2.0 / r_peri - 1.0 / a)).sqrt();
@@ -902,6 +910,7 @@ mod tests {
 
     #[test]
     fn test_scanning_short_arc() {
+        ensure_test_spk();
         let r = 2.0;
         let v = (GMS / r).sqrt();
         let obl = 23.44_f64.to_radians();
@@ -947,6 +956,7 @@ mod tests {
 
     #[test]
     fn test_scanning_year_long_arc() {
+        ensure_test_spk();
         let r = 2.5;
         let v = (GMS / r).sqrt();
         let obl = 23.44_f64.to_radians();
@@ -986,6 +996,7 @@ mod tests {
 
     #[test]
     fn test_scanning_neo_long_arc() {
+        ensure_test_spk();
         // Bennu-like NEO: a ~ 1.126 AU, e ~ 0.2, i ~ 6 deg.
         // ~200 observations over 2 years with N-body propagation and SPK Earth.
         let a = 1.126;
@@ -1082,6 +1093,7 @@ mod tests {
 
     #[test]
     fn test_scanning_close_encounter_neo() {
+        ensure_test_spk();
         // Apophis-like close encounter: a ~ 0.92 AU, e ~ 0.19, i ~ 3 deg.
         // Object passes ~0.1 AU from Earth with high apparent motion.
         // Observations span ~20 days around closest approach.
@@ -1144,6 +1156,7 @@ mod tests {
 
     #[test]
     fn test_single_night_circular_2au() {
+        ensure_test_spk();
         // Circular orbit at 2 AU, 4 observations over 4 hours on one night.
         let r = 2.0;
         let v = (GMS / r).sqrt();
@@ -1179,6 +1192,7 @@ mod tests {
 
     #[test]
     fn test_single_night_neo() {
+        ensure_test_spk();
         // Apollo-type NEO at ~1.5 AU, 6 observations over 6 hours.
         let a = 1.8;
         let r = 1.5;
@@ -1217,6 +1231,7 @@ mod tests {
 
     #[test]
     fn test_minimum_2obs() {
+        ensure_test_spk();
         // Minimum requirement: 2 observations, 1-hour separation.
         let r = 2.0;
         let v = (GMS / r).sqrt();
@@ -1242,6 +1257,7 @@ mod tests {
 
     #[test]
     fn test_rejects_1obs() {
+        ensure_test_spk();
         // Should fail with only 1 observation.
         let r = 2.0;
         let v = (GMS / r).sqrt();
@@ -1261,6 +1277,7 @@ mod tests {
 
     #[test]
     fn test_epoch_parameter() {
+        ensure_test_spk();
         // Verify that the epoch parameter controls the output epoch.
         let r = 2.0;
         let v = (GMS / r).sqrt();

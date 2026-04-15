@@ -19,5 +19,6 @@ API
    population
    propagation
    spice
+   spitzer
    time
    vector

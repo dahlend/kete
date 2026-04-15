@@ -24,3 +24,6 @@ nuts-rs = "0.17"
 rand = "^0.10.0"
 rand_distr = "^0.6.0"
 rayon = "^1.11.0"
+
+[dev-dependencies]
+kete_spice = {version = "*", path = "../kete_spice", features = ["test"]}

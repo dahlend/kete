@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from kete import spice, State, Time, Frames
+from kete import spice, State, Time
 from kete.mpc import find_obs_code
 from kete.spice import SpkInfo
 
@@ -103,3 +103,23 @@ class TestSpice:
 
         # Horizons reports: 0.200455
         assert np.isclose(spice.moon_illumination_frac(2451555), 0.2003318)
+
+    def test_repack_spk(self, tmp_path):
+        """Repack 20000042.bsp (Type 21) to Type 2 via repack_spk."""
+        import os
+
+        input_file = os.path.join(
+            os.path.dirname(__file__), "..", "..", "docs", "data", "20000042.bsp"
+        )
+        out_file = str(tmp_path / "repacked.bsp")
+        summary = spice.repack_spk(
+            input_file,
+            out_file,
+            center_id=10,
+            threshold_km=0.5,
+            degree=15,
+        )
+        assert len(summary) >= 1
+        assert (tmp_path / "repacked.bsp").exists()
+        # Repacked file should be smaller than the original.
+        assert os.path.getsize(out_file) < os.path.getsize(input_file)

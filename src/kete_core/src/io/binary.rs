@@ -37,8 +37,8 @@ use crate::desigs::Desig;
 use crate::errors::{Error, KeteResult};
 use crate::fov::{
     FOV, GenericCone, GenericRectangle, NeosCmos, NeosVisit, OmniDirectional, OnSkyRectangle,
-    PTFFilter, PtfCcd, PtfField, SpherexCmos, SpherexField, SphericalCone, WiseCmos, ZtfCcdQuad,
-    ZtfField,
+    PTFFilter, PtfCcd, PtfField, SpherexCmos, SpherexField, SphericalCone, SpitzerBand,
+    SpitzerFrame, WiseCmos, ZtfCcdQuad, ZtfField,
 };
 use crate::frames::{Equatorial, Vector};
 use crate::simult_states::SimultaneousStates;
@@ -718,6 +718,64 @@ impl KeteRead for SpherexField {
     }
 }
 
+impl KeteWrite for SpitzerBand {
+    fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let tag: u8 = match self {
+            Self::Irac1 => 0,
+            Self::Irac2 => 1,
+            Self::Irac3 => 2,
+            Self::Irac4 => 3,
+            Self::Mips24 => 4,
+            Self::Mips70 => 5,
+            Self::Mips160 => 6,
+            Self::IrsPeakUpBlue => 7,
+            Self::IrsPeakUpRed => 8,
+        };
+        tag.write_to(w)
+    }
+}
+
+impl KeteRead for SpitzerBand {
+    fn read_from<R: Read>(r: &mut R) -> KeteResult<Self> {
+        match u8::read_from(r)? {
+            0 => Ok(Self::Irac1),
+            1 => Ok(Self::Irac2),
+            2 => Ok(Self::Irac3),
+            3 => Ok(Self::Irac4),
+            4 => Ok(Self::Mips24),
+            5 => Ok(Self::Mips70),
+            6 => Ok(Self::Mips160),
+            7 => Ok(Self::IrsPeakUpBlue),
+            8 => Ok(Self::IrsPeakUpRed),
+            t => Err(Error::IOError(format!("Invalid SpitzerBand tag: {t}"))),
+        }
+    }
+}
+
+impl KeteWrite for SpitzerFrame {
+    fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        self.observer.write_to(w)?;
+        self.patch.write_to(w)?;
+        self.obs_id.as_ref().write_to(w)?;
+        self.band.write_to(w)?;
+        self.artifact_uri.as_ref().write_to(w)?;
+        self.duration.write_to(w)
+    }
+}
+
+impl KeteRead for SpitzerFrame {
+    fn read_from<R: Read>(r: &mut R) -> KeteResult<Self> {
+        Ok(Self {
+            observer: State::read_from(r)?,
+            patch: OnSkyRectangle::read_from(r)?,
+            obs_id: Box::<str>::read_from(r)?,
+            band: SpitzerBand::read_from(r)?,
+            artifact_uri: Box::<str>::read_from(r)?,
+            duration: f64::read_from(r)?,
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // FOV enum
 // ---------------------------------------------------------------------------
@@ -744,6 +802,7 @@ impl KeteWrite for FOV {
             Self::PtfField(v) => (9_u8, write_to_vec(v)?),
             Self::SpherexCmos(v) => (10_u8, write_to_vec(v)?),
             Self::SpherexField(v) => (11_u8, write_to_vec(v)?),
+            Self::Spitzer(v) => (12_u8, write_to_vec(v)?),
         };
         tag.write_to(w)?;
         (payload.len() as u32).write_to(w)?;
@@ -780,6 +839,7 @@ pub fn read_fov<R: Read>(r: &mut R) -> KeteResult<Option<FOV>> {
         9 => Some(FOV::PtfField(PtfField::read_from(&mut cursor)?)),
         10 => Some(FOV::SpherexCmos(SpherexCmos::read_from(&mut cursor)?)),
         11 => Some(FOV::SpherexField(SpherexField::read_from(&mut cursor)?)),
+        12 => Some(FOV::Spitzer(SpitzerFrame::read_from(&mut cursor)?)),
         _ => None,
     };
     Ok(fov)

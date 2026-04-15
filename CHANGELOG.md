@@ -7,13 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## Added
+
+- Support for Spitzer, including fetching FoVs and frames.
+- Initial support for writing some SPICE files.
+- SPK Repacking, where SPICE kernels are repacked into different SPICE formats which can
+  greatly reduce their size. This was done with the ~600MB Spitzer kernel and it was
+  reduced to less than 1MB and is included with Kete, less than 1km max difference
+  across the entire file.
+
+### Fixed
+- SPK lookups were failing to resolve in some cases when the planets were unloaded and
+  reloaded.
+- Improved Initial Orbit Determination a bit.
+
 ## [3.0.1]
 
 ### Added
 - Added a number of minor analysis tools: `closest_approach`, `hill_radius`,
   `sphere_of_influence`, `specific_energy`, `calculate_b_plane`.
 - Added two new examples which demonstrate these analysis tools.
-
 
 ## [3.0.0]
 

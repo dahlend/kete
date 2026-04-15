@@ -92,9 +92,7 @@ def hill_radius(
     state = spice.get_state(body, jd, center=central_body)
     gm_body = _resolve_gm(body)
     gm_central = _resolve_gm(central_body)
-    return _core.hill_radius(
-        state.semi_major, state.eccentricity, gm_body, gm_central
-    )
+    return _core.hill_radius(state.semi_major, state.eccentricity, gm_body, gm_central)
 
 
 def sphere_of_influence(

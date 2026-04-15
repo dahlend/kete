@@ -36,6 +36,7 @@ mod neos;
 mod patches;
 mod ptf;
 mod spherex;
+mod spitzer;
 mod wise;
 mod ztf;
 
@@ -49,6 +50,7 @@ pub use self::neos::{NeosCmos, NeosVisit};
 pub use self::patches::{Contains, OnSkyRectangle, SkyPatch, SphericalCone, SphericalPolygon};
 pub use self::ptf::{PTFFilter, PtfCcd, PtfField};
 pub use self::spherex::{SpherexCmos, SpherexField};
+pub use self::spitzer::{SpitzerBand, SpitzerFrame};
 pub use self::wise::WiseCmos;
 pub use self::ztf::{ZtfCcdQuad, ZtfField};
 
@@ -92,6 +94,9 @@ pub enum FOV {
 
     /// Spherex Field, containing up to 6 CMOS frames.
     SpherexField(SpherexField),
+
+    /// Spitzer BCD frame (IRAC or MIPS).
+    Spitzer(SpitzerFrame),
 }
 
 macro_rules! dispatch_fov {
@@ -109,6 +114,7 @@ macro_rules! dispatch_fov {
             Self::PtfField(fov) => fov.$method($($arg),*),
             Self::SpherexCmos(fov) => fov.$method($($arg),*),
             Self::SpherexField(fov) => fov.$method($($arg),*),
+            Self::Spitzer(fov) => fov.$method($($arg),*),
         }
     };
 }
@@ -134,6 +140,7 @@ impl FovLike for FOV {
             Self::PtfField(fov) => Self::PtfCcd(fov.get_child(index)),
             Self::SpherexCmos(fov) => Self::SpherexCmos(fov.get_child(index)),
             Self::SpherexField(fov) => Self::SpherexCmos(fov.get_child(index)),
+            Self::Spitzer(fov) => Self::Spitzer(fov.get_child(index)),
         }
     }
 
