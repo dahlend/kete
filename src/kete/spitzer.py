@@ -52,17 +52,21 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-IRAC_BAND_WAVELENGTHS: list[float] = [3550.0, 4493.0, 5731.0, 7872.0]
+IRAC_BAND_WAVELENGTHS: list[float] = [3600.0, 4500.0, 5800.0, 8000.0]
 """
-Effective channel wavelengths in nm for IRAC channels 1-4 (3.6, 4.5, 5.8, 8.0 um).
-Source: IRAC Instrument Handbook v2.1, Table 4.1.
+Channel wavelengths in nm for IRAC channels 1-4 (3.6, 4.5, 5.8, 8.0 um).
+These are the wavelengths at which the zero-magnitude flux densities (Table 4.2)
+are defined. The nominal isophotal wavelengths from Table 4.3 depend on source
+spectrum and are slightly different (3544, 4487, 5710, 7841 nm).
+Source: IRAC Instrument Handbook v2.1, Tables 4.1 and 4.2.
 """
 
-IRAC_ZERO_MAGS: list[float] = [280.9, 179.7, 115.0, 64.13]
+IRAC_ZERO_MAGS: list[float] = [280.9, 179.7, 115.0, 64.9]
 """
 Vega-system zero-magnitude flux densities in Jy for IRAC channels 1-4.
+Values are evaluated at 3.6, 4.5, 5.8, and 8.0 um respectively.
 Magnitude is ``-2.5 * log10(flux_jy / zero_mag)``.
-Source: IRAC Instrument Handbook v2.1, Table 4.1.
+Source: IRAC Instrument Handbook v2.1, Table 4.2.
 """
 
 MIPS_BAND_WAVELENGTHS: list[float] = [23680.0, 71420.0, 155900.0]

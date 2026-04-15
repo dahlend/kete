@@ -20,7 +20,6 @@ from ._core import (
     name_lookup,
     repack_spk,
     state_to_earth_pos,
-    tle_file_info,
 )
 from .cache import cache_path, download_file
 from .constants import AU_KM
@@ -46,7 +45,6 @@ __all__ = [
     "moon_illumination_frac",
     "instrument_frame_to_equatorial",
     "instrument_equatorial_to_frame",
-    "tle_file_info",
     "repack_spk",
 ]
 
