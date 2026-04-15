@@ -36,140 +36,6 @@ pub struct SpkSegmentType10 {
 }
 
 impl SpkSegmentType10 {
-    #[inline(always)]
-    fn get_times(&self) -> &[f64] {
-        self.array.get_reference_items()
-    }
-
-    /// Return the SGP4 record stored within the spice kernel.
-    #[inline(always)]
-    fn get_record(&self, idx: usize) -> Constants {
-        let rec = self.array.get_packet::<15>(idx);
-        let [
-            _,
-            _,
-            _,
-            b_star,
-            inclination,
-            right_ascension,
-            eccentricity,
-            argument_of_perigee,
-            mean_anomaly,
-            kozai_mean_motion,
-            epoch,
-            _,
-            _,
-            _,
-            _,
-        ] = *rec;
-
-        let epoch = julian_years_since_j2000_afspc_compatibility_mode(
-            &spice_jd_to_jd(epoch)
-                .utc()
-                .to_datetime()
-                .unwrap()
-                .naive_utc(),
-        );
-
-        // use the provided goepotential even if it is not correct.
-        let orbit_0 = Orbit::from_kozai_elements(
-            &self.geopotential,
-            inclination,
-            right_ascension,
-            eccentricity,
-            argument_of_perigee,
-            mean_anomaly,
-            kozai_mean_motion,
-        )
-        .expect("Failed to load orbit values");
-        Constants::new(
-            self.geopotential,
-            sgp4::afspc_epoch_to_sidereal_time,
-            epoch,
-            b_star,
-            orbit_0,
-        )
-        .expect("Failed to load orbit values")
-    }
-
-    /// Build the data array for a Type 10 (TLE) generic segment.
-    ///
-    /// The data layout follows the cSPICE generic segment format for
-    /// explicitly-indexed fixed-size packets:
-    /// `[constants][interleaved (ref + packet)...][contiguous refs][ref_dir][metadata]`
-    ///
-    /// Nutation values (packet indices 10-13) are set to zero; the kete reader
-    /// does not use them.
-    #[allow(dead_code, reason = "Writer for external use, no internal callers yet")]
-    fn build_data(consts: &[f64; 8], elements: &[f64], epochs: &[f64]) -> KeteResult<Vec<f64>> {
-        let n = epochs.len();
-        if n == 0 {
-            return Err(Error::ValueError(
-                "Type 10: need at least one element set.".into(),
-            ));
-        }
-        if elements.len() != n * 10 {
-            return Err(Error::ValueError(format!(
-                "Type 10: elements length ({}) must be n ({}) * 10",
-                elements.len(),
-                n
-            )));
-        }
-        for w in epochs.windows(2) {
-            if w[1] <= w[0] {
-                return Err(Error::ValueError(
-                    "Type 10: epochs must be strictly increasing.".into(),
-                ));
-            }
-        }
-
-        let n_ref_dir = if n > 100 { (n - 1) / 100 } else { 0 };
-        let ref_items_addr = 8 + 15 * n;
-        let ref_dir_addr = ref_items_addr + n + n_ref_dir;
-        let total_len = 8 + 15 * n + n + n_ref_dir + 17;
-        let mut data = Vec::with_capacity(total_len);
-
-        // 8 geophysical constants
-        data.extend_from_slice(consts);
-
-        // Interleaved ref + packet slots (15 values each)
-        for i in 0..n {
-            data.push(epochs[i]); // reference value (epoch)
-            data.extend_from_slice(&elements[i * 10..(i + 1) * 10]); // 10 TLE elements
-            data.extend_from_slice(&[0.0; 4]); // 4 nutation values (zero)
-        }
-
-        // Contiguous reference items
-        data.extend_from_slice(epochs);
-
-        // Reference directory (every 100th epoch)
-        for i in 1..=n_ref_dir {
-            data.push(epochs[(i * 100 - 1).min(n - 1)]);
-        }
-
-        // 17 generic segment metadata values
-        data.push(0.0); //  [0] const_addr
-        data.push(8.0); //  [1] n_consts
-        data.push(ref_dir_addr as f64); //  [2] ref_dir_addr
-        data.push(n_ref_dir as f64); //  [3] n_item_ref_dir
-        data.push(4.0); //  [4] ref_dir_type (explicit index)
-        data.push(ref_items_addr as f64); //  [5] ref_items_addr
-        data.push(n as f64); //  [6] n_ref_items
-        data.push(0.0); //  [7] packet_dir_addr (none)
-        data.push(0.0); //  [8] n_dir_packets  (none)
-        data.push(0.0); //  [9] packet_dir_type (none)
-        data.push(8.0); // [10] packet_addr
-        data.push(n as f64); // [11] n_packets
-        data.push(0.0); // [12] res_addr
-        data.push(0.0); // [13] n_reserved
-        data.push(14.0); // [14] max_packet_size
-        data.push(1.0); // [15] offset (1 ref value per packet)
-        data.push(17.0); // [16] n_meta
-
-        debug_assert_eq!(data.len(), total_len, "Type 10 data length mismatch");
-        Ok(data)
-    }
-
     /// Create a Type 10 (TLE) SPK array.
     ///
     /// # Arguments
@@ -313,7 +179,7 @@ impl SpkSegmentType10 {
         center_id: i32,
         frame_id: i32,
     ) -> KeteResult<Vec<SpkArray>> {
-        let groups = parse_tle_text(text);
+        let groups = parse_tle_text(text)?;
         if groups.is_empty() {
             return Err(Error::ValueError(
                 "No valid TLE records found in the provided text.".into(),
@@ -372,6 +238,140 @@ impl SpkSegmentType10 {
             [x / AU_KM, y / AU_KM, z / AU_KM],
             [vx * v_scale, vy * v_scale, vz * v_scale],
         )
+    }
+
+    /// Build the data array for a Type 10 (TLE) generic segment.
+    ///
+    /// The data layout follows the cSPICE generic segment format for
+    /// explicitly-indexed fixed-size packets:
+    /// `[constants][interleaved (ref + packet)...][contiguous refs][ref_dir][metadata]`
+    ///
+    /// Nutation values (packet indices 10-13) are set to zero; the kete reader
+    /// does not use them.
+    #[allow(dead_code, reason = "Writer for external use, no internal callers yet")]
+    fn build_data(consts: &[f64; 8], elements: &[f64], epochs: &[f64]) -> KeteResult<Vec<f64>> {
+        let n = epochs.len();
+        if n == 0 {
+            return Err(Error::ValueError(
+                "Type 10: need at least one element set.".into(),
+            ));
+        }
+        if elements.len() != n * 10 {
+            return Err(Error::ValueError(format!(
+                "Type 10: elements length ({}) must be n ({}) * 10",
+                elements.len(),
+                n
+            )));
+        }
+        for w in epochs.windows(2) {
+            if w[1] <= w[0] {
+                return Err(Error::ValueError(
+                    "Type 10: epochs must be strictly increasing.".into(),
+                ));
+            }
+        }
+
+        let n_ref_dir = if n > 100 { (n - 1) / 100 } else { 0 };
+        let ref_items_addr = 8 + 15 * n;
+        let ref_dir_addr = ref_items_addr + n + n_ref_dir;
+        let total_len = 8 + 15 * n + n + n_ref_dir + 17;
+        let mut data = Vec::with_capacity(total_len);
+
+        // 8 geophysical constants
+        data.extend_from_slice(consts);
+
+        // Interleaved ref + packet slots (15 values each)
+        for i in 0..n {
+            data.push(epochs[i]); // reference value (epoch)
+            data.extend_from_slice(&elements[i * 10..(i + 1) * 10]); // 10 TLE elements
+            data.extend_from_slice(&[0.0; 4]); // 4 nutation values (zero)
+        }
+
+        // Contiguous reference items
+        data.extend_from_slice(epochs);
+
+        // Reference directory (every 100th epoch)
+        for i in 1..=n_ref_dir {
+            data.push(epochs[(i * 100 - 1).min(n - 1)]);
+        }
+
+        // 17 generic segment metadata values
+        data.push(0.0); //  [0] const_addr
+        data.push(8.0); //  [1] n_consts
+        data.push(ref_dir_addr as f64); //  [2] ref_dir_addr
+        data.push(n_ref_dir as f64); //  [3] n_item_ref_dir
+        data.push(4.0); //  [4] ref_dir_type (explicit index)
+        data.push(ref_items_addr as f64); //  [5] ref_items_addr
+        data.push(n as f64); //  [6] n_ref_items
+        data.push(0.0); //  [7] packet_dir_addr (none)
+        data.push(0.0); //  [8] n_dir_packets  (none)
+        data.push(0.0); //  [9] packet_dir_type (none)
+        data.push(8.0); // [10] packet_addr
+        data.push(n as f64); // [11] n_packets
+        data.push(0.0); // [12] res_addr
+        data.push(0.0); // [13] n_reserved
+        data.push(14.0); // [14] max_packet_size
+        data.push(1.0); // [15] offset (1 ref value per packet)
+        data.push(17.0); // [16] n_meta
+
+        debug_assert_eq!(data.len(), total_len, "Type 10 data length mismatch");
+        Ok(data)
+    }
+
+    #[inline(always)]
+    fn get_times(&self) -> &[f64] {
+        self.array.get_reference_items()
+    }
+
+    /// Return the SGP4 record stored within the spice kernel.
+    #[inline(always)]
+    fn get_record(&self, idx: usize) -> Constants {
+        let rec = self.array.get_packet::<15>(idx);
+        let [
+            _,
+            _,
+            _,
+            b_star,
+            inclination,
+            right_ascension,
+            eccentricity,
+            argument_of_perigee,
+            mean_anomaly,
+            kozai_mean_motion,
+            epoch,
+            _,
+            _,
+            _,
+            _,
+        ] = *rec;
+
+        let epoch = julian_years_since_j2000_afspc_compatibility_mode(
+            &spice_jd_to_jd(epoch)
+                .utc()
+                .to_datetime()
+                .unwrap()
+                .naive_utc(),
+        );
+
+        // use the provided goepotential even if it is not correct.
+        let orbit_0 = Orbit::from_kozai_elements(
+            &self.geopotential,
+            inclination,
+            right_ascension,
+            eccentricity,
+            argument_of_perigee,
+            mean_anomaly,
+            kozai_mean_motion,
+        )
+        .expect("Failed to load orbit values");
+        Constants::new(
+            self.geopotential,
+            sgp4::afspc_epoch_to_sidereal_time,
+            epoch,
+            b_star,
+            orbit_0,
+        )
+        .expect("Failed to load orbit values")
     }
 }
 
@@ -561,62 +561,31 @@ impl TryFrom<SpkArray> for GenericSegment {
     }
 }
 
-/// Parse a TLE text block (mix of 2-line and 3-line entries) into groups
-/// keyed by NORAD catalog number.
+/// Parse a TLE text block (3-line or 2-line format) into groups keyed by
+/// NORAD catalog number.
 ///
-/// Each group is sorted by epoch (ascending). Lines that fail to parse are
-/// silently skipped.
-pub fn parse_tle_text(text: &str) -> Vec<(u64, Vec<sgp4::Elements>)> {
-    // Collect non-empty, trimmed lines.
-    let lines: Vec<&str> = text
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect();
+/// Tries `sgp4::parse_3les` first, then falls back to `sgp4::parse_2les`.
+/// Each group is sorted by epoch (ascending).
+///
+/// # Errors
+/// Returns an error if the text cannot be parsed as either 3-line or 2-line TLEs.
+pub fn parse_tle_text(text: &str) -> KeteResult<Vec<(u64, Vec<sgp4::Elements>)>> {
+    let elements = sgp4::parse_3les(text)
+        .or_else(|_| sgp4::parse_2les(text))
+        .map_err(|e| Error::ValueError(format!("Failed to parse TLE text: {e}")))?;
 
     let mut groups: std::collections::HashMap<u64, Vec<sgp4::Elements>> =
         std::collections::HashMap::new();
-
-    let mut i = 0;
-    while i < lines.len() {
-        let line = lines[i];
-
-        // Detect line-1 of a TLE: starts with "1 " and is roughly 69 chars.
-        let (name, l1, l2, step) = if line.starts_with("1 ") && line.len() >= 68 {
-            // 2-line format: current line is l1, next is l2.
-            let l2 = match lines.get(i + 1) {
-                Some(l) if l.starts_with("2 ") => *l,
-                _ => {
-                    i += 1;
-                    continue;
-                }
-            };
-            (None, line, l2, 2_usize)
-        } else if i + 2 < lines.len()
-            && lines[i + 1].starts_with("1 ")
-            && lines[i + 1].len() >= 68
-            && lines[i + 2].starts_with("2 ")
-        {
-            // 3-line format: name + l1 + l2.
-            (Some(line.to_string()), lines[i + 1], lines[i + 2], 3_usize)
-        } else {
-            i += 1;
-            continue;
-        };
-
-        if let Ok(elem) = sgp4::Elements::from_tle(name, l1.as_bytes(), l2.as_bytes()) {
-            groups.entry(elem.norad_id).or_default().push(elem);
-        }
-        i += step;
+    for elem in elements {
+        groups.entry(elem.norad_id).or_default().push(elem);
     }
 
-    // Sort each group by epoch then collect into a deterministically-ordered vec.
     let mut result: Vec<(u64, Vec<sgp4::Elements>)> = groups.into_iter().collect();
     for (_, elems) in &mut result {
         elems.sort_by_key(|e| e.datetime);
     }
     result.sort_by_key(|(id, _)| *id);
-    result
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -704,7 +673,7 @@ ISS (ZARYA)
 1 25544U 98067A   20194.88612269 -.00002218  00000-0 -31515-4 0  9992
 2 25544  51.6461 221.2784 0001413  89.1723 280.4612 15.49507896236008
 ";
-        let groups = parse_tle_text(tle_text);
+        let groups = parse_tle_text(tle_text).unwrap();
         assert_eq!(groups.len(), 1);
         let (norad_id, elems) = &groups[0];
         assert_eq!(*norad_id, 25544_u64);
@@ -729,7 +698,7 @@ ISS (ZARYA)
 1 25544U 98067A   20194.88612269 -.00002218  00000-0 -31515-4 0  9992
 2 25544  51.6461 221.2784 0001413  89.1723 280.4612 15.49507896236008
 ";
-        let groups = parse_tle_text(tle_text);
+        let groups = parse_tle_text(tle_text).unwrap();
         assert_eq!(groups.len(), 2);
         let arrays = SpkSegmentType10::arrays_from_tle_text(tle_text, 399, 1).unwrap();
         assert_eq!(arrays.len(), 2);

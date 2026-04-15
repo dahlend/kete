@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sphere_of_influence`, `specific_energy`, `calculate_b_plane`.
 - Added two new examples which demonstrate these analysis tools.
 
+### Fixed
+- SPK lookups were failing to resolve in some cases when the planets were unloaded and
+  reloaded.
+- Improved Initial Orbit Determination a bit.
 
 ## [3.0.0]
 

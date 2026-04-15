@@ -394,6 +394,7 @@ pub fn tle_file_info_py(tle_file: &str) -> PyResult<Vec<(u64, String, usize)>> {
         ))
     })?;
     Ok(parse_tle_text(&text)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
         .into_iter()
         .map(|(id, elems)| {
             let name = elems

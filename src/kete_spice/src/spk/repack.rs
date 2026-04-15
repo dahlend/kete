@@ -79,179 +79,6 @@ const BOUNDARY_BUFFER: f64 = 1e-4;
 /// than this are treated as contiguous.
 const GAP_TOLERANCE: f64 = 1.0;
 
-/// Sort raw `(start, end)` ranges and shrink each inward by `buffer` to
-/// protect against JD round-trip imprecision.
-fn buffer_and_sort(raw: &[(f64, f64)], buffer: f64) -> Vec<(f64, f64)> {
-    let mut sorted: Vec<(f64, f64)> = raw.to_vec();
-    sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
-    sorted
-        .into_iter()
-        .filter_map(|(s, e)| {
-            let sb = s + buffer;
-            let eb = e - buffer;
-            if sb < eb { Some((sb, eb)) } else { None }
-        })
-        .collect()
-}
-
-/// Merge sorted segments into contiguous runs, but *only* when the data is
-/// actually continuous across the boundary.  Two segments are merged when:
-///   1. They overlap or abut (gap <= 0), OR
-///   2. The gap is smaller than `gap_tolerance` AND velocity-extrapolated
-///      position from the first segment matches the second within
-///      `continuity_km`.
-///
-/// Segments that are close in time but have a real data discontinuity
-/// (different navigation solutions) stay separate, preventing the fitter
-/// from having to bridge a jump it cannot represent.
-fn merge_continuous_runs(
-    sorted_segments: &[(f64, f64)],
-    gap_tolerance: f64,
-    source: &super::SpkCollection,
-    object_id: i32,
-    center_id: i32,
-    continuity_km: f64,
-) -> Vec<(f64, f64)> {
-    if sorted_segments.is_empty() {
-        return Vec::new();
-    }
-    let mut merged = Vec::with_capacity(sorted_segments.len());
-    let mut cur = sorted_segments[0];
-    for &(s, e) in &sorted_segments[1..] {
-        let gap = s - cur.1;
-        if gap <= 0.0 {
-            // Overlapping or exactly abutting — always merge.
-            cur.1 = cur.1.max(e);
-        } else if gap <= gap_tolerance
-            && is_boundary_continuous(
-                source,
-                object_id,
-                center_id,
-                cur.1,
-                s,
-                sorted_segments,
-                continuity_km,
-            )
-            .unwrap_or(false)
-        {
-            cur.1 = cur.1.max(e);
-        } else {
-            merged.push(cur);
-            cur = (s, e);
-        }
-    }
-    merged.push(cur);
-    merged
-}
-
-/// Check whether source data is continuous across a segment boundary by
-/// extrapolating position from the end of one segment to the start of the
-/// next using the endpoint velocity.  Returns `true` if the mismatch is
-/// below `threshold_km`.
-fn is_boundary_continuous(
-    source: &super::SpkCollection,
-    object_id: i32,
-    center_id: i32,
-    t_before: f64,
-    t_after: f64,
-    segments: &[(f64, f64)],
-    threshold_km: f64,
-) -> KeteResult<bool> {
-    let state_a = safe_query(source, object_id, center_id, t_before, segments)?;
-    let state_b = safe_query(source, object_id, center_id, t_after, segments)?;
-    let dt_days = (t_after - t_before) / 86400.0;
-    let pos_a: [f64; 3] = state_a.pos.into();
-    let vel_a: [f64; 3] = state_a.vel.into();
-    let pos_b: [f64; 3] = state_b.pos.into();
-    let err_au_sq = (0..3)
-        .map(|i| (pos_a[i] + vel_a[i] * dt_days - pos_b[i]).powi(2))
-        .sum::<f64>();
-    Ok(err_au_sq.sqrt() * AU_KM <= threshold_km)
-}
-
-/// Clamp `t` to the nearest time covered by `segments` (must be sorted by
-/// start time and pre-buffered).
-///
-/// If `t` is already inside a segment, returns it unchanged.  Otherwise
-/// returns the nearest segment edge.
-fn clamp_to_coverage(t: f64, segments: &[(f64, f64)]) -> f64 {
-    // Binary search: find the last segment whose start <= t.
-    let idx = segments.partition_point(|&(s, _)| s <= t);
-    if idx > 0 && t <= segments[idx - 1].1 {
-        return t; // inside segment[idx-1]
-    }
-    // In a gap (or outside all segments).  Pick closest edge.
-    let mut best = t;
-    let mut best_dist = f64::INFINITY;
-    if idx > 0 {
-        let d = (t - segments[idx - 1].1).abs();
-        if d < best_dist {
-            best = segments[idx - 1].1;
-            best_dist = d;
-        }
-    }
-    if idx < segments.len() {
-        let d = (segments[idx].0 - t).abs();
-        if d < best_dist {
-            best = segments[idx].0;
-        }
-    }
-    best
-}
-
-/// Collect all segment start/end times as a sorted, deduped boundary list.
-fn segment_boundary_times(segments: &[(f64, f64)]) -> Vec<f64> {
-    let mut b = Vec::with_capacity(segments.len() * 2);
-    for &(s, e) in segments {
-        b.push(s);
-        b.push(e);
-    }
-    b.sort_by(f64::total_cmp);
-    b.dedup();
-    b
-}
-
-/// Does the open interval `(t0, t1)` contain any value from `boundaries`
-/// (which must be sorted)?
-fn spans_boundary(t0: f64, t1: f64, boundaries: &[f64]) -> bool {
-    let idx = boundaries.partition_point(|&b| b <= t0);
-    idx < boundaries.len() && boundaries[idx] < t1
-}
-
-/// Query the source at SPICE-second time `t`, clamping to known segment
-/// coverage so that micro-gaps between abutting source segments never cause
-/// failures.
-fn safe_query(
-    source: &super::SpkCollection,
-    object_id: i32,
-    center_id: i32,
-    t: f64,
-    segments: &[(f64, f64)],
-) -> KeteResult<kete_core::state::State<Equatorial>> {
-    let tc = clamp_to_coverage(t, segments);
-    let jd = spice_jd_to_jd(tc);
-    source.try_get_state_with_center::<Equatorial>(object_id, jd, center_id)
-}
-
-/// Obtain raw segment boundaries: from `explicit_ranges` if provided,
-/// otherwise from the source's loaded segments.
-fn raw_boundaries(
-    source: &super::SpkCollection,
-    object_id: i32,
-    explicit_ranges: Option<&[(f64, f64)]>,
-) -> KeteResult<Vec<(f64, f64)>> {
-    let raw = match explicit_ranges {
-        Some(r) => r.to_vec(),
-        None => source.segment_boundaries(object_id),
-    };
-    if raw.is_empty() {
-        return Err(Error::Bounds(format!(
-            "No SPK coverage found for NAIF ID {object_id}"
-        )));
-    }
-    Ok(raw)
-}
-
 // ═════════════════════════════════════════════════════════════════════════════
 //  Type 2 repacker — Chebyshev polynomial position fitting
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1230,6 +1057,181 @@ fn t13_validate_sampled(
     }
 
     Ok(max_err)
+}
+
+// ── Segment-domain helpers ──────────────────────────────────────────────────
+
+/// Sort raw `(start, end)` ranges and shrink each inward by `buffer` to
+/// protect against JD round-trip imprecision.
+fn buffer_and_sort(raw: &[(f64, f64)], buffer: f64) -> Vec<(f64, f64)> {
+    let mut sorted: Vec<(f64, f64)> = raw.to_vec();
+    sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
+    sorted
+        .into_iter()
+        .filter_map(|(s, e)| {
+            let sb = s + buffer;
+            let eb = e - buffer;
+            if sb < eb { Some((sb, eb)) } else { None }
+        })
+        .collect()
+}
+
+/// Merge sorted segments into contiguous runs, but *only* when the data is
+/// actually continuous across the boundary.  Two segments are merged when:
+///   1. They overlap or abut (gap <= 0), OR
+///   2. The gap is smaller than `gap_tolerance` AND velocity-extrapolated
+///      position from the first segment matches the second within
+///      `continuity_km`.
+///
+/// Segments that are close in time but have a real data discontinuity
+/// (different navigation solutions) stay separate, preventing the fitter
+/// from having to bridge a jump it cannot represent.
+fn merge_continuous_runs(
+    sorted_segments: &[(f64, f64)],
+    gap_tolerance: f64,
+    source: &super::SpkCollection,
+    object_id: i32,
+    center_id: i32,
+    continuity_km: f64,
+) -> Vec<(f64, f64)> {
+    if sorted_segments.is_empty() {
+        return Vec::new();
+    }
+    let mut merged = Vec::with_capacity(sorted_segments.len());
+    let mut cur = sorted_segments[0];
+    for &(s, e) in &sorted_segments[1..] {
+        let gap = s - cur.1;
+        if gap <= 0.0 {
+            // Overlapping or exactly abutting — always merge.
+            cur.1 = cur.1.max(e);
+        } else if gap <= gap_tolerance
+            && is_boundary_continuous(
+                source,
+                object_id,
+                center_id,
+                cur.1,
+                s,
+                sorted_segments,
+                continuity_km,
+            )
+            .unwrap_or(false)
+        {
+            cur.1 = cur.1.max(e);
+        } else {
+            merged.push(cur);
+            cur = (s, e);
+        }
+    }
+    merged.push(cur);
+    merged
+}
+
+/// Check whether source data is continuous across a segment boundary by
+/// extrapolating position from the end of one segment to the start of the
+/// next using the endpoint velocity.  Returns `true` if the mismatch is
+/// below `threshold_km`.
+fn is_boundary_continuous(
+    source: &super::SpkCollection,
+    object_id: i32,
+    center_id: i32,
+    t_before: f64,
+    t_after: f64,
+    segments: &[(f64, f64)],
+    threshold_km: f64,
+) -> KeteResult<bool> {
+    let state_a = safe_query(source, object_id, center_id, t_before, segments)?;
+    let state_b = safe_query(source, object_id, center_id, t_after, segments)?;
+    let dt_days = (t_after - t_before) / 86400.0;
+    let pos_a: [f64; 3] = state_a.pos.into();
+    let vel_a: [f64; 3] = state_a.vel.into();
+    let pos_b: [f64; 3] = state_b.pos.into();
+    let err_au_sq = (0..3)
+        .map(|i| (pos_a[i] + vel_a[i] * dt_days - pos_b[i]).powi(2))
+        .sum::<f64>();
+    Ok(err_au_sq.sqrt() * AU_KM <= threshold_km)
+}
+
+/// Clamp `t` to the nearest time covered by `segments` (must be sorted by
+/// start time and pre-buffered).
+///
+/// If `t` is already inside a segment, returns it unchanged.  Otherwise
+/// returns the nearest segment edge.
+fn clamp_to_coverage(t: f64, segments: &[(f64, f64)]) -> f64 {
+    // Binary search: find the last segment whose start <= t.
+    let idx = segments.partition_point(|&(s, _)| s <= t);
+    if idx > 0 && t <= segments[idx - 1].1 {
+        return t; // inside segment[idx-1]
+    }
+    // In a gap (or outside all segments).  Pick closest edge.
+    let mut best = t;
+    let mut best_dist = f64::INFINITY;
+    if idx > 0 {
+        let d = (t - segments[idx - 1].1).abs();
+        if d < best_dist {
+            best = segments[idx - 1].1;
+            best_dist = d;
+        }
+    }
+    if idx < segments.len() {
+        let d = (segments[idx].0 - t).abs();
+        if d < best_dist {
+            best = segments[idx].0;
+        }
+    }
+    best
+}
+
+/// Collect all segment start/end times as a sorted, deduped boundary list.
+fn segment_boundary_times(segments: &[(f64, f64)]) -> Vec<f64> {
+    let mut b = Vec::with_capacity(segments.len() * 2);
+    for &(s, e) in segments {
+        b.push(s);
+        b.push(e);
+    }
+    b.sort_by(f64::total_cmp);
+    b.dedup();
+    b
+}
+
+/// Does the open interval `(t0, t1)` contain any value from `boundaries`
+/// (which must be sorted)?
+fn spans_boundary(t0: f64, t1: f64, boundaries: &[f64]) -> bool {
+    let idx = boundaries.partition_point(|&b| b <= t0);
+    idx < boundaries.len() && boundaries[idx] < t1
+}
+
+/// Query the source at SPICE-second time `t`, clamping to known segment
+/// coverage so that micro-gaps between abutting source segments never cause
+/// failures.
+fn safe_query(
+    source: &super::SpkCollection,
+    object_id: i32,
+    center_id: i32,
+    t: f64,
+    segments: &[(f64, f64)],
+) -> KeteResult<kete_core::state::State<Equatorial>> {
+    let tc = clamp_to_coverage(t, segments);
+    let jd = spice_jd_to_jd(tc);
+    source.try_get_state_with_center::<Equatorial>(object_id, jd, center_id)
+}
+
+/// Obtain raw segment boundaries: from `explicit_ranges` if provided,
+/// otherwise from the source's loaded segments.
+fn raw_boundaries(
+    source: &super::SpkCollection,
+    object_id: i32,
+    explicit_ranges: Option<&[(f64, f64)]>,
+) -> KeteResult<Vec<(f64, f64)>> {
+    let raw = match explicit_ranges {
+        Some(r) => r.to_vec(),
+        None => source.segment_boundaries(object_id),
+    };
+    if raw.is_empty() {
+        return Err(Error::Bounds(format!(
+            "No SPK coverage found for NAIF ID {object_id}"
+        )));
+    }
+    Ok(raw)
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
