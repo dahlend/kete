@@ -32,8 +32,9 @@ use nalgebra::UnitVector3;
 use std::f64::consts::PI;
 
 use kete_core::constants::{
-    AU_KM, NEOS_BANDS, NEOS_SUN_CORRECTION, NEOS_ZERO_MAG, SOLAR_FLUX, STEFAN_BOLTZMANN,
-    V_MAG_ZERO, WISE_BANDS_300K, WISE_CC, WISE_SUN_CORRECTION, WISE_ZERO_MAG_300K,
+    AU_KM, IRAC_BANDS, IRAC_ZERO_MAG, IRS_PU_BANDS, IRS_PU_ZERO_MAG, MIPS_BANDS, MIPS_ZERO_MAG,
+    NEOS_BANDS, NEOS_SUN_CORRECTION, NEOS_ZERO_MAG, SOLAR_FLUX, STEFAN_BOLTZMANN, V_MAG_ZERO,
+    WISE_BANDS_300K, WISE_CC, WISE_SUN_CORRECTION, WISE_ZERO_MAG_300K,
 };
 
 /// A function which computes the color correction on a single facet for NEATM and FRM.
@@ -124,6 +125,27 @@ impl BandInfo {
             WISE_ZERO_MAG_300K[3],
             Some(WISE_CC[3]),
         ),
+    ];
+
+    /// [`BandInfo`] array for the four Spitzer/IRAC channels (3.6, 4.5, 5.8, 8.0 um).
+    pub const IRAC: [Self; 4] = [
+        Self::new(IRAC_BANDS[0], 1.0, IRAC_ZERO_MAG[0], None),
+        Self::new(IRAC_BANDS[1], 1.0, IRAC_ZERO_MAG[1], None),
+        Self::new(IRAC_BANDS[2], 1.0, IRAC_ZERO_MAG[2], None),
+        Self::new(IRAC_BANDS[3], 1.0, IRAC_ZERO_MAG[3], None),
+    ];
+
+    /// [`BandInfo`] array for the three Spitzer/MIPS bands (24, 70, 160 um).
+    pub const MIPS: [Self; 3] = [
+        Self::new(MIPS_BANDS[0], 1.0, MIPS_ZERO_MAG[0], None),
+        Self::new(MIPS_BANDS[1], 1.0, MIPS_ZERO_MAG[1], None),
+        Self::new(MIPS_BANDS[2], 1.0, MIPS_ZERO_MAG[2], None),
+    ];
+
+    /// [`BandInfo`] array for the two Spitzer/IRS Peak-Up bands (Blue, Red).
+    pub const IRS_PU: [Self; 2] = [
+        Self::new(IRS_PU_BANDS[0], 1.0, IRS_PU_ZERO_MAG[0], None),
+        Self::new(IRS_PU_BANDS[1], 1.0, IRS_PU_ZERO_MAG[1], None),
     ];
 }
 

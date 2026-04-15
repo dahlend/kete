@@ -202,16 +202,9 @@ impl SpkSegmentType10 {
 
     #[inline(always)]
     pub(in crate::spk) fn try_get_pos_vel(&self, jds: f64) -> ([f64; 3], [f64; 3]) {
-        // TODO: this does not yet implement the interpolation between two neighboring states
-        // which is present in the cSPICE implementation.
-        // This currently matches the cspice implementation to within about 20km, where the error
-        // is less near the year 2000.
+        // TODO: this does not yet implement the interpolation between two neighboring
+        // states which is present in the cSPICE implementation.
 
-        // There is also an outstanding small time conversion issue.
-        // I am somewhat certain that this conversion is incorrect in cSPICE itself.
-        // Much of this error may be fixed by applying a small linear offset to time which
-        // causes about a 3 second offset in 2024 vs a 0 second offset in 2000.
-        // See #66 for more details.
         let times = self.get_times();
         let idx: usize = match times.binary_search_by(|probe| probe.total_cmp(&jds)) {
             Ok(c) => c,

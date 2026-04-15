@@ -38,6 +38,12 @@ from .time import Time
 from .vector import Vector
 
 __all__ = [
+    "IRAC_BAND_WAVELENGTHS",
+    "IRAC_ZERO_MAGS",
+    "IRS_PU_BAND_WAVELENGTHS",
+    "IRS_PU_ZERO_MAGS",
+    "MIPS_BAND_WAVELENGTHS",
+    "MIPS_ZERO_MAGS",
     "fetch_fovs",
     "fetch_frame",
     "parse_poly",
@@ -45,6 +51,44 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+IRAC_BAND_WAVELENGTHS: list[float] = [3550.0, 4493.0, 5731.0, 7872.0]
+"""
+Effective channel wavelengths in nm for IRAC channels 1-4 (3.6, 4.5, 5.8, 8.0 um).
+Source: IRAC Instrument Handbook v2.1, Table 4.1.
+"""
+
+IRAC_ZERO_MAGS: list[float] = [280.9, 179.7, 115.0, 64.13]
+"""
+Vega-system zero-magnitude flux densities in Jy for IRAC channels 1-4.
+Magnitude is ``-2.5 * log10(flux_jy / zero_mag)``.
+Source: IRAC Instrument Handbook v2.1, Table 4.1.
+"""
+
+MIPS_BAND_WAVELENGTHS: list[float] = [23680.0, 71420.0, 155900.0]
+"""
+Effective wavelengths in nm for MIPS 24, 70, and 160 um bands.
+Source: MIPS Instrument Handbook (Rieke et al. 2004).
+"""
+
+MIPS_ZERO_MAGS: list[float] = [7.17, 0.778, 0.159]
+"""
+Vega-system zero-magnitude flux densities in Jy for MIPS 24, 70, and 160 um.
+Sources: Engelbracht et al. 2007 (24um), Gordon et al. 2007 (70um),
+Stansberry et al. 2007 (160um).
+"""
+
+IRS_PU_BAND_WAVELENGTHS: list[float] = [15800.0, 22300.0]
+"""
+Effective wavelengths in nm for IRS Peak-Up Blue and Red.
+Source: IRS Instrument Handbook v5.0.
+"""
+
+IRS_PU_ZERO_MAGS: list[float] = [15.6, 7.80]
+"""
+Vega-system zero-magnitude flux densities in Jy for IRS Peak-Up Blue and Red.
+Derived from the Cohen (1999) Vega spectral model at the effective wavelengths.
+"""
 
 _VALID_BANDS = frozenset(
     [

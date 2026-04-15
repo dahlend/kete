@@ -221,9 +221,7 @@ impl DafFile {
         let mut comments: Vec<String> = Vec::with_capacity(n_comment_recs);
         for _ in 0..n_comment_recs {
             let rec = read_bytes_exact(&mut buffer, 1024)?;
-            // Only the first 1000 bytes of each 1024-byte record carry comment
-            // content; the remaining 24 bytes are reserved for Fortran
-            // direct-access record overhead and must be ignored.
+            // Only the first 1000 bytes of each 1024-byte record carry comments.
             comments.push(bytes_to_string(&rec[..1000]));
             raw_comment_records.push(rec);
         }

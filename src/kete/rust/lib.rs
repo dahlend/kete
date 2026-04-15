@@ -172,7 +172,6 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(spice::spk_load_cache_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::spk_load_core_py, m)?)?;
     m.add_class::<spice::PySpkBuilder>()?;
-    m.add_function(wrap_pyfunction!(spice::tle_file_info_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::repack_spk_py, m)?)?;
 
     m.add_function(wrap_pyfunction!(spice::pck_reset_py, m)?)?;

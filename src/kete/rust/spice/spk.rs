@@ -4,7 +4,7 @@ use kete_core::frames::geodetic_lat_lon_to_ecef;
 use kete_spice::prelude::{DafFile, LOADED_SPK};
 use kete_spice::spk::repack_to_type2;
 use kete_spice::spk::repack_to_type13;
-use kete_spice::spk::type10::{SpkSegmentType10, parse_tle_text};
+use kete_spice::spk::type10::SpkSegmentType10;
 use pyo3::{PyResult, Python, pyclass, pyfunction, pymethods};
 use std::collections::{HashMap, HashSet};
 
@@ -272,81 +272,6 @@ impl PySpkBuilder {
         Ok(())
     }
 
-    /// Repack segments for an object from the loaded SPK kernels and add them
-    /// to this builder.
-    ///
-    /// Reads from the currently loaded SPK singleton, fits the positions in
-    /// the Equatorial J2000 frame, and validates that the fit error is within
-    /// the specified threshold.
-    ///
-    /// Parameters
-    /// ----------
-    /// object_id :
-    ///     NAIF ID of the body to repack.
-    /// center_id :
-    ///     NAIF ID of the reference center body. If None (default), the
-    ///     center is preserved from the source segment.
-    /// threshold_km :
-    ///     Maximum allowable position error in km (default 0.5).
-    /// degree :
-    ///     Polynomial degree (default 15). For Type 2 Chebyshev: 1 to 27.
-    ///     For Type 13 Hermite: must be odd and in 1 to 27 (default 7).
-    /// output_type :
-    ///     SPK segment type for the output: 2 (Chebyshev) or 13 (Hermite).
-    ///     Type 2 compresses best for slow orbits (asteroids, planets).
-    ///     Type 13 is suited for fast orbiters (LEO, MEO). Default 2.
-    ///
-    /// Raises
-    /// ------
-    /// ValueError
-    ///     If no coverage exists, the degree is out of range, or the threshold
-    ///     cannot be met.
-    #[pyo3(signature = (object_id, center_id=None, threshold_km=0.5, degree=None, output_type=2))]
-    pub fn add_repacked_segment(
-        &mut self,
-        object_id: i32,
-        center_id: Option<i32>,
-        threshold_km: f64,
-        degree: Option<usize>,
-        output_type: i32,
-    ) -> PyResult<()> {
-        let spk = LOADED_SPK
-            .try_read()
-            .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("SPK lock poisoned"))?;
-        let center_id = match center_id {
-            Some(c) => c,
-            None => {
-                let info = spk.available_info(object_id);
-                if info.is_empty() {
-                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                        "No SPK coverage for NAIF ID {object_id}, cannot detect center."
-                    )));
-                }
-                info[0].2
-            }
-        };
-        let arrays = match output_type {
-            2 => {
-                let deg = degree.unwrap_or(15);
-                repack_to_type2(&spk, object_id, center_id, threshold_km, deg, None)
-            }
-            13 => {
-                let deg = degree.unwrap_or(7);
-                repack_to_type13(&spk, object_id, center_id, threshold_km, deg, None)
-            }
-            _ => {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "output_type must be 2 or 13, got {output_type}"
-                )));
-            }
-        }
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        for array in arrays {
-            self.daf.arrays.push(array.daf);
-        }
-        Ok(())
-    }
-
     /// Number of segments currently held by this builder.
     #[getter]
     pub fn n_segments(&self) -> usize {
@@ -384,42 +309,6 @@ impl PySpkBuilder {
     fn __repr__(&self) -> String {
         format!("SpkBuilder(n_segments={})", self.daf.arrays.len())
     }
-}
-
-/// Return the NORAD catalog IDs and UTC epoch ranges found in a TLE file,
-/// without creating an SPK file.
-///
-/// Useful for inspecting a TLE file's contents before conversion.
-///
-/// Parameters
-/// ----------
-/// tle_file :
-///     Path to a TLE text file.
-///
-/// Returns
-/// -------
-/// list of (norad_id, object_name, n_records)
-#[pyfunction]
-#[pyo3(name = "tle_file_info")]
-pub fn tle_file_info_py(tle_file: &str) -> PyResult<Vec<(u64, String, usize)>> {
-    let text = std::fs::read_to_string(tle_file).map_err(|e| {
-        pyo3::exceptions::PyIOError::new_err(format!(
-            "Failed to read TLE file '{}': {}",
-            tle_file, e
-        ))
-    })?;
-    Ok(parse_tle_text(&text)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
-        .into_iter()
-        .map(|(id, elems)| {
-            let name = elems
-                .first()
-                .and_then(|e| e.object_name.clone())
-                .unwrap_or_default();
-            let n = elems.len();
-            (id, name, n)
-        })
-        .collect())
 }
 
 /// Repack an SPK file into a compact output file.
@@ -464,6 +353,7 @@ pub fn tle_file_info_py(tle_file: &str) -> PyResult<Vec<(u64, String, usize)>> {
 ///     If reading the input file or writing the output file fails.
 #[pyfunction]
 #[pyo3(name = "repack_spk", signature = (input_filename, output_filename, object_ids=None, center_id=None, threshold_km=0.5, degree=None, output_type=2))]
+#[allow(clippy::too_many_arguments)]
 pub fn repack_spk_py(
     py: Python<'_>,
     input_filename: &str,

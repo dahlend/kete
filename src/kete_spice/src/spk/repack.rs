@@ -13,13 +13,6 @@
 //!
 //! The output frame is fixed as Equatorial J2000 (`frame_id = 1`).
 //!
-//! # Boundary strategy
-//!
-//! Rather than probing the source at many times to discover where coverage
-//! exists, the repacker reads the raw segment boundaries directly from the
-//! loaded [`super::SpkCollection`].  Queries are clamped to known-good coverage,
-//! eliminating micro-gap failures and all the tolerance/retry/skip machinery
-//! that entails.
 
 use crate::interpolation::{chebyshev_fit, hermite_interpolation};
 use crate::{jd_to_spice_jd, spice_jd_to_jd};
@@ -34,7 +27,7 @@ use super::SpkArray;
 use super::type2::SpkSegmentType2;
 use super::type13::SpkSegmentType13;
 
-// ── Type 2 constants ────────────────────────────────────────────────────────
+// Type 2 constants
 
 /// Minimum step size for Type 2: 0.1 day (in SPICE seconds).
 const S_MIN: f64 = 0.1 * 86400.0;
@@ -57,7 +50,7 @@ const RAYON_MIN_LEN: usize = 4;
 /// Maximum recursion depth for subrange splitting.
 const MAX_SPLIT_DEPTH: usize = 20;
 
-// ── Type 13 constants ───────────────────────────────────────────────────────
+// Type 13 constants
 
 /// Minimum node spacing for Type 13: 60 seconds.
 const T13_S_MIN: f64 = 60.0;
@@ -78,10 +71,6 @@ const BOUNDARY_BUFFER: f64 = 1e-4;
 /// Gap tolerance for merging adjacent segments.  Segments separated by less
 /// than this are treated as contiguous.
 const GAP_TOLERANCE: f64 = 1.0;
-
-// ═════════════════════════════════════════════════════════════════════════════
-//  Type 2 repacker — Chebyshev polynomial position fitting
-// ═════════════════════════════════════════════════════════════════════════════
 
 /// Repack all source segments for `object_id` into compact Type 2 Chebyshev
 /// SPK arrays.
@@ -534,10 +523,6 @@ fn fit_interval(
 
     Ok((cdata, max_err))
 }
-
-// ═════════════════════════════════════════════════════════════════════════════
-//  Type 13 repacker — Hermite interpolation with adaptive node spacing
-// ═════════════════════════════════════════════════════════════════════════════
 
 /// Repack source segments for `object_id` into Type 13 Hermite SPK arrays.
 ///

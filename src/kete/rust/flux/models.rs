@@ -168,9 +168,9 @@ pub fn resolve_hg_params_py(
 /// band_wavelengths :
 ///     List of effective wavelengths in nm. Required unless ``bands`` is given.
 /// bands :
-///     Band preset name: ``"wise"`` or ``"neos"``. If given, ``band_wavelengths``
-///     is ignored and the standard band definitions (including color corrections
-///     and zero magnitudes) are used.
+///     Band preset name: ``"wise"``, ``"neos"``, ``"irac"``, ``"mips"``, or
+///     ``"irs_pu"``. If given, ``band_wavelengths`` is ignored and the standard
+///     band definitions (including color corrections and zero magnitudes) are used.
 /// zero_mags :
 ///     Optional list of zero-point magnitudes for each band. Only used when
 ///     ``band_wavelengths`` is provided.
@@ -245,9 +245,9 @@ pub fn neatm_model_flux_py(
 /// band_wavelengths :
 ///     List of effective wavelengths in nm. Required unless ``bands`` is given.
 /// bands :
-///     Band preset name: ``"wise"`` or ``"neos"``. If given, ``band_wavelengths``
-///     is ignored and the standard band definitions (including color corrections
-///     and zero magnitudes) are used.
+///     Band preset name: ``"wise"``, ``"neos"``, ``"irac"``, ``"mips"``, or
+///     ``"irs_pu"``. If given, ``band_wavelengths`` is ignored and the standard
+///     band definitions (including color corrections and zero magnitudes) are used.
 /// zero_mags :
 ///     Optional list of zero-point magnitudes for each band. Only used when
 ///     ``band_wavelengths`` is provided.
@@ -302,8 +302,12 @@ fn resolve_bands(
         (Some(name), _) => match name.to_lowercase().as_str() {
             "wise" => Ok(BandInfo::WISE.to_vec()),
             "neos" => Ok(BandInfo::NEOS.to_vec()),
+            "irac" => Ok(BandInfo::IRAC.to_vec()),
+            "mips" => Ok(BandInfo::MIPS.to_vec()),
+            "irs_pu" => Ok(BandInfo::IRS_PU.to_vec()),
             other => Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "Unknown band preset '{other}'. Use 'wise' or 'neos'."
+                "Unknown band preset '{other}'. \
+                 Use 'wise', 'neos', 'irac', 'mips', or 'irs_pu'."
             ))),
         },
         (None, Some(wavelengths)) => {
