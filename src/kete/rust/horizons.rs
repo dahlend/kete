@@ -5,6 +5,7 @@ use crate::elements::PyCometElements;
 use crate::nongrav::PyNonGravModel;
 use crate::state::PyState;
 use crate::uncertain_state::PyUncertainState;
+use kete_core::errors::Error;
 use pyo3::prelude::*;
 
 /// Horizons object properties
@@ -203,6 +204,44 @@ impl PyHorizonsProperties {
     #[getter]
     pub fn state(&self) -> PyResult<PyState> {
         Ok(self.0.state()?.into())
+    }
+
+    /// Sample the covariance matrix for this object, returning `n_samples` of states
+    /// and non-gravitational models, which may be used to propagate the orbit in time.
+    ///
+    /// This uses the full covariance matrix in order to correctly sample the object's
+    /// orbit with all correlations, including correlations with the non-gravitational
+    /// forces.
+    ///
+    /// Parameters
+    /// ----------
+    /// n_samples :
+    ///     The number of samples to take of the covariance.
+    /// seed :
+    ///     An optional random seed for reproducibility.
+    #[pyo3(signature = (n_samples, seed=None))]
+    pub fn sample(
+        &self,
+        n_samples: usize,
+        seed: Option<u64>,
+    ) -> PyResult<(Vec<PyState>, Vec<Option<PyNonGravModel>>)> {
+        let uc = self.uncertain_state().ok_or(Error::ValueError(
+            "This object does not have a covariance matrix, cannot sample from it.".into(),
+        ))?;
+        uc.sample(n_samples, seed)
+    }
+
+    /// Raw SBDB JSON response parsed into a Python dict.
+    ///
+    /// Raises ``ValueError`` if no JSON is found.
+    #[getter]
+    pub fn json<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let raw = self
+            .0
+            .raw_json
+            .as_deref()
+            .ok_or_else(|| Error::ValueError("No raw JSON found for this object.".into()))?;
+        py.import("json")?.call_method1("loads", (raw,))
     }
 
     /// Fetch an object from JPL Horizons.

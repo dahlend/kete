@@ -10,12 +10,9 @@ pub use daf::*;
 use kete_core::desigs::{OBS_CODES, try_obs_code_from_name};
 pub use pck::*;
 pub use sclk::*;
-use sgp4::Constants;
 pub use spk::*;
 
 use pyo3::{PyResult, pyfunction};
-
-use crate::time::PyTime;
 
 /// Return a list of MPC observatory codes, along with the latitude, longitude (deg),
 /// altitude (m above the WGS84 surface), and name.
@@ -86,59 +83,4 @@ pub fn find_obs_code_py(name: &str) -> PyResult<(f64, f64, f64, String, String)>
     let altitude = (obs_code.altitude * 1e5).round() / 1e5 + 0.0;
 
     Ok((lat, lon, altitude, obs_code.name, obs_code.code.to_string()))
-}
-
-/// Predict the state of an object in earths orbit from the two line elements
-#[pyfunction]
-pub fn predict_tle(line1: String, line2: String, time: PyTime) -> PyResult<([f64; 3], [f64; 3])> {
-    let elements =
-        sgp4::Elements::from_tle(None, line1.as_bytes(), line2.as_bytes()).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!("Invalid TLE format: {}", e))
-        })?;
-
-    let orbit = sgp4::Orbit::from_kozai_elements(
-        &sgp4::WGS84,
-        elements.inclination * (core::f64::consts::PI / 180.0),
-        elements.right_ascension * (core::f64::consts::PI / 180.0),
-        elements.eccentricity,
-        elements.argument_of_perigee * (core::f64::consts::PI / 180.0),
-        elements.mean_anomaly * (core::f64::consts::PI / 180.0),
-        elements.mean_motion * (core::f64::consts::PI / 720.0),
-    )
-    .map_err(|e| {
-        pyo3::exceptions::PyValueError::new_err(format!("Failed to create orbit from TLE: {}", e))
-    })?;
-
-    let constants = Constants::new(
-        sgp4::WGS84,
-        sgp4::iau_epoch_to_sidereal_time,
-        elements.epoch(),
-        elements.drag_term,
-        orbit,
-    )
-    .map_err(|e| {
-        pyo3::exceptions::PyValueError::new_err(format!(
-            "Failed to initialize SGP4 constants: {}",
-            e
-        ))
-    })?;
-
-    let time = time.0.utc();
-
-    let naive_time = time
-        .to_datetime()
-        .map_err(|_| pyo3::exceptions::PyValueError::new_err("Failed to convert time to datetime"))?
-        .naive_utc();
-
-    let min_diff = elements
-        .datetime_to_minutes_since_epoch(&naive_time)
-        .map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!("Failed to convert time: {}", e))
-        })?;
-
-    let state = constants.propagate(min_diff).map_err(|e| {
-        pyo3::exceptions::PyValueError::new_err(format!("Failed to propagate TLE: {}", e))
-    })?;
-
-    Ok((state.position, state.velocity))
 }

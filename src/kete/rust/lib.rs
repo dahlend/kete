@@ -200,8 +200,6 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(spice::obs_codes, m)?)?;
     m.add_function(wrap_pyfunction!(spice::find_obs_code_py, m)?)?;
 
-    m.add_function(wrap_pyfunction!(spice::predict_tle, m)?)?;
-
     m.add_function(wrap_pyfunction!(state_transition::compute_stm_py, m)?)?;
 
     m.add_class::<fitting::PyObservation>()?;

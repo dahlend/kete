@@ -340,8 +340,9 @@ impl PySpkBuilder {
 ///
 /// Returns
 /// -------
-/// list of (object_id, n_segments, n_records_total, max_error_km)
-///     Summary information for each repacked object.
+/// list[tuple[int, int, int, float]]
+///     Tuples of (object_id, n_segments, n_records_total, max_error_km)
+///     for each repacked object.
 ///
 /// Raises
 /// ------

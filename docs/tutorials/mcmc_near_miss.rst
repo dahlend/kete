@@ -500,6 +500,7 @@ Here are guidelines for choosing the right tool:
   follow up with MCMC.
 
 The MCMC sampler accepts raw :class:`~kete.State` objects (e.g. from
-:func:`initial_orbit_determination` or :func:`fit_orbit`), so it can be
-used directly with IOD candidates or converged states.  A linearization
-at each seed builds the initial mass matrix internally.
+:func:`~kete.fitting.initial_orbit_determination` or
+:func:`~kete.fitting.fit_orbit`), so it can be used directly with IOD 
+candidates or converged states.  A linearization at each seed builds the
+initial mass matrix internally.

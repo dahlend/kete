@@ -280,6 +280,7 @@ impl HorizonsProperties {
                 .iter()
                 .find(|el| el.label == label)?
                 .value
+                .as_ref()?
                 .parse()
                 .ok()
         };
@@ -327,7 +328,13 @@ impl HorizonsProperties {
                 if let Some(cov_els) = &cov.elements {
                     cov_els
                         .iter()
-                        .filter_map(|lv| lv.value.parse().ok().map(|v| (lv.label.clone(), v)))
+                        .filter_map(|lv| {
+                            lv.value
+                                .as_ref()?
+                                .parse()
+                                .ok()
+                                .map(|v| (lv.label.clone(), v))
+                        })
                         .collect()
                 } else {
                     [
@@ -717,7 +724,7 @@ struct SbdbCovariance {
 struct LabelValue {
     #[serde(alias = "label")]
     label: String,
-    value: String,
+    value: Option<String>,
 }
 
 #[cfg(feature = "fetch")]
@@ -730,7 +737,7 @@ struct NameValue {
 #[cfg(feature = "fetch")]
 #[derive(Deserialize)]
 struct SbdbListEntry {
-    pdes: String,
+    pdes: Option<String>,
 }
 
 /// Perform a single HTTP request to the JPL SBDB API and return the deserialized response.
@@ -767,7 +774,7 @@ fn query_sbdb_json(name: &str, exact: bool) -> KeteResult<(SbdbResponse, String)
         {
             let candidates: Vec<&str> = list
                 .iter()
-                .map(|e| e.pdes.as_str())
+                .filter_map(|e| e.pdes.as_deref())
                 .filter(|p| !p.contains('-'))
                 .collect();
             if candidates.len() == 1 {
