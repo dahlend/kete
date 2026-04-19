@@ -379,7 +379,7 @@ impl<'a, const N: usize, const NM1: usize> PicardIntegrator<N, NM1> {
 
             b.fixed_view_mut::<DIM, NM1>(0, 1)
                 .iter_mut()
-                .zip((f * self.a).into_iter())
+                .zip((f * self.a).iter())
                 .for_each(|(x, &n)| *x = n);
 
             let last_pos = cur_pos;
@@ -623,7 +623,7 @@ impl<'a, const N: usize, const NM1: usize> PicardIntegrator<N, NM1> {
             b_vel
                 .fixed_view_mut::<DIM, NM1>(0, 1)
                 .iter_mut()
-                .zip((accel * self.a).into_iter())
+                .zip((accel * self.a).iter())
                 .for_each(|(x, &n)| *x = n);
             let last_vel = cur_vel;
             cur_vel = b_vel * self.c;
@@ -634,7 +634,7 @@ impl<'a, const N: usize, const NM1: usize> PicardIntegrator<N, NM1> {
             b_pos
                 .fixed_view_mut::<DIM, NM1>(0, 1)
                 .iter_mut()
-                .zip((vel_scaled * self.a).into_iter())
+                .zip((vel_scaled * self.a).iter())
                 .for_each(|(x, &n)| *x = n);
 
             let last_pos = cur_pos;

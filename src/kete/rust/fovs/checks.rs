@@ -17,7 +17,7 @@ use crate::{simult_states::PySimultaneousStates, vector::VectorLike};
 /// ----------
 /// states: list[State]
 ///     States which do not already have a specified FOV.
-/// fov: List[AllowedFOV]
+/// fov: list
 ///     A field of view from which to subselect objects which are visible.
 /// dt: float
 ///     Length of time in days where 2-body mechanics is a good approximation.

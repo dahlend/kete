@@ -510,8 +510,8 @@ mod tests {
             let res_p = propagate_n_body_spk(state_p, jd_final, false, None).unwrap();
             let res_m = propagate_n_body_spk(state_m, jd_final, false, None).unwrap();
 
-            let vec_p: Vec<f64> = res_p.pos.into_iter().chain(res_p.vel.into_iter()).collect();
-            let vec_m: Vec<f64> = res_m.pos.into_iter().chain(res_m.vel.into_iter()).collect();
+            let vec_p: Vec<f64> = res_p.pos.into_iter().chain(res_p.vel).collect();
+            let vec_m: Vec<f64> = res_m.pos.into_iter().chain(res_m.vel).collect();
 
             for row in 0..6 {
                 let fd = (vec_p[row] - vec_m[row]) / (2.0 * eps);
@@ -589,8 +589,8 @@ mod tests {
             let res_m =
                 propagate_n_body_spk(state.clone(), jd_final, false, Some(model_m)).unwrap();
 
-            let vec_p: Vec<f64> = res_p.pos.into_iter().chain(res_p.vel.into_iter()).collect();
-            let vec_m: Vec<f64> = res_m.pos.into_iter().chain(res_m.vel.into_iter()).collect();
+            let vec_p: Vec<f64> = res_p.pos.into_iter().chain(res_p.vel).collect();
+            let vec_m: Vec<f64> = res_m.pos.into_iter().chain(res_m.vel).collect();
 
             for row in 0..6 {
                 let fd = (vec_p[row] - vec_m[row]) / (2.0 * eps_a);

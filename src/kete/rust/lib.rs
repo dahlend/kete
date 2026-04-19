@@ -100,7 +100,7 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<stats::PyData>()?;
     m.add_class::<flux::PyFitResult>()?;
 
-    m.add_class::<horizons::HorizonsProperties>()?;
+    m.add_class::<horizons::PyHorizonsProperties>()?;
 
     m.add_class::<uncertain_state::PyUncertainState>()?;
 
@@ -199,8 +199,6 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(spice::daf_convert_be_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::obs_codes, m)?)?;
     m.add_function(wrap_pyfunction!(spice::find_obs_code_py, m)?)?;
-
-    m.add_function(wrap_pyfunction!(spice::predict_tle, m)?)?;
 
     m.add_function(wrap_pyfunction!(state_transition::compute_stm_py, m)?)?;
 

@@ -369,8 +369,9 @@ def fetch_frame(
 
     Returns
     -------
-    astropy.io.fits.ImageHDU or str
-        The FITS image HDU, or the local file path if ``as_fits=False``.
+    object
+        An ``astropy.io.fits.ImageHDU`` if ``as_fits=True``, otherwise the
+        local file path as a ``str``.
     """
     uri = fov.artifact_uri
     if not uri:

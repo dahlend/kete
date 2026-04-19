@@ -94,4 +94,5 @@ nitpick_ignore = [
     ("py:class", "numpy.ma.core.MaskedArray"),
     ("py:class", "numpy.core.records.recarray"),
     ("py:class", "numpy._typing._array_like._ScalarType_co"),
+    ("py:class", "numpy._typing._array_like._ScalarT"),
 ]

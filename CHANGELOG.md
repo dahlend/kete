@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reduced to less than 1MB and is included with Kete, less than 1km max difference
   across the entire file.
 
+### Changed
+
+- HorizonsProperties now has its query and caching done in rust. Python api unchanged.
+
 ### Fixed
 - SPK lookups were failing to resolve in some cases when the planets were unloaded and
   reloaded.

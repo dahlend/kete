@@ -573,9 +573,7 @@ pub fn fit_orbit_mcmc(
     let sorted_obs: Arc<[AstrometricObservation]> = sorted_obs.into();
 
     // Distribute num_draws across seeds, then sub-chains across cores.
-    let n_cores = std::thread::available_parallelism()
-        .map(std::num::NonZero::get)
-        .unwrap_or(1);
+    let n_cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
     let n_seeds = seeds.len();
     let chains_per_seed = (n_cores / n_seeds).max(1);
 

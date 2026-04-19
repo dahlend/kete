@@ -332,7 +332,7 @@ mod tests {
             v1_lam[1],
             v1_lam[2],
         );
-        assert!(dv2 < tol, "v2 mismatch: err={dv2:.2e} > tol={tol:.2e}",);
+        assert!(dv2 < tol, "v2 mismatch: err={dv2:.2e} > tol={tol:.2e}");
     }
 
     #[test]
