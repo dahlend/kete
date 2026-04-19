@@ -32,6 +32,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+pub mod horizons;
 mod iod;
 mod lambert;
 mod mcmc;
@@ -39,6 +40,7 @@ mod obs;
 mod orbit_fitting;
 mod uncertain_state;
 
+pub use horizons::HorizonsProperties;
 pub use iod::initial_orbit_determination;
 pub use lambert::lambert;
 pub use mcmc::{OrbitSamples, fit_orbit_mcmc};

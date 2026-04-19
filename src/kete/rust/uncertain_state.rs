@@ -193,7 +193,7 @@ impl PyUncertainState {
     /// seed : int
     ///     Random seed for reproducibility (optional).
     #[pyo3(signature = (n_samples, seed=None))]
-    fn sample(
+    pub fn sample(
         &self,
         n_samples: usize,
         seed: Option<u64>,
