@@ -20,7 +20,6 @@ version = "3.0.1"
 edition = "2024"
 rust-version = "1.95"
 license = "BSD-3-Clause"
-license-file = "LICENSE"
 repository = "https://github.com/dahlend/kete"
 
 [dependencies]

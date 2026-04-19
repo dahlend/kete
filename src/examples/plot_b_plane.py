@@ -88,21 +88,36 @@ print(f"  Closest approach: {bp.closest_approach * kete.constants.AU_KM:12.1f} k
 
 n_samples = 200
 states, non_gravs = obj.sample(n_samples)
+earth_radius_km = 6371
 
 # Propagate all samples to the close approach epoch
 propagated = kete.propagate_n_body(states, ca_time.jd, non_gravs=non_gravs)
 
 b_t_vals = []
 b_r_vals = []
+n_impacts = 0
 for st in propagated:
     geo = st.change_center(399)
     try:
         bp_sample = kete.compute_b_plane(geo)
-        b_t_vals.append(bp_sample.b_t * kete.constants.AU_KM)
-        b_r_vals.append(bp_sample.b_r * kete.constants.AU_KM)
+        bt = bp_sample.b_t * kete.constants.AU_KM
+        br = bp_sample.b_r * kete.constants.AU_KM
+        if not (np.isfinite(bt) and np.isfinite(br)):
+            # NaN B-plane likely means a grazing/impact trajectory
+            n_impacts += 1
+        elif bp_sample.b_mag * kete.constants.AU_KM < earth_radius_km:
+            n_impacts += 1
+        else:
+            b_t_vals.append(bt)
+            b_r_vals.append(br)
     except ValueError:
-        # Skip samples where the orbit is not hyperbolic w.r.t. Earth
-        pass
+        # Non-hyperbolic w.r.t. Earth -- count as an impact
+        n_impacts += 1
+
+if n_impacts > 0:
+    print(
+        f"Impact trajectories: {n_impacts} / {n_samples} samples ({100 * n_impacts / n_samples:.1f}%)"
+    )
 
 # %%
 # Visualize the B-plane
@@ -113,9 +128,9 @@ for st in propagated:
 
 b_t_arr = np.array(b_t_vals)
 b_r_arr = np.array(b_r_vals)
+
 nom_bt = bp.b_t * kete.constants.AU_KM
 nom_br = bp.b_r * kete.constants.AU_KM
-earth_radius_km = 6371
 
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5), dpi=250)
 
@@ -135,11 +150,12 @@ ax1.annotate("Earth", (0, 0), ha="center", va="center", fontsize=9, color="darkg
 ax1.set_title("Apophis 2029 B-Plane")
 
 # Right panel: zoomed to the sampled region
-margin = 0.15
-span_t = b_t_arr.max() - b_t_arr.min()
-span_r = b_r_arr.max() - b_r_arr.min()
-ax2.set_xlim(b_t_arr.min() - margin * span_t, b_t_arr.max() + margin * span_t)
-ax2.set_ylim(b_r_arr.min() - margin * span_r, b_r_arr.max() + margin * span_r)
+if len(b_t_arr) > 1:
+    margin = 0.15
+    span_t = b_t_arr.max() - b_t_arr.min()
+    span_r = b_r_arr.max() - b_r_arr.min()
+    ax2.set_xlim(b_t_arr.min() - margin * span_t, b_t_arr.max() + margin * span_t)
+    ax2.set_ylim(b_r_arr.min() - margin * span_r, b_r_arr.max() + margin * span_r)
 ax2.set_title("Zoomed to Uncertainty Region")
 
 plt.tight_layout()
