@@ -385,7 +385,7 @@ impl HorizonsProperties {
                 .ok()
         };
 
-        let mut props = HorizonsProperties::new(
+        let mut props = Self::new(
             desig.clone(),
             resp.object
                 .as_ref()
@@ -508,7 +508,7 @@ fn build_uncertain_state(
     let n = 6 + np;
 
     let ng_param_names: Vec<&str> = match &non_grav {
-        Some(ng) => ng.param_names(),
+        Some(ng) => ng.param_names().to_vec(),
         None => Vec::new(),
     };
     let reorder: Vec<Option<usize>> = (0..n)

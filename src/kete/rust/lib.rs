@@ -101,7 +101,6 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<flux::PyFitResult>()?;
 
     m.add_class::<horizons::PyHorizonsProperties>()?;
-    m.add_function(wrap_pyfunction!(horizons::fetch_horizons_properties, m)?)?;
 
     m.add_class::<uncertain_state::PyUncertainState>()?;
 
@@ -209,7 +208,6 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<fitting::PyOrbitFit>()?;
     m.add_class::<fitting::PyOrbitSamples>()?;
     m.add_function(wrap_pyfunction!(fitting::fit_orbit_py, m)?)?;
-    m.add_function(wrap_pyfunction!(fitting::fit_orbit_sequential_py, m)?)?;
     m.add_function(wrap_pyfunction!(
         fitting::initial_orbit_determination_py,
         m
