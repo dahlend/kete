@@ -525,7 +525,7 @@ impl PyOrbitFit {
         initial_state,
         observations,
         non_grav=None,
-        include_asteroids=true,
+        include_asteroids=false,
         auto_sigma=true,
         chi2_threshold=9.0,
         max_reject_passes=10,
