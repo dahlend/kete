@@ -306,9 +306,9 @@ def _build_radar_observer(jd: float, rec: dict, prefix: str):
     alt_units = rec.get(f"{prefix}_alt_units") or "km"
     code = rec.get(prefix)
     try:
-        lat = float(lat)
-        lon = float(lon)
-        alt = float(alt)
+        lat = float(lat)  # type: ignore
+        lon = float(lon)  # type: ignore
+        alt = float(alt)  # type: ignore
     except ValueError:
         logger.debug(
             "Invalid coordinates for stn %s: lat=%s lon=%s alt=%s", code, lat, lon, alt
