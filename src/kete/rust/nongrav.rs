@@ -170,6 +170,15 @@ impl PyNonGravModel {
     ///
     /// This includes an optional time delay, which the non-gravitational forces are
     /// time delayed.
+    ///
+    /// Setting an A term to ``float('nan')`` excludes it from fitting and treats it
+    /// as zero in the force model. This allows fitting any subset of A1, A2, A3.
+    /// For example, to fit only A2:
+    ///
+    /// .. code-block:: python
+    ///
+    ///     NonGravModel.new_comet(a1=float('nan'), a2=0.0, a3=float('nan'))
+    ///
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (a1=0.0, a2=0.0, a3=0.0, alpha=0.1112620426, r_0=2.808, m=2.15, n=5.093, k=4.6142, dt=0.0))]
     #[staticmethod]
@@ -201,6 +210,9 @@ impl PyNonGravModel {
     /// set so that :math:`g(r) = 1/r^2`.
     ///
     /// See :py:meth:`NonGravModel.new_comet` for more details.
+    ///
+    /// Setting an A term to ``float('nan')`` excludes it from fitting and treats it
+    /// as zero in the force model.
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (a1, a2, a3, alpha=1.0, r_0=1.0, m= 2.0, n=1.0, k=0.0, dt=0.0))]
     #[staticmethod]

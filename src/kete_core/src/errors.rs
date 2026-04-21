@@ -34,6 +34,7 @@
 /// Define all errors which may be raise by this crate, as well as optionally provide
 /// conversion to pyo3 error types which allow for the errors to be raised in Python.
 use chrono::ParseError;
+use kete_stats::fitting::ConvergenceError;
 use std::{error, fmt, io, sync::TryLockError};
 
 /// kete specific result.
@@ -89,6 +90,23 @@ impl fmt::Display for Error {
             Self::OutOfMemory => {
                 write!(f, "The system ran out of memory.")
             }
+        }
+    }
+}
+
+impl From<ConvergenceError> for Error {
+    fn from(err: ConvergenceError) -> Self {
+        match err {
+            ConvergenceError::Iterations => {
+                Self::Convergence("Maximum number of iterations reached without convergence".into())
+            }
+            ConvergenceError::NonFinite => {
+                Self::Convergence("Non-finite value encountered during evaluation".into())
+            }
+            ConvergenceError::ZeroDerivative => {
+                Self::Convergence("Zero derivative encountered during evaluation".into())
+            }
+            ConvergenceError::InvalidInput(msg) => Self::Convergence(msg.into()),
         }
     }
 }
@@ -151,11 +169,5 @@ impl From<ParseError> for Error {
 impl<T> From<TryLockError<T>> for Error {
     fn from(_: TryLockError<T>) -> Self {
         Self::LockFailed
-    }
-}
-
-impl From<argmin::core::Error> for Error {
-    fn from(_: argmin::core::Error) -> Self {
-        Self::Convergence("Convergence failed".into())
     }
 }

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Added
 
+- Non-Gravitational orbit fitting now accepts `NaN` to indicate to not fit a parameter.
 - Support for Spitzer, including fetching FoVs and frames.
 - Initial support for writing some SPICE files.
 - SPK Repacking, where SPICE kernels are repacked into different SPICE formats which can
@@ -23,7 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - SPK lookups were failing to resolve in some cases when the planets were unloaded and
   reloaded.
-- Improved Initial Orbit Determination a bit.
+- Improved Initial Orbit Determination and convergence of orbit fitting.
+
 
 ## [3.0.1]
 

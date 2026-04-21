@@ -515,7 +515,7 @@ fn build_uncertain_state(
     let n = 6 + np;
 
     let ng_param_names: Vec<&str> = match &non_grav {
-        Some(ng) => ng.param_names().to_vec(),
+        Some(ng) => ng.param_names(),
         None => Vec::new(),
     };
     let reorder: Vec<Option<usize>> = (0..n)

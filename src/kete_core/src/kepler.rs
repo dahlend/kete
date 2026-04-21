@@ -34,35 +34,17 @@
 
 use crate::constants::{C_AU_PER_DAY_INV, GMS, GMS_SQRT};
 use crate::errors::Error;
-use crate::frames::InertialFrame;
+use crate::frames::{InertialFrame, Vector};
 use crate::prelude::{CometElements, KeteResult};
 use crate::state::State;
 use crate::time::{Duration, TDB, Time};
-use argmin::core::{CostFunction, Error as ArgminErr, Executor};
-use argmin::solver::neldermead::NelderMead;
 use core::f64;
-use kete_stats::fitting::{ConvergenceError, halley, newton_raphson};
+use kete_stats::fitting::{halley, nelder_mead, newton_raphson};
 use nalgebra::{ComplexField, Vector3};
 use std::f64::consts::TAU;
 
 /// How close to ecc=1 do we assume the orbit is parabolic
 pub const PARABOLIC_ECC_LIMIT: f64 = 1e-4;
-
-impl From<ConvergenceError> for Error {
-    fn from(err: ConvergenceError) -> Self {
-        match err {
-            ConvergenceError::Iterations => {
-                Self::Convergence("Maximum number of iterations reached without convergence".into())
-            }
-            ConvergenceError::NonFinite => {
-                Self::Convergence("Non-finite value encountered during evaluation".into())
-            }
-            ConvergenceError::ZeroDerivative => {
-                Self::Convergence("Zero derivative encountered during evaluation".into())
-            }
-        }
-    }
-}
 
 /// Compute the eccentric anomaly for all orbital classes.
 ///
@@ -335,7 +317,7 @@ fn solve_kepler_universal(mut dt: f64, r0: f64, v0: f64, rv0: f64) -> KeteResult
 /// # Errors
 /// Fails for a number of reasons, including:
 /// - Input contains non-finite values
-/// - Hitting recurusion depth limits.
+/// - Hitting recursion depth limits.
 pub fn analytic_2_body(
     time: Duration<TDB>,
     pos: &Vector3<f64>,
@@ -457,41 +439,37 @@ pub fn propagate_two_body<T: InertialFrame>(
 
 /// Apply geometric light-time correction to a state.
 ///
-/// The state must be Sun-centered (`center_id = 10`). `dist` is the
-/// distance between the object and the observer in AU.
-/// Uses two-body backward propagation by the light travel time.
+/// The state must be Sun-centered (`center_id = 10`). `observer_pos` is the
+/// observer's Sun-centered position in the same frame as the state.
+/// Uses two-body backward propagation by the light travel time, iterated up
+/// to 3 times until the change in light-travel time is below 1e-12 days.
 ///
 /// # Errors
 /// Returns an error if `state.center_id != 10` or if the Kepler solver fails.
-pub fn light_time_correct<T: InertialFrame>(state: &State<T>, dist: f64) -> KeteResult<State<T>> {
+pub fn light_time_correct<T: InertialFrame>(
+    state: &State<T>,
+    observer_pos: &Vector<T>,
+) -> KeteResult<State<T>> {
     if state.center_id != 10 {
         return Err(Error::ValueError(
             "light_time_correct requires center_id = 10 (Sun).".into(),
         ));
     }
-    let tau = dist * C_AU_PER_DAY_INV;
-    propagate_two_body(state, state.epoch - tau)
-}
 
-struct MoidCost<T: InertialFrame> {
-    state_a: State<T>,
+    let mut corrected = state.clone();
+    let mut tau = 0.0;
 
-    state_b: State<T>,
-}
-
-impl<T: InertialFrame> CostFunction for MoidCost<T> {
-    type Param = Vec<f64>;
-    type Output = f64;
-
-    fn cost(&self, param: &Self::Param) -> Result<Self::Output, ArgminErr> {
-        let dt_a = param.first().unwrap();
-        let dt_b = param.last().unwrap();
-
-        let s0 = propagate_two_body(&self.state_a, (self.state_a.epoch.jd + dt_a).into())?;
-        let s1 = propagate_two_body(&self.state_b, (self.state_b.epoch.jd + dt_b).into())?;
-
-        Ok((Vector3::from(s0.pos) - Vector3::from(s1.pos)).norm())
+    for _ in 0..3 {
+        let dx = corrected.pos - observer_pos;
+        let new_tau = dx.norm() * C_AU_PER_DAY_INV;
+        if (new_tau - tau).abs() < 1e-12 {
+            break;
+        }
+        tau = new_tau;
+        corrected = propagate_two_body(state, state.epoch - tau)?;
     }
+
+    Ok(corrected)
 }
 
 /// Compute the MOID between two states in au.
@@ -539,18 +517,22 @@ pub fn moid<T: InertialFrame>(mut state_a: State<T>, mut state_b: State<T>) -> K
         }
     }
 
-    let cost = MoidCost {
-        state_a: best.1,
-        state_b: best.2,
+    let best_a = best.1;
+    let best_b = best.2;
+    let cost = |p: &[f64]| {
+        let dt_a = p[0];
+        let dt_b = p[1];
+        let Ok(s0) = propagate_two_body(&best_a, (best_a.epoch.jd + dt_a).into()) else {
+            return f64::INFINITY;
+        };
+        let Ok(s1) = propagate_two_body(&best_b, (best_b.epoch.jd + dt_b).into()) else {
+            return f64::INFINITY;
+        };
+        (Vector3::from(s0.pos) - Vector3::from(s1.pos)).norm()
     };
 
-    let solver = NelderMead::new(vec![vec![-15.0, -15.0], vec![15.0, -15.0], vec![0.0, 15.0]]);
-
-    let res = Executor::new(cost, solver)
-        .configure(|state| state.max_iters(1000))
-        .run()?;
-
-    Ok(res.state().get_best_cost())
+    let res = nelder_mead(cost, &[0.0, 0.0], &[15.0, 15.0], 1e-12, 1000)?;
+    Ok(res.value)
 }
 
 #[cfg(test)]

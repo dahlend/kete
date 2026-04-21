@@ -265,8 +265,10 @@ pub(crate) fn analytical_jacobians(
 /// Compute analytical partial derivatives of the non-gravitational acceleration
 /// with respect to each free parameter.
 ///
-/// Returns up to 3 vectors (one per free parameter). The returned count matches
-/// the number of free parameters in the model.
+/// Returns one vector per free parameter, in the same order as
+/// [`NonGravModel::get_free_params`].  For `JplComet`, A terms set to NaN are
+/// treated as frozen (absent) and produce no entry, matching the contract used
+/// by the orbit fitter and MCMC sampler.
 fn nongrav_param_partials(
     model: &NonGravModel,
     pos: &Vector3<f64>,
@@ -274,13 +276,15 @@ fn nongrav_param_partials(
 ) -> Vec<Vector3<f64>> {
     match model {
         NonGravModel::JplComet {
+            a1,
+            a2,
+            a3,
             alpha,
             r_0,
             m,
             n,
             k,
             dt,
-            ..
         } => {
             let mut eval_pos = *pos;
             let pos_hat = pos.normalize();
@@ -293,7 +297,21 @@ fn nongrav_param_partials(
             }
             let rr0 = eval_pos.norm() / r_0;
             let scale = alpha * rr0.powf(-m) * (1.0 + rr0.powf(*n)).powf(-k);
-            vec![pos_hat * scale, t_hat * scale, n_hat * scale]
+
+            // Emit one column per *finite* A term, in (a1, a2, a3) order.  Must
+            // match NonGravModel::get_free_params exactly so that the LM update
+            // applied via set_free_params lands on the right component.
+            let mut out = Vec::with_capacity(3);
+            if a1.is_finite() {
+                out.push(pos_hat * scale);
+            }
+            if a2.is_finite() {
+                out.push(t_hat * scale);
+            }
+            if a3.is_finite() {
+                out.push(n_hat * scale);
+            }
+            out
         }
         NonGravModel::Dust { .. } => {
             let pos_hat = pos.normalize();
@@ -309,11 +327,17 @@ fn nongrav_param_partials(
 }
 
 /// Number of free non-grav parameters for a given model.
+///
+/// Matches [`NonGravModel::n_free_params`] -- for `JplComet`, NaN A terms are
+/// treated as frozen (absent) and not counted.  Keeping these two in sync is
+/// essential: the propagator allocates one parameter-sensitivity column per
+/// value returned here, and the fitter applies its LM correction vector via
+/// `set_free_params`, which uses the same NaN-aware count.  A mismatch causes
+/// LM updates to land on the wrong parameter slot.
 pub(crate) fn n_params(model: Option<&NonGravModel>) -> usize {
     match model {
         None => 0,
-        Some(NonGravModel::JplComet { .. }) => 3,
-        Some(NonGravModel::Dust { .. }) => 1,
+        Some(m) => m.n_free_params(),
     }
 }
 

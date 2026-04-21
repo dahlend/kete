@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import gzip
+import hashlib
+import json
 import logging
+import os
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -10,7 +14,7 @@ import requests
 
 from . import constants, conversion, spice
 from ._core import _find_obs_code, pack_designation, unpack_designation
-from .cache import download_json
+from .cache import cache_path, download_json
 from .fitting import Observation
 from .time import Time
 from .vector import Frames, State, Vector
@@ -417,7 +421,7 @@ def _build_observer(stn: str, jd: float, rec: dict):
         return None
 
 
-def fetch_mpc_observations(desig: str):
+def fetch_mpc_observations(desig: str, update_cache: bool = False):
     """
     Fetch observations from the MPC API and convert to fitting Observations.
 
@@ -426,15 +430,20 @@ def fetch_mpc_observations(desig: str):
     orbit fitting.  Only optical records with valid RA/Dec are included;
     radar and other types are silently skipped.
 
+    Results are cached under ``~/.kete/observations/`` so that repeated
+    queries for the same designation do not hit the network.
+
     Per-observation uncertainties are taken from the ``precra`` /
     ``precdec`` fields (coordinate precision in arcseconds) when
-    available.  Otherwise, a default of 0.1 arcseconds is used.
+    available.  Otherwise, a default of 0.5 arcseconds is used.
 
     Parameters
     ----------
     desig :
         Object designation recognized by the MPC (e.g. ``"Apophis"``,
         ``"101955"``, ``"1999 RQ36"``).
+    update_cache :
+        If ``True``, discard any cached result and re-query the MPC.
 
     Returns
     -------
@@ -455,19 +464,33 @@ def fetch_mpc_observations(desig: str):
 
         observations = kete.mpc.fetch_mpc_observations("Apophis")
     """
+    _hash = hashlib.md5(desig.encode()).hexdigest()[:16]
+    obs_dir = os.path.join(cache_path(sub_path="observations"), _hash[:3])
+    os.makedirs(obs_dir, exist_ok=True)
+    cached_path = os.path.join(obs_dir, f"{_hash}.json.gz")
 
-    response = requests.get(
-        "https://data.minorplanetcenter.net/api/get-obs",
-        json={"desigs": [desig], "output_format": ["ADES_DF"]},
-        timeout=120,
-    )
-    response.raise_for_status()
-    records = response.json()
+    if os.path.isfile(cached_path) and not update_cache:
+        logger.debug("Loading cached MPC observations for '%s'", desig)
+        with gzip.open(cached_path, "rb") as f:
+            records = json.loads(f.read().decode())
+    else:
+        response = requests.get(
+            "https://data.minorplanetcenter.net/api/get-obs",
+            json={"desigs": [desig], "output_format": ["ADES_DF"]},
+            timeout=120,
+        )
+        response.raise_for_status()
+        records = response.json()
+        if not records:
+            return []
+        # The API returns a list with one element per designation; take the
+        # first (and only) entry which is itself a list of observation dicts.
+        records = records[0]
+        with gzip.open(cached_path, "wb") as f:
+            f.write(json.dumps(records).encode())
+
     if not records:
         return []
-    # The API returns a list with one element per designation; take the
-    # first (and only) entry which is itself a list of observation dicts.
-    records = records[0]
 
     observations = []
     for rec in records["ADES_DF"]:
@@ -483,13 +506,18 @@ def fetch_mpc_observations(desig: str):
         obstime = rec.get("obstime")
         if obstime is None:
             continue
-        jd = Time.from_iso(obstime).jd
+        try:
+            jd = Time.from_iso(obstime).jd
+        except ValueError:
+            continue
 
         # Per-observation sigma: prefer precra/precdec if present.
         # Guard against NaN or non-positive values which would poison
         # downstream weight computations.
-        s_ra = _parse_sigma(rec.get("precra"), 0.1)
-        s_dec = _parse_sigma(rec.get("precdec"), 0.1)
+        # Default of 0.5" matches the CCD default from _sigma_for_obs_type
+        # in fitting.py (Veres et al. 2017).
+        s_ra = _parse_sigma(rec.get("precra"), 0.5)
+        s_dec = _parse_sigma(rec.get("precdec"), 0.5)
 
         stn = rec.get("stn", None)
         if stn is None:
@@ -499,7 +527,7 @@ def fetch_mpc_observations(desig: str):
         if observer is None:
             continue
 
-        band = rec.get("fltr") or "V"
+        band = rec.get("band") or "V"
         try:
             mag = float(rec.get("mag"))
         except (TypeError, ValueError):

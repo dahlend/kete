@@ -495,59 +495,50 @@ impl PyOrbitFit {
 ///     Initial guess for the object state (any center / frame).
 /// observations : list
 ///     List of :class:`~kete.fitting.Observation` to fit.
+/// non_grav : :class:`~kete.propagation.NonGravModel`, optional
+///     Non-gravitational force model.
 /// include_asteroids : bool
 ///     If True, include asteroid masses in the force model (slower but more
 ///     accurate for near-Earth objects). Default is False.
-/// non_grav : :class:`~kete.propagation.NonGravModel`, optional
-///     Non-gravitational force model.
-/// max_iter : int
-///     Maximum number of iterations per convergence pass. Default is 50.
-/// tol : float
-///     Convergence tolerance on the state correction norm. Default is 1e-8.
-/// chi2_threshold : float
-///     Chi-squared threshold for outlier rejection. Default is 9.0
-///     (roughly 3-sigma per component).  Only used when
-///     ``max_reject_passes > 0``.
-/// max_reject_passes : int
-///     Maximum number of outlier-rejection cycles. Set to 0 to disable
-///     rejection entirely. Default is 3.
 /// auto_sigma : bool
 ///     If True, adaptively rescale the rejection threshold based on the
 ///     actual residual scatter rather than the stated uncertainties.
 ///     Useful when observation uncertainties are unreliable.
-///     Default is False.
+///     Default is True.
+/// chi2_threshold : float
+///     Chi-squared threshold for outlier rejection.  An observation with
+///     a weighted residual exceeding this value may be rejected.
+///     Default is 9.0.
+/// max_reject_passes : int
+///     Maximum number of outlier-rejection passes.  Set to 0 to disable
+///     outlier rejection entirely.  Default is 10.
 ///
 /// Returns
 /// -------
 /// OrbitFit
 ///     The fitted orbit, including the best-fit state, covariance,
 ///     residuals, and convergence diagnostics.
-#[allow(clippy::too_many_arguments)]
 #[pyfunction]
 #[pyo3(
     name = "fit_orbit",
     signature = (
         initial_state,
         observations,
-        include_asteroids=false,
         non_grav=None,
-        max_iter=50,
-        tol=1e-8,
+        include_asteroids=true,
+        auto_sigma=true,
         chi2_threshold=9.0,
-        max_reject_passes=3,
-        auto_sigma=false,
+        max_reject_passes=10,
     )
 )]
 pub fn fit_orbit_py(
     initial_state: PyState,
     observations: Vec<PyObservation>,
-    include_asteroids: bool,
     non_grav: Option<PyNonGravModel>,
-    max_iter: usize,
-    tol: f64,
+    include_asteroids: bool,
+    auto_sigma: bool,
     chi2_threshold: f64,
     max_reject_passes: usize,
-    auto_sigma: bool,
 ) -> PyResult<PyOrbitFit> {
     let mut raw_state = initial_state.raw;
 
@@ -564,8 +555,8 @@ pub fn fit_orbit_py(
         &obs,
         include_asteroids,
         ng,
-        max_iter,
-        tol,
+        50,   // max_iter
+        1e-8, // tol
         chi2_threshold,
         max_reject_passes,
         auto_sigma,
@@ -575,44 +566,49 @@ pub fn fit_orbit_py(
 
 /// Compute an initial orbit from observations.
 ///
+/// Returns candidate orbital states sorted by ascending residual score
+/// (best first).  The score is the trimmed-mean angular residual
+/// (radians squared) plus a soft eccentricity penalty.
+///
 /// Parameters
 /// ----------
 /// observations : list[Observation]
 ///     At least 2 optical observations.
-/// epoch : float
-///     Reference epoch (JD, TDB) for returned states (optional).  Defaults
-///     to the last observation epoch (for forward prediction).
 ///
 /// Returns
 /// -------
-/// list[State]
-///     One or more candidate initial states at the reference epoch.
+/// list[tuple[float, State]]
+///     ``(score, state)`` pairs sorted by ascending score.  States are at
+///     the midpoint of the selected observational arc.
 #[pyfunction]
-#[pyo3(name = "initial_orbit_determination", signature = (observations, epoch=None))]
+#[pyo3(name = "initial_orbit_determination", signature = (observations))]
 pub fn initial_orbit_determination_py(
     observations: Vec<PyObservation>,
-    epoch: Option<f64>,
-) -> PyResult<Vec<PyState>> {
+) -> PyResult<Vec<(f64, PyState)>> {
     let obs: Vec<AstrometricObservation> = observations.into_iter().map(|o| o.obs).collect();
-    let epoch_tdb = epoch.map(Time::new);
-    let states = kete_fitting::initial_orbit_determination(&obs, epoch_tdb)?;
+    let scored = kete_fitting::initial_orbit_determination(&obs)?;
     let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-    states
+    scored
         .into_iter()
-        .map(|mut st| {
+        .map(|(score, mut st)| {
             if st.center_id != 10 {
                 spk.try_change_center(&mut st, 10)?;
             }
-            Ok(st.into())
+            Ok((score, st.into()))
         })
         .collect()
 }
 
-/// Solve Lambert's problem for a single-revolution Keplerian transfer.
+/// Solve Lambert's problem for a Keplerian transfer.
 ///
 /// Given two heliocentric position vectors and a transfer time, compute the
 /// velocity vectors at departure and arrival that connect them via two-body
 /// (Keplerian) motion.
+///
+/// When ``max_revs`` is 0 only the zero-revolution (direct) solution is
+/// returned.  For ``max_revs > 0`` the solver also finds multi-revolution
+/// solutions up to that limit; the result list contains one pair per
+/// solution, ordered by ascending number of revolutions.
 ///
 /// Parameters
 /// ----------
@@ -626,11 +622,15 @@ pub fn initial_orbit_determination_py(
 ///     If True (default), selects the short-way transfer (transfer angle
 ///     less than 180 degrees for prograde orbits). If False, selects
 ///     the long-way transfer.
+/// max_revs : int
+///     Maximum number of complete revolutions to include.  Default is 0
+///     (single direct transfer only).
 ///
 /// Returns
 /// -------
-/// tuple[Vector, Vector]
-///     ``(v1, v2)`` -- velocity at ``r1`` and ``r2`` respectively (AU/day).
+/// list[tuple[Vector, Vector]]
+///     ``[(v1, v2), ...]`` -- velocity pairs at ``r1`` and ``r2`` for each
+///     solution found.
 ///
 /// Raises
 /// ------
@@ -640,17 +640,21 @@ pub fn initial_orbit_determination_py(
 /// RuntimeError
 ///     If the iterative solver fails to converge.
 #[pyfunction]
-#[pyo3(name = "lambert", signature = (r1, r2, dt, prograde=true))]
+#[pyo3(name = "lambert", signature = (r1, r2, dt, prograde=true, max_revs=0))]
 pub fn lambert_py(
     r1: PyVector,
     r2: PyVector,
     dt: f64,
     prograde: bool,
-) -> PyResult<(PyVector, PyVector)> {
+    max_revs: u32,
+) -> PyResult<Vec<(PyVector, PyVector)>> {
     let r1_eq: Vector<Equatorial> = r1.into();
     let r2_eq: Vector<Equatorial> = r2.into();
-    let (v1, v2) = lambert(&r1_eq, &r2_eq, dt, prograde)?;
-    Ok((v1.into(), v2.into()))
+    let solutions = lambert(&r1_eq, &r2_eq, dt, prograde, max_revs)?;
+    Ok(solutions
+        .into_iter()
+        .map(|(v1, v2)| (v1.into(), v2.into()))
+        .collect())
 }
 
 /// Collection of plausible orbits from MCMC uncertainty estimation.

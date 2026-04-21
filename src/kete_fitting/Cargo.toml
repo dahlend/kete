@@ -23,6 +23,7 @@ fetch = ["dep:serde", "dep:serde_json", "dep:ureq"]
 [dependencies]
 kete_core = {version = "*", path = "../kete_core"}
 kete_spice = {version = "*", path = "../kete_spice"}
+kete_stats = {version = "*", path = "../kete_stats"}
 nalgebra = {version = "^0.34.2", features = ["rayon"]}
 nuts-rs = "0.17"
 rand = "^0.10.0"

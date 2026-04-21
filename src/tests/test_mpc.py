@@ -107,7 +107,7 @@ def test_mpc_obs_to_observations_ground():
     mpc_obs = mpc.MPCObservation.from_lines(lines)
     assert len(mpc_obs) == 1
 
-    obs_list = fitting.mpc_obs_to_observations(mpc_obs)
+    obs_list = fitting.mpc_obs_to_observations(mpc_obs, sigma_ra=1.0, sigma_dec=1.0)
     assert len(obs_list) == 1
     obs = obs_list[0]
 
@@ -117,10 +117,10 @@ def test_mpc_obs_to_observations_ground():
 
     # Observer should be Sun-centered (center_id = 10) and Equatorial.
     assert obs.observer.center_id == 10
-    # Sigma should be in arcseconds (default 0.1 arcsec).
-    assert abs(obs.sigma_dec - 0.1) < 1e-10
+    # default sigma_dec = 1.0 arcsec.
+    assert abs(obs.sigma_dec - 1.0) < 1e-10
     # cos(dec) factor makes RA sigma larger
-    assert obs.sigma_ra > 0.1
+    assert obs.sigma_ra > 1.0
 
 
 def test_mpc_obs_to_observations_spacecraft():

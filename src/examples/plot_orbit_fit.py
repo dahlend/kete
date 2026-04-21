@@ -72,8 +72,8 @@ for i, obs in enumerate(observations):
 candidates = kete.fitting.initial_orbit_determination(observations)
 print(f"\nIOD returned {len(candidates)} candidate(s)")
 
-# Pick the lowest eccentricity
-best = min(candidates, key=lambda s: s.elements.eccentricity)
+# Candidates are (score, state) tuples sorted best-first.
+_score, best = candidates[0]
 print(
     f"Best IOD candidate: a={best.elements.semi_major:.4f} AU, "
     f"e={best.elements.eccentricity:.4f}, "

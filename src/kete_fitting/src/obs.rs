@@ -147,14 +147,13 @@ impl AstrometricObservation {
     /// Fails if two-body propagation for light-time correction fails.
     pub fn residual(
         &self,
-        obj_state: &State<Equatorial>,
+        mut obj_state: State<Equatorial>,
     ) -> KeteResult<(DVector<f64>, DVector<f64>)> {
         let obs = self.observer();
-        let dist = (obj_state.pos - obs.pos).norm();
         let spk = kete_spice::prelude::LOADED_SPK.try_read()?;
-        let mut sun_state = obj_state.clone();
-        spk.try_change_center(&mut sun_state, 10)?;
-        let mut obj_lt = kete_core::kepler::light_time_correct(&sun_state, dist)?;
+        spk.try_change_center(&mut obj_state, 10)?;
+        let obs_sun = obs.pos - obj_state.pos + obj_state.pos;
+        let mut obj_lt = kete_core::kepler::light_time_correct(&obj_state, &obs_sun)?;
         spk.try_change_center(&mut obj_lt, obj_state.center_id)?;
         Ok(self.residual_predicted_from_corrected(&obj_lt))
     }
@@ -496,7 +495,7 @@ mod tests {
             sigma_dec: 1e-6,
         };
 
-        let (resid, _pred) = obs.residual(&obj).unwrap();
+        let (resid, _pred) = obs.residual(obj).unwrap();
         // Residual should be close to the injected offset.
         // (Predicted RA may wrap by 2*pi; the residual handles wrapping.)
         assert!((resid[0] - 0.01).abs() < 0.01);
