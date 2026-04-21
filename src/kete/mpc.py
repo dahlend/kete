@@ -407,8 +407,18 @@ _VERES_TABLE3: dict[str, float] = {
 #     fallback when the catalog is not listed.
 # LCO codes share a single 0.4" weight (table caption lists them).
 _LCO_CODES = {
-    "K92", "K93", "Q63", "Q64", "V37", "W84", "W85", "W86", "W87",
-    "K91", "E10", "F65",
+    "K92",
+    "K93",
+    "Q63",
+    "Q64",
+    "V37",
+    "W84",
+    "W85",
+    "W86",
+    "W87",
+    "K91",
+    "E10",
+    "F65",
 }
 _VERES_TABLE4: dict[str, float | dict[str, float]] = {
     "645": 0.3,
@@ -420,17 +430,33 @@ _VERES_TABLE4: dict[str, float | dict[str, float]] = {
     "W84": 0.5,
     "Y28": {"PPMXL": 0.3, "Gaia1": 0.3, "Gaia2": 0.3, "Gaia3": 0.3, "_default": 0.3},
     "568": {
-        "USNO-B1.0": 0.5, "USNO-B2.0": 0.5,
-        "Gaia1": 0.1, "Gaia2": 0.1, "Gaia3": 0.1,
-        "PPMXL": 0.2, "_default": 0.5,
+        "USNO-B1.0": 0.5,
+        "USNO-B2.0": 0.5,
+        "Gaia1": 0.1,
+        "Gaia2": 0.1,
+        "Gaia3": 0.1,
+        "PPMXL": 0.2,
+        "_default": 0.5,
     },
     "T09": {"Gaia1": 0.1, "Gaia2": 0.1, "Gaia3": 0.1, "_default": 0.5},
     "T12": {"Gaia1": 0.1, "Gaia2": 0.1, "Gaia3": 0.1, "_default": 0.5},
     "T14": {"Gaia1": 0.1, "Gaia2": 0.1, "Gaia3": 0.1, "_default": 0.5},
-    "G83": {"UCAC4": 0.3, "PPMXL": 0.3,
-            "Gaia1": 0.2, "Gaia2": 0.2, "Gaia3": 0.2, "_default": 0.3},
-    "309": {"UCAC4": 0.3, "PPMXL": 0.3,
-            "Gaia1": 0.2, "Gaia2": 0.2, "Gaia3": 0.2, "_default": 0.3},
+    "G83": {
+        "UCAC4": 0.3,
+        "PPMXL": 0.3,
+        "Gaia1": 0.2,
+        "Gaia2": 0.2,
+        "Gaia3": 0.2,
+        "_default": 0.3,
+    },
+    "309": {
+        "UCAC4": 0.3,
+        "PPMXL": 0.3,
+        "Gaia1": 0.2,
+        "Gaia2": 0.2,
+        "Gaia3": 0.2,
+        "_default": 0.3,
+    },
 }
 for _c in _LCO_CODES:
     _VERES_TABLE4.setdefault(_c, 0.4)
@@ -439,13 +465,13 @@ for _c in _LCO_CODES:
 # Photographic uses three epoch buckets (cutoff JDs in TDB):
 #   2411368.5 = 1890-01-01, 2433282.5 = 1950-01-01.
 _VERES_TABLE5_NON_CCD: dict[str, float] = {
-    "OCC": 0.2,    # occultation
-    "HIP": 0.2,    # Hipparcos
-    "MER": 0.5,    # transit circle / meridian
-    "ENC": 0.75,   # encoder
-    "MIC": 2.0,    # micrometer
-    "SAT": 1.5,    # satellite
-    "NOR": 1.0,    # normal place
+    "OCC": 0.2,  # occultation
+    "HIP": 0.2,  # Hipparcos
+    "MER": 0.5,  # transit circle / meridian
+    "ENC": 0.75,  # encoder
+    "MIC": 2.0,  # micrometer
+    "SAT": 1.5,  # satellite
+    "NOR": 1.0,  # normal place
 }
 
 

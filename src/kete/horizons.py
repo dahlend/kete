@@ -305,18 +305,26 @@ def _build_radar_observer(jd: float, rec: dict, prefix: str):
     alt = rec.get(f"{prefix}_altitude")
     alt_units = rec.get(f"{prefix}_alt_units") or "km"
     code = rec.get(prefix)
-    if pd.isna(lat) or pd.isna(lon) or pd.isna(alt):
+    try:
+        lat = float(lat)
+        lon = float(lon)
+        alt = float(alt)
+    except ValueError:
+        logger.debug(
+            "Invalid coordinates for stn %s: lat=%s lon=%s alt=%s", code, lat, lon, alt
+        )
         return None
+
     if alt_units == "m":
-        alt_km = float(alt) / 1000.0
+        alt_km = alt / 1000.0
     elif alt_units == "km":
-        alt_km = float(alt)
+        alt_km = alt
     else:
         logger.debug("Unsupported altitude units '%s' for stn %s", alt_units, code)
         return None
     try:
         return spice.earth_pos_to_ecliptic(
-            jd, float(lat), float(lon), alt_km, name=str(code), center=10
+            jd, lat, lon, alt_km, name=str(code), center=10
         ).as_equatorial
     except Exception as exc:
         logger.debug("Failed to build observer for stn %s: %s", code, exc)
