@@ -280,6 +280,19 @@ pub fn lambertian_vis_scale_factor(
     0.0
 }
 
+/// Bowell et al. 1989 approximation of the Bond albedo from the visible
+/// geometric albedo and the HG slope parameter `G`.
+///
+/// The phase integral is `q = 0.290 + 0.684 * G` and the Bond albedo is
+/// `A_B = vis_albedo * q`. `G = 0.15` (the typical asteroid value) gives
+/// `q ~= 0.393`.
+#[inline(always)]
+#[must_use]
+pub fn bond_albedo(vis_albedo: f64, g_param: f64) -> f64 {
+    let phase_integral = 0.29 + 0.684 * g_param;
+    vis_albedo * phase_integral
+}
+
 /// Calculate the subsolar temperature in Kelvin.
 ///
 /// # Arguments
@@ -298,10 +311,7 @@ pub fn sub_solar_temperature(
     beaming: f64,
     emissivity: f64,
 ) -> f64 {
-    let phase_integral = 0.29 + 0.684 * g_param;
-
-    let bond_albedo = vis_albedo * phase_integral;
-    let reflected = (1.0 - bond_albedo) * SOLAR_FLUX / sun_dist.powi(2);
+    let reflected = (1.0 - bond_albedo(vis_albedo, g_param)) * SOLAR_FLUX / sun_dist.powi(2);
     let temp = reflected / (beaming * emissivity * STEFAN_BOLTZMANN);
     if temp <= 0.0 {
         return 0.0;

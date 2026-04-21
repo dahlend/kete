@@ -433,9 +433,12 @@ def fetch_mpc_observations(desig: str, update_cache: bool = False):
     Results are cached under ``~/.kete/observations/`` so that repeated
     queries for the same designation do not hit the network.
 
-    Per-observation uncertainties are taken from the ``precra`` /
-    ``precdec`` fields (coordinate precision in arcseconds) when
-    available.  Otherwise, a default of 0.5 arcseconds is used.
+    Per-observation uncertainties are taken from the ADES ``rmsRA`` /
+    ``rmsDec`` fields (1-sigma astrometric uncertainty in arcseconds,
+    with ``rmsRA`` already including the ``cos(dec)`` factor) when
+    available.  Otherwise, a default of 1.0 arcsecond is used.  The
+    ``precRA`` / ``precDec`` fields are coordinate publication precision,
+    not uncertainty, and are intentionally not used.
 
     Parameters
     ----------
@@ -511,13 +514,18 @@ def fetch_mpc_observations(desig: str, update_cache: bool = False):
         except ValueError:
             continue
 
-        # Per-observation sigma: prefer precra/precdec if present.
-        # Guard against NaN or non-positive values which would poison
-        # downstream weight computations.
-        # Default of 0.5" matches the CCD default from _sigma_for_obs_type
-        # in fitting.py (Veres et al. 2017).
-        s_ra = _parse_sigma(rec.get("precra"), 0.5)
-        s_dec = _parse_sigma(rec.get("precdec"), 0.5)
+        # Per-observation sigma: use the ADES rmsRA/rmsDec fields, which are
+        # the reported astrometric 1-sigma uncertainties (rmsRA already
+        # includes the cos(dec) factor). Do NOT use precRA/precDec -- those
+        # are the publication precision (number of decimal places retained
+        # when rounding the position) and are typically far smaller than the
+        # actual measurement uncertainty, which would catastrophically
+        # over-weight historical observations.
+        # Fallback default 1.0" is a conservative all-purpose value when no
+        # rms is reported. Users wanting per-station/per-epoch weighting
+        # (e.g. Veres et al. 2017) should override the sigmas after fetching.
+        s_ra = _parse_sigma(rec.get("rmsra"), 1.0)
+        s_dec = _parse_sigma(rec.get("rmsdec"), 1.0)
 
         stn = rec.get("stn", None)
         if stn is None:

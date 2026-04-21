@@ -142,6 +142,7 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(flux::hg_apparent_mag_py, m)?)?;
     m.add_function(wrap_pyfunction!(flux::hg_phase_curve_correction_py, m)?)?;
     m.add_function(wrap_pyfunction!(flux::sub_solar_temperature_py, m)?)?;
+    m.add_function(wrap_pyfunction!(flux::bond_albedo_py, m)?)?;
     m.add_function(wrap_pyfunction!(flux::black_body_flux_py, m)?)?;
 
     m.add_function(wrap_pyfunction!(flux::neatm_facet_temperature_py, m)?)?;

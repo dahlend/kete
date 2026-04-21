@@ -95,6 +95,26 @@ pub fn sub_solar_temperature_py(
     sub_solar_temperature(sun_dist, vis_albedo, g_param, beaming, emissivity)
 }
 
+/// Approximate the Bond albedo from the visible geometric albedo and the HG
+/// slope parameter using Bowell et al. (1989):
+/// ``A_B = vis_albedo * (0.290 + 0.684 * g_param)``.
+///
+/// For the radiation force model the relevant quantity is the absorptivity
+/// ``alpha = 1 - A_B``.
+///
+/// Parameters
+/// ----------
+/// vis_albedo :
+///     Visible geometric albedo.
+/// g_param :
+///     G phase parameter in the HG system. ``0.15`` is the typical asteroid
+///     default.
+#[pyfunction]
+#[pyo3(name = "bond_albedo", signature = (vis_albedo, g_param=0.15))]
+pub fn bond_albedo_py(vis_albedo: f64, g_param: f64) -> f64 {
+    bond_albedo(vis_albedo, g_param)
+}
+
 /// Compute the black body flux at the specified temperatures and wavelength.
 ///
 /// Flux is in units Janskys / steradian per unit freq.
