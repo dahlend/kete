@@ -497,7 +497,9 @@ mod tests {
                         "alpha was {alpha}, expected {custom_alpha}"
                     );
                 }
-                NonGravModel::Dust { .. } => panic!("Expected JplComet variant"),
+                NonGravModel::Dust { .. } | NonGravModel::FarnocchiaModel { .. } => {
+                    panic!("Expected JplComet variant")
+                }
             }
         }
     }

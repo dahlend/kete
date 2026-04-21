@@ -1235,25 +1235,67 @@ fn accumulate_from_sweep(
     (n_mat, b_vec, huber_loss, residuals)
 }
 
-/// Solve `(N + lambda * diag(N)) * dx = b` via SVD.
+/// Solve `(N + lambda * diag(N)) * dx = b` via SVD with column scaling.
 ///
 /// When `lambda > 0` the diagonal of N is augmented, pulling the solution
 /// toward a steepest-descent step and stabilising poorly-constrained
 /// directions.
+///
+/// Column scaling is essential when the parameters span very different
+/// magnitudes (e.g. position in AU together with `density` in kg/m^3 or
+/// `thermal_inertia` in SI units).  Without it, the information matrix
+/// can have a condition number of 1e20 or more and the SVD pseudo-inverse
+/// truncation cutoff zeroes out the small parameter directions, producing
+/// degenerate steps.  We pre- and post-multiply by `D = diag(1/sqrt(|N_ii|))`
+/// so the scaled normal matrix has unit diagonal and a relative SVD cutoff
+/// is meaningful.
 fn solve_damped(
     n_mat: &DMatrix<f64>,
     b_vec: &DVector<f64>,
     lambda: f64,
 ) -> KeteResult<DVector<f64>> {
-    let mut n_work = n_mat.clone();
-    if lambda > 0.0 {
-        for i in 0..n_work.nrows() {
-            n_work[(i, i)] += lambda * n_mat[(i, i)].abs().max(1e-15);
+    let n = n_mat.nrows();
+
+    // Build inverse column scales d_inv[i] = 1/sqrt(|N_ii|).
+    let mut d_inv = DVector::<f64>::zeros(n);
+    for i in 0..n {
+        let dii = n_mat[(i, i)].abs().max(1e-30);
+        d_inv[i] = 1.0 / dii.sqrt();
+    }
+
+    // Scaled normal matrix: N_s = D^-1 N D^-1  (unit diagonal by construction).
+    let mut n_scaled = n_mat.clone();
+    for i in 0..n {
+        for j in 0..n {
+            n_scaled[(i, j)] *= d_inv[i] * d_inv[j];
         }
     }
-    let svd = n_work.svd(true, true);
-    svd.solve(b_vec, 1e-14)
-        .map_err(|_| Error::ValueError("SVD solve failed on damped normal matrix".into()))
+
+    // Marquardt damping in the scaled space (where diag(N_s) = 1):
+    //   (N_s + lambda I) dx_s = b_s
+    if lambda > 0.0 {
+        for i in 0..n {
+            n_scaled[(i, i)] += lambda;
+        }
+    }
+
+    // Scaled RHS.
+    let mut b_scaled = b_vec.clone();
+    for i in 0..n {
+        b_scaled[i] *= d_inv[i];
+    }
+
+    let svd = n_scaled.svd(true, true);
+    let dx_scaled = svd
+        .solve(&b_scaled, 1e-12)
+        .map_err(|_| Error::ValueError("SVD solve failed on damped normal matrix".into()))?;
+
+    // Unscale: dx = D^-1 dx_s.
+    let mut dx = dx_scaled;
+    for i in 0..n {
+        dx[i] *= d_inv[i];
+    }
+    Ok(dx)
 }
 
 /// Cap position and velocity corrections to prevent wild jumps.

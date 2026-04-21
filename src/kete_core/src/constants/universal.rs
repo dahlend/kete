@@ -61,6 +61,49 @@ pub const GOLDEN_RATIO: f64 = 1.618033988749894;
 /// <https://coolwiki.ipac.caltech.edu/index.php/Central_wavelengths_and_zero_points>
 pub const V_MAG_ZERO: f64 = 3597.28;
 
+// Johnson-Cousins zero point magnitudes in Jy (Bessell et al. 1998, A&A 333, 231).
+// These are Vega-based zero points.
+
+/// Zero point U band magnitude in Jy.
+pub const U_MAG_ZERO: f64 = 1790.0;
+
+/// Zero point B band magnitude in Jy.
+pub const B_MAG_ZERO: f64 = 4063.0;
+
+/// Zero point R band magnitude in Jy (Cousins R).
+pub const R_MAG_ZERO: f64 = 3064.0;
+
+/// Zero point I band magnitude in Jy (Cousins I).
+pub const I_MAG_ZERO: f64 = 2416.0;
+
+// 2MASS zero point magnitudes in Jy (Cohen et al. 2003, AJ 126, 1090).
+
+/// Zero point J band magnitude in Jy (2MASS).
+pub const J_MAG_ZERO: f64 = 1594.0;
+
+/// Zero point H band magnitude in Jy (2MASS).
+pub const H_MAG_ZERO: f64 = 1024.0;
+
+/// Zero point Ks band magnitude in Jy (2MASS).
+pub const KS_MAG_ZERO: f64 = 666.7;
+
+// Sloan/SDSS zero point magnitude in Jy (AB system).
+// In the AB system, the zero point is 3631 Jy at all wavelengths.
+
+/// AB system zero point magnitude in Jy, used by SDSS/Sloan bands.
+pub const AB_MAG_ZERO: f64 = 3631.0;
+
+// Gaia DR3 zero point magnitudes in Jy (Riello et al. 2021, A&A 649, A3).
+
+/// Zero point Gaia G band magnitude in Jy.
+pub const GAIA_G_MAG_ZERO: f64 = 3228.75;
+
+/// Zero point Gaia BP band magnitude in Jy.
+pub const GAIA_BP_MAG_ZERO: f64 = 3552.01;
+
+/// Zero point Gaia RP band magnitude in Jy.
+pub const GAIA_RP_MAG_ZERO: f64 = 2554.95;
+
 /// V-band constant for the relationship between `D`, `H_V`, and `p_v`, in km.
 pub const C_V: f64 = 1329.0;
 
@@ -98,3 +141,15 @@ pub const EARTH_J4: f64 = -0.00000161098761;
 /// <https://www.nature.com/articles/nature25776>
 /// Nature 555, 220-220, 2018 March 8
 pub const JUPITER_J2: f64 = 0.014696572;
+
+/// Solar radiation pressure scale `F_0 / c` expressed in `AU / Day^2` per
+/// `(m^2 / kg)`.
+///
+/// Combines `SOLAR_FLUX / C_M_PER_S` (SI radiation pressure) with the
+/// conversion `(s/day)^2 / (m/AU)` so that multiplying by an area-to-mass
+/// ratio in `m^2 / kg` and `1 / r^2` (`r` in AU) yields acceleration in
+/// `AU / Day^2`. Used by the Farnocchia 2025 radiation force model.
+///
+/// Numeric value: `1360.8 / 299_792_458 * 86_400^2 / 149_597_870_700`
+/// ~ 2.2645e-7.
+pub const F0_OVER_C_AU_DAY2: f64 = SOLAR_FLUX / C_M_PER_S * 86_400.0 * 86_400.0 / (AU_KM * 1000.0);
