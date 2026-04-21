@@ -32,8 +32,7 @@ pub fn check_n_body<F: FovLike>(
         spk.try_change_center(&mut sun_state, 10)?;
     }
 
-    let dist = (exact_state.pos - obs.pos).norm();
-    let final_state = light_time_correct(&sun_state, dist)?;
+    let final_state = light_time_correct(&sun_state, &obs.pos)?;
     let rel_pos = final_state.pos - obs.pos;
 
     let (idx, contains) = fov.contains(&rel_pos);

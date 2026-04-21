@@ -183,13 +183,13 @@ the results, which naturally captures multi-modality.
 
     candidates = kete.fitting.initial_orbit_determination(observations)
     print(f"IOD returned {len(candidates)} candidate(s)")
-    for i, c in enumerate(candidates):
+    for i, (score, c) in enumerate(candidates):
         e = c.elements
-        print(f"  [{i}] a={e.semi_major:.3f} AU, e={e.eccentricity:.3f}")
+        print(f"  [{i}] score={score:.3e}, a={e.semi_major:.3f} AU, e={e.eccentricity:.3f}")
 
     # Refine each IOD candidate with differential correction.
     fits = []
-    for c in candidates:
+    for _score, c in candidates:
         fit = kete.fitting.fit_orbit(c, observations)
         if fit.converged:
             fits.append(fit)
@@ -198,12 +198,12 @@ the results, which naturally captures multi-modality.
 ::
 
     IOD returned 5 candidate(s)
-      [0] a=3.583 AU, e=0.745
-      [1] a=-5.555 AU, e=1.164
-      [2] a=-0.518 AU, e=2.674
-      [3] a=-0.724 AU, e=2.250
-      [4] a=-0.653 AU, e=2.875
-    2 converged fit(s)
+      [0] score=8.031e-09, a=2.494 AU, e=0.630
+      [1] score=9.742e-09, a=9.267 AU, e=0.733
+      [2] score=1.018e-08, a=-4.326 AU, e=1.203
+      [3] score=1.067e-08, a=4.031 AU, e=0.505
+      [4] score=1.103e-08, a=-5.501 AU, e=1.179
+    1 converged fit(s)
 
 
 4. Orbit Uncertainty Estimation
@@ -243,7 +243,7 @@ robust when the stated uncertainties are imperfect.
 
 ::
 
-    MCMC complete: 2000 draws, 2 chain(s), 442 divergent (22.1%)
+    MCMC complete: 2000 draws, 1 chain(s), 0 divergent (0.0%)
 
 A small fraction of divergent transitions is normal and those draws are
 still valid posterior samples.  A high divergence rate (>10%) suggests the
@@ -284,7 +284,7 @@ alone cannot capture.
 
 ::
 
-    1000 / 1558 draws are bound orbits with a < 10 AU
+    2000 / 2000 draws are bound orbits with a < 10 AU
 
 .. code-block:: python
 
@@ -373,7 +373,7 @@ from three nights of data, how close could this object come to Earth?"
 
 ::
 
-    Miss distance (km):  5th=1327726, median=1428982, 95th=1544370
+    Miss distance (km):  5th=1373300, median=1488606, 95th=1701202
     True miss distance:  1358975 km
 
 The spread of the miss-distance histogram illustrates how uncertain the
@@ -431,9 +431,9 @@ on the sky is the search region.
 ::
 
     On-sky uncertainty at close approach:
-      RA spread:  3437.2 arcmin
-      Dec spread: 2617.3 arcmin
-      Samples plotted: 1000
+    RA spread:  3165.1 arcmin
+    Dec spread: 3038.8 arcmin
+    Samples plotted: 2000
 
 .. code-block:: python
 

@@ -119,12 +119,7 @@ pub fn propagation_n_body_spk_py(
     // python is checked for signals. This allows keyboard interrupts to be caught
     // and the process interrupted.
 
-    for chunk in states
-        .into_iter()
-        .zip(non_gravs.into_iter())
-        .collect_vec()
-        .chunks(500)
-    {
+    for chunk in states.into_iter().zip(non_gravs).collect_vec().chunks(500) {
         py.check_signals()?;
 
         let chunk_owned = chunk.to_owned();

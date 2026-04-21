@@ -29,11 +29,13 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+mod bisection;
 mod golden_section;
 mod halley;
 mod nelder_mead;
 mod newton;
 
+pub use self::bisection::bisection;
 pub use self::golden_section::golden_section_search;
 pub use self::halley::halley;
 pub use self::nelder_mead::{NelderMeadResult, nelder_mead};
@@ -53,6 +55,10 @@ pub enum ConvergenceError {
     /// Zero derivative encountered during evaluation.
     #[error("Zero derivative encountered during evaluation")]
     ZeroDerivative,
+
+    /// Invalid input provided to the solver.
+    #[error("Invalid input: {0}")]
+    InvalidInput(&'static str),
 }
 
 /// Result type for fitting operations.

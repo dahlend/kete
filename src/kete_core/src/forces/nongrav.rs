@@ -131,24 +131,29 @@ impl NonGravModel {
 
     /// Number of free (solvable) parameters in this model.
     ///
-    /// - `JplComet`: 3 (a1, a2, a3)
-    /// - `Dust`: 1 (beta)
+    /// For `JplComet`, only finite A terms are counted as free; NaN marks a
+    /// term as absent (held at zero). `Dust` always has 1 free parameter.
     #[must_use]
     pub fn n_free_params(&self) -> usize {
         match self {
-            Self::JplComet { .. } => 3,
+            Self::JplComet { a1, a2, a3, .. } => {
+                [a1, a2, a3].iter().filter(|v| v.is_finite()).count()
+            }
             Self::Dust { .. } => 1,
         }
     }
 
     /// Return the free parameters as a vector.
     ///
-    /// - `JplComet`: `[a1, a2, a3]`
-    /// - `Dust`: `[beta]`
+    /// For `JplComet`, only finite A terms are returned; NaN-valued terms are
+    /// excluded.
     #[must_use]
     pub fn get_free_params(&self) -> Vec<f64> {
         match self {
-            Self::JplComet { a1, a2, a3, .. } => vec![*a1, *a2, *a3],
+            Self::JplComet { a1, a2, a3, .. } => [*a1, *a2, *a3]
+                .into_iter()
+                .filter(|v| v.is_finite())
+                .collect(),
             Self::Dust { beta } => vec![*beta],
         }
     }
@@ -158,31 +163,45 @@ impl NonGravModel {
     /// The order matches [`get_free_params`](Self::get_free_params) and
     /// [`set_free_params`](Self::set_free_params).
     ///
-    /// - `JplComet`: `["a1", "a2", "a3"]`
-    /// - `Dust`: `["beta"]`
+    /// For `JplComet`, only names for finite A terms are returned.
     #[must_use]
-    pub fn param_names(&self) -> &[&str] {
+    pub fn param_names(&self) -> Vec<&str> {
         match self {
-            Self::JplComet { .. } => &["a1", "a2", "a3"],
-            Self::Dust { .. } => &["beta"],
+            Self::JplComet { a1, a2, a3, .. } => {
+                const NAMES: [&str; 3] = ["a1", "a2", "a3"];
+                [a1, a2, a3]
+                    .iter()
+                    .zip(NAMES)
+                    .filter(|(v, _)| v.is_finite())
+                    .map(|(_, name)| name)
+                    .collect()
+            }
+            Self::Dust { .. } => vec!["beta"],
         }
     }
 
     /// Update the free parameters from a slice.
+    ///
+    /// Only finite (non-NaN) A terms are updated for `JplComet`.
     ///
     /// # Panics
     /// Panics if the slice length does not match `n_free_params()`.
     pub fn set_free_params(&mut self, params: &[f64]) {
         match self {
             Self::JplComet { a1, a2, a3, .. } => {
+                let n = [&*a1, &*a2, &*a3].iter().filter(|v| v.is_finite()).count();
                 assert!(
-                    params.len() == 3,
-                    "JplComet requires 3 params, got {}",
+                    params.len() == n,
+                    "JplComet requires {} params, got {}",
+                    n,
                     params.len()
                 );
-                *a1 = params[0];
-                *a2 = params[1];
-                *a3 = params[2];
+                let mut iter = params.iter();
+                for val in [a1, a2, a3] {
+                    if val.is_finite() {
+                        *val = *iter.next().unwrap();
+                    }
+                }
             }
             Self::Dust { beta } => {
                 assert!(
@@ -257,9 +276,13 @@ impl NonGravModel {
                 }
                 let rr0 = pos.norm() / r_0;
                 let scale = alpha * rr0.powf(-m) * (1.0 + rr0.powf(*n)).powf(-k);
-                *accel += pos_norm * (scale * a1);
-                *accel += t_vec * (scale * a2);
-                *accel += n_vec * (scale * a3);
+                // NaN A terms are absent — treat as zero.
+                let a1_eff = if a1.is_finite() { *a1 } else { 0.0 };
+                let a2_eff = if a2.is_finite() { *a2 } else { 0.0 };
+                let a3_eff = if a3.is_finite() { *a3 } else { 0.0 };
+                *accel += pos_norm * (scale * a1_eff);
+                *accel += t_vec * (scale * a2_eff);
+                *accel += n_vec * (scale * a3_eff);
             }
         }
     }
@@ -420,5 +443,64 @@ mod tests {
         );
         // At 2 AU the radial acceleration should be 1/4 of that at 1 AU
         assert!((a2.x / a1.x - 0.25).abs() < 1e-14);
+    }
+
+    // -- NaN sentinel for absent A terms ----------------------------
+
+    #[test]
+    fn nan_a_terms_excluded_from_free_params() {
+        // Only a2 is finite
+        let model = NonGravModel::new_jpl(f64::NAN, 1e-8, f64::NAN, 1.0, 1.0, 2.0, 0.0, 0.0, 0.0);
+        assert_eq!(model.n_free_params(), 1);
+        assert_eq!(model.get_free_params(), vec![1e-8]);
+        assert_eq!(model.param_names(), vec!["a2"]);
+    }
+
+    #[test]
+    fn nan_all_finite_unchanged() {
+        let model = NonGravModel::new_jpl(1.0, 2.0, 3.0, 1.0, 1.0, 2.0, 0.0, 0.0, 0.0);
+        assert_eq!(model.n_free_params(), 3);
+        assert_eq!(model.get_free_params(), vec![1.0, 2.0, 3.0]);
+        assert_eq!(model.param_names(), vec!["a1", "a2", "a3"]);
+    }
+
+    #[test]
+    fn nan_all_nan_zero_params() {
+        let model =
+            NonGravModel::new_jpl(f64::NAN, f64::NAN, f64::NAN, 1.0, 1.0, 2.0, 0.0, 0.0, 0.0);
+        assert_eq!(model.n_free_params(), 0);
+        assert!(model.get_free_params().is_empty());
+        assert!(model.param_names().is_empty());
+    }
+
+    #[test]
+    fn set_free_params_respects_nan() {
+        let mut model = NonGravModel::new_jpl(0.0, f64::NAN, 0.0, 1.0, 1.0, 2.0, 0.0, 0.0, 0.0);
+        // Only a1 and a3 are free
+        model.set_free_params(&[5.0, 7.0]);
+        assert_eq!(model.get_free_params(), vec![5.0, 7.0]);
+        assert_eq!(model.param_names(), vec!["a1", "a3"]);
+    }
+
+    #[test]
+    fn nan_a_terms_produce_zero_acceleration() {
+        let (pos, vel) = circular_prograde();
+        let model =
+            NonGravModel::new_jpl(f64::NAN, f64::NAN, f64::NAN, 1.0, 1.0, 2.0, 0.0, 0.0, 0.0);
+        let accel = eval(&model, pos, vel);
+        assert!(accel.x.abs() < 1e-14);
+        assert!(accel.y.abs() < 1e-14);
+        assert!(accel.z.abs() < 1e-14);
+    }
+
+    #[test]
+    fn nan_partial_acceleration() {
+        // Only a2 active, so only tangential acceleration
+        let (pos, vel) = circular_prograde();
+        let model = NonGravModel::new_jpl(f64::NAN, 3.0, f64::NAN, 1.0, 1.0, 2.0, 0.0, 0.0, 0.0);
+        let accel = eval(&model, pos, vel);
+        assert!(accel.x.abs() < 1e-14);
+        assert!((accel.y - 3.0).abs() < 1e-14);
+        assert!(accel.z.abs() < 1e-14);
     }
 }

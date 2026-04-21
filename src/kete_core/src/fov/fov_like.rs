@@ -156,8 +156,7 @@ pub fn check_two_body<F: FovLike>(
     let obs = fov.observer();
 
     let final_state = propagate_two_body(state, obs.epoch)?;
-    let dist = (final_state.pos - obs.pos).norm();
-    let final_state = light_time_correct(&final_state, dist)?;
+    let final_state = light_time_correct(&final_state, &obs.pos)?;
     let rel_pos = final_state.pos - obs.pos;
 
     let (idx, contains) = fov.contains(&rel_pos);
