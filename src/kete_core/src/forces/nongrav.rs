@@ -101,45 +101,40 @@ pub enum NonGravModel {
     /// ("Radiation Forces and Trajectory of Hayabusa2# Target 1998 KY26",
     /// `ApJL` 993:L9).
     ///
-    /// Models the body as an oblate spheroid with a fixed spin pole and computes
-    /// solar radiation pressure plus thermal recoil (Yarkovsky) acceleration
-    /// from first principles.
+    /// Models the body as an oblate spheroid with a fixed spin pole and
+    /// computes solar radiation pressure plus thermal recoil (Yarkovsky)
+    /// acceleration from first principles.
     ///
-    /// The model stores the physical parameters directly. The derived
-    /// quantities `a_over_m` (Eq. 6) and `lambda_0` (Eq. 12) used by the force
-    /// equations are computed on demand inside `add_acceleration`. Two
-    /// parameters are fittable: `density` and `thermal_inertia`. All other
-    /// entries (diameter, emissivity, albedo, absorptivity, flattening, spin
-    /// pole, rotation period) are treated as fixed physical inputs.
+    /// Internally stores only the two fittable parameters in the form used
+    /// by the paper: `a_over_m` (Eq. 6) and `lambda_0` (Eq. 12). Fitting on
+    /// these directly is far better conditioned than fitting on
+    /// `(density, thermal_inertia)`: `A/M` multiplies the entire
+    /// acceleration linearly, and `lambda_0` enters the thermal terms only
+    /// through the dimensionless lag parameter `lambda`.
     FarnocchiaModel {
-        /// Bulk density in `kg / m^3`. Primary fittable parameter.
-        density: f64,
+        /// Area-to-mass ratio (`m^2 / kg`). Primary fittable parameter
+        /// (Eq. 6: `A/M = 3 / (4 * rho * R_P)`).
+        a_over_m: f64,
 
-        /// Surface thermal inertia `Gamma` in SI units
-        /// (`J m^-2 s^-1/2 K^-1`). Secondary fittable parameter.
-        thermal_inertia: f64,
+        /// Dimensionless thermal parameter at 1 AU (Eq. 12). Secondary
+        /// fittable parameter.
+        lambda_0: f64,
 
-        /// Volume-equivalent diameter in kilometers.
-        diameter: f64,
-
-        /// Thermal emissivity.
-        emissivity: f64,
-
-        /// Geometric albedo `a_0` (Lambert approximation).
+        /// Geometric albedo `a_0` (Lambert approximation). Enters SRP only.
         albedo: f64,
 
         /// Absorptivity `alpha = 1 - A_B`, where `A_B` is the Bond albedo.
+        /// Multiplies the thermal terms.
         absorptivity: f64,
 
         /// Axis ratio `e = R_P / R_E` (`1.0` for a sphere, `< 1` for oblate).
         flattening: f64,
 
-        /// Spin pole unit vector in the equatorial frame, fixed in inertial
-        /// space.
+        /// Spin pole unit vector in the equatorial (integration) frame,
+        /// fixed in inertial space. The constructor accepts any inertial
+        /// frame and converts to equatorial for storage so no per-step
+        /// frame conversion is needed during propagation.
         spin_pole: Vector<Equatorial>,
-
-        /// Rotation period in hours.
-        rotation_period: f64,
     },
 }
 
@@ -178,152 +173,74 @@ impl NonGravModel {
         Self::Dust { beta }
     }
 
-    /// Construct a new `FarnocchiaModel` from physical surface parameters.
+    /// Construct a `FarnocchiaModel` from the two fittable parameters
+    /// (`a_over_m`, `lambda_0`) and the fixed surface descriptors.
     ///
-    /// The derived quantities `a_over_m` and `lambda_0` used in the force
-    /// equations are computed on demand from these inputs.
+    /// The fittable parameters are the ones used in Farnocchia et al. 2025
+    /// (Eq. 6 and Eq. 12). To compute them from physical surface inputs
+    /// (`density`, `thermal_inertia`, etc.), use the free helpers
+    /// [`a_over_m_from_physical`] and [`lambda_0_from_physical`].
     ///
     /// # Errors
-    /// Returns an error if any of the strictly-positive parameters
-    /// (`density`, `diameter`, `rotation_period`) is non-finite or
-    /// non-positive, or if any of `thermal_inertia`, `emissivity`,
-    /// `albedo`, `absorptivity`, `flattening` is non-finite or negative,
-    /// or if `flattening` is greater than `1`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Physical model has many fixed inputs"
-    )]
+    /// Returns an error if `a_over_m` is non-finite or non-positive, if
+    /// `lambda_0` is non-finite or negative, if any of `albedo`,
+    /// `absorptivity`, `flattening` is non-finite or negative, or if
+    /// `flattening` is greater than `1`.
     pub fn new_farnocchia(
-        density: f64,
-        thermal_inertia: f64,
-        diameter: f64,
-        emissivity: f64,
+        a_over_m: f64,
+        lambda_0: f64,
         albedo: f64,
         absorptivity: f64,
         flattening: f64,
         spin_pole: Vector<Equatorial>,
-        rotation_period: f64,
     ) -> KeteResult<Self> {
-        let positive = |name: &str, v: f64| -> KeteResult<()> {
-            if !v.is_finite() || v <= 0.0 {
-                Err(Error::ValueError(format!(
-                    "FarnocchiaModel non-grav: '{name}' must be finite and > 0 (got {v})"
-                )))
-            } else {
-                Ok(())
-            }
-        };
-        let non_negative = |name: &str, v: f64| -> KeteResult<()> {
+        if !a_over_m.is_finite() || a_over_m <= 0.0 {
+            return Err(Error::ValueError(format!(
+                "FarnocchiaModel non-grav: 'a_over_m' must be finite and > 0 (got {a_over_m})"
+            )));
+        }
+        for (name, v) in [
+            ("lambda_0", lambda_0),
+            ("albedo", albedo),
+            ("absorptivity", absorptivity),
+            ("flattening", flattening),
+        ] {
             if !v.is_finite() || v < 0.0 {
-                Err(Error::ValueError(format!(
+                return Err(Error::ValueError(format!(
                     "FarnocchiaModel non-grav: '{name}' must be finite and >= 0 (got {v})"
-                )))
-            } else {
-                Ok(())
+                )));
             }
-        };
-        positive("density", density)?;
-        positive("diameter", diameter)?;
-        positive("rotation_period", rotation_period)?;
-        non_negative("thermal_inertia", thermal_inertia)?;
-        non_negative("emissivity", emissivity)?;
-        non_negative("albedo", albedo)?;
-        non_negative("absorptivity", absorptivity)?;
-        non_negative("flattening", flattening)?;
+        }
         if flattening > 1.0 {
             return Err(Error::ValueError(format!(
                 "FarnocchiaModel non-grav: 'flattening' must be <= 1 (got {flattening})"
             )));
         }
+        // Spin pole is stored in the equatorial (integration) frame so that
+        // pos/vel and spin_pole share a frame inside `add_acceleration`.
+        let spin_pole = spin_pole.into_frame::<Equatorial>();
+        if !spin_pole.is_finite() || spin_pole.norm() == 0.0 {
+            return Err(Error::ValueError(
+                "FarnocchiaModel non-grav: 'spin_pole' must be a finite, non-zero vector".into(),
+            ));
+        }
+        // Normalize so the equations only see a unit pole regardless of input.
+        let spin_pole = spin_pole.normalize();
         Ok(Self::FarnocchiaModel {
-            density,
-            thermal_inertia,
-            diameter,
-            emissivity,
+            a_over_m,
+            lambda_0,
             albedo,
             absorptivity,
             flattening,
             spin_pole,
-            rotation_period,
         })
-    }
-
-    /// Derived area-to-mass ratio in `m^2 / kg` for a `FarnocchiaModel`
-    /// (Eq. 6: `A/M = 3 / (4 * rho * R_P)`).
-    ///
-    /// Returns `NaN` for non-`FarnocchiaModel` variants.
-    #[must_use]
-    pub fn a_over_m(&self) -> f64 {
-        match self {
-            Self::FarnocchiaModel {
-                density,
-                diameter,
-                flattening,
-                ..
-            } => {
-                // diameter is stored in km; convert to m so that A/M comes
-                // out in m^2/kg with density in kg/m^3.
-                let r_p = flattening.powf(2.0 / 3.0) * diameter * 500.0;
-                3.0 / (4.0 * density * r_p)
-            }
-            Self::JplComet { .. } | Self::Dust { .. } => f64::NAN,
-        }
-    }
-
-    /// Derived thermal parameter `lambda_0` (Eq. 12) for a `FarnocchiaModel`.
-    ///
-    /// Returns `NaN` for non-`FarnocchiaModel` variants.
-    #[must_use]
-    pub fn lambda_0(&self) -> f64 {
-        match self {
-            Self::FarnocchiaModel {
-                thermal_inertia,
-                emissivity,
-                absorptivity,
-                flattening,
-                rotation_period,
-                ..
-            } => {
-                let sigma = sigma_shape(*flattening);
-                let denom = (emissivity * STEFAN_BOLTZMANN).powf(0.25)
-                    * (absorptivity * SOLAR_FLUX).powf(0.75);
-                // rotation_period is stored in hours; convert to seconds
-                // here so the result is dimensionally consistent with the
-                // SI thermal inertia.
-                thermal_inertia * sigma.powf(0.75) / denom
-                    * (std::f64::consts::PI / (2.0 * rotation_period * 3600.0)).sqrt()
-            }
-            Self::JplComet { .. } | Self::Dust { .. } => f64::NAN,
-        }
-    }
-
-    /// Bulk density (`kg / m^3`) for a `FarnocchiaModel`. Returns `NaN`
-    /// otherwise.
-    #[must_use]
-    pub fn bulk_density(&self) -> f64 {
-        match self {
-            Self::FarnocchiaModel { density, .. } => *density,
-            Self::JplComet { .. } | Self::Dust { .. } => f64::NAN,
-        }
-    }
-
-    /// Surface thermal inertia (SI units) for a `FarnocchiaModel`. Returns
-    /// `NaN` otherwise.
-    #[must_use]
-    pub fn thermal_inertia(&self) -> f64 {
-        match self {
-            Self::FarnocchiaModel {
-                thermal_inertia, ..
-            } => *thermal_inertia,
-            Self::JplComet { .. } | Self::Dust { .. } => f64::NAN,
-        }
     }
 
     /// Number of free (solvable) parameters in this model.
     ///
     /// For `JplComet`, only finite A terms are counted as free; NaN marks a
     /// term as absent (held at zero). `Dust` always has 1 free parameter.
-    /// `FarnocchiaModel` has 2 free parameters (`density`, `thermal_inertia`).
+    /// `FarnocchiaModel` has 2 free parameters (`a_over_m`, `lambda_0`).
     #[must_use]
     pub fn n_free_params(&self) -> usize {
         match self {
@@ -348,10 +265,8 @@ impl NonGravModel {
                 .collect(),
             Self::Dust { beta } => vec![*beta],
             Self::FarnocchiaModel {
-                density,
-                thermal_inertia,
-                ..
-            } => vec![*density, *thermal_inertia],
+                a_over_m, lambda_0, ..
+            } => vec![*a_over_m, *lambda_0],
         }
     }
 
@@ -374,7 +289,28 @@ impl NonGravModel {
                     .collect()
             }
             Self::Dust { .. } => vec!["beta"],
-            Self::FarnocchiaModel { .. } => vec!["density", "thermal_inertia"],
+            Self::FarnocchiaModel { .. } => vec!["a_over_m", "lambda_0"],
+        }
+    }
+
+    /// Lower bounds for the free parameters (matching [`get_free_params`]).
+    ///
+    /// `f64::NEG_INFINITY` indicates no lower bound. These are used by
+    /// the orbit fitter to reject trial steps that would otherwise be
+    /// silently clamped by [`set_free_params`], which would pin the
+    /// optimizer at the boundary.
+    #[must_use]
+    pub fn param_lower_bounds(&self) -> Vec<f64> {
+        match self {
+            Self::JplComet { a1, a2, a3, .. } => [a1, a2, a3]
+                .iter()
+                .filter(|v| v.is_finite())
+                .map(|_| f64::NEG_INFINITY)
+                .collect(),
+            Self::Dust { .. } => vec![f64::NEG_INFINITY],
+            // a_over_m must remain strictly positive; lambda_0 must
+            // remain >= 0 (zero turns off the thermal component).
+            Self::FarnocchiaModel { .. } => vec![0.0, 0.0],
         }
     }
 
@@ -410,18 +346,17 @@ impl NonGravModel {
                 *beta = params[0];
             }
             Self::FarnocchiaModel {
-                density,
-                thermal_inertia,
-                ..
+                a_over_m, lambda_0, ..
             } => {
                 assert!(
                     params.len() == 2,
-                    "Radiation requires 2 params, got {}",
+                    "FarnocchiaModel requires 2 params, got {}",
                     params.len()
                 );
-                // Both parameters are physical and must remain positive.
-                *density = params[0].max(1e-12);
-                *thermal_inertia = params[1].max(1e-12);
+                // A/M must remain strictly positive; lambda_0 must remain
+                // non-negative (zero turns off the thermal component).
+                *a_over_m = params[0].max(1e-30);
+                *lambda_0 = params[1].max(0.0);
             }
         }
     }
@@ -498,25 +433,19 @@ impl NonGravModel {
             }
 
             Self::FarnocchiaModel {
-                density,
-                thermal_inertia,
-                diameter,
-                emissivity,
+                a_over_m,
+                lambda_0,
                 albedo,
                 absorptivity,
                 flattening,
                 spin_pole,
-                rotation_period,
+                ..
             } => {
-                // Derived A/M (Eq. 6). diameter is in km -> convert to m.
-                let r_p = flattening.powf(2.0 / 3.0) * diameter * 500.0;
-                let a_over_m = 3.0 / (4.0 * density * r_p);
-
                 let e = *flattening;
 
-                // Frame note: pos/vel here are Sun-relative in the equatorial
-                // frame (matching `vec_accel`/`spk_accel`), and `spin_pole` is
-                // stored in the same frame, so we can take the raw Vector3.
+                // pos/vel are Sun-relative in the equatorial (integration)
+                // frame; `spin_pole` is stored pre-converted to equatorial
+                // and pre-normalized at construction.
                 let s_hat: Vector3<f64> = (*spin_pole).into();
                 let r = pos.norm();
                 let r_inv = r.recip();
@@ -544,18 +473,9 @@ impl NonGravModel {
                 let srp_pole = four_ninths_a0 * (psi_z - psi_x) * r_dot_s;
                 *accel += scale * (srp_radial * r_hat + srp_pole * s_hat);
 
-                // Thermal terms are only present if the body absorbs light.
-                // Guard against `absorptivity = 0`, which makes `lambda_0`
-                // diverge and would produce NaN through 0*inf.
-                if *absorptivity > 0.0 {
-                    // Derived lambda_0 (Eq. 12) evaluated at 1 AU.
-                    let sigma_s = sigma_shape(e);
-                    let lambda_denom = (emissivity * STEFAN_BOLTZMANN).powf(0.25)
-                        * (absorptivity * SOLAR_FLUX).powf(0.75);
-                    // rotation_period is in hours; convert to seconds.
-                    let lambda_0 = thermal_inertia * sigma_s.powf(0.75) / lambda_denom
-                        * (std::f64::consts::PI / (2.0 * rotation_period * 3600.0)).sqrt();
-
+                // Thermal terms vanish if the body neither absorbs light
+                // (alpha = 0) nor has any thermal lag (lambda_0 = 0).
+                if *absorptivity > 0.0 && *lambda_0 > 0.0 {
                     // Thermal lag parameter lambda(r, theta_0). j2_theta > 0
                     // for any e > 0, so the division is safe.
                     let lambda = lambda_0 / j2_theta.powf(0.75) * r.powf(1.5);
@@ -577,6 +497,60 @@ impl NonGravModel {
             }
         }
     }
+}
+
+/// Compute `A/M` (`m^2 / kg`) from physical inputs (Farnocchia 2025 Eq. 6).
+///
+/// `density` is in kg/m^3, `diameter` in km, `flattening` is the axis ratio
+/// `R_P / R_E` (1.0 for a sphere).
+#[must_use]
+pub fn a_over_m_from_physical(density: f64, diameter: f64, flattening: f64) -> f64 {
+    // diameter is in km; convert to m so A/M comes out in m^2/kg.
+    let r_p = flattening.powf(2.0 / 3.0) * diameter * 500.0;
+    3.0 / (4.0 * density * r_p)
+}
+
+/// Inverse of [`a_over_m_from_physical`]: solve for bulk density (`kg / m^3`)
+/// given `a_over_m`, `diameter` (km), and `flattening`.
+#[must_use]
+pub fn density_from_a_over_m(a_over_m: f64, diameter: f64, flattening: f64) -> f64 {
+    let r_p = flattening.powf(2.0 / 3.0) * diameter * 500.0;
+    3.0 / (4.0 * a_over_m * r_p)
+}
+
+/// Compute `lambda_0` (dimensionless, Eq. 12) from physical inputs.
+///
+/// `thermal_inertia` is in SI units (J m^-2 K^-1 s^-1/2), `rotation_period`
+/// is in hours, `flattening` is the axis ratio `R_P / R_E`.
+#[must_use]
+pub fn lambda_0_from_physical(
+    thermal_inertia: f64,
+    emissivity: f64,
+    absorptivity: f64,
+    flattening: f64,
+    rotation_period: f64,
+) -> f64 {
+    let sigma = sigma_shape(flattening);
+    let denom = (emissivity * STEFAN_BOLTZMANN).powf(0.25) * (absorptivity * SOLAR_FLUX).powf(0.75);
+    // rotation_period is in hours; convert to seconds.
+    thermal_inertia * sigma.powf(0.75) / denom
+        * (std::f64::consts::PI / (2.0 * rotation_period * 3600.0)).sqrt()
+}
+
+/// Inverse of [`lambda_0_from_physical`]: solve for thermal inertia
+/// (SI units) given `lambda_0` and the auxiliary surface inputs.
+#[must_use]
+pub fn thermal_inertia_from_lambda_0(
+    lambda_0: f64,
+    emissivity: f64,
+    absorptivity: f64,
+    flattening: f64,
+    rotation_period: f64,
+) -> f64 {
+    let sigma = sigma_shape(flattening);
+    let numer = (emissivity * STEFAN_BOLTZMANN).powf(0.25) * (absorptivity * SOLAR_FLUX).powf(0.75);
+    lambda_0 * numer
+        / (sigma.powf(0.75) * (std::f64::consts::PI / (2.0 * rotation_period * 3600.0)).sqrt())
 }
 
 /// Oblate-spheroid shape factors `(psi_X, psi_Z, Sigma)` from Eqs. 2-4 of
@@ -834,16 +808,29 @@ mod tests {
         albedo: f64,
         absorptivity: f64,
     ) -> NonGravModel {
+        let diameter = 0.011_f64; // km, ~11 m
+        let flattening = 1.0_f64;
+        let emissivity = 0.9_f64;
+        let rotation_period = 1.0_f64; // hours
+        let a_over_m = a_over_m_from_physical(density, diameter, flattening);
+        let lambda_0 = if absorptivity > 0.0 {
+            lambda_0_from_physical(
+                thermal_inertia,
+                emissivity,
+                absorptivity,
+                flattening,
+                rotation_period,
+            )
+        } else {
+            0.0
+        };
         NonGravModel::new_farnocchia(
-            density,
-            thermal_inertia,
-            0.011, // diameter, km (~11 m)
-            0.9,   // emissivity
+            a_over_m,
+            lambda_0,
             albedo,
             absorptivity,
-            1.0, // sphere
+            flattening,
             Vector::<Equatorial>::new([0.0, 0.0, 1.0]),
-            1.0, // rotation period, hours
         )
         .unwrap()
     }
@@ -851,16 +838,22 @@ mod tests {
     #[test]
     fn radiation_free_params_ordering() {
         let m = sphere_physical(2800.0, 130.0, 0.52, 0.71);
+        let NonGravModel::FarnocchiaModel {
+            a_over_m, lambda_0, ..
+        } = m
+        else {
+            unreachable!()
+        };
         assert_eq!(m.n_free_params(), 2);
-        assert_eq!(m.get_free_params(), vec![2800.0, 130.0]);
-        assert_eq!(m.param_names(), vec!["density", "thermal_inertia"]);
+        assert_eq!(m.get_free_params(), vec![a_over_m, lambda_0]);
+        assert_eq!(m.param_names(), vec!["a_over_m", "lambda_0"]);
     }
 
     #[test]
     fn radiation_set_free_params_clamps_positive() {
         let mut m = sphere_physical(2800.0, 130.0, 0.5, 0.7);
         m.set_free_params(&[-1.0, -1.0]);
-        assert_eq!(m.get_free_params(), vec![1e-12, 1e-12]);
+        assert_eq!(m.get_free_params(), vec![1e-30, 0.0]);
     }
 
     #[test]
@@ -877,7 +870,9 @@ mod tests {
         // with r_hat . s_hat = 0:
         //   a = (A/M) * F0/c * (1 + 4/9 * a_0) * r_hat
         let model = sphere_physical(2800.0, 130.0, 0.5, 0.0);
-        let a_over_m = model.a_over_m();
+        let NonGravModel::FarnocchiaModel { a_over_m, .. } = model else {
+            unreachable!()
+        };
         let pos = Vector3::new(1.0, 0.0, 0.0);
         let vel = Vector3::zeros();
         let accel = {
@@ -964,24 +959,12 @@ mod tests {
         let pos = Vector3::new(1.0, 0.0, 0.0);
         let vel = Vector3::zeros();
         let pole = Vector::<Equatorial>::new([0.0, 0.0, 1.0]);
-        let m_full =
-            NonGravModel::new_farnocchia(2800.0, 130.0, 0.011, 0.9, 0.0, 0.7, 1.0, pole, 1.0)
-                .unwrap();
+        let a_over_m = a_over_m_from_physical(2800.0, 0.011, 1.0);
+        let lambda_0 = lambda_0_from_physical(130.0, 0.9, 0.7, 1.0, 1.0);
+        let m_full = NonGravModel::new_farnocchia(a_over_m, lambda_0, 0.0, 0.7, 1.0, pole).unwrap();
         let mut a = Vector3::zeros();
         m_full.add_acceleration(&mut a, &pos, &vel);
         assert!(a.y > 0.0);
-    }
-
-    #[test]
-    fn radiation_bulk_density_accessor() {
-        let m = sphere_physical(2800.0, 130.0, 0.52, 0.71);
-        assert!((m.bulk_density() - 2800.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn radiation_thermal_inertia_accessor() {
-        let m = sphere_physical(2800.0, 130.0, 0.52, 0.71);
-        assert!((m.thermal_inertia() - 130.0).abs() < 1e-12);
     }
 
     #[test]
@@ -989,7 +972,30 @@ mod tests {
         // For a sphere (flattening=1), R_P = D/2, so A/M = 3 / (4 * rho * R_P).
         // sphere_physical uses diameter = 0.011 km = 11 m.
         let m = sphere_physical(2800.0, 130.0, 0.52, 0.71);
+        let NonGravModel::FarnocchiaModel { a_over_m, .. } = m else {
+            unreachable!()
+        };
         let expected = 3.0 / (2.0 * 2800.0 * 11.0);
-        assert!((m.a_over_m() - expected).abs() / expected < 1e-14);
+        assert!((a_over_m - expected).abs() / expected < 1e-14);
+    }
+
+    #[test]
+    fn radiation_density_round_trip() {
+        let m = sphere_physical(2800.0, 130.0, 0.52, 0.71);
+        let NonGravModel::FarnocchiaModel { a_over_m, .. } = m else {
+            unreachable!()
+        };
+        let recovered = density_from_a_over_m(a_over_m, 0.011, 1.0);
+        assert!((recovered - 2800.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn radiation_thermal_inertia_round_trip() {
+        let m = sphere_physical(2800.0, 130.0, 0.52, 0.71);
+        let NonGravModel::FarnocchiaModel { lambda_0, .. } = m else {
+            unreachable!()
+        };
+        let recovered = thermal_inertia_from_lambda_0(lambda_0, 0.9, 0.71, 1.0, 1.0);
+        assert!((recovered - 130.0).abs() < 1e-9);
     }
 }

@@ -864,18 +864,11 @@ mod tests {
             49_f64.to_radians(),
             -28_f64.to_radians(),
         );
-        NonGravModel::new_farnocchia(
-            2000.0, // density (kg/m^3)
-            200.0,  // thermal_inertia (SI)
-            0.030,  // diameter (km)
-            0.9,    // emissivity
-            0.52,   // albedo
-            0.71,   // absorptivity
-            0.71,   // flattening
-            pole,
-            5.351 / 60.0, // rotation_period (hours)
-        )
-        .unwrap()
+        let flattening = 0.71_f64;
+        let a_over_m = kete_core::forces::a_over_m_from_physical(2000.0, 0.030, flattening);
+        let lambda_0 =
+            kete_core::forces::lambda_0_from_physical(200.0, 0.9, 0.71, flattening, 5.351 / 60.0);
+        NonGravModel::new_farnocchia(a_over_m, lambda_0, 0.52, 0.71, flattening, pole).unwrap()
     }
 
     #[test]

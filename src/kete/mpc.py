@@ -368,6 +368,134 @@ def _parse_sigma(value, default: float) -> float:
     return v
 
 
+# Per-station 1-sigma astrometric weights (arcseconds, per component) used
+# as a fallback when the MPC ADES record does not carry rmsRA/rmsDec.
+#
+# Values are taken directly from Veres, Farnocchia, Chesley, Chamberlin
+# 2017, "Statistical analysis of the astrometric errors for the most
+# productive asteroid surveys" (Icarus 296, 139-149), Tables 2-4.  Only
+# the per-station/per-catalog/per-mode weight is applied here; catalog-bias
+# debiasing (Farnocchia et al. 2015 / Eggl et al. 2020) is a separate
+# step and is not performed by this function.
+
+# Table 2: epoch-dependent station weights (cutoff JD, sigma_before, sigma_after).
+# JD 2456658.5 = 2014-01-01, 2452640.5 = 2003-01-01, 2452883.5 = 2003-09-01.
+_VERES_TABLE2: dict[str, tuple[float, float, float]] = {
+    "703": (2456658.5, 1.0, 0.8),
+    "691": (2452640.5, 0.6, 0.5),
+    "644": (2452883.5, 0.6, 0.4),
+}
+
+# Table 3: epoch-independent station weights for the most active CCD surveys.
+_VERES_TABLE3: dict[str, float] = {
+    "704": 1.0,
+    "G96": 0.5,
+    "F51": 0.2,
+    "G45": 0.6,
+    "699": 0.8,
+    "D29": 0.75,
+    "C51": 1.0,
+    "E12": 0.75,
+    "608": 0.6,
+    "J75": 1.0,
+}
+
+# Table 4: NEO follow-up observers (catalog-dependent in some cases).
+# Mapping of MPC code to either:
+#   - a single float (catalog-independent), or
+#   - a dict {catalog_code: sigma, ...} with key "_default" used as
+#     fallback when the catalog is not listed.
+# LCO codes share a single 0.4" weight (table caption lists them).
+_LCO_CODES = {
+    "K92", "K93", "Q63", "Q64", "V37", "W84", "W85", "W86", "W87",
+    "K91", "E10", "F65",
+}
+_VERES_TABLE4: dict[str, float | dict[str, float]] = {
+    "645": 0.3,
+    "673": 0.3,
+    "689": 0.5,
+    "950": 0.5,
+    "H01": 0.3,
+    "J04": 0.4,
+    "W84": 0.5,
+    "Y28": {"PPMXL": 0.3, "Gaia1": 0.3, "Gaia2": 0.3, "Gaia3": 0.3, "_default": 0.3},
+    "568": {
+        "USNO-B1.0": 0.5, "USNO-B2.0": 0.5,
+        "Gaia1": 0.1, "Gaia2": 0.1, "Gaia3": 0.1,
+        "PPMXL": 0.2, "_default": 0.5,
+    },
+    "T09": {"Gaia1": 0.1, "Gaia2": 0.1, "Gaia3": 0.1, "_default": 0.5},
+    "T12": {"Gaia1": 0.1, "Gaia2": 0.1, "Gaia3": 0.1, "_default": 0.5},
+    "T14": {"Gaia1": 0.1, "Gaia2": 0.1, "Gaia3": 0.1, "_default": 0.5},
+    "G83": {"UCAC4": 0.3, "PPMXL": 0.3,
+            "Gaia1": 0.2, "Gaia2": 0.2, "Gaia3": 0.2, "_default": 0.3},
+    "309": {"UCAC4": 0.3, "PPMXL": 0.3,
+            "Gaia1": 0.2, "Gaia2": 0.2, "Gaia3": 0.2, "_default": 0.3},
+}
+for _c in _LCO_CODES:
+    _VERES_TABLE4.setdefault(_c, 0.4)
+
+# Table 5: non-CCD modes / pre-CCD photographic plates (sigma in arcsec).
+# Photographic uses three epoch buckets (cutoff JDs in TDB):
+#   2411368.5 = 1890-01-01, 2433282.5 = 1950-01-01.
+_VERES_TABLE5_NON_CCD: dict[str, float] = {
+    "OCC": 0.2,    # occultation
+    "HIP": 0.2,    # Hipparcos
+    "MER": 0.5,    # transit circle / meridian
+    "ENC": 0.75,   # encoder
+    "MIC": 2.0,    # micrometer
+    "SAT": 1.5,    # satellite
+    "NOR": 1.0,    # normal place
+}
+
+
+def _veres_2017_sigma(
+    stn: str | None,
+    mode: str | None,
+    astcat: str | None,
+    jd: float,
+) -> float:
+    """1-sigma astrometric uncertainty (arcsec) per Veres et al. 2017.
+
+    Implements the weighting tables in Section 3 of the paper.  Returns a
+    single value used for both RA (cos(dec)-corrected) and Dec.
+    """
+    mode_u = (mode or "").upper()
+
+    # Non-CCD modes are dispatched first (Table 5).
+    if mode_u in _VERES_TABLE5_NON_CCD:
+        return _VERES_TABLE5_NON_CCD[mode_u]
+    if mode_u in ("PHA", "PHO", "PH", "A", "N"):
+        # Photographic: epoch-binned weights.
+        if jd < 2411368.5:
+            return 10.0
+        if jd < 2433282.5:
+            return 5.0
+        return 2.5
+
+    # Table 2: epoch-dependent surveys.
+    if stn is not None and stn in _VERES_TABLE2:
+        cutoff, sig_before, sig_after = _VERES_TABLE2[stn]
+        return sig_before if jd < cutoff else sig_after
+
+    # Table 4: follow-up observers (potentially catalog-dependent).
+    if stn is not None and stn in _VERES_TABLE4:
+        entry = _VERES_TABLE4[stn]
+        if isinstance(entry, dict):
+            cat = (astcat or "").strip()
+            return entry.get(cat, entry.get("_default", 1.0))
+        return entry
+
+    # Table 3: epoch-independent CCD surveys.
+    if stn is not None and stn in _VERES_TABLE3:
+        return _VERES_TABLE3[stn]
+
+    # Other CCD: 1.0" if catalog known, 1.5" if unknown (Section 3 text).
+    if astcat:
+        return 1.0
+    return 1.5
+
+
 def _build_observer(stn: str, jd: float, rec: dict):
     """Return an SSB-centered equatorial observer State, or None."""
     # Ground-station lookup.
@@ -514,22 +642,20 @@ def fetch_mpc_observations(desig: str, update_cache: bool = False):
         except ValueError:
             continue
 
-        # Per-observation sigma: use the ADES rmsRA/rmsDec fields, which are
-        # the reported astrometric 1-sigma uncertainties (rmsRA already
-        # includes the cos(dec) factor). Do NOT use precRA/precDec -- those
-        # are the publication precision (number of decimal places retained
-        # when rounding the position) and are typically far smaller than the
-        # actual measurement uncertainty, which would catastrophically
-        # over-weight historical observations.
-        # Fallback default 1.0" is a conservative all-purpose value when no
-        # rms is reported. Users wanting per-station/per-epoch weighting
-        # (e.g. Veres et al. 2017) should override the sigmas after fetching.
-        s_ra = _parse_sigma(rec.get("rmsra"), 1.0)
-        s_dec = _parse_sigma(rec.get("rmsdec"), 1.0)
-
+        # Per-observation sigma: prefer the ADES rmsRA/rmsDec fields when
+        # present (the reported astrometric 1-sigma uncertainty, with
+        # rmsRA already including the cos(dec) factor).  Fall back to the
+        # Veres et al. 2017 weighting tables (per-station, with mode and
+        # catalog dependence) when rmsRA/rmsDec are absent.  Do NOT use
+        # precRA/precDec -- those are the publication precision (number
+        # of decimal places retained when rounding the position) and are
+        # typically far smaller than the actual measurement uncertainty.
         stn = rec.get("stn", None)
         if stn is None:
             continue
+        veres = _veres_2017_sigma(stn, rec.get("mode"), rec.get("astcat"), jd)
+        s_ra = _parse_sigma(rec.get("rmsra"), veres)
+        s_dec = _parse_sigma(rec.get("rmsdec"), veres)
 
         observer = _build_observer(stn, jd, rec)
         if observer is None:

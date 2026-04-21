@@ -575,18 +575,32 @@ fn iterate_to_convergence(
     for _ in 0..max_iter {
         let dx = solve_damped(&info_mat, &rhs_vec, lambda)?;
         let dx = limit_correction(dx);
+        let dx = backtrack_to_ng_bounds(dx, non_grav.as_ref());
 
-        let converged = dx.norm() < tol;
+        // Convergence test. The raw `dx.norm()` (mixed units of AU,
+        // AU/day, and arbitrary non-grav coefficients) is dominated
+        // by the largest-magnitude parameters and can leave small
+        // parameters (velocity ~1e-2, non-grav down to ~1e-12) far
+        // from optimum when convergence is declared. We additionally
+        // require each component's step to be small in "standard
+        // error" units (sqrt(|N_ii|) times the step), which is scale-
+        // invariant. Both criteria must hold.
+        let mut max_scaled_step = 0.0_f64;
+        for i in 0..dx.len() {
+            let s = info_mat[(i, i)].abs().sqrt();
+            max_scaled_step = max_scaled_step.max((dx[i] * s).abs());
+        }
+        let converged = dx.norm() < tol && max_scaled_step < 1e-3;
 
         // Build trial state.
         let mut trial_state = state_epoch.clone();
         let mut trial_ng = non_grav.clone();
-        apply_correction(&mut trial_state, &dx, &mut trial_ng);
+        let ng_in_bounds = apply_correction(&mut trial_state, &dx, &mut trial_ng);
 
         // Reject unphysical trial states without repropagating.
         let r = trial_state.pos.norm();
         let v = trial_state.vel.norm();
-        if !r.is_finite() || !v.is_finite() || !(1e-4..=1e4).contains(&r) {
+        if !ng_in_bounds || !r.is_finite() || !v.is_finite() || !(1e-4..=1e4).contains(&r) {
             lambda = if lambda < 1e-6 { 1.0 } else { lambda * 10.0 };
             if lambda > 1e12 {
                 break;
@@ -616,13 +630,9 @@ fn iterate_to_convergence(
                 lambda *= 0.1;
 
                 if converged {
-                    let covariance = info_mat
-                        .clone()
-                        .svd(true, true)
-                        .pseudo_inverse(1e-14)
-                        .map_err(|e| {
-                            Error::ValueError(format!("SVD pseudo-inverse failed: {e}"))
-                        })?;
+                    let covariance = scaled_pseudo_inverse(&info_mat).map_err(|e| {
+                        Error::ValueError(format!("SVD pseudo-inverse failed: {e}"))
+                    })?;
 
                     // Build per-obs residuals from the sweep (included
                     // observations only have meaningful values; excluded
@@ -700,10 +710,7 @@ fn make_non_converged_result(
     let (covariance, residuals, rms) =
         accumulate_normal_equations(state, obs, included, include_asteroids, non_grav.as_ref())
             .and_then(|(info_mat, _, _)| {
-                let cov = info_mat
-                    .clone()
-                    .svd(true, true)
-                    .pseudo_inverse(1e-14)
+                let cov = scaled_pseudo_inverse(&info_mat)
                     .unwrap_or_else(|_| DMatrix::zeros(n_params, n_params));
                 let res = compute_residuals(state, obs, include_asteroids, non_grav.as_ref())?;
                 let r = weighted_rms(&res, obs, included, n_params);
@@ -1298,6 +1305,46 @@ fn solve_damped(
     Ok(dx)
 }
 
+/// Pseudo-invert a normal-equations (information) matrix using the
+/// same diagonal column scaling as [`solve_damped`].
+///
+/// The fit parameters span many orders of magnitude (state in AU and
+/// AU/day, non-grav coefficients from ~1e-12 to ~1e1).  Without
+/// scaling, the information matrix has condition numbers easily
+/// exceeding 1e20, and the relative SVD truncation cutoff zeroes out
+/// the small-parameter rows and columns -- producing a covariance that
+/// is essentially numerical noise.  Scaling so the diagonal is unit
+/// makes the relative cutoff meaningful, then we unscale on the way
+/// out: cov = D^-1 (D^-1 N D^-1)^+ D^-1.
+fn scaled_pseudo_inverse(n_mat: &DMatrix<f64>) -> KeteResult<DMatrix<f64>> {
+    let n = n_mat.nrows();
+    let mut d_inv = DVector::<f64>::zeros(n);
+    for i in 0..n {
+        let dii = n_mat[(i, i)].abs().max(1e-30);
+        d_inv[i] = 1.0 / dii.sqrt();
+    }
+
+    let mut n_scaled = n_mat.clone();
+    for i in 0..n {
+        for j in 0..n {
+            n_scaled[(i, j)] *= d_inv[i] * d_inv[j];
+        }
+    }
+
+    let cov_scaled = n_scaled
+        .svd(true, true)
+        .pseudo_inverse(1e-12)
+        .map_err(|e| Error::ValueError(format!("SVD pseudo-inverse failed: {e}")))?;
+
+    let mut cov = cov_scaled;
+    for i in 0..n {
+        for j in 0..n {
+            cov[(i, j)] *= d_inv[i] * d_inv[j];
+        }
+    }
+    Ok(cov)
+}
+
 /// Cap position and velocity corrections to prevent wild jumps.
 ///
 /// Position is limited to 0.5 AU and velocity to 0.005 AU/day per
@@ -1330,20 +1377,68 @@ fn limit_correction(mut dx: DVector<f64>) -> DVector<f64> {
     dx
 }
 
+/// Backtrack only the non-grav components of a step so each parameter
+/// stays strictly above its lower bound.
+///
+/// Position and velocity are left untouched. For each non-grav
+/// parameter that would be pushed at or below its bound, the
+/// corresponding entry of `dx[6+k]` is shrunk so the new value sits
+/// just above the bound. This avoids the pathology where a single
+/// out-of-bounds non-grav step inflates Marquardt damping and shrinks
+/// the position step (which was correctly sized) to nothing -- the
+/// orbital fit then stalls completely.
+fn backtrack_to_ng_bounds(mut dx: DVector<f64>, non_grav: Option<&NonGravModel>) -> DVector<f64> {
+    let Some(ng) = non_grav else {
+        return dx;
+    };
+    let np = ng.n_free_params();
+    let params = ng.get_free_params();
+    let bounds = ng.param_lower_bounds();
+    for k in 0..np {
+        let cur = params[k];
+        let lo = bounds[k];
+        if !lo.is_finite() {
+            continue;
+        }
+        let proposed = cur + dx[6 + k];
+        if proposed > lo {
+            continue;
+        }
+        // Shrink to land halfway between the current value and the
+        // bound so we make progress toward the bound without snapping
+        // onto it (which would silently re-trigger the clamp inside
+        // `set_free_params`).
+        let safe_step = 0.5 * (lo - cur);
+        dx[6 + k] = safe_step;
+    }
+    dx
+}
+
 /// Apply a state correction vector to the epoch state and (optionally)
 /// non-grav parameters.
 fn apply_correction(
     state: &mut State<Equatorial>,
     dx: &DVector<f64>,
     non_grav: &mut Option<NonGravModel>,
-) {
+) -> bool {
+    if let Some(ng) = non_grav.as_ref() {
+        let np = ng.n_free_params();
+        let params = ng.get_free_params();
+        let bounds = ng.param_lower_bounds();
+        for k in 0..np {
+            let new_val = params[k] + dx[6 + k];
+            if new_val <= bounds[k] || !new_val.is_finite() {
+                return false;
+            }
+        }
+    }
+
     let pos: [f64; 3] = state.pos.into();
     state.pos = [pos[0] + dx[0], pos[1] + dx[1], pos[2] + dx[2]].into();
 
     let vel: [f64; 3] = state.vel.into();
     state.vel = [vel[0] + dx[3], vel[1] + dx[4], vel[2] + dx[5]].into();
 
-    // Apply non-grav parameter corrections from dx[6..].
     if let Some(ng) = non_grav.as_mut() {
         let np = ng.n_free_params();
         let mut params = ng.get_free_params();
@@ -1352,6 +1447,7 @@ fn apply_correction(
         }
         ng.set_free_params(&params);
     }
+    true
 }
 
 /// Compute post-fit residuals for all observations (time-sorted order).

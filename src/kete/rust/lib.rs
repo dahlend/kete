@@ -134,6 +134,14 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(propagation::moid_py, m)?)?;
     m.add_function(wrap_pyfunction!(propagation::closest_approach_py, m)?)?;
 
+    m.add_function(wrap_pyfunction!(nongrav::py_a_over_m_from_physical, m)?)?;
+    m.add_function(wrap_pyfunction!(nongrav::py_density_from_a_over_m, m)?)?;
+    m.add_function(wrap_pyfunction!(nongrav::py_lambda_0_from_physical, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        nongrav::py_thermal_inertia_from_lambda_0,
+        m
+    )?)?;
+
     m.add_function(wrap_pyfunction!(fovs::fov_checks_py, m)?)?;
     m.add_function(wrap_pyfunction!(fovs::fov_spk_checks_py, m)?)?;
     m.add_function(wrap_pyfunction!(fovs::fov_static_checks_py, m)?)?;
