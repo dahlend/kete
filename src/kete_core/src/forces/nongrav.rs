@@ -293,12 +293,13 @@ impl NonGravModel {
         }
     }
 
-    /// Lower bounds for the free parameters (matching [`get_free_params`]).
+    /// Lower bounds for the free parameters (matching
+    /// [`get_free_params`](Self::get_free_params)).
     ///
     /// `f64::NEG_INFINITY` indicates no lower bound. These are used by
     /// the orbit fitter to reject trial steps that would otherwise be
-    /// silently clamped by [`set_free_params`], which would pin the
-    /// optimizer at the boundary.
+    /// silently clamped by [`set_free_params`](Self::set_free_params), which would pin
+    /// the optimizer at the boundary.
     #[must_use]
     pub fn param_lower_bounds(&self) -> Vec<f64> {
         match self {
