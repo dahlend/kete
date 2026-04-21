@@ -892,16 +892,19 @@ mod tests {
         let (_final_state, sens) =
             compute_state_transition(&state, jd_final, false, Some(model.clone())).unwrap();
 
-        // Columns 6 and 7 are d/d(density) and d/d(thermal_inertia).
+        // Columns 6 and 7 are d/d(a_over_m) and d/d(lambda_0).
         assert_eq!(sens.ncols(), 8, "Expected 6+2 columns for FarnocchiaModel");
 
-        // Use a relative perturbation (~1e-3 of base value).  The trajectory
-        // sensitivity to these parameters is small, so the FD signal needs to
-        // be well above the integrator noise floor (~1e-12 AU over 30 days).
+        // Pick the FD eps per parameter so the trajectory perturbation lies
+        // well above the n-body integrator's round-off floor (~1e-12 AU over
+        // 30 days).  `a_over_m` is order 1e-8 (m^2/kg) and the radiation
+        // acceleration is exactly linear in it, so we perturb by 100% to lift
+        // the FD signal off the noise floor.  `lambda_0` is order 1 and
+        // mildly nonlinear, so a small relative step is appropriate.
         let base_params = model.get_free_params();
-        let rel = 1e-3;
+        let eps_rel = [1.0_f64, 0.1];
         for k in 0..base_params.len() {
-            let eps = base_params[k] * rel;
+            let eps = base_params[k] * eps_rel[k];
             let mut p_plus = base_params.clone();
             let mut p_minus = base_params.clone();
             p_plus[k] += eps;
@@ -929,7 +932,7 @@ mod tests {
                 assert!(
                     abs_err < threshold,
                     "Radiation param {} sensitivity mismatch row {}: var={:.6e}, fd={:.6e}, rel={:.4e}",
-                    if k == 0 { "density" } else { "thermal_inertia" },
+                    if k == 0 { "a_over_m" } else { "lambda_0" },
                     row,
                     var,
                     fd,
