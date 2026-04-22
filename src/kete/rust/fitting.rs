@@ -500,15 +500,12 @@ impl PyOrbitFit {
 /// include_asteroids : bool
 ///     If True, include asteroid masses in the force model (slower but more
 ///     accurate for near-Earth objects). Default is False.
-/// auto_sigma : bool
-///     If True, adaptively rescale the rejection threshold based on the
-///     actual residual scatter rather than the stated uncertainties.
-///     Useful when observation uncertainties are unreliable.
-///     Default is True.
 /// chi2_threshold : float
-///     Chi-squared threshold for outlier rejection.  An observation with
-///     a weighted residual exceeding this value may be rejected.
-///     Default is 9.0.
+///     Per-observation z-score threshold for outlier rejection following
+///     Carpino, Milani & Chesley (2003). An observation is rejected when
+///     its weighted chi-squared exceeds this multiple of the leverage-
+///     corrected expected value, and recovered when it falls below 6/7
+///     of this threshold. Default is 7.0.
 /// max_reject_passes : int
 ///     Maximum number of outlier-rejection passes.  Set to 0 to disable
 ///     outlier rejection entirely.  Default is 10.
@@ -526,8 +523,7 @@ impl PyOrbitFit {
         observations,
         non_grav=None,
         include_asteroids=false,
-        auto_sigma=true,
-        chi2_threshold=9.0,
+        chi2_threshold=7.0,
         max_reject_passes=10,
     )
 )]
@@ -536,7 +532,6 @@ pub fn fit_orbit_py(
     observations: Vec<PyObservation>,
     non_grav: Option<PyNonGravModel>,
     include_asteroids: bool,
-    auto_sigma: bool,
     chi2_threshold: f64,
     max_reject_passes: usize,
 ) -> PyResult<PyOrbitFit> {
@@ -559,7 +554,6 @@ pub fn fit_orbit_py(
         1e-8, // tol
         chi2_threshold,
         max_reject_passes,
-        auto_sigma,
     )?;
     Ok(PyOrbitFit(fit))
 }
@@ -886,4 +880,24 @@ pub fn fit_orbit_mcmc_py(
         target_accept,
     )?;
     Ok(PyOrbitSamples(result))
+}
+
+/// Get per-observatory code residuals.
+#[pyfunction]
+#[pyo3(
+    name = "_get_obs_residuals",
+    signature = (code)
+)]
+pub fn get_obs_residuals_py(code: &str) -> Option<Vec<f32>> {
+    let resid = kete_fitting::get_obs_residuals(code)?;
+    Some(vec![
+        resid.ra_low,
+        resid.ra_med,
+        resid.ra_high,
+        resid.ra_std,
+        resid.dec_low,
+        resid.dec_med,
+        resid.dec_high,
+        resid.dec_std,
+    ])
 }
