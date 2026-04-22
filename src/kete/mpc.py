@@ -414,7 +414,7 @@ def _build_observer(stn: str, jd: float, rec: dict):
 
 
 @lru_cache
-def _parse_residuals(obs_code: str) -> None:
+def _parse_residuals(obs_code: str):
     """
     If available, return the MPC observatory residuals and uncertainties.
     These are used to correct systematic errors in observations submitted to the MPC
