@@ -1,8 +1,17 @@
 //! Python support for non-gravitational forces
 use std::collections::HashMap;
 
-use kete_core::{errors::Error, forces::NonGravModel};
-use pyo3::{PyResult, exceptions::PyValueError, pyclass, pymethods};
+use kete_core::{
+    errors::Error,
+    forces::{
+        NonGravModel, a_over_m_from_physical, density_from_a_over_m, lambda_0_from_physical,
+        thermal_inertia_from_lambda_0,
+    },
+};
+use pyo3::{PyResult, exceptions::PyValueError, pyclass, pyfunction, pymethods};
+
+use crate::frame::PyFrames;
+use crate::vector::VectorLike;
 
 /// Non-gravitational force models.
 ///
@@ -34,7 +43,7 @@ impl PyNonGravModel {
     #[allow(clippy::new_without_default)]
     #[new]
     pub fn new() -> PyResult<Self> {
-        Err(Error::ValueError("Non-gravitational force models need to be constructed using either the new_dust, new_comet, or new_asteroid methods.".into()))?
+        Err(Error::ValueError("Non-gravitational force models need to be constructed using new_dust, new_comet, new_asteroid, or new_farnocchia.".into()))?
     }
 
     /// Create a new non-gravitational forces Dust model.
@@ -240,6 +249,122 @@ impl PyNonGravModel {
         })
     }
 
+    /// Construct a physical radiation force model from Farnocchia et al. 2025.
+    ///
+    /// Models the body as an oblate spheroid with a fixed spin pole and
+    /// computes solar radiation pressure plus thermal recoil (Yarkovsky)
+    /// acceleration.
+    ///
+    /// The two fittable parameters are taken in the form used by the paper:
+    /// ``a_over_m`` (Eq. 6) and ``lambda_0`` (Eq. 12). Use the helpers
+    /// :func:`kete.propagation.a_over_m_from_physical` and
+    /// :func:`kete.propagation.lambda_0_from_physical` to compute them
+    /// from physical surface inputs (density, thermal inertia, diameter,
+    /// rotation period, etc.).
+    ///
+    /// Parameters
+    /// ----------
+    /// a_over_m :
+    ///     Area-to-mass ratio in ``m^2 / kg`` (Eq. 6:
+    ///     ``A/M = 3 / (4 * rho * R_P)``).
+    /// lambda_0 :
+    ///     Dimensionless thermal lag parameter at 1 AU (Eq. 12). Set to
+    ///     ``0`` to disable the thermal (Yarkovsky) component.
+    /// albedo :
+    ///     Geometric (Lambert) albedo, enters SRP only.
+    /// absorptivity :
+    ///     ``alpha = 1 - A_B`` where ``A_B`` is the Bond albedo. Multiplies
+    ///     the thermal terms.
+    /// flattening :
+    ///     Axis ratio ``e = R_P / R_E``. Use ``1.0`` for a sphere.
+    /// spin_pole :
+    ///     Spin pole unit vector (any :class:`~kete.Vector` or length-3
+    ///     sequence). Must be fixed in inertial space.
+    #[staticmethod]
+    #[pyo3(signature = (a_over_m, lambda_0, albedo, absorptivity, flattening, spin_pole))]
+    pub fn new_farnocchia(
+        a_over_m: f64,
+        lambda_0: f64,
+        albedo: f64,
+        absorptivity: f64,
+        flattening: f64,
+        spin_pole: VectorLike,
+    ) -> PyResult<Self> {
+        let pole = spin_pole.into_vector(PyFrames::Equatorial);
+        let model = NonGravModel::new_farnocchia(
+            a_over_m,
+            lambda_0,
+            albedo,
+            absorptivity,
+            flattening,
+            pole,
+        )
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(Self(model))
+    }
+
+    /// Stored area-to-mass ratio ``A/M`` (``m^2 / kg``) for a
+    /// ``FarnocchiaModel`` (Eq. 6).
+    ///
+    /// Returns ``NaN`` unless this is a ``FarnocchiaModel``.
+    #[getter]
+    pub fn a_over_m(&self) -> f64 {
+        match self.0 {
+            NonGravModel::FarnocchiaModel { a_over_m, .. } => a_over_m,
+            NonGravModel::JplComet { .. } | NonGravModel::Dust { .. } => f64::NAN,
+        }
+    }
+
+    /// Stored thermal parameter ``lambda_0`` (dimensionless, Eq. 12) for a
+    /// ``FarnocchiaModel``.
+    ///
+    /// Returns ``NaN`` unless this is a ``FarnocchiaModel``.
+    #[getter]
+    pub fn lambda_0(&self) -> f64 {
+        match self.0 {
+            NonGravModel::FarnocchiaModel { lambda_0, .. } => lambda_0,
+            NonGravModel::JplComet { .. } | NonGravModel::Dust { .. } => f64::NAN,
+        }
+    }
+
+    /// Recover bulk density (``kg / m^3``) of this ``FarnocchiaModel`` given
+    /// the auxiliary inputs that were collapsed away at construction time.
+    ///
+    /// Returns ``NaN`` unless this is a ``FarnocchiaModel``.
+    pub fn bulk_density(&self, diameter: f64) -> f64 {
+        match self.0 {
+            NonGravModel::FarnocchiaModel {
+                a_over_m,
+                flattening,
+                ..
+            } => density_from_a_over_m(a_over_m, diameter, flattening),
+            NonGravModel::JplComet { .. } | NonGravModel::Dust { .. } => f64::NAN,
+        }
+    }
+
+    /// Recover surface thermal inertia ``Gamma`` (SI units) of this
+    /// ``FarnocchiaModel`` given the auxiliary inputs that were collapsed
+    /// away at construction time. ``rotation_period`` is in hours.
+    ///
+    /// Returns ``NaN`` unless this is a ``FarnocchiaModel``.
+    pub fn thermal_inertia(&self, emissivity: f64, rotation_period: f64) -> f64 {
+        match self.0 {
+            NonGravModel::FarnocchiaModel {
+                lambda_0,
+                absorptivity,
+                flattening,
+                ..
+            } => thermal_inertia_from_lambda_0(
+                lambda_0,
+                emissivity,
+                absorptivity,
+                flattening,
+                rotation_period,
+            ),
+            NonGravModel::JplComet { .. } | NonGravModel::Dust { .. } => f64::NAN,
+        }
+    }
+
     #[getter]
     /// Return a dictionary of the values used in this non-grav model.
     pub fn items(&self) -> HashMap<String, f64> {
@@ -272,6 +397,26 @@ impl PyNonGravModel {
                 let _ = values.insert("dt".to_string(), dt);
                 values
             }
+            NonGravModel::FarnocchiaModel {
+                a_over_m,
+                lambda_0,
+                albedo,
+                absorptivity,
+                flattening,
+                spin_pole,
+            } => {
+                let mut values = HashMap::new();
+                let raw: [f64; 3] = spin_pole.into();
+                let _ = values.insert("a_over_m".to_string(), a_over_m);
+                let _ = values.insert("lambda_0".to_string(), lambda_0);
+                let _ = values.insert("albedo".to_string(), albedo);
+                let _ = values.insert("absorptivity".to_string(), absorptivity);
+                let _ = values.insert("flattening".to_string(), flattening);
+                let _ = values.insert("spin_pole_x".to_string(), raw[0]);
+                let _ = values.insert("spin_pole_y".to_string(), raw[1]);
+                let _ = values.insert("spin_pole_z".to_string(), raw[2]);
+                values
+            }
         }
     }
 
@@ -294,6 +439,99 @@ impl PyNonGravModel {
             } => format!(
                 "kete.propagation.NonGravModel.new_comet(a1={a1:?}, a2={a2:?}, a3={a3:?}, alpha={alpha:?}, r_0={r_0:?}, m={m:?}, n={n:?}, k={k:?}, dt={dt:?})",
             ),
+            NonGravModel::FarnocchiaModel {
+                a_over_m,
+                lambda_0,
+                albedo,
+                absorptivity,
+                flattening,
+                spin_pole,
+            } => {
+                let raw: [f64; 3] = spin_pole.into();
+                format!(
+                    "kete.propagation.NonGravModel.FarnocchiaModel(a_over_m={a_over_m:?}, lambda_0={lambda_0:?}, albedo={albedo:?}, absorptivity={absorptivity:?}, flattening={flattening:?}, spin_pole={raw:?})",
+                )
+            }
         }
     }
+}
+
+/// Compute ``A/M`` (``m^2 / kg``) from physical surface inputs
+/// (Farnocchia 2025 Eq. 6).
+///
+/// Parameters
+/// ----------
+/// density :
+///     Bulk density in ``kg / m^3``.
+/// diameter :
+///     Volume-equivalent diameter in km.
+/// flattening :
+///     Axis ratio ``e = R_P / R_E``. Use ``1.0`` for a sphere.
+#[pyfunction]
+#[pyo3(name = "a_over_m_from_physical")]
+pub fn py_a_over_m_from_physical(density: f64, diameter: f64, flattening: f64) -> f64 {
+    a_over_m_from_physical(density, diameter, flattening)
+}
+
+/// Inverse of :func:`a_over_m_from_physical`: solve for bulk density
+/// (``kg / m^3``) given ``A/M``, ``diameter`` (km), and ``flattening``.
+#[pyfunction]
+#[pyo3(name = "density_from_a_over_m")]
+pub fn py_density_from_a_over_m(a_over_m: f64, diameter: f64, flattening: f64) -> f64 {
+    density_from_a_over_m(a_over_m, diameter, flattening)
+}
+
+/// Compute ``lambda_0`` (dimensionless, Farnocchia 2025 Eq. 12) from
+/// physical surface inputs.
+///
+/// Parameters
+/// ----------
+/// thermal_inertia :
+///     Surface thermal inertia ``Gamma`` in SI units
+///     (``J m^-2 s^-1/2 K^-1``).
+/// emissivity :
+///     Thermal emissivity.
+/// absorptivity :
+///     ``alpha = 1 - A_B`` where ``A_B`` is the Bond albedo.
+/// flattening :
+///     Axis ratio ``e = R_P / R_E``.
+/// rotation_period :
+///     Rotation period in hours.
+#[pyfunction]
+#[pyo3(name = "lambda_0_from_physical")]
+pub fn py_lambda_0_from_physical(
+    thermal_inertia: f64,
+    emissivity: f64,
+    absorptivity: f64,
+    flattening: f64,
+    rotation_period: f64,
+) -> f64 {
+    lambda_0_from_physical(
+        thermal_inertia,
+        emissivity,
+        absorptivity,
+        flattening,
+        rotation_period,
+    )
+}
+
+/// Inverse of :func:`lambda_0_from_physical`: solve for thermal inertia
+/// (SI units) given ``lambda_0`` and the auxiliary surface inputs.
+/// ``rotation_period`` is in hours.
+#[pyfunction]
+#[pyo3(name = "thermal_inertia_from_lambda_0")]
+pub fn py_thermal_inertia_from_lambda_0(
+    lambda_0: f64,
+    emissivity: f64,
+    absorptivity: f64,
+    flattening: f64,
+    rotation_period: f64,
+) -> f64 {
+    thermal_inertia_from_lambda_0(
+        lambda_0,
+        emissivity,
+        absorptivity,
+        flattening,
+        rotation_period,
+    )
 }

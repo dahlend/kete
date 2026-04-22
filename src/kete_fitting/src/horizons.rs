@@ -748,16 +748,18 @@ struct SbdbListEntry {
 #[cfg(feature = "fetch")]
 fn query_sbdb_json(name: &str, exact: bool) -> KeteResult<(SbdbResponse, String)> {
     let resolved = Desig::parse_mpc_packed_designation(name.trim())
-        .map_or_else(|_| name.to_string(), |d| d.to_string());
+        .map_or_else(|_| name.trim().to_string(), |d| d.to_string());
 
     let query_key = if exact { "des" } else { "sstr" };
-    let url = format!(
-        "https://ssd-api.jpl.nasa.gov/sbdb.api?{query_key}={resolved}\
-         &phys-par=true&full-prec=true&cov=mat\
-         &alt-des=true&alt-spk=true&alt-orbits=true&discovery=true"
-    );
-
-    let response = ureq::get(&url)
+    let response = ureq::get("https://ssd-api.jpl.nasa.gov/sbdb.api")
+        .query(query_key, &resolved)
+        .query("phys-par", "true")
+        .query("full-prec", "true")
+        .query("cov", "mat")
+        .query("alt-des", "true")
+        .query("alt-spk", "true")
+        .query("alt-orbits", "true")
+        .query("discovery", "true")
         .call()
         .map_err(|e| Error::IOError(format!("Horizons SBDB request failed: {e}")))?;
 
@@ -814,7 +816,7 @@ fn fetch_sbdb_json(
     }
     let stem = Desig::parse_mpc_designation(name.trim())
         .and_then(|d| d.try_pack())
-        .unwrap_or_else(|_| name.replace('/', "_"));
+        .unwrap_or_else(|_| name.trim().replace(['/', ' '], "_"));
     let filename = dir.join(format!("{stem}.json"));
 
     if !update_cache

@@ -1,4 +1,5 @@
 naif_id    name
+-139479   ,gaia
 -163182   ,spherex
 -750      ,sprint-a
 -652      ,bepicolombo mtm
@@ -71,6 +72,7 @@ naif_id    name
 -131      ,kaguya
 -130      ,hayabusa
 -127      ,mco
+-123      ,gaia
 -121      ,bepicolombo mpo
 -119      ,mom2
 -117      ,exomars 2016 edm

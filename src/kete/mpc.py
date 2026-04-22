@@ -13,7 +13,12 @@ import pandas as pd
 import requests
 
 from . import constants, conversion, spice
-from ._core import _find_obs_code, pack_designation, unpack_designation
+from ._core import (
+    _find_obs_code,
+    _get_obs_residuals,
+    pack_designation,
+    unpack_designation,
+)
 from .cache import cache_path, download_json
 from .fitting import Observation
 from .time import Time
@@ -355,19 +360,6 @@ class MPCObservation:
         return Vector.from_ra_dec(self.ra, self.dec).as_ecliptic
 
 
-def _parse_sigma(value, default: float) -> float:
-    """Return a finite positive sigma, or *default* if *value* is unusable."""
-    if value is None:
-        return default
-    try:
-        v = float(value)
-    except (ValueError, TypeError):
-        return default
-    if not np.isfinite(v) or v <= 0:
-        return default
-    return v
-
-
 def _build_observer(stn: str, jd: float, rec: dict):
     """Return an SSB-centered equatorial observer State, or None."""
     # Ground-station lookup.
@@ -421,6 +413,31 @@ def _build_observer(stn: str, jd: float, rec: dict):
         return None
 
 
+@lru_cache
+def _parse_residuals(obs_code: str):
+    """
+    If available, return the MPC observatory residuals and uncertainties.
+    These are used to correct systematic errors in observations submitted to the MPC
+    by these observatories. This is an very crude approximation of what is done at
+    both the MPC and JPL, but it is better than nothing.
+
+    These residuals were computed by taking the JPL Horizons ephemeris for each of the
+    first 10k numbered asteroids, and calculating the residual error for every submitted
+    observation for each of these objects. These residuals were combined together by
+    observatory code and basic statistics were computed.
+
+    This function returns the median and standard deviation of the RA and Dec
+    residuals for the specified observatory code, if available. Otherwise, it returns
+    None.
+    """
+    res = _get_obs_residuals(obs_code)
+    if res is None:
+        return None
+    _ra_low, ra_med, _ra_high, ra_std, _dec_low, dec_med, _dec_high, dec_std = res
+
+    return (ra_med, ra_std, dec_med, dec_std)
+
+
 def fetch_mpc_observations(desig: str, update_cache: bool = False):
     """
     Fetch observations from the MPC API and convert to fitting Observations.
@@ -433,9 +450,9 @@ def fetch_mpc_observations(desig: str, update_cache: bool = False):
     Results are cached under ``~/.kete/observations/`` so that repeated
     queries for the same designation do not hit the network.
 
-    Per-observation uncertainties are taken from the ``precra`` /
-    ``precdec`` fields (coordinate precision in arcseconds) when
-    available.  Otherwise, a default of 0.5 arcseconds is used.
+    Uncertainties are first taken from a pre-computed table of residual error by
+    observatory code, if available.  If not, the MPC-provided ``rmsra`` and
+    ``rmsdec`` fields are used, defaulting to 1 arcsecond if not provided.
 
     Parameters
     ----------
@@ -511,17 +528,21 @@ def fetch_mpc_observations(desig: str, update_cache: bool = False):
         except ValueError:
             continue
 
-        # Per-observation sigma: prefer precra/precdec if present.
-        # Guard against NaN or non-positive values which would poison
-        # downstream weight computations.
-        # Default of 0.5" matches the CCD default from _sigma_for_obs_type
-        # in fitting.py (Veres et al. 2017).
-        s_ra = _parse_sigma(rec.get("precra"), 0.5)
-        s_dec = _parse_sigma(rec.get("precdec"), 0.5)
-
         stn = rec.get("stn", None)
         if stn is None:
             continue
+
+        obs_errors = _parse_residuals(stn)
+        if obs_errors is not None:
+            ra_deg += obs_errors[0] / 3600
+            dec_deg += obs_errors[2] / 3600
+            s_ra = obs_errors[1]
+            s_dec = obs_errors[3]
+        else:
+            s_ra = rec.get("rmsra", 1.0) or 1.0
+            s_dec = rec.get("rmsdec", 1.0) or 1.0
+        if s_ra is None:
+            print(obs_errors, stn, rec)
 
         observer = _build_observer(stn, jd, rec)
         if observer is None:
@@ -538,8 +559,8 @@ def fetch_mpc_observations(desig: str, update_cache: bool = False):
                 observer=observer,
                 ra=ra_deg,
                 dec=dec_deg,
-                sigma_ra=s_ra,
-                sigma_dec=s_dec,
+                sigma_ra=float(s_ra),
+                sigma_dec=float(s_dec),
                 band=band,
                 mag=mag,
             )

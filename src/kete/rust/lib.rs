@@ -134,6 +134,14 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(propagation::moid_py, m)?)?;
     m.add_function(wrap_pyfunction!(propagation::closest_approach_py, m)?)?;
 
+    m.add_function(wrap_pyfunction!(nongrav::py_a_over_m_from_physical, m)?)?;
+    m.add_function(wrap_pyfunction!(nongrav::py_density_from_a_over_m, m)?)?;
+    m.add_function(wrap_pyfunction!(nongrav::py_lambda_0_from_physical, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        nongrav::py_thermal_inertia_from_lambda_0,
+        m
+    )?)?;
+
     m.add_function(wrap_pyfunction!(fovs::fov_checks_py, m)?)?;
     m.add_function(wrap_pyfunction!(fovs::fov_spk_checks_py, m)?)?;
     m.add_function(wrap_pyfunction!(fovs::fov_static_checks_py, m)?)?;
@@ -142,6 +150,7 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(flux::hg_apparent_mag_py, m)?)?;
     m.add_function(wrap_pyfunction!(flux::hg_phase_curve_correction_py, m)?)?;
     m.add_function(wrap_pyfunction!(flux::sub_solar_temperature_py, m)?)?;
+    m.add_function(wrap_pyfunction!(flux::bond_albedo_py, m)?)?;
     m.add_function(wrap_pyfunction!(flux::black_body_flux_py, m)?)?;
 
     m.add_function(wrap_pyfunction!(flux::neatm_facet_temperature_py, m)?)?;
@@ -212,6 +221,7 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     m.add_function(wrap_pyfunction!(fitting::lambert_py, m)?)?;
     m.add_function(wrap_pyfunction!(fitting::fit_orbit_mcmc_py, m)?)?;
+    m.add_function(wrap_pyfunction!(fitting::get_obs_residuals_py, m)?)?;
 
     m.add_function(wrap_pyfunction!(kete_core::cache::cache_path, m)?)?;
 

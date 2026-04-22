@@ -253,7 +253,9 @@ pub(crate) fn analytical_jacobians(
         let rel_vel = vel - sun_vel;
         let (ng_dr, ng_dv) = match model {
             NonGravModel::Dust { beta } => dust_jacobians(&rel_pos, &rel_vel, *beta),
-            NonGravModel::JplComet { .. } => nongrav_jacobians_fd(model, &rel_pos, &rel_vel),
+            NonGravModel::JplComet { .. } | NonGravModel::FarnocchiaModel { .. } => {
+                nongrav_jacobians_fd(model, &rel_pos, &rel_vel)
+            }
         };
         da_dr += ng_dr;
         da_dv += ng_dv;
@@ -322,6 +324,29 @@ fn nongrav_param_partials(
                 * ((1.0 - r_dot * C_AU_PER_DAY_INV_SQUARED) * pos_hat
                     - vel * C_AU_PER_DAY_INV_SQUARED);
             vec![partial]
+        }
+        NonGravModel::FarnocchiaModel { .. } => {
+            // Central-difference partials wrt the two free parameters
+            // (a_over_m, lambda_0), matching the order in get_free_params.
+            let base_params = model.get_free_params();
+            let mut out = Vec::with_capacity(base_params.len());
+            for i in 0..base_params.len() {
+                let mut plus = base_params.clone();
+                let mut minus = base_params.clone();
+                let eps = (plus[i].abs() * 1e-6).max(1e-12);
+                plus[i] += eps;
+                minus[i] -= eps;
+                let mut m_plus = model.clone();
+                let mut m_minus = model.clone();
+                m_plus.set_free_params(&plus);
+                m_minus.set_free_params(&minus);
+                let mut a_plus = Vector3::zeros();
+                let mut a_minus = Vector3::zeros();
+                m_plus.add_acceleration(&mut a_plus, pos, vel);
+                m_minus.add_acceleration(&mut a_minus, pos, vel);
+                out.push((a_plus - a_minus) * (0.5 / eps));
+            }
+            out
         }
     }
 }
@@ -831,5 +856,89 @@ mod tests {
             Some(NonGravModel::new_jpl_comet_default(1e-8, 1e-9, 1e-10)),
             5e-6,
         );
+    }
+
+    fn radiation_test_model() -> NonGravModel {
+        // Realistic 1998 KY26-like inputs.
+        let pole = kete_core::frames::Vector::<Equatorial>::from_ra_dec(
+            49_f64.to_radians(),
+            -28_f64.to_radians(),
+        );
+        let flattening = 0.71_f64;
+        let a_over_m = kete_core::forces::a_over_m_from_physical(2000.0, 0.030, flattening);
+        let lambda_0 =
+            kete_core::forces::lambda_0_from_physical(200.0, 0.9, 0.71, flattening, 5.351 / 60.0);
+        NonGravModel::new_farnocchia(a_over_m, lambda_0, 0.52, 0.71, flattening, pole).unwrap()
+    }
+
+    #[test]
+    fn analytical_vs_fd_radiation() {
+        // The analytical_jacobians for Radiation actually use FD internally; this
+        // test confirms that path is consistent with the reference FD-of-accel
+        // implementation used in tests.
+        check_jacobians_match(Some(radiation_test_model()), 5e-6);
+    }
+
+    #[test]
+    fn stm_radiation_param_sensitivity() {
+        crate::test_data::ensure_test_spk();
+        // Validate parameter sensitivity columns for the FarnocchiaModel via
+        // FD of full-trajectory propagation.  This is the analogue of the
+        // existing JplComet and Dust sensitivity tests.
+        let model = radiation_test_model();
+        let state = test_state();
+        let jd_final = (2451545.0 + 30.0).into();
+
+        let (_final_state, sens) =
+            compute_state_transition(&state, jd_final, false, Some(model.clone())).unwrap();
+
+        // Columns 6 and 7 are d/d(a_over_m) and d/d(lambda_0).
+        assert_eq!(sens.ncols(), 8, "Expected 6+2 columns for FarnocchiaModel");
+
+        // Pick the FD eps per parameter so the trajectory perturbation lies
+        // well above the n-body integrator's round-off floor (~1e-12 AU over
+        // 30 days).  `a_over_m` is order 1e-8 (m^2/kg) and the radiation
+        // acceleration is exactly linear in it, so we perturb by 100% to lift
+        // the FD signal off the noise floor.  `lambda_0` is order 1 and
+        // mildly nonlinear, so a small relative step is appropriate.
+        let base_params = model.get_free_params();
+        let eps_rel = [1.0_f64, 0.1];
+        for k in 0..base_params.len() {
+            let eps = base_params[k] * eps_rel[k];
+            let mut p_plus = base_params.clone();
+            let mut p_minus = base_params.clone();
+            p_plus[k] += eps;
+            p_minus[k] -= eps;
+
+            let mut model_p = model.clone();
+            let mut model_m = model.clone();
+            model_p.set_free_params(&p_plus);
+            model_m.set_free_params(&p_minus);
+
+            let res_p =
+                propagate_n_body_spk(state.clone(), jd_final, false, Some(model_p)).unwrap();
+            let res_m =
+                propagate_n_body_spk(state.clone(), jd_final, false, Some(model_m)).unwrap();
+
+            let vec_p: Vec<f64> = res_p.pos.into_iter().chain(res_p.vel).collect();
+            let vec_m: Vec<f64> = res_m.pos.into_iter().chain(res_m.vel).collect();
+
+            for row in 0..6 {
+                let fd = (vec_p[row] - vec_m[row]) / (2.0 * eps);
+                let var = sens[(row, 6 + k)];
+                let abs_err = (fd - var).abs();
+                let scale = fd.abs().max(var.abs()).max(1e-12);
+                let threshold = (scale * 5e-2).max(1e-10);
+                assert!(
+                    abs_err < threshold,
+                    "Radiation param {} sensitivity mismatch row {}: var={:.6e}, fd={:.6e}, rel={:.4e}",
+                    if k == 0 { "a_over_m" } else { "lambda_0" },
+                    row,
+                    var,
+                    fd,
+                    abs_err / scale
+                );
+            }
+        }
     }
 }

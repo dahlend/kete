@@ -48,8 +48,8 @@ mod sun;
 
 pub use self::comets::CometMKParams;
 pub use self::common::{
-    BandInfo, ColorCorrFn, ModelResults, black_body_flux, flux_to_mag, lambertian_flux,
-    lambertian_vis_scale_factor, mag_to_flux, sub_solar_temperature,
+    BandInfo, ColorCorrFn, ModelResults, black_body_flux, bond_albedo, flux_to_mag,
+    lambertian_flux, lambertian_vis_scale_factor, mag_to_flux, sub_solar_temperature,
 };
 pub use self::frm::{frm_facet_temperature, frm_thermal_flux, frm_total_flux};
 pub use self::neatm::{neatm_facet_temperature, neatm_thermal_flux, neatm_total_flux};

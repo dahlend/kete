@@ -33,6 +33,7 @@ from ._core import (
     ModelResults,
     ParamPrior,
     black_body_flux,
+    bond_albedo,
     comet_apparent_mags,
     comet_dust_phase_curve_correction,
     fit_model,
@@ -51,6 +52,7 @@ from ._core import (
 
 __all__ = [
     "black_body_flux",
+    "bond_albedo",
     "comet_apparent_mags",
     "comet_dust_phase_curve_correction",
     "fit_model",

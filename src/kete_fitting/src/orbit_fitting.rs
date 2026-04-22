@@ -90,10 +90,9 @@ pub struct OrbitFit {
 /// Outlier rejection is controlled by `max_reject_passes`.  When zero,
 /// no rejection is performed and the fit uses all observations.
 ///
-/// When `auto_sigma` is true the effective rejection threshold is scaled
-/// per pass by a robust estimate (MAD-based) of the actual residual
-/// scatter, so it adapts to the data rather than relying on stated
-/// uncertainties being correct.
+/// The CMC 2003 z-scores are already leverage-normalized and
+/// approximately self-normalizing, so the rejection threshold is used
+/// directly without further scaling.
 ///
 /// # Arguments
 /// * `initial_state` - Initial guess for the object state at the reference
@@ -104,12 +103,14 @@ pub struct OrbitFit {
 /// * `max_iter` - Maximum iterations per convergence pass.
 /// * `tol` - Convergence tolerance on the state correction norm (AU for
 ///   position, AU/day for velocity).
-/// * `chi2_threshold` - Per-observation chi-squared threshold for outlier
-///   rejection.  Only used when `max_reject_passes > 0`.
+/// * `chi2_threshold` - Per-observation z-score threshold for outlier
+///   rejection. An observation is rejected when its weighted
+///   chi-squared exceeds this multiple of the leverage-corrected
+///   expected value, and recovered when it falls below `6/7` of this
+///   threshold (Carpino-Milani-Chesley 2003 hysteresis).  Only used
+///   when `max_reject_passes > 0`.
 /// * `max_reject_passes` - Maximum outlier-rejection cycles.  Set to 0 to
 ///   disable rejection entirely.
-/// * `auto_sigma` - When true, adaptively rescale the rejection threshold
-///   based on actual residual scatter.
 ///
 /// # Errors
 /// Fails if any internal propagation or solve fails.
@@ -122,7 +123,6 @@ pub fn fit_orbit(
     tol: f64,
     chi2_threshold: f64,
     max_reject_passes: usize,
-    auto_sigma: bool,
 ) -> KeteResult<OrbitFit> {
     if obs.is_empty() {
         return Err(Error::ValueError("No observations provided".into()));
@@ -203,7 +203,6 @@ pub fn fit_orbit(
             tol,
             chi2_threshold,
             max_reject_passes,
-            auto_sigma,
         ) {
             let candidate = result.uncertain_state.state.clone();
             // Re-score the candidate on the FULL window (ignoring any
@@ -220,8 +219,52 @@ pub fn fit_orbit(
         // On error: keep previous state, try the next wider window.
     }
 
-    // Final full-arc pass: re-include all observations and reject anew.
+    // Final full-arc pass.
+    //
+    // When fitting non-grav parameters, first run a gravity-only
+    // solve_with_rejection to obtain a CMC-stable rejection mask, then
+    // call iterate_to_convergence directly on that FIXED mask with the
+    // NG model.  This avoids two known pathologies:
+    //
+    // 1. Leverage inflation: with 2+ extra free parameters the CMC
+    //    z-score denominator shrinks for every observation.
+    //    Borderline observations (z close to the threshold) that were
+    //    accepted by gravity-only would be spuriously rejected by the
+    //    NG CMC loop, weakening the normal equations and shifting the
+    //    solution to a worse local minimum.
+    //
+    // 2. Cold-start sensitivity: the NG fit should start from the
+    //    gravity-optimal state, not the windowed-expansion state.
+    //
+    // Using the gravity-only mask as the fixed observation set for the
+    // NG convergence pass matches the practice in Milani, Chesley &
+    // Sansaturio (2005) and Farnocchia et al. (2013): the outlier set
+    // is determined by the best available model (gravity-only) and
+    // carried into the NG estimation without re-running rejection.
     let included = vec![true; sorted.len()];
+    if ng.is_some()
+        && let Ok(grav_fit) = solve_with_rejection(
+            &state,
+            &sorted,
+            &included,
+            include_asteroids,
+            None,
+            max_iter,
+            tol,
+            chi2_threshold,
+            max_reject_passes,
+        )
+    {
+        return iterate_to_convergence(
+            &grav_fit.uncertain_state.state,
+            &sorted,
+            &grav_fit.included,
+            include_asteroids,
+            ng,
+            max_iter,
+            tol,
+        );
+    }
     solve_with_rejection(
         &state,
         &sorted,
@@ -232,20 +275,30 @@ pub fn fit_orbit(
         tol,
         chi2_threshold,
         max_reject_passes,
-        auto_sigma,
     )
 }
 
-/// Converge + progressively reject/recover outliers on a subset.
+/// Converge + iteratively reject/recover outliers on a subset.
 ///
-/// Uses a Carpino-style progressive protocol: begins with a generous
-/// threshold (8x `chi2_threshold`), tightening by half each pass toward
-/// the final threshold. Previously rejected observations are reconsidered
-/// at each pass and recovered if they now pass the current threshold.
+/// Implements the Carpino, Milani & Chesley (2003, Icarus 166:248)
+/// rejection algorithm.  After each least-squares pass, every caller-
+/// allowed observation receives a leverage-corrected z-score
 ///
-/// When `auto_sigma` is true, the threshold is multiplied by a robust
-/// variance scale factor estimated from the MAD of normalized residuals.
-/// This makes rejection adaptive to the actual data scatter.
+/// ```text
+/// z_i = chi2_i / max(m_i - trace(H_i C H_i^T diag(W_i)), 0.5)
+/// ```
+///
+/// where `H_i` is the parameter-space design block for the observation,
+/// `C` is the current parameter covariance, and `W_i` is the diagonal
+/// weight matrix.  Currently included observations with `z > chi2_rej`
+/// are rejected; currently rejected observations with `z < chi2_rec`
+/// are recovered.  The two thresholds are `chi2_threshold` and
+/// `chi2_threshold * 6 / 7` respectively (a 7/6 hysteresis ratio that
+/// prevents oscillation).  A floor of `max(d+1, 4)` included
+/// observations is enforced by un-rejecting the smallest-z newly
+/// rejected observations.  Iteration stops when the included set is
+/// stable.
+///
 fn solve_with_rejection(
     initial_state: &State<Equatorial>,
     sorted_obs: &[AstrometricObservation],
@@ -256,19 +309,18 @@ fn solve_with_rejection(
     tol: f64,
     chi2_threshold: f64,
     max_reject_passes: usize,
-    auto_sigma: bool,
 ) -> KeteResult<OrbitFit> {
+    let mut current_included = included.to_vec();
     let mut fit = iterate_to_convergence(
         initial_state,
         sorted_obs,
-        included,
+        &current_included,
         include_asteroids,
         non_grav,
         max_iter,
         tol,
     )?;
 
-    // Progressive rejection loop with recovery.
     let np = fit
         .uncertain_state
         .non_grav
@@ -276,206 +328,105 @@ fn solve_with_rejection(
         .map_or(0, NonGravModel::n_free_params);
     let min_included = (6 + np).max(4);
 
-    // Total rejection budget: never discard more than 25% of the
-    // originally included observations across all passes combined.
-    // This prevents runaway rejection when stated sigmas are too
-    // optimistic and many observations legitimately exceed the
-    // threshold.
-    let n_originally_included = included.iter().filter(|&&v| v).count();
-    let max_total_rejected = n_originally_included / 4;
-    let mut total_rejected: usize = 0;
-
-    let mut threshold_scale = 8.0_f64;
-    let mut prev_rms = fit.rms;
-
-    // When auto_sigma is enabled, estimate the robust variance scale
-    // factor ONCE from the initial fit's residuals.  Recomputing after
-    // each rejection pass would create a shrinking-window feedback loop:
-    // removing the tail compresses the distribution, lowering the
-    // estimated sigma, tightening the threshold, exposing more of the
-    // tail, and so on until the global cap is hit.
-    let base_threshold = if auto_sigma {
-        let mut abs_norm: Vec<f64> = Vec::new();
-        for (i, res) in fit.residuals.iter().enumerate() {
-            if !fit.included[i] {
-                continue;
-            }
-            let w = fit.observations[i].weights();
-            for (r, wi) in res.iter().zip(w.iter()) {
-                abs_norm.push((r * r * wi).sqrt().abs());
-            }
-        }
-        abs_norm.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let robust_sigma = if abs_norm.is_empty() {
-            1.0
-        } else {
-            let median_abs = abs_norm[abs_norm.len() / 2];
-            (1.4826 * median_abs).max(1.0)
-        };
-        chi2_threshold * robust_sigma * robust_sigma
-    } else {
-        chi2_threshold
-    };
+    // Rejection and recovery thresholds with 7/6 hysteresis ratio
+    // (Carpino, Milani & Chesley 2003).  The z-scores are already
+    // leverage-normalized so no additional scaling is applied.
+    let chi2_rej = chi2_threshold;
+    let chi2_rec = chi2_threshold * (6.0 / 7.0);
 
     for _ in 0..max_reject_passes {
-        // Progressive threshold: start generous, tighten each pass.
-        let scale = threshold_scale.max(1.0);
-        let effective_threshold = base_threshold * scale;
-
-        // Recovery: compute fresh residuals for the current state and
-        // re-include any previously rejected observations that now fall
-        // within the current threshold.
-        let all_residuals = compute_residuals(
+        // Sweep over every caller-allowed observation (mask = `included`)
+        // so that currently rejected observations also receive z-scores
+        // and can be recovered.  stm_sweep emits one StmObs per included
+        // observation in time-sorted order.
+        let sweep = stm_sweep(
             &fit.uncertain_state.state,
             sorted_obs,
+            included,
             include_asteroids,
             fit.uncertain_state.non_grav.as_ref(),
-        );
-        let mut changed = false;
-        if let Ok(all_res) = &all_residuals {
-            for i in 0..fit.included.len() {
-                if fit.included[i] || !included[i] {
+        )?;
+        let cov = &fit.uncertain_state.cov_matrix;
+
+        let mut z_scores: Vec<f64> = Vec::with_capacity(sweep.len());
+        for entry in &sweep {
+            let m = entry.weights.len();
+            // Parameter-space design block: H_i = h_local * phi_cum
+            // (m x d).  Leverage trace = sum_k (H_i C H_i^T)[k,k] * W_k.
+            let h_full: DMatrix<f64> = &entry.h_local * &entry.phi_cum;
+            let hch: DMatrix<f64> = &h_full * cov * h_full.transpose();
+            let leverage: f64 = (0..m).map(|k| hch[(k, k)] * entry.weights[k]).sum();
+            let chi2: f64 = entry
+                .residual
+                .iter()
+                .zip(entry.weights.iter())
+                .map(|(r, w)| r * r * w)
+                .sum();
+            let expected = (m as f64 - leverage).max(0.5);
+            z_scores.push(chi2 / expected);
+        }
+
+        // Apply hysteresis to build the new included mask.
+        // Radar observations are never rejected -- they are too few and
+        // too precise to discard without explicit user intent.
+        let mut new_included = current_included.clone();
+        let mut sweep_idx = 0;
+        for i in 0..sorted_obs.len() {
+            if !included[i] {
+                continue;
+            }
+            let z = z_scores[sweep_idx];
+            sweep_idx += 1;
+            if sorted_obs[i].is_radar() {
+                new_included[i] = true;
+                continue;
+            }
+            new_included[i] = if current_included[i] {
+                z <= chi2_rej
+            } else {
+                z <= chi2_rec
+            };
+        }
+
+        // Enforce the minimum-included floor by un-rejecting the
+        // smallest-z newly rejected observations -- those are the
+        // least-bad rejections.
+        let n_new = new_included.iter().filter(|&&v| v).count();
+        if n_new < min_included {
+            let mut newly_rejected: Vec<(usize, f64)> = Vec::new();
+            let mut sweep_idx = 0;
+            for i in 0..sorted_obs.len() {
+                if !included[i] {
                     continue;
                 }
-                let w = fit.observations[i].weights();
-                let chi2: f64 = all_res[i]
-                    .iter()
-                    .zip(w.iter())
-                    .map(|(r, wi)| r * r * wi)
-                    .sum();
-                if chi2 <= effective_threshold {
-                    fit.included[i] = true;
-                    fit.residuals[i] = all_res[i].clone();
-                    changed = true;
+                let z = z_scores[sweep_idx];
+                sweep_idx += 1;
+                if current_included[i] && !new_included[i] {
+                    newly_rejected.push((i, z));
                 }
             }
-        }
-
-        // Rejection: mark worst-first observations above threshold.
-        let n_included = fit.included.iter().filter(|&&inc| inc).count();
-        if n_included <= min_included {
-            if changed {
-                fit = iterate_to_convergence(
-                    &fit.uncertain_state.state,
-                    sorted_obs,
-                    &fit.included,
-                    include_asteroids,
-                    fit.uncertain_state.non_grav.clone(),
-                    max_iter,
-                    tol,
-                )?;
+            newly_rejected
+                .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            let need = min_included - n_new;
+            for &(i, _) in newly_rejected.iter().take(need) {
+                new_included[i] = true;
             }
-            break;
         }
 
-        let mut obs_chi2: Vec<(usize, f64)> = fit
-            .residuals
-            .iter()
-            .enumerate()
-            .filter(|&(i, _)| fit.included[i])
-            .map(|(i, res)| {
-                let w = fit.observations[i].weights();
-                let chi2: f64 = res.iter().zip(w.iter()).map(|(r, wi)| r * r * wi).sum();
-                (i, chi2)
-            })
-            .filter(|&(_, chi2)| chi2 > effective_threshold)
-            .collect();
-        obs_chi2.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        // Reject worst-first, but limit per-pass rejection to at most
-        // 10% of the currently included observations.  This prevents
-        // a single pass from collapsing the fit when the state is
-        // slightly off and many observations exceed the threshold.
-        //
-        // Additionally respect the global 25% budget so that runaway
-        // rejection cannot strip the dataset.
-        let max_reject = (n_included / 10).max(1);
-        let remaining_budget = max_total_rejected.saturating_sub(total_rejected);
-        let budget = max_reject
-            .min(n_included - min_included)
-            .min(remaining_budget);
-        if budget == 0 && !changed {
+        if new_included == current_included {
             break;
         }
-        let rejected_any = !obs_chi2.is_empty() && budget > 0;
-        let n_rejected_this_pass = obs_chi2.len().min(budget);
-        for &(i, _) in obs_chi2.iter().take(budget) {
-            fit.included[i] = false;
-            changed = true;
-        }
-        total_rejected += n_rejected_this_pass;
-
-        if !changed {
-            break;
-        }
+        current_included = new_included;
 
         fit = iterate_to_convergence(
             &fit.uncertain_state.state,
             sorted_obs,
-            &fit.included,
+            &current_included,
             include_asteroids,
             fit.uncertain_state.non_grav.clone(),
             max_iter,
             tol,
         )?;
-
-        // Stop if RMS is worsening — rejection is not improving the
-        // fit, likely because the stated sigmas are too optimistic and
-        // the residuals are dominated by systematics rather than
-        // outliers.
-        if fit.rms >= prev_rms && rejected_any {
-            break;
-        }
-        prev_rms = fit.rms;
-
-        if !rejected_any {
-            // No new rejections this pass (only recoveries or
-            // steady state) -- no point continuing.
-            break;
-        }
-        threshold_scale *= 0.5;
-    }
-
-    // When auto_sigma is enabled, rescale the covariance by the reduced
-    // chi-squared of the included observations.  This inflates the
-    // covariance to reflect the actual data scatter when the stated
-    // sigmas are incorrect (a posteriori variance scaling).
-    if auto_sigma {
-        let n_included = fit.included.iter().filter(|&&inc| inc).count();
-        let n_params = 6 + fit
-            .uncertain_state
-            .non_grav
-            .as_ref()
-            .map_or(0, NonGravModel::n_free_params);
-        let n_measurements: usize = fit
-            .residuals
-            .iter()
-            .zip(fit.included.iter())
-            .filter(|&(_, &inc)| inc)
-            .map(|(r, _)| r.len())
-            .sum();
-        let dof = n_measurements.saturating_sub(n_params);
-        if dof > 0 && n_included > n_params {
-            let chi2_total: f64 = fit
-                .residuals
-                .iter()
-                .enumerate()
-                .filter(|&(i, _)| fit.included[i])
-                .map(|(i, res)| {
-                    let w = fit.observations[i].weights();
-                    res.iter()
-                        .zip(w.iter())
-                        .map(|(r, wi)| r * r * wi)
-                        .sum::<f64>()
-                })
-                .sum();
-            let chi2_reduced = chi2_total / dof as f64;
-            // Only inflate, never shrink -- if chi2_reduced < 1 the
-            // stated sigmas are already conservative.
-            if chi2_reduced > 1.0 {
-                fit.uncertain_state.cov_matrix *= chi2_reduced;
-            }
-        }
     }
 
     Ok(fit)
@@ -575,18 +526,32 @@ fn iterate_to_convergence(
     for _ in 0..max_iter {
         let dx = solve_damped(&info_mat, &rhs_vec, lambda)?;
         let dx = limit_correction(dx);
+        let dx = backtrack_to_ng_bounds(dx, non_grav.as_ref());
 
-        let converged = dx.norm() < tol;
+        // Convergence test. The raw `dx.norm()` (mixed units of AU,
+        // AU/day, and arbitrary non-grav coefficients) is dominated
+        // by the largest-magnitude parameters and can leave small
+        // parameters (velocity ~1e-2, non-grav down to ~1e-12) far
+        // from optimum when convergence is declared. We additionally
+        // require each component's step to be small in "standard
+        // error" units (sqrt(|N_ii|) times the step), which is scale-
+        // invariant. Both criteria must hold.
+        let mut max_scaled_step = 0.0_f64;
+        for i in 0..dx.len() {
+            let s = info_mat[(i, i)].abs().sqrt();
+            max_scaled_step = max_scaled_step.max((dx[i] * s).abs());
+        }
+        let converged = dx.norm() < tol && max_scaled_step < 1e-3;
 
         // Build trial state.
         let mut trial_state = state_epoch.clone();
         let mut trial_ng = non_grav.clone();
-        apply_correction(&mut trial_state, &dx, &mut trial_ng);
+        let ng_in_bounds = apply_correction(&mut trial_state, &dx, &mut trial_ng);
 
         // Reject unphysical trial states without repropagating.
         let r = trial_state.pos.norm();
         let v = trial_state.vel.norm();
-        if !r.is_finite() || !v.is_finite() || !(1e-4..=1e4).contains(&r) {
+        if !ng_in_bounds || !r.is_finite() || !v.is_finite() || !(1e-4..=1e4).contains(&r) {
             lambda = if lambda < 1e-6 { 1.0 } else { lambda * 10.0 };
             if lambda > 1e12 {
                 break;
@@ -616,13 +581,9 @@ fn iterate_to_convergence(
                 lambda *= 0.1;
 
                 if converged {
-                    let covariance = info_mat
-                        .clone()
-                        .svd(true, true)
-                        .pseudo_inverse(1e-14)
-                        .map_err(|e| {
-                            Error::ValueError(format!("SVD pseudo-inverse failed: {e}"))
-                        })?;
+                    let covariance = scaled_pseudo_inverse(&info_mat).map_err(|e| {
+                        Error::ValueError(format!("SVD pseudo-inverse failed: {e}"))
+                    })?;
 
                     // Build per-obs residuals from the sweep (included
                     // observations only have meaningful values; excluded
@@ -700,10 +661,7 @@ fn make_non_converged_result(
     let (covariance, residuals, rms) =
         accumulate_normal_equations(state, obs, included, include_asteroids, non_grav.as_ref())
             .and_then(|(info_mat, _, _)| {
-                let cov = info_mat
-                    .clone()
-                    .svd(true, true)
-                    .pseudo_inverse(1e-14)
+                let cov = scaled_pseudo_inverse(&info_mat)
                     .unwrap_or_else(|_| DMatrix::zeros(n_params, n_params));
                 let res = compute_residuals(state, obs, include_asteroids, non_grav.as_ref())?;
                 let r = weighted_rms(&res, obs, included, n_params);
@@ -1235,25 +1193,107 @@ fn accumulate_from_sweep(
     (n_mat, b_vec, huber_loss, residuals)
 }
 
-/// Solve `(N + lambda * diag(N)) * dx = b` via SVD.
+/// Solve `(N + lambda * diag(N)) * dx = b` via SVD with column scaling.
 ///
 /// When `lambda > 0` the diagonal of N is augmented, pulling the solution
 /// toward a steepest-descent step and stabilising poorly-constrained
 /// directions.
+///
+/// Column scaling is essential when the parameters span very different
+/// magnitudes (e.g. position in AU together with `density` in kg/m^3 or
+/// `thermal_inertia` in SI units).  Without it, the information matrix
+/// can have a condition number of 1e20 or more and the SVD pseudo-inverse
+/// truncation cutoff zeroes out the small parameter directions, producing
+/// degenerate steps.  We pre- and post-multiply by `D = diag(1/sqrt(|N_ii|))`
+/// so the scaled normal matrix has unit diagonal and a relative SVD cutoff
+/// is meaningful.
 fn solve_damped(
     n_mat: &DMatrix<f64>,
     b_vec: &DVector<f64>,
     lambda: f64,
 ) -> KeteResult<DVector<f64>> {
-    let mut n_work = n_mat.clone();
-    if lambda > 0.0 {
-        for i in 0..n_work.nrows() {
-            n_work[(i, i)] += lambda * n_mat[(i, i)].abs().max(1e-15);
+    let n = n_mat.nrows();
+
+    // Build inverse column scales d_inv[i] = 1/sqrt(|N_ii|).
+    let mut d_inv = DVector::<f64>::zeros(n);
+    for i in 0..n {
+        let dii = n_mat[(i, i)].abs().max(1e-30);
+        d_inv[i] = 1.0 / dii.sqrt();
+    }
+
+    // Scaled normal matrix: N_s = D^-1 N D^-1  (unit diagonal by construction).
+    let mut n_scaled = n_mat.clone();
+    for i in 0..n {
+        for j in 0..n {
+            n_scaled[(i, j)] *= d_inv[i] * d_inv[j];
         }
     }
-    let svd = n_work.svd(true, true);
-    svd.solve(b_vec, 1e-14)
-        .map_err(|_| Error::ValueError("SVD solve failed on damped normal matrix".into()))
+
+    // Marquardt damping in the scaled space (where diag(N_s) = 1):
+    //   (N_s + lambda I) dx_s = b_s
+    if lambda > 0.0 {
+        for i in 0..n {
+            n_scaled[(i, i)] += lambda;
+        }
+    }
+
+    // Scaled RHS.
+    let mut b_scaled = b_vec.clone();
+    for i in 0..n {
+        b_scaled[i] *= d_inv[i];
+    }
+
+    let svd = n_scaled.svd(true, true);
+    let dx_scaled = svd
+        .solve(&b_scaled, 1e-12)
+        .map_err(|_| Error::ValueError("SVD solve failed on damped normal matrix".into()))?;
+
+    // Unscale: dx = D^-1 dx_s.
+    let mut dx = dx_scaled;
+    for i in 0..n {
+        dx[i] *= d_inv[i];
+    }
+    Ok(dx)
+}
+
+/// Pseudo-invert a normal-equations (information) matrix using the
+/// same diagonal column scaling as [`solve_damped`].
+///
+/// The fit parameters span many orders of magnitude (state in AU and
+/// AU/day, non-grav coefficients from ~1e-12 to ~1e1).  Without
+/// scaling, the information matrix has condition numbers easily
+/// exceeding 1e20, and the relative SVD truncation cutoff zeroes out
+/// the small-parameter rows and columns -- producing a covariance that
+/// is essentially numerical noise.  Scaling so the diagonal is unit
+/// makes the relative cutoff meaningful, then we unscale on the way
+/// out: cov = D^-1 (D^-1 N D^-1)^+ D^-1.
+fn scaled_pseudo_inverse(n_mat: &DMatrix<f64>) -> KeteResult<DMatrix<f64>> {
+    let n = n_mat.nrows();
+    let mut d_inv = DVector::<f64>::zeros(n);
+    for i in 0..n {
+        let dii = n_mat[(i, i)].abs().max(1e-30);
+        d_inv[i] = 1.0 / dii.sqrt();
+    }
+
+    let mut n_scaled = n_mat.clone();
+    for i in 0..n {
+        for j in 0..n {
+            n_scaled[(i, j)] *= d_inv[i] * d_inv[j];
+        }
+    }
+
+    let cov_scaled = n_scaled
+        .svd(true, true)
+        .pseudo_inverse(1e-12)
+        .map_err(|e| Error::ValueError(format!("SVD pseudo-inverse failed: {e}")))?;
+
+    let mut cov = cov_scaled;
+    for i in 0..n {
+        for j in 0..n {
+            cov[(i, j)] *= d_inv[i] * d_inv[j];
+        }
+    }
+    Ok(cov)
 }
 
 /// Cap position and velocity corrections to prevent wild jumps.
@@ -1288,20 +1328,68 @@ fn limit_correction(mut dx: DVector<f64>) -> DVector<f64> {
     dx
 }
 
+/// Backtrack only the non-grav components of a step so each parameter
+/// stays strictly above its lower bound.
+///
+/// Position and velocity are left untouched. For each non-grav
+/// parameter that would be pushed at or below its bound, the
+/// corresponding entry of `dx[6+k]` is shrunk so the new value sits
+/// just above the bound. This avoids the pathology where a single
+/// out-of-bounds non-grav step inflates Marquardt damping and shrinks
+/// the position step (which was correctly sized) to nothing -- the
+/// orbital fit then stalls completely.
+fn backtrack_to_ng_bounds(mut dx: DVector<f64>, non_grav: Option<&NonGravModel>) -> DVector<f64> {
+    let Some(ng) = non_grav else {
+        return dx;
+    };
+    let np = ng.n_free_params();
+    let params = ng.get_free_params();
+    let bounds = ng.param_lower_bounds();
+    for k in 0..np {
+        let cur = params[k];
+        let lo = bounds[k];
+        if !lo.is_finite() {
+            continue;
+        }
+        let proposed = cur + dx[6 + k];
+        if proposed > lo {
+            continue;
+        }
+        // Shrink to land halfway between the current value and the
+        // bound so we make progress toward the bound without snapping
+        // onto it (which would silently re-trigger the clamp inside
+        // `set_free_params`).
+        let safe_step = 0.5 * (lo - cur);
+        dx[6 + k] = safe_step;
+    }
+    dx
+}
+
 /// Apply a state correction vector to the epoch state and (optionally)
 /// non-grav parameters.
 fn apply_correction(
     state: &mut State<Equatorial>,
     dx: &DVector<f64>,
     non_grav: &mut Option<NonGravModel>,
-) {
+) -> bool {
+    if let Some(ng) = non_grav.as_ref() {
+        let np = ng.n_free_params();
+        let params = ng.get_free_params();
+        let bounds = ng.param_lower_bounds();
+        for k in 0..np {
+            let new_val = params[k] + dx[6 + k];
+            if new_val <= bounds[k] || !new_val.is_finite() {
+                return false;
+            }
+        }
+    }
+
     let pos: [f64; 3] = state.pos.into();
     state.pos = [pos[0] + dx[0], pos[1] + dx[1], pos[2] + dx[2]].into();
 
     let vel: [f64; 3] = state.vel.into();
     state.vel = [vel[0] + dx[3], vel[1] + dx[4], vel[2] + dx[5]].into();
 
-    // Apply non-grav parameter corrections from dx[6..].
     if let Some(ng) = non_grav.as_mut() {
         let np = ng.n_free_params();
         let mut params = ng.get_free_params();
@@ -1310,6 +1398,7 @@ fn apply_correction(
         }
         ng.set_free_params(&params);
     }
+    true
 }
 
 /// Compute post-fit residuals for all observations (time-sorted order).
@@ -1465,18 +1554,7 @@ mod tests {
         // Perturbed initial state (5% error in position, 3% in velocity).
         let perturbed = make_state([r * 1.05, 0.0, 0.0], [0.0, v * 0.97, 0.0], 2460000.5);
 
-        let fit = fit_orbit(
-            &perturbed,
-            &observations,
-            false,
-            None,
-            20,
-            1e-8,
-            9.0,
-            0,
-            false,
-        )
-        .unwrap();
+        let fit = fit_orbit(&perturbed, &observations, false, None, 20, 1e-8, 9.0, 0).unwrap();
 
         // Check that the fit converged near the true state.
         let pos_err = (fit.uncertain_state.state.pos - true_state.pos).norm();
@@ -1520,18 +1598,7 @@ mod tests {
             2460000.5,
         );
 
-        let fit = fit_orbit(
-            &perturbed,
-            &observations,
-            false,
-            None,
-            20,
-            1e-8,
-            9.0,
-            0,
-            false,
-        )
-        .unwrap();
+        let fit = fit_orbit(&perturbed, &observations, false, None, 20, 1e-8, 9.0, 0).unwrap();
 
         let pos_err = (fit.uncertain_state.state.pos - true_state.pos).norm();
 
@@ -1569,7 +1636,6 @@ mod tests {
             1e-8,
             9.0,
             3,
-            false,
         )
         .unwrap();
 
@@ -1613,7 +1679,6 @@ mod tests {
             1e-10,
             9.0,
             0,
-            false,
         )
         .unwrap();
 
@@ -1675,7 +1740,6 @@ mod tests {
             1e-10,
             9.0,
             0,
-            false,
         )
         .unwrap();
 
@@ -1725,18 +1789,7 @@ mod tests {
         // Perturb initial state by 10% position and 5% velocity.
         let perturbed = make_state([r * 1.10, 0.0, 0.0], [0.0, v * 0.95, 0.0], 2460000.5);
 
-        let fit = fit_orbit(
-            &perturbed,
-            &observations,
-            false,
-            None,
-            50,
-            1e-8,
-            9.0,
-            3,
-            false,
-        )
-        .unwrap();
+        let fit = fit_orbit(&perturbed, &observations, false, None, 50, 1e-8, 9.0, 3).unwrap();
 
         let pos_err = (fit.uncertain_state.state.pos - true_state.pos).norm();
         assert!(
@@ -1773,18 +1826,7 @@ mod tests {
             *ra += 50.0 * sigma;
         }
 
-        let fit = fit_orbit(
-            &true_state,
-            &observations,
-            false,
-            None,
-            50,
-            1e-8,
-            9.0,
-            5,
-            false,
-        )
-        .unwrap();
+        let fit = fit_orbit(&true_state, &observations, false, None, 50, 1e-8, 9.0, 5).unwrap();
 
         // The corrupted observation should be rejected.
         let n_total = 20;

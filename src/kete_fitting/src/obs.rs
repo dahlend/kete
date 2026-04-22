@@ -104,6 +104,12 @@ impl AstrometricObservation {
         }
     }
 
+    /// Returns true if this is a radar observation (range or range-rate).
+    #[must_use]
+    pub fn is_radar(&self) -> bool {
+        matches!(self, Self::RadarRange { .. } | Self::RadarRate { .. })
+    }
+
     /// Number of measurement components (2 for optical, 1 for radar).
     #[must_use]
     pub fn measurement_dim(&self) -> usize {
