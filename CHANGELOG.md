@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.1.0]
 
 ## Added
 
@@ -16,15 +16,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   greatly reduce their size. This was done with the ~600MB Spitzer kernel and it was
   reduced to less than 1MB and is included with Kete, less than 1km max difference
   across the entire file.
+- Added support for downloading JPL Horizons Radar observations.
 
 ### Changed
 
 - HorizonsProperties now has its query and caching done in rust. Python api unchanged.
+- MPC Observations are now cached.
 
 ### Fixed
 - SPK lookups were failing to resolve in some cases when the planets were unloaded and
   reloaded.
-- Improved Initial Orbit Determination and convergence of orbit fitting.
+- Improved Initial Orbit Determination significantly.
+- Improved convergence and outlier rejection in orbit fitting.
 
 
 ## [3.0.1]
@@ -683,6 +686,7 @@ Initial Release
 
 
 [Unreleased]: https://github.com/dahlend/kete/tree/main
+[3.1.0]: https://github.com/dahlend/kete/releases/tag/v3.1.0
 [3.0.1]: https://github.com/dahlend/kete/releases/tag/v3.0.1
 [3.0.0]: https://github.com/dahlend/kete/releases/tag/v3.0.0
 [2.1.5]: https://github.com/dahlend/kete/releases/tag/v2.1.5
