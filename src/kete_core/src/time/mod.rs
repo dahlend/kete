@@ -44,7 +44,7 @@ use crate::prelude::{Error, KeteResult};
 use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc};
 
 // pub use self::leap_second::{};
-pub use self::scales::{JD_TO_MJD, TAI, TDB, TimeScale, UTC};
+pub use self::scales::{JD_TO_MJD, TAI, TCB, TDB, TimeScale, UTC};
 
 /// Representation of Time.
 ///
@@ -489,6 +489,33 @@ mod tests {
                 (t.mjd() - mjd).abs() * 86400.0
             );
         }
+    }
+
+    #[test]
+    fn test_tcb_roundtrip() {
+        // TCB/TDB round-trip: converting TDB -> TCB -> TDB should be the identity
+        // to floating-point precision.
+        for jd_offset in [-10000.0_f64, 0.0, 10000.0, 36525.0] {
+            let jd = 2_451_545.0 + jd_offset;
+            let tcb_jd = TCB::from_tdb(jd);
+            let recovered = TCB::to_tdb(tcb_jd);
+            assert!(
+                (recovered - jd).abs() < 1e-9,
+                "round-trip error at jd={jd}: {err} days",
+                err = (recovered - jd).abs()
+            );
+        }
+
+        // At J2000.0 (jd = 2451545.0, ~23 years after T_0), TCB should be
+        // ahead of TDB by roughly L_B * (J2000 - T_0) days.
+        let jd_j2000 = 2_451_545.0_f64;
+        let tcb = TCB::from_tdb(jd_j2000);
+        let expected_drift_s = 1.550_519_768e-8_f64 * (jd_j2000 - 2_443_144.500_372_5) * 86400.0;
+        let actual_drift_s = (tcb - jd_j2000) * 86400.0;
+        assert!(
+            (actual_drift_s - expected_drift_s).abs() < 1e-4,
+            "drift mismatch: actual={actual_drift_s:.6} s expected={expected_drift_s:.6} s"
+        );
     }
 
     #[test]

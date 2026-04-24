@@ -32,7 +32,7 @@
 use crate::obs::AstrometricObservation;
 use crate::uncertain_state::UncertainState;
 use kete_core::forces::NonGravModel;
-use kete_core::frames::Equatorial;
+use kete_core::frames::{Equatorial, SSB, SunCenter, Vector};
 use kete_core::kepler::{analytic_2_body_stm, light_time_correct};
 use kete_core::prelude::{Error, KeteResult, State};
 use kete_spice::prelude::{LOADED_SPK, compute_state_transition};
@@ -107,15 +107,17 @@ pub struct OrbitFit {
 ///   rejection. An observation is rejected when its weighted
 ///   chi-squared exceeds this multiple of the leverage-corrected
 ///   expected value, and recovered when it falls below `6/7` of this
-///   threshold (Carpino-Milani-Chesley 2003 hysteresis).  Only used
-///   when `max_reject_passes > 0`.
+///   threshold (Carpino-Milani-Chesley 2003 hysteresis).  For a 2D
+///   optical observation, a 3-sigma outlier in one axis gives z = 4.5,
+///   so a value of 4.5 matches per-component 3-sigma rejection.  Only
+///   used when `max_reject_passes > 0`.
 /// * `max_reject_passes` - Maximum outlier-rejection cycles.  Set to 0 to
 ///   disable rejection entirely.
 ///
 /// # Errors
 /// Fails if any internal propagation or solve fails.
 pub fn fit_orbit(
-    initial_state: &State<Equatorial>,
+    initial_state: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
     include_asteroids: bool,
     non_grav: Option<&NonGravModel>,
@@ -203,8 +205,9 @@ pub fn fit_orbit(
             tol,
             chi2_threshold,
             max_reject_passes,
-        ) {
-            let candidate = result.uncertain_state.state.clone();
+        ) && let Ok(candidate) =
+            State::<Equatorial, SSB>::try_from(result.uncertain_state.state.clone())
+        {
             // Re-score the candidate on the FULL window (ignoring any
             // outlier rejections inside solve_with_rejection) for an
             // apples-to-apples comparison.
@@ -214,7 +217,7 @@ pub fn fit_orbit(
             if post_rms.is_finite() && post_rms <= pre_rms {
                 state = candidate;
             }
-            // else: keep prior state, the stage made things worse.
+            // else: keep prior state, the conversion invariant was violated.
         }
         // On error: keep previous state, try the next wider window.
     }
@@ -254,9 +257,11 @@ pub fn fit_orbit(
             chi2_threshold,
             max_reject_passes,
         )
+        && let Ok(grav_state) =
+            State::<Equatorial, SSB>::try_from(grav_fit.uncertain_state.state.clone())
     {
         return iterate_to_convergence(
-            &grav_fit.uncertain_state.state,
+            &grav_state,
             &sorted,
             &grav_fit.included,
             include_asteroids,
@@ -300,7 +305,7 @@ pub fn fit_orbit(
 /// stable.
 ///
 fn solve_with_rejection(
-    initial_state: &State<Equatorial>,
+    initial_state: &State<Equatorial, SSB>,
     sorted_obs: &[AstrometricObservation],
     included: &[bool],
     include_asteroids: bool,
@@ -339,31 +344,44 @@ fn solve_with_rejection(
         // so that currently rejected observations also receive z-scores
         // and can be recovered.  stm_sweep emits one StmObs per included
         // observation in time-sorted order.
+        let sweep_state: State<Equatorial, SSB> = fit.uncertain_state.state.clone().try_into()?;
         let sweep = stm_sweep(
-            &fit.uncertain_state.state,
+            &sweep_state,
             sorted_obs,
             included,
             include_asteroids,
             fit.uncertain_state.non_grav.as_ref(),
         )?;
-        let cov = &fit.uncertain_state.cov_matrix;
+        // CMC leverage requires the unscaled Fisher inverse C_0 = (H^T W H)^+.
+        // The stored cov_matrix has been scaled by max(rms^2, 1) for correct
+        // formal sigmas, so we reverse that here.  The hat-matrix trace
+        // trace(H C_0 H^T W) must lie in [0, m] (hat-matrix eigenvalue
+        // property); using the scaled matrix would inflate it by rms^2,
+        // pushing the denominator (m - leverage) negative for most
+        // observations.
+        let rms_sq = fit.rms.powi(2).max(1.0);
+        let cov_fisher = &fit.uncertain_state.cov_matrix / rms_sq;
 
         let mut z_scores: Vec<f64> = Vec::with_capacity(sweep.len());
         for entry in &sweep {
-            let m = entry.weights.len();
-            // Parameter-space design block: H_i = h_local * phi_cum
-            // (m x d).  Leverage trace = sum_k (H_i C H_i^T)[k,k] * W_k.
+            let m = entry.weight_matrix.nrows();
+            // Parameter-space design block: H_i = h_local * phi_cum (m x d).
             let h_full: DMatrix<f64> = &entry.h_local * &entry.phi_cum;
-            let hch: DMatrix<f64> = &h_full * cov * h_full.transpose();
-            let leverage: f64 = (0..m).map(|k| hch[(k, k)] * entry.weights[k]).sum();
-            let chi2: f64 = entry
-                .residual
-                .iter()
-                .zip(entry.weights.iter())
-                .map(|(r, w)| r * r * w)
-                .sum();
+            let hch: DMatrix<f64> = &h_full * &cov_fisher * h_full.transpose();
+            // leverage = tr(H C_0 H^T W)  (full matrix trace for non-diagonal W).
+            let leverage: f64 = (&hch * &entry.weight_matrix).trace();
+            // chi2 = r^T W r  (full weight matrix, includes timing correction).
+            let wr = &entry.weight_matrix * &entry.residual;
+            let chi2: f64 = entry.residual.dot(&wr);
             let expected = (m as f64 - leverage).max(0.5);
-            z_scores.push(chi2 / expected);
+            // Normalize by rms_sq so that a typical well-fitting observation
+            // has z ≈ 1 regardless of weight calibration.  Without this,
+            // chi2 is inflated by rms^2 (since weights underestimate the
+            // true noise), so z ≈ rms^2 for all good observations and the
+            // threshold chi2_threshold (calibrated for rms ≈ 1) rejects the
+            // majority of the arc.  CMC 2003 assumes unit-weight RMS; this
+            // normalization extends the formula to miscalibrated weights.
+            z_scores.push(chi2 / expected / rms_sq);
         }
 
         // Apply hysteresis to build the new included mask.
@@ -418,8 +436,9 @@ fn solve_with_rejection(
         }
         current_included = new_included;
 
+        let iter_state: State<Equatorial, SSB> = fit.uncertain_state.state.clone().try_into()?;
         fit = iterate_to_convergence(
-            &fit.uncertain_state.state,
+            &iter_state,
             sorted_obs,
             &current_included,
             include_asteroids,
@@ -444,22 +463,89 @@ fn sort_by_epoch(obs: &[AstrometricObservation]) -> Vec<AstrometricObservation> 
     sorted
 }
 
+/// Differential gravitational light deflection due to the Sun.
+///
+/// Adjusts the apparent heliocentric position of a Solar System object to
+/// account for the difference between the solar gravitational bending of the
+/// photon path from the object and the bending from background stars at
+/// infinity.  On a plate-solved CCD frame the common-mode bending (same for
+/// all reference stars and the object) cancels in the plate solution.  Only
+/// the differential term, arising from the object being at finite
+/// heliocentric distance rather than at infinity, survives.
+///
+/// Both `observer_helio` and `obj_lt_pos` are Sun-centered positions in AU.
+/// Returns the corrected apparent heliocentric position.
+///
+fn differential_light_deflect(
+    observer_helio: &Vector<Equatorial>,
+    obj_lt_pos: Vector<Equatorial>,
+) -> Vector<Equatorial> {
+    use kete_core::constants::{C_AU_PER_DAY, GMS};
+
+    let bend_factor = 2.0 * GMS / (C_AU_PER_DAY * C_AU_PER_DAY);
+
+    // Topocentric vector: observer to light-time-corrected object.
+    let p = obj_lt_pos - observer_helio;
+    let plen = p.norm();
+    if plen < 1e-10 {
+        return obj_lt_pos;
+    }
+
+    let olen = observer_helio.norm();
+    let rlen = obj_lt_pos.norm();
+    if olen < 1e-10 || rlen < 1e-10 {
+        return obj_lt_pos;
+    }
+
+    // Direction perpendicular to p, in the Sun-Observer-Object plane, pointing
+    // away from the Sun: cross(p, cross(observer, obj)), normalized.
+    let xprod = observer_helio.cross(&obj_lt_pos);
+    let dir_unnorm = p.cross(&xprod);
+    let dlen = dir_unnorm.norm();
+    if dlen < 1e-30 {
+        // Observer, Sun, and object are collinear; deflection direction is undefined.
+        return obj_lt_pos;
+    }
+    let dir = dir_unnorm / dlen;
+
+    // psi1: angle at the Sun between observer and object heliocentric directions.
+    let psi1 = (obj_lt_pos.dot(observer_helio) / (rlen * olen))
+        .clamp(-1.0, 1.0)
+        .acos();
+
+    // psi2: angle between topocentric direction and heliocentric observer direction
+    // (equals 180 degrees minus the solar elongation of the object).
+    let psi2 = (p.dot(observer_helio) / (plen * olen))
+        .clamp(-1.0, 1.0)
+        .acos();
+
+    let bending = bend_factor * ((psi2 / 2.0).tan() - (psi1 / 2.0).tan()) * plen;
+    obj_lt_pos + dir * bending
+}
+
 /// Apply light-time correction to an SSB-centered object state.
 ///
 /// Takes the current SSB-centered object state and the observer state,
 /// converts to heliocentric, applies light-time correction, then
 /// converts back to SSB.  Returns the corrected SSB-centered state.
 fn light_time_corrected_state(
-    mut state_ssb: State<Equatorial>,
-    mut observer: State<Equatorial>,
-) -> KeteResult<State<Equatorial>> {
+    state_ssb: State<Equatorial, SSB>,
+    observer: State<Equatorial, SSB>,
+) -> KeteResult<State<Equatorial, SSB>> {
     let spk = LOADED_SPK.try_read()?;
-    spk.try_change_center(&mut state_ssb, 10)?;
-    spk.try_change_center(&mut observer, 10)?;
-    let obs_sun = observer.pos - state_ssb.pos + state_ssb.pos;
-    let mut obj_lt = light_time_correct(&state_ssb, &obs_sun)?;
-    spk.try_change_center(&mut obj_lt, 0)?;
-    Ok(obj_lt)
+    // Convert both object and observer to heliocentric for two-body correction.
+    let observer_dyn: State<Equatorial> = observer.into();
+    let state_sun = spk.try_to_sun(state_ssb.into())?;
+    let observer_sun = spk.try_to_sun(observer_dyn)?;
+    let obj_lt_helio = light_time_correct(&state_sun, &observer_sun.pos)?;
+    // Apply differential gravitational light deflection (solar bending of the
+    // photon path relative to background stars at infinity).
+    let deflected_pos = differential_light_deflect(&observer_sun.pos, obj_lt_helio.pos);
+    let obj_lt_deflected = State {
+        pos: deflected_pos,
+        ..obj_lt_helio
+    };
+    spk.try_to_ssb(obj_lt_deflected.into())
 }
 
 /// Run the iterative convergence loop with adaptive Levenberg-Marquardt
@@ -489,7 +575,7 @@ fn light_time_corrected_state(
 /// linearization point (no repropagation).  This guarantees that
 /// `state_epoch` is always the best state seen.
 fn iterate_to_convergence(
-    initial_state: &State<Equatorial>,
+    initial_state: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
     included: &[bool],
     include_asteroids: bool,
@@ -497,7 +583,7 @@ fn iterate_to_convergence(
     max_iter: usize,
     tol: f64,
 ) -> KeteResult<OrbitFit> {
-    let mut state_epoch = initial_state.clone();
+    let mut state_epoch: State<Equatorial, SSB> = initial_state.clone();
     // Start with non-zero damping when fitting non-grav parameters.
     // Their information-matrix entries are often orders of magnitude
     // smaller than the orbital entries, so an undamped first step can
@@ -581,7 +667,7 @@ fn iterate_to_convergence(
                 lambda *= 0.1;
 
                 if converged {
-                    let covariance = scaled_pseudo_inverse(&info_mat).map_err(|e| {
+                    let raw_cov = scaled_pseudo_inverse(&info_mat).map_err(|e| {
                         Error::ValueError(format!("SVD pseudo-inverse failed: {e}"))
                     })?;
 
@@ -604,7 +690,18 @@ fn iterate_to_convergence(
 
                     let n_params = 6 + non_grav.as_ref().map_or(0, NonGravModel::n_free_params);
                     let rms = weighted_rms(&residuals, obs, included, n_params);
-                    let uncertain_state = UncertainState::new(state_epoch, covariance, non_grav)?;
+                    // Scale formal covariance by max(rms^2, 1.0).  When
+                    // observation weights are perfectly calibrated rms ~ 1
+                    // and this is a no-op.  When the unit-weight assumption
+                    // is violated (typical without catalog debiasing, rms
+                    // often 2-5) the unscaled Fisher inverse underestimates
+                    // formal sigmas by a factor of rms, which is the unsafe
+                    // direction for hazard assessment.  Flooring at 1
+                    // prevents deflating well-constrained covariances.
+                    // (Danby 1988 §7.5.21; matches OrbFit / Find_Orb.)
+                    let covariance = raw_cov * rms.powi(2).max(1.0);
+                    let uncertain_state =
+                        UncertainState::new(state_epoch.into(), covariance, non_grav)?;
                     return Ok(OrbitFit {
                         uncertain_state,
                         residuals,
@@ -648,7 +745,7 @@ fn iterate_to_convergence(
 /// zeroed covariance and NaN residuals so that the caller still gets a
 /// valid `OrbitFit` instead of a hard error.
 fn make_non_converged_result(
-    state: &State<Equatorial>,
+    state: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
     included: &[bool],
     include_asteroids: bool,
@@ -665,7 +762,7 @@ fn make_non_converged_result(
                     .unwrap_or_else(|_| DMatrix::zeros(n_params, n_params));
                 let res = compute_residuals(state, obs, include_asteroids, non_grav.as_ref())?;
                 let r = weighted_rms(&res, obs, included, n_params);
-                Ok((cov, res, r))
+                Ok((cov * r.powi(2).max(1.0), res, r))
             })
             .unwrap_or_else(|_: Error| {
                 let nan_res = obs
@@ -676,8 +773,8 @@ fn make_non_converged_result(
             });
 
     // Dimensions are correct by construction -- `new` cannot fail.
-    let uncertain_state =
-        UncertainState::new(state.clone(), covariance, non_grav).expect("dimension mismatch");
+    let uncertain_state = UncertainState::new(state.clone().into(), covariance, non_grav)
+        .expect("dimension mismatch");
 
     OrbitFit {
         uncertain_state,
@@ -703,8 +800,10 @@ pub(crate) struct StmObs {
     pub residual: DVector<f64>,
     /// Local geometric partial derivatives, m x 6.
     pub h_local: DMatrix<f64>,
-    /// Weight vector (1/sigma^2 per measurement component), m-vector.
-    pub weights: DVector<f64>,
+    /// Full weight matrix (inverse noise covariance), m x m.
+    /// For optical with timing correction this is a non-diagonal 2x2 matrix;
+    /// for radar it is a 1x1 scalar matrix.
+    pub weight_matrix: DMatrix<f64>,
 }
 
 /// Inner STM sweep over a contiguous observation slice starting from a
@@ -717,7 +816,7 @@ pub(crate) struct StmObs {
 /// Used by [`stm_sweep`] to implement parallel divide-and-conquer
 /// over long observation arcs.
 fn stm_sweep_inner(
-    checkpoint: &State<Equatorial>,
+    checkpoint: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
     included: &[bool],
     include_asteroids: bool,
@@ -732,7 +831,7 @@ fn stm_sweep_inner(
         phi_cum[(i, i)] = 1.0;
     }
 
-    let mut state_cur = checkpoint.clone();
+    let mut state_cur: State<Equatorial, SSB> = checkpoint.clone();
     let mut results = Vec::new();
 
     for (i, observation) in obs.iter().enumerate() {
@@ -767,13 +866,27 @@ fn stm_sweep_inner(
 
         let residual = observation.residual_from_corrected(&obj_lt);
         let h_local = observation.partials(&obj_lt);
-        let weights = observation.weights();
+
+        // Apparent angular velocity (rad/day): H[:,0:3] * (v_obj - v_obs).
+        // Used to inflate along-track uncertainty for timing errors.
+        let v_obj: [f64; 3] = obj_lt.vel.into();
+        let v_obs: [f64; 3] = observation.observer().vel.into();
+        let vel_rel = DVector::from_column_slice(&[
+            v_obj[0] - v_obs[0],
+            v_obj[1] - v_obs[1],
+            v_obj[2] - v_obs[2],
+        ]);
+        let motion = h_local.columns(0, 3) * &vel_rel;
+        let weight_matrix = observation.weight_matrix(
+            motion.get(0).copied().unwrap_or(0.0),
+            motion.get(1).copied().unwrap_or(0.0),
+        );
 
         results.push(StmObs {
             phi_cum: phi_cum.clone(),
             residual,
             h_local,
-            weights,
+            weight_matrix,
         });
     }
 
@@ -804,7 +917,7 @@ fn stm_sweep_inner(
 /// # Panics
 /// Panics if the observer state position has zero norm.
 pub(crate) fn stm_sweep(
-    state_epoch: &State<Equatorial>,
+    state_epoch: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
     included: &[bool],
     include_asteroids: bool,
@@ -895,13 +1008,18 @@ pub(crate) fn stm_sweep(
     // If instead c_{s+1} were at obs[end_s].epoch, phi_local_end would
     // cover only up to obs[end_s - 1], missing one integration step per
     // segment boundary, causing ~0.2% error per boundary in phi_cum.
-    let mut checkpoint_states: Vec<State<Equatorial>> = Vec::with_capacity(n_segments);
+    let mut checkpoint_states: Vec<State<Equatorial, SSB>> = Vec::with_capacity(n_segments);
     checkpoint_states.push(state_epoch.clone());
-    let mut cur = state_epoch.clone();
+    let mut cur: State<Equatorial, SSB> = state_epoch.clone();
     for &(_, end) in &segment_ranges[..n_segments - 1] {
         let target_epoch = obs[end - 1].epoch();
         if (target_epoch.jd - cur.epoch.jd).abs() > 1e-12 {
-            cur = propagate_n_body_spk(cur, target_epoch, include_asteroids, non_grav.cloned())?;
+            cur = propagate_n_body_spk(
+                cur.clone(),
+                target_epoch,
+                include_asteroids,
+                non_grav.cloned(),
+            )?;
         }
         checkpoint_states.push(cur.clone());
     }
@@ -910,7 +1028,7 @@ pub(crate) fn stm_sweep(
     // Each segment runs independently from its checkpoint with a fresh
     // identity phi_cum.  The local phi_cum values are relative to the
     // segment's checkpoint epoch, not the reference epoch.
-    let inputs: Vec<(&[AstrometricObservation], &[bool], &State<Equatorial>)> = segment_ranges
+    let inputs: Vec<(&[AstrometricObservation], &[bool], &State<Equatorial, SSB>)> = segment_ranges
         .iter()
         .enumerate()
         .map(|(s, &(start, end))| {
@@ -1011,7 +1129,7 @@ pub(crate) fn stm_sweep(
 /// # Errors
 /// Returns an error if two-body propagation or light-time correction fails.
 pub(crate) fn stm_sweep_two_body(
-    state_epoch: &State<Equatorial>,
+    state_epoch: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
     included: &[bool],
     non_grav: Option<&NonGravModel>,
@@ -1033,11 +1151,8 @@ pub(crate) fn stm_sweep_two_body(
     // (the usual convention inside the fitter) would bias every step by the
     // Sun-SSB offset (~0.007 AU), producing residuals dominated by that
     // systematic error rather than by the orbit fit.
-    let mut state_helio = state_epoch.clone();
-    if state_helio.center_id != 10 {
-        let spk = LOADED_SPK.try_read()?;
-        spk.try_change_center(&mut state_helio, 10)?;
-    }
+    let spk = LOADED_SPK.try_read()?;
+    let state_helio = spk.try_to_sun(state_epoch.clone().into())?;
 
     let mut cur_pos: Vector3<f64> = state_helio.pos.into();
     let mut cur_vel: Vector3<f64> = state_helio.vel.into();
@@ -1071,24 +1186,44 @@ pub(crate) fn stm_sweep_two_body(
             continue;
         }
 
-        // Build a heliocentric State for light-time correction and residuals.
-        // `light_time_corrected_state` re-centers as needed internally.
-        let mut cur_state = state_helio.clone();
-        cur_state.pos = cur_pos.into();
-        cur_state.vel = cur_vel.into();
-        cur_state.epoch = cur_epoch;
+        // Build heliocentric state for light-time correction.
+        // `light_time_correct` requires heliocentric inputs; the observer
+        // is SSB-typed so we also need to convert it to heliocentric.
+        let obj_lt_ssb = {
+            let cur_state_helio = State::<Equatorial, SunCenter> {
+                desig: state_helio.desig.clone(),
+                epoch: cur_epoch,
+                pos: cur_pos.into(),
+                vel: cur_vel.into(),
+                center: SunCenter,
+            };
+            let obs_helio = spk.try_to_sun(observation.observer().clone().into())?;
+            let obj_lt_helio = light_time_correct(&cur_state_helio, &obs_helio.pos)?;
+            spk.try_to_ssb(obj_lt_helio.into())?
+        };
 
-        let obj_lt = light_time_corrected_state(cur_state, observation.observer().clone())?;
+        let residual = observation.residual_from_corrected(&obj_lt_ssb);
+        let h_local = observation.partials(&obj_lt_ssb);
 
-        let residual = observation.residual_from_corrected(&obj_lt);
-        let h_local = observation.partials(&obj_lt);
-        let weights = observation.weights();
+        // Apparent angular velocity (rad/day) for timing correction.
+        let v_obj: [f64; 3] = obj_lt_ssb.vel.into();
+        let v_obs: [f64; 3] = observation.observer().vel.into();
+        let vel_rel = DVector::from_column_slice(&[
+            v_obj[0] - v_obs[0],
+            v_obj[1] - v_obs[1],
+            v_obj[2] - v_obs[2],
+        ]);
+        let motion = h_local.columns(0, 3) * &vel_rel;
+        let weight_matrix = observation.weight_matrix(
+            motion.get(0).copied().unwrap_or(0.0),
+            motion.get(1).copied().unwrap_or(0.0),
+        );
 
         results.push(StmObs {
             phi_cum: phi_cum.clone(),
             residual,
             h_local,
-            weights,
+            weight_matrix,
         });
     }
 
@@ -1105,7 +1240,7 @@ pub(crate) fn stm_sweep_two_body(
 /// # Errors
 /// Returns an error if the underlying STM sweep fails.
 pub(crate) fn accumulate_normal_equations(
-    state_epoch: &State<Equatorial>,
+    state_epoch: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
     included: &[bool],
     include_asteroids: bool,
@@ -1124,13 +1259,14 @@ const HUBER_K: f64 = 1.345;
 
 /// Accumulate normal equations from a pre-computed STM sweep.
 ///
-/// Applies iteratively reweighted least squares (IRLS) with Huber loss:
-/// each measurement component whose normalized residual exceeds [`HUBER_K`]
-/// is smoothly downweighted, preventing large residuals from dominating the
-/// normal equations.
+/// Applies iteratively reweighted least squares (IRLS) with Huber loss.
+/// Each observation is treated as a unit using the joint Mahalanobis
+/// distance z = sqrt(r^T W r).  When z > `HUBER_K` the entire weight
+/// matrix is scaled down by `HUBER_K/z`, preserving the correlations
+/// introduced by timing corrections.
 ///
 /// Returns `(info_mat, rhs_vec, huber_loss, residuals)` where `huber_loss`
-/// is the Huber rho objective summed over all measurements.  This is the
+/// is the Huber rho objective summed over all observations.  This is the
 /// merit function the IRLS-LM solver should monotonically reduce; using the
 /// Huber-weighted sum-of-squared residuals instead would be non-monotone
 /// because Huber weights themselves shift as residuals cross the threshold,
@@ -1150,44 +1286,33 @@ fn accumulate_from_sweep(
     let mut residuals = Vec::with_capacity(sweep.len());
 
     for entry in sweep {
-        let m = entry.residual.len();
-
         // Map to epoch: H_epoch = H_local * Phi_cum  (m x D).
         let h_epoch = &entry.h_local * &entry.phi_cum;
 
-        // Huber IRLS: downweight components with large normalized residuals,
-        // and accumulate the Huber rho loss over all measurements using the
-        // ORIGINAL (un-Huber'd) weights.
-        let mut weights = entry.weights.clone();
-        for k in 0..m {
-            let z_abs = (entry.residual[k] * entry.weights[k].sqrt()).abs();
-            if z_abs <= HUBER_K {
-                huber_loss += 0.5 * z_abs * z_abs;
-            } else {
-                huber_loss += HUBER_K * z_abs - 0.5 * HUBER_K * HUBER_K;
-                weights[k] *= HUBER_K / z_abs;
-            }
-        }
+        // Joint Huber IRLS: compute Mahalanobis distance z = sqrt(r^T W r).
+        // If z > HUBER_K, scale the entire weight matrix by HUBER_K/z so
+        // that the effective loss is Huber rho(z) = HUBER_K*z - 0.5*k^2
+        // instead of 0.5*z^2 for the outlier.  This preserves off-diagonal
+        // correlations in the weight matrix (e.g. from timing corrections).
+        let wr = &entry.weight_matrix * &entry.residual;
+        let z_sq = entry.residual.dot(&wr);
+        let z = z_sq.sqrt();
+        let (w_eff, loss_contrib) = if z <= HUBER_K {
+            (entry.weight_matrix.clone(), 0.5 * z_sq)
+        } else {
+            (
+                entry.weight_matrix.clone() * (HUBER_K / z),
+                HUBER_K * z - 0.5 * HUBER_K * HUBER_K,
+            )
+        };
+        huber_loss += loss_contrib;
 
         residuals.push(entry.residual.clone());
 
-        // Accumulate normal matrix and RHS via weighted outer products:
-        //   N += H^T W H,  b += H^T W r
-        // Build sqrt(W) * H and sqrt(W) * r for efficient rank-m update.
-        // hw is m x d, wr is m x 1.
-        let mut hw = h_epoch.clone();
-        let mut wr = entry.residual.clone();
-        for k in 0..m {
-            let sw = weights[k].sqrt();
-            for j in 0..d {
-                hw[(k, j)] *= sw;
-            }
-            wr[k] *= sw;
-        }
-        // N += (sqrt(W) H)^T (sqrt(W) H)  =  H^T W H
-        n_mat += hw.transpose() * &hw;
-        // b += (sqrt(W) H)^T (sqrt(W) r)  =  H^T W r
-        b_vec += hw.transpose() * &wr;
+        // Accumulate normal matrix and RHS:
+        //   N += H^T W_eff H,  b += H^T W_eff r
+        n_mat += h_epoch.transpose() * &w_eff * &h_epoch;
+        b_vec += h_epoch.transpose() * (&w_eff * &entry.residual);
     }
 
     (n_mat, b_vec, huber_loss, residuals)
@@ -1368,7 +1493,7 @@ fn backtrack_to_ng_bounds(mut dx: DVector<f64>, non_grav: Option<&NonGravModel>)
 /// Apply a state correction vector to the epoch state and (optionally)
 /// non-grav parameters.
 fn apply_correction(
-    state: &mut State<Equatorial>,
+    state: &mut State<Equatorial, SSB>,
     dx: &DVector<f64>,
     non_grav: &mut Option<NonGravModel>,
 ) -> bool {
@@ -1406,21 +1531,25 @@ fn apply_correction(
 /// Uses the 6-dim `propagate_n_body_spk` (not the 60-dim STM
 /// integrator) so this is ~5x cheaper than an STM sweep.
 fn compute_residuals(
-    state_epoch: &State<Equatorial>,
+    state_epoch: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
     include_asteroids: bool,
     non_grav: Option<&NonGravModel>,
 ) -> KeteResult<Vec<DVector<f64>>> {
     let mut residuals = Vec::with_capacity(obs.len());
-    let mut state_cur = state_epoch.clone();
+    let mut state_cur: State<Equatorial, SSB> = state_epoch.clone();
 
     for observation in obs {
         let obs_epoch = observation.epoch();
 
         // Propagate to observation epoch (6-dim, no STM).
         if (obs_epoch.jd - state_cur.epoch.jd).abs() > 1e-12 {
-            state_cur =
-                propagate_n_body_spk(state_cur, obs_epoch, include_asteroids, non_grav.cloned())?;
+            state_cur = propagate_n_body_spk(
+                state_cur.clone(),
+                obs_epoch,
+                include_asteroids,
+                non_grav.cloned(),
+            )?;
         }
 
         let obj_lt = light_time_corrected_state(state_cur.clone(), observation.observer().clone())?;
@@ -1470,12 +1599,17 @@ mod tests {
     use kete_core::desigs::Desig;
     use kete_core::time::{TDB, Time};
     use kete_spice::propagation::propagate_n_body_spk;
-
     use kete_spice::test_data::ensure_test_spk;
 
     /// Helper: build a simple state.
-    fn make_state(pos: [f64; 3], vel: [f64; 3], jd: f64) -> State<Equatorial> {
-        State::new(Desig::Empty, jd.into(), pos.into(), vel.into(), 0)
+    fn make_state(pos: [f64; 3], vel: [f64; 3], jd: f64) -> State<Equatorial, SSB> {
+        State {
+            desig: Desig::Empty,
+            epoch: jd.into(),
+            pos: pos.into(),
+            vel: vel.into(),
+            center: SSB,
+        }
     }
 
     /// Generate synthetic optical observations, optionally with a non-grav model.
@@ -1483,7 +1617,7 @@ mod tests {
     /// Uses the full N-body SPK propagator so that the physics model is
     /// consistent with the batch least-squares solver.
     fn synth_observations(
-        true_state: &State<Equatorial>,
+        true_state: &State<Equatorial, SSB>,
         epochs: &[f64],
         observer_pos_fn: impl Fn(f64) -> ([f64; 3], [f64; 3]),
         sigma: f64,
@@ -1503,11 +1637,16 @@ mod tests {
             .unwrap();
 
             let spk = LOADED_SPK.try_read().unwrap();
-            let mut sun_at = obj_at.clone();
-            spk.try_change_center(&mut sun_at, 10).unwrap();
+            let sun_at = spk.try_to_sun(obj_at.clone().into()).unwrap();
             let obs_helio = observer.pos - obj_at.pos + sun_at.pos;
-            let mut obj_lt = light_time_correct(&sun_at, &obs_helio).unwrap();
-            spk.try_change_center(&mut obj_lt, 0).unwrap();
+            let obj_lt_sun = light_time_correct(&sun_at, &obs_helio).unwrap();
+            // Apply DLD so synthetic observations are consistent with the prediction model.
+            let deflected_pos = differential_light_deflect(&obs_helio, obj_lt_sun.pos);
+            let obj_lt_deflected = State {
+                pos: deflected_pos,
+                ..obj_lt_sun
+            };
+            let obj_lt = spk.try_to_ssb(obj_lt_deflected.into()).unwrap();
             let (ra, dec) = (obj_lt.pos - observer.pos).to_ra_dec();
 
             observations.push(AstrometricObservation::Optical {
@@ -1516,6 +1655,7 @@ mod tests {
                 dec,
                 sigma_ra: sigma,
                 sigma_dec: sigma,
+                time_sigma: 0.0,
             });
         }
         observations
@@ -1906,5 +2046,97 @@ mod tests {
                 "residual mismatch at obs {k}: {res_diff:.3e}"
             );
         }
+    }
+
+    /// Verify properties of `differential_light_deflect`.
+    ///
+    /// 1. The correction is perpendicular to the topocentric direction
+    ///    (i.e. it shifts only the angle, not the range).
+    /// 2. The magnitude is consistent with the standard GR formula:
+    ///    `delta_theta ~ 2*GMS/c^2 * |tan(psi2/2) - tan(psi1/2)|`.
+    /// 3. Objects near the Sun get larger corrections than objects far away.
+    /// 4. Collinear or zero-distance edge cases return unmodified positions.
+    #[test]
+    fn test_differential_light_deflect() {
+        use kete_core::constants::{C_AU_PER_DAY, GMS};
+        use kete_core::frames::Vector;
+
+        let bend_factor = 2.0 * GMS / (C_AU_PER_DAY * C_AU_PER_DAY);
+
+        // Observer at 1 AU along +x, object at 2 AU along (1,1,0) / sqrt(2).
+        let observer: Vector<Equatorial> = [1.0, 0.0, 0.0].into();
+        let obj: Vector<Equatorial> =
+            [std::f64::consts::SQRT_2, std::f64::consts::SQRT_2, 0.0].into();
+
+        let deflected = differential_light_deflect(&observer, obj);
+
+        // 1. The deflection should be perpendicular to the topocentric direction.
+        let p_orig = obj - observer;
+        let p_defl = deflected - observer;
+        let p_orig_hat = p_orig / p_orig.norm();
+        // Component of deflected topocentric direction along original: should be ~1.
+        let cos_angle = p_defl.dot(&p_orig_hat) / p_defl.norm();
+        assert!(
+            (cos_angle - 1.0).abs() < 1e-8,
+            "DLD should not change range direction appreciably, cos_angle deviation={:.3e}",
+            (cos_angle - 1.0).abs()
+        );
+
+        // 2. Check the angular shift magnitude is in the right ballpark.
+        let cross = p_orig_hat.cross(&(p_defl / p_defl.norm()));
+        let angle_shift = cross.norm().asin();
+        // For this geometry: psi2 ~ pi - elongation, bending ~ bend_factor * (tan(psi2/2) - tan(psi1/2))
+        // Rough upper bound: should be < 2e-3 radians (< 400 arcsec) and > 0.
+        assert!(
+            angle_shift > 0.0,
+            "DLD should produce a positive angular shift"
+        );
+        assert!(
+            angle_shift < bend_factor * 10.0,
+            "DLD angular shift {angle_shift:.3e} rad seems unreasonably large"
+        );
+
+        // 3. For two objects in the same sky direction from the observer, the one
+        //    nearer to the Sun has a larger psi2 - psi1 differential and thus a
+        //    larger DLD angular correction.  Both objects are along (0, 1, 0) from
+        //    the observer at [1, 0, 0], differing only in heliocentric distance.
+        let obj_near_sun: Vector<Equatorial> = [1.0, 0.5, 0.0].into(); // 1.12 AU from Sun
+        let obj_far_sun: Vector<Equatorial> = [1.0, 2.0, 0.0].into(); // 2.24 AU from Sun
+        let defl_near_sun = differential_light_deflect(&observer, obj_near_sun);
+        let defl_far_sun = differential_light_deflect(&observer, obj_far_sun);
+
+        let p_near_sun = obj_near_sun - observer;
+        let p_defl_near_sun = defl_near_sun - observer;
+        let angle_near_sun = p_near_sun.cross(&p_defl_near_sun).norm()
+            / (p_near_sun.norm() * p_defl_near_sun.norm());
+
+        let p_far_sun = obj_far_sun - observer;
+        let p_defl_far_sun = defl_far_sun - observer;
+        let angle_far_sun =
+            p_far_sun.cross(&p_defl_far_sun).norm() / (p_far_sun.norm() * p_defl_far_sun.norm());
+
+        assert!(
+            angle_near_sun > angle_far_sun,
+            "Object nearer to Sun should have larger DLD: near={angle_near_sun:.3e} vs far={angle_far_sun:.3e}"
+        );
+
+        // 4. Edge case: observer at origin -> no correction.
+        let zero_obs: Vector<Equatorial> = [0.0, 0.0, 0.0].into();
+        let obj_edge: Vector<Equatorial> = [1.0, 0.5, 0.0].into();
+        let defl_edge = differential_light_deflect(&zero_obs, obj_edge);
+        // olen = 0, function should return obj_lt_pos unchanged.
+        let diff = (defl_edge - obj_edge).norm();
+        assert!(
+            diff < 1e-15,
+            "Zero observer should return unchanged position, diff={diff:.3e}"
+        );
+
+        // 5. Edge case: object same position as observer -> no correction.
+        let defl_same = differential_light_deflect(&observer, observer);
+        let diff_same = (defl_same - observer).norm();
+        assert!(
+            diff_same < 1e-15,
+            "Zero topocentric distance should return unchanged position, diff={diff_same:.3e}"
+        );
     }
 }

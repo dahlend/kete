@@ -34,7 +34,7 @@
 
 use crate::constants::{C_AU_PER_DAY_INV, GMS, GMS_SQRT};
 use crate::errors::Error;
-use crate::frames::{InertialFrame, Vector};
+use crate::frames::{InertialFrame, SunCenter, Vector};
 use crate::prelude::{CometElements, KeteResult};
 use crate::state::State;
 use crate::time::{Duration, TDB, Time};
@@ -418,9 +418,9 @@ pub fn analytic_2_body_stm(
 /// # Errors
 /// Two body calculation may fail in extreme cases.
 pub fn propagate_two_body<T: InertialFrame>(
-    state: &State<T>,
+    state: &State<T, SunCenter>,
     time_final: Time<TDB>,
-) -> KeteResult<State<T>> {
+) -> KeteResult<State<T, SunCenter>> {
     let (pos, vel) = analytic_2_body(
         time_final - state.epoch,
         &state.pos.into(),
@@ -428,34 +428,28 @@ pub fn propagate_two_body<T: InertialFrame>(
         None,
     )?;
 
-    Ok(State::new(
-        state.desig.clone(),
-        time_final,
-        pos.into(),
-        vel.into(),
-        state.center_id,
-    ))
+    Ok(State {
+        desig: state.desig.clone(),
+        epoch: time_final,
+        pos: pos.into(),
+        vel: vel.into(),
+        center: state.center,
+    })
 }
 
 /// Apply geometric light-time correction to a state.
 ///
-/// The state must be Sun-centered (`center_id = 10`). `observer_pos` is the
-/// observer's Sun-centered position in the same frame as the state.
+/// The state must be Sun-centered. `observer_pos` is the observer's
+/// Sun-centered position in the same frame as the state.
 /// Uses two-body backward propagation by the light travel time, iterated up
 /// to 3 times until the change in light-travel time is below 1e-12 days.
 ///
 /// # Errors
-/// Returns an error if `state.center_id != 10` or if the Kepler solver fails.
+/// Returns an error if the Kepler solver fails.
 pub fn light_time_correct<T: InertialFrame>(
-    state: &State<T>,
+    state: &State<T, SunCenter>,
     observer_pos: &Vector<T>,
-) -> KeteResult<State<T>> {
-    if state.center_id != 10 {
-        return Err(Error::ValueError(
-            "light_time_correct requires center_id = 10 (Sun).".into(),
-        ));
-    }
-
+) -> KeteResult<State<T, SunCenter>> {
     let mut corrected = state.clone();
     let mut tau = 0.0;
 
@@ -477,7 +471,7 @@ pub fn light_time_correct<T: InertialFrame>(
 ///
 /// # Errors
 /// Can fail due to orbital element conversion errors, or failing to find minimum.
-pub fn moid<T: InertialFrame>(mut state_a: State<T>, mut state_b: State<T>) -> KeteResult<f64> {
+pub fn moid<T: InertialFrame>(mut state_a: State<T, SunCenter>, mut state_b: State<T, SunCenter>) -> KeteResult<f64> {
     const N_STEPS: i32 = 50;
 
     let elements_a = CometElements::from_state(&state_a.clone().into_frame());
@@ -494,8 +488,8 @@ pub fn moid<T: InertialFrame>(mut state_a: State<T>, mut state_b: State<T>) -> K
         _ => 300.0 / f64::from(N_STEPS),
     };
 
-    let mut states_b: Vec<State<_>> = Vec::with_capacity(N_STEPS as usize);
-    let mut states_a: Vec<State<_>> = Vec::with_capacity(N_STEPS as usize);
+    let mut states_b: Vec<State<_, SunCenter>> = Vec::with_capacity(N_STEPS as usize);
+    let mut states_a: Vec<State<_, SunCenter>> = Vec::with_capacity(N_STEPS as usize);
 
     for idx in (-N_STEPS)..N_STEPS {
         states_a.push(propagate_two_body(

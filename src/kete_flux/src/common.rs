@@ -32,9 +32,11 @@ use nalgebra::UnitVector3;
 use std::f64::consts::PI;
 
 use kete_core::constants::{
-    AU_KM, IRAC_BANDS, IRAC_ZERO_MAG, IRS_PU_BANDS, IRS_PU_ZERO_MAG, MIPS_BANDS, MIPS_ZERO_MAG,
-    NEOS_BANDS, NEOS_SUN_CORRECTION, NEOS_ZERO_MAG, SOLAR_FLUX, STEFAN_BOLTZMANN, V_MAG_ZERO,
-    WISE_BANDS_300K, WISE_CC, WISE_SUN_CORRECTION, WISE_ZERO_MAG_300K,
+    AB_MAG_ZERO, AU_KM, B_MAG_ZERO, GAIA_BP_MAG_ZERO, GAIA_G_MAG_ZERO, GAIA_RP_MAG_ZERO,
+    H_MAG_ZERO, I_MAG_ZERO, IRAC_BANDS, IRAC_ZERO_MAG, IRS_PU_BANDS, IRS_PU_ZERO_MAG, J_MAG_ZERO,
+    KS_MAG_ZERO, MIPS_BANDS, MIPS_ZERO_MAG, NEOS_BANDS, NEOS_SUN_CORRECTION, NEOS_ZERO_MAG,
+    R_MAG_ZERO, SOLAR_FLUX, STEFAN_BOLTZMANN, U_MAG_ZERO, V_MAG_ZERO, WISE_BANDS_300K, WISE_CC,
+    WISE_SUN_CORRECTION, WISE_ZERO_MAG_300K,
 };
 
 /// A function which computes the color correction on a single facet for NEATM and FRM.
@@ -82,6 +84,53 @@ impl BandInfo {
 
     /// [`BandInfo`] for the Johnson V band (551 nm).
     pub const V: Self = Self::new(551.0, 1.0, V_MAG_ZERO, None);
+
+    // -- Johnson-Cousins bands (Bessell et al. 1998) --
+
+    /// [`BandInfo`] for the Johnson U band (366 nm).
+    pub const U: Self = Self::new(366.0, 1.0, U_MAG_ZERO, None);
+
+    /// [`BandInfo`] for the Johnson B band (438 nm).
+    pub const B: Self = Self::new(438.0, 1.0, B_MAG_ZERO, None);
+
+    /// [`BandInfo`] for the Cousins R band (641 nm).
+    pub const R: Self = Self::new(641.0, 1.0, R_MAG_ZERO, None);
+
+    /// [`BandInfo`] for the Cousins I band (798 nm).
+    pub const I: Self = Self::new(798.0, 1.0, I_MAG_ZERO, None);
+
+    // -- 2MASS bands (Cohen et al. 2003) --
+
+    /// [`BandInfo`] for the 2MASS J band (1235 nm).
+    pub const J: Self = Self::new(1235.0, 1.0, J_MAG_ZERO, None);
+
+    /// [`BandInfo`] for the 2MASS H band (1662 nm).
+    pub const H: Self = Self::new(1662.0, 1.0, H_MAG_ZERO, None);
+
+    /// [`BandInfo`] for the 2MASS Ks band (2159 nm).
+    pub const KS: Self = Self::new(2159.0, 1.0, KS_MAG_ZERO, None);
+
+    // -- Sloan/SDSS bands (AB magnitude system, 3631 Jy zero point) --
+
+    /// [`BandInfo`] array for the five SDSS bands (u, g, r, i, z).
+    pub const SDSS: [Self; 5] = [
+        Self::new(354.3, 1.0, AB_MAG_ZERO, None),
+        Self::new(477.0, 1.0, AB_MAG_ZERO, None),
+        Self::new(623.1, 1.0, AB_MAG_ZERO, None),
+        Self::new(762.5, 1.0, AB_MAG_ZERO, None),
+        Self::new(913.4, 1.0, AB_MAG_ZERO, None),
+    ];
+
+    // -- Gaia DR3 bands (Riello et al. 2021) --
+
+    /// [`BandInfo`] for the Gaia G band (673 nm).
+    pub const GAIA_G: Self = Self::new(673.0, 1.0, GAIA_G_MAG_ZERO, None);
+
+    /// [`BandInfo`] for the Gaia BP band (532 nm).
+    pub const GAIA_BP: Self = Self::new(532.0, 1.0, GAIA_BP_MAG_ZERO, None);
+
+    /// [`BandInfo`] for the Gaia RP band (797 nm).
+    pub const GAIA_RP: Self = Self::new(797.0, 1.0, GAIA_RP_MAG_ZERO, None);
 
     /// [`BandInfo`] array for the two NEOS bands.
     pub const NEOS: [Self; 2] = [

@@ -134,7 +134,7 @@ impl SpkSegmentType13 {
                 ));
             }
         };
-        let center_id = first.center_id;
+        let center_id = first.center_id();
         let raw_states: Vec<(Time<TDB>, [f64; 3], [f64; 3])> = states
             .iter()
             .map(|s| {

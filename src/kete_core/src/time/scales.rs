@@ -69,7 +69,6 @@ pub trait TimeScale {
 /// Earth).
 ///
 /// This is in agreement with TT up to about 1.7ms per century.
-/// This is in agreement with TCB up to 0.57ms per century.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TDB;
 
@@ -127,5 +126,40 @@ impl TimeScale for TAI {
     }
     fn to_tdb(jd: f64) -> f64 {
         jd + TT_TO_TAI
+    }
+}
+
+/// Secular drift rate between TCB and TDB, from IAU 2006 Resolution B3.
+///
+/// ``TCB - TDB = L_B_TCB * (TCB - TCB_EPOCH)``
+const L_B_TCB: f64 = 1.550_519_768e-8;
+
+/// Reference epoch for the TCB/TDB linear relation, in JD.
+///
+/// This is J1977 January 1.0003725 TDB = JD 2443144.5003725.
+const TCB_EPOCH: f64 = 2_443_144.500_372_5;
+
+/// TCB (Barycentric Coordinate Time).
+///
+/// TCB is the coordinate time of the solar system barycenter frame,
+/// defined by IAU 2006 Resolution B3. It runs faster than TDB by the
+/// secular drift rate `L_B` = 1.550519768e-8. At J2000.0 TCB is roughly
+/// 11.3 seconds ahead of TDB; the drift accumulates at about 0.49 s/yr.
+///
+/// Conversions use the linear relation:
+///   `TCB - TDB = L_B * (TCB - T_0)`
+/// where `T_0` = 2443144.5003725 JD (J1977.0 TDB). The remaining periodic
+/// deviation is below 2 ms and is not corrected here.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TCB;
+
+impl TimeScale for TCB {
+    fn to_tdb(jd: f64) -> f64 {
+        // TDB = TCB - L_B * (TCB - T_0)
+        jd - L_B_TCB * (jd - TCB_EPOCH)
+    }
+    fn from_tdb(jd: f64) -> f64 {
+        // TCB = (TDB - L_B * T_0) / (1 - L_B)
+        (jd - L_B_TCB * TCB_EPOCH) / (1.0 - L_B_TCB)
     }
 }

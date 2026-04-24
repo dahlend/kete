@@ -70,13 +70,13 @@ impl SimultaneousStates {
                 "SimultaneousStates must contain at least one state.".into(),
             ));
         };
-        let (mut jd, center_id) = (state.epoch, state.center_id);
+        let (mut jd, center_id) = (state.epoch, state.center_id());
 
         if let Some(f) = &fov {
             jd = f.observer().epoch;
         }
 
-        if states.iter().any(|state| state.center_id != center_id) {
+        if states.iter().any(|state| state.center_id() != center_id) {
             return Err(Error::ValueError("Center IDs do not match expected".into()));
         }
 
@@ -116,7 +116,7 @@ impl SimultaneousStates {
 
         let obs = fov.observer();
 
-        if obs.center_id != self.center_id {
+        if obs.center_id() != self.center_id {
             return Err(Error::ValueError(
                 "Field of view center ID does not match the states center ID.".into(),
             ));

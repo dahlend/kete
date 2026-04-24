@@ -263,6 +263,39 @@ impl<T: InertialFrame> From<Vector<T>> for Vec<f64> {
     }
 }
 
+impl<T: InertialFrame> AddAssign<&Self> for Vector<T> {
+    #[inline(always)]
+    fn add_assign(&mut self, rhs: &Self) {
+        self.raw
+            .iter_mut()
+            .zip(rhs.raw.iter())
+            .for_each(|(a, b)| *a += b);
+    }
+}
+
+impl<T: InertialFrame> SubAssign<&Self> for Vector<T> {
+    #[inline(always)]
+    fn sub_assign(&mut self, rhs: &Self) {
+        self.raw
+            .iter_mut()
+            .zip(rhs.raw.iter())
+            .for_each(|(a, b)| *a -= b);
+    }
+}
+
+impl<T: InertialFrame> AddAssign for Vector<T> {
+    #[inline(always)]
+    fn add_assign(&mut self, rhs: Self) {
+        *self += &rhs;
+    }
+}
+
+impl<T: InertialFrame> SubAssign for Vector<T> {
+    #[inline(always)]
+    fn sub_assign(&mut self, rhs: Self) {
+        *self -= &rhs;
+    }
+}
 impl<T: InertialFrame> Sub<&Self> for Vector<T> {
     type Output = Self;
     #[inline(always)]
@@ -298,20 +331,6 @@ impl<T: InertialFrame> Sub<Vector<T>> for &Vector<T> {
         let mut raw = self.raw;
         (0..3).for_each(|i| raw[i] -= rhs.raw[i]);
         raw.into()
-    }
-}
-
-impl<T: InertialFrame> AddAssign<&Self> for Vector<T> {
-    #[inline(always)]
-    fn add_assign(&mut self, rhs: &Self) {
-        (0..3).for_each(|i| self.raw[i] += rhs.raw[i]);
-    }
-}
-
-impl<T: InertialFrame> SubAssign<&Self> for Vector<T> {
-    #[inline(always)]
-    fn sub_assign(&mut self, rhs: &Self) {
-        (0..3).for_each(|i| self.raw[i] -= rhs.raw[i]);
     }
 }
 

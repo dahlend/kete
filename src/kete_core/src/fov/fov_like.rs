@@ -34,7 +34,7 @@ use super::Contains;
 
 use crate::constants::C_AU_PER_DAY_INV;
 use crate::fov::FOV;
-use crate::frames::{Equatorial, Vector};
+use crate::frames::{Equatorial, SunCenter, Vector};
 use crate::kepler::light_time_correct;
 use crate::prelude::*;
 
@@ -132,7 +132,7 @@ pub fn check_linear<F: FovLike>(
         obs.epoch + dt,
         new_pos,
         vel,
-        obs.center_id,
+        obs.center_id(),
     );
     (idx, contains, new_state)
 }
@@ -140,19 +140,14 @@ pub fn check_linear<F: FovLike>(
 /// Assuming the object undergoes two-body motion, check to see if it is within the
 /// field of view.
 ///
-/// Both the state and the FOV observer must be Sun-centered (`center_id = 10`).
+/// Both the state and the FOV observer must be Sun-centered.
 ///
 /// # Errors
-/// Returns an error if `state.center_id != 10` or if the Kepler solver fails.
+/// Returns an error if the Kepler solver fails.
 pub fn check_two_body<F: FovLike>(
     fov: &F,
-    state: &State<Equatorial>,
-) -> KeteResult<(usize, Contains, State<Equatorial>)> {
-    if state.center_id != 10 {
-        return Err(Error::ValueError(
-            "check_two_body requires center_id = 10 (Sun).".into(),
-        ));
-    }
+    state: &State<Equatorial, SunCenter>,
+) -> KeteResult<(usize, Contains, State<Equatorial, SunCenter>)> {
     let obs = fov.observer();
 
     let final_state = propagate_two_body(state, obs.epoch)?;

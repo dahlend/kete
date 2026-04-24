@@ -71,7 +71,7 @@ impl PyUncertainState {
             );
         }
         let mut eq_state = state.raw;
-        if eq_state.center_id != 0 {
+        if eq_state.center_id() != 0 {
             let spk = LOADED_SPK.try_read().map_err(Error::from)?;
             spk.try_change_center(&mut eq_state, 0)?;
         }
@@ -135,7 +135,7 @@ impl PyUncertainState {
     #[getter]
     fn state(&self) -> PyResult<PyState> {
         let mut st = self.0.state.clone();
-        if st.center_id != 10 {
+        if st.center_id() != 10 {
             let spk = LOADED_SPK.try_read().map_err(Error::from)?;
             spk.try_change_center(&mut st, 10)?;
         }
@@ -204,7 +204,7 @@ impl PyUncertainState {
         let mut non_gravs = Vec::with_capacity(n_samples);
         for (mut st, ng) in samples {
             // Re-center to Sun for the Python-facing state.
-            if st.center_id != 10 {
+            if st.center_id() != 10 {
                 spk.try_change_center(&mut st, 10)?;
             }
             let py_st: PyState = st.into();

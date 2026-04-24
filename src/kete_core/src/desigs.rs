@@ -1265,6 +1265,7 @@ impl FromStr for ObsCode {
     /// Load an [`ObsCode`] from a single string.
     fn from_str(row: &str) -> KeteResult<Self> {
         let code = row[0..3].to_string();
+        // spacecraft have a code, but no location, so we allow for NaN values here
         let rec_lon = f64::from_str(row[3..13].trim()).unwrap_or(f64::NAN);
         let cos = f64::from_str(row[13..21].trim()).unwrap_or(f64::NAN);
         let sin = f64::from_str(row[21..30].trim()).unwrap_or(f64::NAN);

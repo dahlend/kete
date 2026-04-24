@@ -78,8 +78,14 @@ impl PyObservation {
     ///     Photometric filter name (default ``"V"``).
     /// mag : float
     ///     Apparent magnitude (default ``NaN``).
+    /// time_sigma : float
+    ///     1-sigma timing uncertainty in seconds (default ``0.5``).  When
+    ///     non-zero the along-track positional uncertainty is inflated by
+    ///     ``time_sigma * apparent_speed``, producing a non-diagonal weight
+    ///     matrix.
     #[staticmethod]
-    #[pyo3(signature = (observer, ra, dec, sigma_ra, sigma_dec, band="V".to_string(), mag=f64::NAN))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (observer, ra, dec, sigma_ra, sigma_dec, band="V".to_string(), mag=f64::NAN, time_sigma=0.5))]
     fn optical(
         observer: PyState,
         ra: f64,
@@ -88,23 +94,26 @@ impl PyObservation {
         sigma_dec: f64,
         band: String,
         mag: f64,
+        time_sigma: f64,
     ) -> PyResult<Self> {
         if sigma_ra <= 0.0 || sigma_dec <= 0.0 {
             return Err(Error::ValueError("sigma_ra and sigma_dec must be positive".into()).into());
         }
-        let mut raw = observer.raw;
-        if raw.center_id != 0 {
-            let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-            spk.try_change_center(&mut raw, 0)?;
+        if time_sigma < 0.0 {
+            return Err(Error::ValueError("time_sigma must be non-negative".into()).into());
         }
+        let raw = observer.raw;
+        let spk = LOADED_SPK.try_read().map_err(Error::from)?;
+        let observer_ssb = spk.try_to_ssb(raw)?;
         let arcsec_to_rad = 1.0 / RAD_TO_ARCSEC;
         Ok(Self {
             obs: AstrometricObservation::Optical {
-                observer: raw,
+                observer: observer_ssb,
                 ra: ra.to_radians(),
                 dec: dec.to_radians(),
                 sigma_ra: sigma_ra * arcsec_to_rad,
                 sigma_dec: sigma_dec * arcsec_to_rad,
+                time_sigma,
             },
             band,
             mag,
@@ -129,14 +138,12 @@ impl PyObservation {
         if sigma_range <= 0.0 {
             return Err(Error::ValueError("sigma_range must be positive".into()).into());
         }
-        let mut raw = observer.raw;
-        if raw.center_id != 0 {
-            let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-            spk.try_change_center(&mut raw, 0)?;
-        }
+        let raw = observer.raw;
+        let spk = LOADED_SPK.try_read().map_err(Error::from)?;
+        let observer_ssb = spk.try_to_ssb(raw)?;
         Ok(Self {
             obs: AstrometricObservation::RadarRange {
-                observer: raw,
+                observer: observer_ssb,
                 range,
                 sigma_range,
             },
@@ -163,14 +170,12 @@ impl PyObservation {
         if sigma_range_rate <= 0.0 {
             return Err(Error::ValueError("sigma_range_rate must be positive".into()).into());
         }
-        let mut raw = observer.raw;
-        if raw.center_id != 0 {
-            let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-            spk.try_change_center(&mut raw, 0)?;
-        }
+        let raw = observer.raw;
+        let spk = LOADED_SPK.try_read().map_err(Error::from)?;
+        let observer_ssb = spk.try_to_ssb(raw)?;
         Ok(Self {
             obs: AstrometricObservation::RadarRate {
-                observer: raw,
+                observer: observer_ssb,
                 range_rate,
                 sigma_range_rate,
             },
@@ -188,15 +193,13 @@ impl PyObservation {
     /// The observer state (Sun-centered, Ecliptic).
     #[getter]
     fn observer(&self) -> PyResult<PyState> {
-        let mut st = match &self.obs {
+        let observer_ssb = match &self.obs {
             AstrometricObservation::Optical { observer, .. }
             | AstrometricObservation::RadarRange { observer, .. }
             | AstrometricObservation::RadarRate { observer, .. } => observer.clone(),
         };
-        if st.center_id != 10 {
-            let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-            spk.try_change_center(&mut st, 10)?;
-        }
+        let spk = LOADED_SPK.try_read().map_err(Error::from)?;
+        let st: State<Equatorial> = spk.try_to_sun(observer_ssb.into())?.into();
         Ok(st.into())
     }
 
@@ -232,6 +235,15 @@ impl PyObservation {
     fn sigma_dec(&self) -> Option<f64> {
         match &self.obs {
             AstrometricObservation::Optical { sigma_dec, .. } => Some(*sigma_dec * RAD_TO_ARCSEC),
+            _ => None,
+        }
+    }
+
+    /// 1-sigma timing uncertainty in seconds (optical only, None otherwise).
+    #[getter]
+    fn time_sigma(&self) -> Option<f64> {
+        match &self.obs {
+            AstrometricObservation::Optical { time_sigma, .. } => Some(*time_sigma),
             _ => None,
         }
     }
@@ -354,11 +366,9 @@ impl PyOrbitFit {
     /// Convenience shortcut for ``self.uncertain_state.state``.
     #[getter]
     fn state(&self) -> PyResult<PyState> {
-        let mut st = self.0.uncertain_state.state.clone();
-        if st.center_id != 10 {
-            let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-            spk.try_change_center(&mut st, 10)?;
-        }
+        let st = self.0.uncertain_state.state.clone();
+        let spk = LOADED_SPK.try_read().map_err(Error::from)?;
+        let st: State<Equatorial> = spk.try_to_sun(st)?.into();
         Ok(st.into())
     }
 
@@ -505,7 +515,9 @@ impl PyOrbitFit {
 ///     Carpino, Milani & Chesley (2003). An observation is rejected when
 ///     its weighted chi-squared exceeds this multiple of the leverage-
 ///     corrected expected value, and recovered when it falls below 6/7
-///     of this threshold. Default is 7.0.
+///     of this threshold. For a 2-component optical observation with
+///     calibrated weights, a 3-sigma outlier in one axis gives z = 9/2 = 4.5,
+///     so values of 4–5 match per-component 3-sigma rejection. Default is 4.5.
 /// max_reject_passes : int
 ///     Maximum number of outlier-rejection passes.  Set to 0 to disable
 ///     outlier rejection entirely.  Default is 10.
@@ -523,7 +535,7 @@ impl PyOrbitFit {
         observations,
         non_grav=None,
         include_asteroids=false,
-        chi2_threshold=7.0,
+        chi2_threshold=4.5,
         max_reject_passes=10,
     )
 )]
@@ -535,18 +547,16 @@ pub fn fit_orbit_py(
     chi2_threshold: f64,
     max_reject_passes: usize,
 ) -> PyResult<PyOrbitFit> {
-    let mut raw_state = initial_state.raw;
-
-    if raw_state.center_id != 0 {
-        let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-        spk.try_change_center(&mut raw_state, 0)?;
-    }
+    let raw_state = initial_state.raw;
+    let spk = LOADED_SPK.try_read().map_err(Error::from)?;
+    let state_ssb = spk.try_to_ssb(raw_state)?;
+    drop(spk);
 
     let obs: Vec<AstrometricObservation> = observations.into_iter().map(|o| o.obs).collect();
     let ng = non_grav.as_ref().map(|m| &m.0);
 
     let fit = fit_orbit(
-        &raw_state,
+        &state_ssb,
         &obs,
         include_asteroids,
         ng,
@@ -584,10 +594,8 @@ pub fn initial_orbit_determination_py(
     let spk = LOADED_SPK.try_read().map_err(Error::from)?;
     scored
         .into_iter()
-        .map(|(score, mut st)| {
-            if st.center_id != 10 {
-                spk.try_change_center(&mut st, 10)?;
-            }
+        .map(|(score, st)| {
+            let st: State<Equatorial> = spk.try_to_sun(st)?.into();
             Ok((score, st.into()))
         })
         .collect()
@@ -856,21 +864,16 @@ pub fn fit_orbit_mcmc_py(
     target_accept: f64,
 ) -> PyResult<PyOrbitSamples> {
     let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-    let raw_seeds: Vec<State<Equatorial>> = seeds
+    let ssb_seeds: Vec<State<Equatorial, SSB>> = seeds
         .into_iter()
-        .map(|s| {
-            let mut st = s.raw;
-            if st.center_id != 0 {
-                spk.try_change_center(&mut st, 0)?;
-            }
-            Ok(st)
-        })
+        .map(|s| spk.try_to_ssb(s.raw))
         .collect::<KeteResult<Vec<_>>>()?;
+    drop(spk);
     let obs: Vec<AstrometricObservation> = observations.into_iter().map(|o| o.obs).collect();
     let ng: Option<NonGravModel> = non_grav.map(|m| m.0);
 
     let result = fit_orbit_mcmc(
-        &raw_seeds,
+        &ssb_seeds,
         &obs,
         include_asteroids,
         num_draws,

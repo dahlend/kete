@@ -32,6 +32,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+mod debias;
 mod filter;
 pub mod horizons;
 mod iod;
@@ -42,6 +43,7 @@ mod obs;
 mod orbit_fitting;
 mod uncertain_state;
 
+pub use debias::{DEBIAS_EPOCH_JD, DEBIAS_N_TILES, DEBIAS_NSIDE, DebiasTable, DebiasVersion};
 pub use filter::fit_orbit_filter;
 pub use horizons::HorizonsProperties;
 pub use iod::initial_orbit_determination;

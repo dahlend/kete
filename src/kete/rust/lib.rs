@@ -36,6 +36,7 @@ use pyo3::prelude::*;
 use state::PyState;
 
 pub mod analysis;
+pub mod debias;
 pub mod desigs;
 pub mod elements;
 pub mod fitting;
@@ -103,6 +104,8 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<horizons::PyHorizonsProperties>()?;
 
     m.add_class::<uncertain_state::PyUncertainState>()?;
+
+    m.add_class::<debias::PyDebiasTable>()?;
 
     m.add_function(wrap_pyfunction!(known_masses, m)?)?;
     m.add_function(wrap_pyfunction!(register_mass, m)?)?;

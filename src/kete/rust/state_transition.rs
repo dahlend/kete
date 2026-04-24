@@ -27,22 +27,23 @@ pub fn compute_stm_py(
 ) -> PyResult<(PyState, Vec<Vec<f64>>)> {
     let center = state.center_id();
     let frame = state.frame;
-    let mut raw_state = state.raw;
+    let raw_state = state.raw;
 
     // Re-center to SSB (center_id = 0) as required by the Radau integrator.
     // The input state may use any center; we convert, integrate, then convert back.
-    {
+    let ssb_state = {
         let spk = &LOADED_SPK.try_read().map_err(Error::from)?;
-        spk.try_change_center(&mut raw_state, 0)?;
-    }
+        spk.try_to_ssb(raw_state)?
+    };
 
     let non_grav_model = non_grav.map(|ng| ng.0);
     let jd = jd_end.into();
 
-    let (mut final_state, sens) =
-        compute_state_transition(&raw_state, jd, include_asteroids, non_grav_model)?;
+    let (final_state_ssb, sens) =
+        compute_state_transition(&ssb_state, jd, include_asteroids, non_grav_model)?;
 
     // Re-center back to original center
+    let mut final_state: State<Equatorial> = final_state_ssb.into();
     {
         let spk = &LOADED_SPK.try_read().map_err(Error::from)?;
         spk.try_change_center(&mut final_state, center)?;

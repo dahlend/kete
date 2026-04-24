@@ -4,7 +4,7 @@
 //! The `FovLike` trait and FOV types remain in `kete_core`.
 
 use kete_core::fov::{Contains, FovLike, check_linear, check_two_body};
-use kete_core::frames::Equatorial;
+use kete_core::frames::{Equatorial, SunCenter};
 use kete_core::kepler::light_time_correct;
 use kete_core::prelude::{KeteResult, SimultaneousStates, State};
 
@@ -25,19 +25,20 @@ pub fn check_n_body<F: FovLike>(
 ) -> KeteResult<(usize, Contains, State<Equatorial>)> {
     let obs = fov.observer();
 
-    let exact_state = propagate_n_body_spk(state.clone(), obs.epoch, include_asteroids, None)?;
-    let mut sun_state = exact_state.clone();
-    if sun_state.center_id != 10 {
+    let ssb_state = {
         let spk = LOADED_SPK.try_read()?;
-        spk.try_change_center(&mut sun_state, 10)?;
-    }
+        spk.try_to_ssb(state.clone())?
+    };
+    let exact_state = propagate_n_body_spk(ssb_state, obs.epoch, include_asteroids, None)?;
+    let spk = LOADED_SPK.try_read()?;
+    let sun_state = spk.try_to_sun(exact_state.into())?;
 
     let final_state = light_time_correct(&sun_state, &obs.pos)?;
     let rel_pos = final_state.pos - obs.pos;
 
     let (idx, contains) = fov.contains(&rel_pos);
 
-    Ok((idx, contains, final_state))
+    Ok((idx, contains, final_state.into()))
 }
 
 /// Given an object ID, attempt to load the object from the SPKs and check visibility.
@@ -58,8 +59,9 @@ pub fn check_spks<F: FovLike>(fov: &F, obj_ids: &[i32]) -> Vec<Option<Simultaneo
         .into_par_iter()
         .filter_map(|&obj_id| {
             let state = spk.try_get_state_with_center(obj_id, obs.epoch, 10).ok()?;
-            match check_two_body(fov, &state) {
-                Ok((idx, Contains::Inside, state)) => Some((idx, state)),
+            let sun_state: State<Equatorial, SunCenter> = state.try_into().ok()?;
+            match check_two_body(fov, &sun_state) {
+                Ok((idx, Contains::Inside, state)) => Some((idx, state.into())),
                 _ => None,
             }
         })
@@ -103,11 +105,6 @@ pub fn check_visible<F: FovLike>(
         .iter()
         .filter_map(|state: &State<_>| {
             let max_dist = (state.vel - obs_state.vel).norm() * dt_limit * 2.0;
-            let mut sun_state = state.clone();
-            if sun_state.center_id != 10 {
-                let spk = LOADED_SPK.try_read().ok()?;
-                spk.try_change_center(&mut sun_state, 10).ok()?;
-            }
 
             if (state.epoch - obs_state.epoch).elapsed.abs() < dt_limit {
                 let (_, contains, _) = check_linear(fov, state);
@@ -116,12 +113,16 @@ pub fn check_visible<F: FovLike>(
                 {
                     return None;
                 }
+                let spk = LOADED_SPK.try_read().ok()?;
+                let sun_state = spk.try_to_sun(state.clone()).ok()?;
                 let (idx, contains, state) = check_two_body(fov, &sun_state).ok()?;
                 match contains {
-                    Contains::Inside => Some((idx, state)),
+                    Contains::Inside => Some((idx, state.into())),
                     Contains::Outside(_) => None,
                 }
             } else {
+                let spk = LOADED_SPK.try_read().ok()?;
+                let sun_state = spk.try_to_sun(state.clone()).ok()?;
                 let (_, contains, _) = check_two_body(fov, &sun_state).ok()?;
                 if let Contains::Outside(dist) = contains
                     && dist > max_dist
@@ -179,10 +180,15 @@ mod tests {
             10,
         );
 
+        let circular_back_ssb = {
+            let spk = LOADED_SPK.try_read().unwrap();
+            spk.try_to_ssb(circular_back.clone()).unwrap()
+        };
+
         for offset in [-10.0_f64, -5.0, 0.0, 5.0, 10.0] {
             let off_state = propagate_n_body_spk(
-                circular_back.clone(),
-                circular_back.epoch - offset,
+                circular_back_ssb.clone(),
+                circular_back_ssb.epoch - offset,
                 false,
                 None,
             )
@@ -191,11 +197,16 @@ mod tests {
             let vec = circular_back.pos - circular.pos;
 
             let fov = GenericRectangle::new(vec, 0.0001, 0.01, 0.01, circular.clone());
-            assert!(check_two_body(&fov, &off_state).is_ok());
-            assert!(check_n_body(&fov, &off_state, false).is_ok());
+            let off_sun = {
+                let spk = LOADED_SPK.try_read().unwrap();
+                spk.try_to_sun(off_state.clone().into()).unwrap()
+            };
+            assert!(check_two_body(&fov, &off_sun).is_ok());
+            let off_dyn: State<Equatorial> = off_state.into();
+            assert!(check_n_body(&fov, &off_dyn, false).is_ok());
 
             assert!(
-                check_visible(&fov, &[off_state], 6.0, false)
+                check_visible(&fov, &[off_dyn], 6.0, false)
                     .first()
                     .unwrap()
                     .is_some()
@@ -227,7 +238,8 @@ mod tests {
             let fov = OmniDirectional::new(observer.clone());
 
             // Check two body approximation calculation
-            let two_body = check_two_body(&fov, &asteroid);
+            let asteroid_sun: State<_, SunCenter> = asteroid.clone().try_into().unwrap();
+            let two_body = check_two_body(&fov, &asteroid_sun);
             assert!(two_body.is_ok());
             let (_, _, two_body) = two_body.unwrap();
             let dist = (two_body.pos - observer.pos).norm();

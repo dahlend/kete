@@ -253,7 +253,7 @@ impl UncertainState {
                     nominal[5] + delta[5],
                 ]
                 .into(),
-                self.state.center_id,
+                self.state.center_id(),
             );
 
             // Perturbed non-grav (if any).

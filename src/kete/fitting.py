@@ -56,24 +56,23 @@ def mpc_obs_to_observations(
     from the MPC observatory code (ground-based) or from the stored spacecraft
     position.
 
-    .. note::
-
-        The uncertainties that are assumed here are applied to all observatories.
-        *This is an incorrect assumption!*
-
-        Really there should be a per-observation uncertainty, and a observatory code
-        bias removal. This is left as future work.
-
-
+    Per-observatory bias corrections and uncertainties are applied when
+    available from the precomputed residual table (see
+    :func:`kete.mpc._parse_residuals`).  The median RA and Dec residuals are
+    subtracted from the observed position and the per-axis standard deviations
+    are used as sigmas.  When no table entry exists for an observatory code,
+    the caller-supplied ``sigma_ra`` and ``sigma_dec`` are used instead.
 
     Parameters
     ----------
     mpc_obs :
         List of ``MPCObservation`` objects (see :mod:`kete.mpc`).
     sigma_ra :
-        1-sigma RA uncertainty in arcseconds, defaults to 1.
+        Fallback 1-sigma RA uncertainty in arcseconds when no per-observatory
+        data is available.  Defaults to 1.
     sigma_dec :
-        1-sigma Dec uncertainty in arcseconds, defaults to 1.
+        Fallback 1-sigma Dec uncertainty in arcseconds when no per-observatory
+        data is available.  Defaults to 1.
 
     Returns
     -------
@@ -98,13 +97,28 @@ def mpc_obs_to_observations(
         fit = kete.fitting.fit_orbit(initial_state, observations)
     """
     from . import spice
+    from .mpc import _parse_residuals
     from .vector import Frames, State
 
     observations = []
     for obs in mpc_obs:
+        ra = obs.ra
+        dec = obs.dec
+
+        # Apply per-observatory bias correction and use per-observatory sigmas
+        # when available; otherwise fall back to the caller-supplied values.
+        obs_errors = _parse_residuals(obs.obs_code)
+        if obs_errors is not None:
+            ra_med, s_ra, dec_med, s_dec = obs_errors
+            ra -= ra_med / 3600.0
+            dec -= dec_med / 3600.0
+        else:
+            s_ra = sigma_ra
+            s_dec = sigma_dec
+
         # Apply cos(dec) factor to RA sigma.
-        cos_dec = np.cos(np.radians(obs.dec))
-        sig_ra = sigma_ra / max(cos_dec, 1e-6)
+        cos_dec = np.cos(np.radians(dec))
+        s_ra = s_ra / max(cos_dec, 1e-6)
 
         # Determine observer state (SSB-centered, Equatorial).
         if obs.note2 in ("S", "T") and not any(np.isnan(obs.sun2sc)):
@@ -118,21 +132,21 @@ def mpc_obs_to_observations(
                 pos=pos_ssb,
                 vel=[0.0, 0.0, 0.0],
                 frame=Frames.Ecliptic,
-                center_id=10,
+                center_id=0,
             ).as_equatorial
         else:
-            # Ground-based: look up from obs code, heliocentric.
+            # Ground-based: look up from obs code, SSB-centered.
             observer = spice.mpc_code_to_ecliptic(
-                obs.obs_code, obs.jd, center=10
+                obs.obs_code, obs.jd, center=0
             ).as_equatorial
 
         observations.append(
             Observation.optical(
                 observer=observer,
-                ra=obs.ra,
-                dec=obs.dec,
-                sigma_ra=sig_ra,
-                sigma_dec=sigma_dec,
+                ra=ra,
+                dec=dec,
+                sigma_ra=s_ra,
+                sigma_dec=s_dec,
             )
         )
 

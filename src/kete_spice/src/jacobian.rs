@@ -453,7 +453,7 @@ mod tests {
     use crate::spk::LOADED_SPK;
     use crate::state_transition::compute_state_transition;
     use kete_core::forces::GravParams;
-    use kete_core::frames::Equatorial;
+    use kete_core::frames::{Equatorial, SSB};
     use kete_core::prelude::Desig;
     use kete_core::state::State;
 
@@ -502,16 +502,14 @@ mod tests {
     }
 
     /// Helper: create a test state at ~1 AU from the Sun (solar-system barycenter centered).
-    fn test_state() -> State<Equatorial> {
-        State::new(
-            Desig::Name("Test".into()),
-            // J2000.0
-            2451545.0.into(),
-            [1.0, 0.0, 0.0].into(),
-            // ~circular at 1 AU
-            [0.0, 0.01720209895, 0.0].into(),
-            0,
-        )
+    fn test_state() -> State<Equatorial, SSB> {
+        State {
+            desig: Desig::Name("Test".into()),
+            epoch: 2451545.0.into(),
+            pos: [1.0, 0.0, 0.0].into(),
+            vel: [0.0, 0.01720209895, 0.0].into(),
+            center: SSB,
+        }
     }
 
     #[test]
@@ -542,20 +540,20 @@ mod tests {
                 vel_p[col - 3] += eps;
                 vel_m[col - 3] -= eps;
             }
-            let state_p = State::new(
-                Desig::Name("P".into()),
-                state.epoch,
-                pos_p.into(),
-                vel_p.into(),
-                0,
-            );
-            let state_m = State::new(
-                Desig::Name("M".into()),
-                state.epoch,
-                pos_m.into(),
-                vel_m.into(),
-                0,
-            );
+            let state_p = State {
+                desig: Desig::Name("P".into()),
+                epoch: state.epoch,
+                pos: pos_p.into(),
+                vel: vel_p.into(),
+                center: SSB,
+            };
+            let state_m = State {
+                desig: Desig::Name("M".into()),
+                epoch: state.epoch,
+                pos: pos_m.into(),
+                vel: vel_m.into(),
+                center: SSB,
+            };
             let res_p = propagate_n_body_spk(state_p, jd_final, false, None).unwrap();
             let res_m = propagate_n_body_spk(state_m, jd_final, false, None).unwrap();
 
@@ -730,20 +728,20 @@ mod tests {
                 vel_p[col - 3] += eps;
                 vel_m[col - 3] -= eps;
             }
-            let state_p = State::new(
-                Desig::Name("P".into()),
-                state.epoch,
-                pos_p.into(),
-                vel_p.into(),
-                0,
-            );
-            let state_m = State::new(
-                Desig::Name("M".into()),
-                state.epoch,
-                pos_m.into(),
-                vel_m.into(),
-                0,
-            );
+            let state_p = State {
+                desig: Desig::Name("P".into()),
+                epoch: state.epoch,
+                pos: pos_p.into(),
+                vel: vel_p.into(),
+                center: SSB,
+            };
+            let state_m = State {
+                desig: Desig::Name("M".into()),
+                epoch: state.epoch,
+                pos: pos_m.into(),
+                vel: vel_m.into(),
+                center: SSB,
+            };
             let res_p = propagate_n_body_spk(state_p, jd_final, false, None).unwrap();
             let res_m = propagate_n_body_spk(state_m, jd_final, false, None).unwrap();
 

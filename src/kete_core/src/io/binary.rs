@@ -347,19 +347,18 @@ impl KeteWrite for State<Equatorial> {
         self.epoch.write_to(w)?;
         self.pos.write_to(w)?;
         self.vel.write_to(w)?;
-        self.center_id.write_to(w)
+        self.center_id().write_to(w)
     }
 }
 
 impl KeteRead for State<Equatorial> {
     fn read_from<R: Read>(r: &mut R) -> KeteResult<Self> {
-        Ok(Self {
-            desig: Desig::read_from(r)?,
-            epoch: Time::read_from(r)?,
-            pos: Vector::read_from(r)?,
-            vel: Vector::read_from(r)?,
-            center_id: i32::read_from(r)?,
-        })
+        let desig = Desig::read_from(r)?;
+        let epoch = Time::read_from(r)?;
+        let pos = Vector::read_from(r)?;
+        let vel = Vector::read_from(r)?;
+        let center_id = i32::read_from(r)?;
+        Ok(Self::new(desig, epoch, pos, vel, center_id))
     }
 }
 
@@ -1062,13 +1061,13 @@ mod tests {
     }
 
     fn sample_state() -> State<Equatorial> {
-        State {
-            desig: Desig::Naif(399),
-            epoch: sample_time(),
-            pos: Vector::new([1.0, 0.0, 0.0]),
-            vel: Vector::new([0.0, 1.0, 0.0]),
-            center_id: 10,
-        }
+        State::new(
+            Desig::Naif(399),
+            sample_time(),
+            Vector::new([1.0, 0.0, 0.0]),
+            Vector::new([0.0, 1.0, 0.0]),
+            10,
+        )
     }
 
     #[test]

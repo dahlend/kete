@@ -215,9 +215,9 @@ impl PySimultaneousStates {
 
         let mut vecs = Vec::with_capacity(self.__len__());
         for state in &self.0.states {
-            if state.center_id != obs.center_id {
+            if state.center_id() != obs.center_id() {
                 let mut state = state.clone();
-                spk.try_change_center(&mut state, obs.center_id)?;
+                spk.try_change_center(&mut state, obs.center_id())?;
                 let diff = state.pos - obs.pos;
                 vecs.push(diff.into());
             } else {

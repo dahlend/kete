@@ -389,7 +389,7 @@ def fetch_radar_observations(desig: str, update_cache: bool = False):
         epoch = rec.get("epoch")
         if epoch is None or pd.isna(epoch):
             continue
-        jd = Time.from_iso(pd.Timestamp(epoch).strftime("%Y-%m-%dT%H:%M:%S")).jd
+        jd = Time.from_iso(pd.Timestamp(epoch).isoformat()).jd
 
         rcvr_state = _build_radar_observer(jd, rec, "rcvr")
         if rcvr_state is None:

@@ -14,15 +14,74 @@ import requests
 
 from . import constants, conversion, spice
 from ._core import (
+    DebiasTable,
     _find_obs_code,
     _get_obs_residuals,
     pack_designation,
     unpack_designation,
 )
-from .cache import cache_path, download_json
+from .cache import cache_path, download_file, download_json
 from .fitting import Observation
 from .time import Time
 from .vector import Frames, State, Vector
+
+# Default JPL distribution. EFCC18 (26 catalogs, Gaia-DR2 reference).
+_DEBIAS_URL = "https://ssd.jpl.nasa.gov/ftp/ssd/debias/debias_2018.tgz"
+
+# ADES ``astCat`` name -> single-character MPC catalog code.
+# Source: EFCC18 ``bias.dat`` header cross-referenced with
+# https://www.minorplanetcenter.net/iau/info/CatalogueCodes.html
+# Add new entries cautiously; a misassignment silently applies the wrong correction.
+_ADES_TO_MPC_CODE: dict[str, str] = {
+    "USNOA1": "a",
+    "USNOSA1": "b",
+    "USNOA2": "c",
+    "USNOSA2": "d",
+    "UCAC1": "e",
+    "Tyc2": "g",
+    "GSC1.1": "i",
+    "GSC1.2": "j",
+    "ACT": "l",
+    "GSCACT": "m",
+    "SDSS8": "n",
+    "USNOB1": "o",
+    "PPM": "p",
+    "UCAC4": "q",
+    "UCAC2": "r",
+    "PPMXL": "t",
+    "UCAC3": "u",
+    "NOMAD": "v",
+    "CMC14": "w",
+    "2MASS": "L",
+    "SDSS7": "N",
+    "CMC15": "Q",
+    "SSTRC4": "R",
+    "URAT1": "S",
+    "GAIA1": "U",
+    "UCAC5": "Y",
+}
+
+
+@lru_cache(maxsize=1)
+def _fetch_debias_table(force_download: bool = False) -> DebiasTable:
+    """Load the EFCC18 debias table, downloading the tgz on first use."""
+    import io
+    import tarfile
+
+    tgz_path = download_file(
+        _DEBIAS_URL, force_download=force_download, subfolder="debias"
+    )
+    with tarfile.open(tgz_path, "r:gz") as tar:
+        for member in tar.getmembers():
+            if member.isfile() and member.name.endswith("bias.dat"):
+                f = tar.extractfile(member)
+                if f is not None:
+                    text = io.TextIOWrapper(f, encoding="ascii").read()
+                    return DebiasTable.from_ascii(text)
+    raise RuntimeError(
+        f"bias.dat not found inside {tgz_path}; archive layout may have changed"
+    )
+
 
 __all__ = [
     "unpack_designation",
@@ -40,9 +99,6 @@ logger = logging.getLogger(__name__)
 @lru_cache
 def find_obs_code(site):
     return _find_obs_code(site)
-
-
-find_obs_code.__doc__ = _find_obs_code.__doc__
 
 
 @lru_cache
@@ -438,7 +494,12 @@ def _parse_residuals(obs_code: str):
     return (ra_med, ra_std, dec_med, dec_std)
 
 
-def fetch_mpc_observations(desig: str, update_cache: bool = False):
+def fetch_mpc_observations(
+    desig: str,
+    use_observatory_residuals: bool = True,
+    debias: bool = True,
+    update_cache: bool = False,
+):
     """
     Fetch observations from the MPC API and convert to fitting Observations.
 
@@ -454,11 +515,25 @@ def fetch_mpc_observations(desig: str, update_cache: bool = False):
     observatory code, if available.  If not, the MPC-provided ``rmsra`` and
     ``rmsdec`` fields are used, defaulting to 1 arcsecond if not provided.
 
+    When ``debias`` is True (the default), the EFCC18 star-catalog bias
+    correction is applied to each observation's (RA, Dec) using the ADES
+    ``astCat`` field.  Observations with unknown or missing catalog codes
+    are passed through unchanged.
+
     Parameters
     ----------
     desig :
         Object designation recognized by the MPC (e.g. ``"Apophis"``,
         ``"101955"``, ``"1999 RQ36"``).
+    use_observatory_residuals :
+        If ``True``, apply the per-observatory bias correction and use the
+        per-observatory sigmas from the pre-computed residual table when
+        available; otherwise, use the MPC-provided ``rmsra`` and ``rmsdec`` fields,
+        defaulting to 1 arcsecond if not provided.  Default is ``True``.
+    debias :
+        If ``True``, apply the EFCC18 star-catalog debiasing correction.
+        Requires the JPL ``debias_2018.tgz`` archive, which is downloaded
+        and cached on first use.  Default is ``True``.
     update_cache :
         If ``True``, discard any cached result and re-query the MPC.
 
@@ -509,6 +584,8 @@ def fetch_mpc_observations(desig: str, update_cache: bool = False):
     if not records:
         return []
 
+    debias_table = _fetch_debias_table() if debias else None
+
     observations = []
     for rec in records["ADES_DF"]:
         if rec.get("Obstype") != "optical":
@@ -533,7 +610,7 @@ def fetch_mpc_observations(desig: str, update_cache: bool = False):
             continue
 
         obs_errors = _parse_residuals(stn)
-        if obs_errors is not None:
+        if obs_errors is not None and use_observatory_residuals:
             ra_deg += obs_errors[0] / 3600
             dec_deg += obs_errors[2] / 3600
             s_ra = obs_errors[1]
@@ -543,6 +620,15 @@ def fetch_mpc_observations(desig: str, update_cache: bool = False):
             s_dec = rec.get("rmsdec", 1.0) or 1.0
         if s_ra is None:
             print(obs_errors, stn, rec)
+
+        if debias_table is not None:
+            mpc_code = _ADES_TO_MPC_CODE.get(rec["astcat"].upper())
+
+            if mpc_code:
+                shift = debias_table.lookup(mpc_code, ra_deg, dec_deg, jd)
+                if shift is not None:
+                    ra_deg -= shift[0] / 3600
+                    dec_deg -= shift[1] / 3600
 
         observer = _build_observer(stn, jd, rec)
         if observer is None:

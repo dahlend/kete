@@ -9,6 +9,7 @@ from . import (
     fitting,
     flux,
     fov,
+    gaia,
     mpc,
     neos,
     plot,

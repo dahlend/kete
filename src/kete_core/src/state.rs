@@ -46,11 +46,9 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use std::fmt::Debug;
-
 use crate::desigs::Desig;
 use crate::errors::{Error, KeteResult};
-use crate::frames::{InertialFrame, Vector};
+use crate::frames::{CenterBody, DynCenter, EarthCenter, InertialFrame, SSB, SunCenter, Vector};
 use crate::time::{TDB, Time};
 
 /// Exact State of an object.
@@ -58,12 +56,17 @@ use crate::time::{TDB, Time};
 /// This represents the id, position, and velocity of an object with respect to a
 /// coordinate frame and a center point.
 ///
+/// The second type parameter `C` encodes the gravitational center at compile time.
+/// The default `DynCenter(i32)` carries the center NAIF id at runtime.  Use `SSB`,
+/// `SunCenter`, or `EarthCenter` for states whose center is known at compile time.
+///
 /// This state object assumes no uncertainty in its values.
 #[derive(Debug, Clone, PartialEq)]
 #[must_use]
-pub struct State<T>
+pub struct State<T, C = DynCenter>
 where
     T: InertialFrame,
+    C: CenterBody,
 {
     /// Designation number which corresponds to the object.
     pub desig: Desig,
@@ -71,48 +74,21 @@ where
     /// Epoch of the object's state in TDB scaled time.
     pub epoch: Time<TDB>,
 
-    /// Position of the object with respect to the `center_id` object, units of AU.
+    /// Position of the object with respect to the center body, units of AU.
     pub pos: Vector<T>,
 
-    /// Velocity of the object with respect to the `center_id` object, units of AU/Day.
+    /// Velocity of the object with respect to the center body, units of AU/Day.
     pub vel: Vector<T>,
 
-    /// Position and velocity are given with respect to the specified `center_id`.
-    /// The only privileged center ID is the Solar System Barycenter 0.
-    pub center_id: i32,
+    /// Center body encoding the NAIF id of the reference origin.
+    pub center: C,
 }
 
-impl<T: InertialFrame> State<T> {
-    /// Construct a new State object.
+impl<T: InertialFrame, C: CenterBody> State<T, C> {
+    /// NAIF id of the center body.
     #[inline(always)]
-    pub fn new(
-        desig: Desig,
-        epoch: Time<TDB>,
-        pos: Vector<T>,
-        vel: Vector<T>,
-        center_id: i32,
-    ) -> Self {
-        Self {
-            desig,
-            epoch,
-            pos,
-            vel,
-            center_id,
-        }
-    }
-
-    /// Construct a new state made of NAN pos and vel vectors but containing the
-    /// remaining data. This is primarily useful as a place holder when propagation
-    /// has failed and the object needs to be recorded still.
-    #[inline(always)]
-    pub fn new_nan(desig: Desig, epoch: Time<TDB>, center_id: i32) -> Self {
-        Self::new(
-            desig,
-            epoch,
-            Vector::new_nan(),
-            Vector::new_nan(),
-            center_id,
-        )
+    pub fn center_id(&self) -> i32 {
+        self.center.center_id()
     }
 
     /// Are all values finite.
@@ -121,12 +97,55 @@ impl<T: InertialFrame> State<T> {
         self.pos.is_finite() & self.vel.is_finite() & self.epoch.jd.is_finite()
     }
 
+    /// Convert the state into a new frame, preserving the center type.
+    #[inline(always)]
+    pub fn into_frame<B: InertialFrame>(self) -> State<B, C> {
+        let pos = self.pos.into_frame::<B>();
+        let vel = self.vel.into_frame::<B>();
+        State {
+            desig: self.desig,
+            epoch: self.epoch,
+            pos,
+            vel,
+            center: self.center,
+        }
+    }
+}
+
+impl<T: InertialFrame> State<T, DynCenter> {
+    /// Construct a new State object with a runtime-determined center.
+    #[inline(always)]
+    pub fn new(
+        desig: Desig,
+        epoch: Time<TDB>,
+        pos: Vector<T>,
+        vel: Vector<T>,
+        center: impl Into<DynCenter>,
+    ) -> Self {
+        Self {
+            desig,
+            epoch,
+            pos,
+            vel,
+            center: center.into(),
+        }
+    }
+
+    /// Construct a new state made of NAN pos and vel vectors.
+    ///
+    /// This is primarily useful as a place holder when propagation has failed
+    /// and the object needs to be recorded still.
+    #[inline(always)]
+    pub fn new_nan(desig: Desig, epoch: Time<TDB>, center: impl Into<DynCenter>) -> Self {
+        Self::new(desig, epoch, Vector::new_nan(), Vector::new_nan(), center)
+    }
+
     /// Trade the center ID and ID values, and flip the direction of the position and
     /// velocity vectors.
     #[inline(always)]
     pub(crate) fn try_flip_center_id(&mut self) -> KeteResult<()> {
         if let Desig::Naif(mut id) = self.desig {
-            std::mem::swap(&mut id, &mut self.center_id);
+            std::mem::swap(&mut id, &mut self.center.0);
             self.pos = -self.pos;
             self.vel = -self.vel;
             self.desig = Desig::Naif(id);
@@ -139,6 +158,7 @@ impl<T: InertialFrame> State<T> {
 
     /// Mutate the current state and change its center to the center defined in the
     /// provided state.
+    ///
     /// For example if the current states center id is 2 (Venus), and a state is
     /// provided which represents 2 (Venus) with its center defined as 10 (Sun), then
     /// this changes the current states center to be 10 (the Sun).
@@ -155,7 +175,6 @@ impl<T: InertialFrame> State<T> {
     /// - Other state is not at the same instant in time (epoch).
     /// - [`Desig`] is not a Naif ID.
     /// - Center id of the state does not match the ID in the other state.
-    ///
     #[inline(always)]
     pub fn try_change_center(&mut self, mut state: Self) -> KeteResult<()> {
         if self.epoch != state.epoch {
@@ -171,36 +190,117 @@ impl<T: InertialFrame> State<T> {
         };
 
         // target state does not match at all, error
-        if self.center_id != state.center_id && self.center_id != state_id {
+        if self.center.0 != state.center.0 && self.center.0 != state_id {
             return Err(Error::ValueError(
                 "States do not reference one another at all, cannot change center.".into(),
             ));
         }
 
         // Flip center ID if necessary for the state
-        if self.center_id == state.center_id {
+        if self.center.0 == state.center.0 {
             state.try_flip_center_id()?;
         }
 
         // Now the state is where it is supposed to be, update as required.
-        self.center_id = state.center_id;
+        self.center = DynCenter(state.center.0);
         self.pos += &state.pos;
         self.vel += &state.vel;
         Ok(())
     }
+}
 
-    /// Convert the state into a new frame.
-    #[inline(always)]
-    pub fn into_frame<B: InertialFrame>(self) -> State<B> {
-        let pos = self.pos.into_frame::<B>();
-        let vel = self.vel.into_frame::<B>();
+impl<T: InertialFrame> TryFrom<State<T, DynCenter>> for State<T, SSB> {
+    type Error = Error;
 
-        State {
-            desig: self.desig,
-            epoch: self.epoch,
-            pos,
-            vel,
-            center_id: self.center_id,
+    fn try_from(s: State<T, DynCenter>) -> KeteResult<Self> {
+        if s.center.0 != 0 {
+            return Err(Error::ValueError(format!(
+                "Expected SSB-centered state (center_id=0), got center_id={}",
+                s.center.0
+            )));
+        }
+        Ok(Self {
+            desig: s.desig,
+            epoch: s.epoch,
+            pos: s.pos,
+            vel: s.vel,
+            center: SSB,
+        })
+    }
+}
+
+impl<T: InertialFrame> TryFrom<State<T, DynCenter>> for State<T, SunCenter> {
+    type Error = Error;
+
+    fn try_from(s: State<T, DynCenter>) -> KeteResult<Self> {
+        if s.center.0 != 10 {
+            return Err(Error::ValueError(format!(
+                "Expected Sun-centered state (center_id=10), got center_id={}",
+                s.center.0
+            )));
+        }
+        Ok(Self {
+            desig: s.desig,
+            epoch: s.epoch,
+            pos: s.pos,
+            vel: s.vel,
+            center: SunCenter,
+        })
+    }
+}
+
+impl<T: InertialFrame> TryFrom<State<T, DynCenter>> for State<T, EarthCenter> {
+    type Error = Error;
+
+    fn try_from(s: State<T, DynCenter>) -> KeteResult<Self> {
+        if s.center.0 != 399 {
+            return Err(Error::ValueError(format!(
+                "Expected Earth-centered state (center_id=399), got center_id={}",
+                s.center.0
+            )));
+        }
+        Ok(Self {
+            desig: s.desig,
+            epoch: s.epoch,
+            pos: s.pos,
+            vel: s.vel,
+            center: EarthCenter,
+        })
+    }
+}
+
+impl<T: InertialFrame> From<State<T, SSB>> for State<T, DynCenter> {
+    fn from(s: State<T, SSB>) -> Self {
+        Self {
+            desig: s.desig,
+            epoch: s.epoch,
+            pos: s.pos,
+            vel: s.vel,
+            center: DynCenter(0),
+        }
+    }
+}
+
+impl<T: InertialFrame> From<State<T, SunCenter>> for State<T, DynCenter> {
+    fn from(s: State<T, SunCenter>) -> Self {
+        Self {
+            desig: s.desig,
+            epoch: s.epoch,
+            pos: s.pos,
+            vel: s.vel,
+            center: DynCenter(10),
+        }
+    }
+}
+
+impl<T: InertialFrame> From<State<T, EarthCenter>> for State<T, DynCenter> {
+    fn from(s: State<T, EarthCenter>) -> Self {
+        Self {
+            desig: s.desig,
+            epoch: s.epoch,
+            pos: s.pos,
+            vel: s.vel,
+            center: DynCenter(399),
         }
     }
 }
@@ -225,7 +325,7 @@ mod tests {
 
         let pos: [f64; 3] = a.pos.into();
         let vel: [f64; 3] = a.vel.into();
-        assert!(a.center_id == 1);
+        assert!(a.center_id() == 1);
         assert!(pos == [-1.0, 0.0, 0.0]);
         assert!(vel == [0.0, -1.0, 0.0]);
     }
@@ -246,6 +346,32 @@ mod tests {
     }
 
     #[test]
+    fn ssb_round_trip() {
+        let dyn_state = State::<Equatorial>::new(
+            Desig::Naif(1),
+            0.0.into(),
+            [1.0, 2.0, 3.0].into(),
+            [0.1, 0.2, 0.3].into(),
+            0,
+        );
+        let ssb: State<Equatorial, SSB> = dyn_state.clone().try_into().unwrap();
+        let back: State<Equatorial, DynCenter> = ssb.into();
+        assert_eq!(dyn_state, back);
+    }
+
+    #[test]
+    fn ssb_try_from_wrong_center() {
+        let bad = State::<Equatorial>::new(
+            Desig::Naif(1),
+            0.0.into(),
+            [1.0, 0.0, 0.0].into(),
+            [0.0, 1.0, 0.0].into(),
+            10, // not SSB
+        );
+        assert!(State::<Equatorial, SSB>::try_from(bad).is_err());
+    }
+
+    #[test]
     fn change_center() {
         let mut a = State::<Ecliptic>::new(
             Desig::Naif(1),
@@ -263,7 +389,7 @@ mod tests {
         );
         a.try_change_center(b.into_frame()).unwrap();
 
-        assert!(a.center_id == 3);
+        assert!(a.center_id() == 3);
         assert!(a.pos[0] == 1.0);
         assert!(a.pos[1] != 0.0);
         assert!(a.pos[2] != 0.0);

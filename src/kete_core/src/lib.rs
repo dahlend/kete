@@ -94,7 +94,10 @@ pub mod prelude {
     pub use crate::elements::CometElements;
     pub use crate::errors::{Error, KeteResult};
     pub use crate::forces::NonGravModel;
-    pub use crate::frames::{Ecliptic, Equatorial, FK4, Galactic, InertialFrame, NonInertialFrame};
+    pub use crate::frames::{
+        CenterBody, DynCenter, EarthCenter, Ecliptic, Equatorial, FK4, Galactic, InertialFrame,
+        NonInertialFrame, SSB, SunCenter,
+    };
     pub use crate::kepler::propagate_two_body;
     pub use crate::simult_states::SimultaneousStates;
     pub use crate::state::State;

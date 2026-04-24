@@ -114,7 +114,7 @@ fn gm_for_center(center_id: i32) -> KeteResult<f64> {
 /// Returns an error if the center body's GM is unknown.
 ///
 pub fn specific_energy<T: InertialFrame>(state: &State<T>) -> KeteResult<f64> {
-    let gm = gm_for_center(state.center_id)?;
+    let gm = gm_for_center(state.center_id())?;
     let r = state.pos.norm();
     let v2 = state.vel.norm_squared();
     Ok(0.5 * v2 - gm / r)
@@ -208,7 +208,7 @@ impl BPlane {
 /// # Errors
 /// Returns an error if the orbit is bound (energy < 0).
 pub fn compute_b_plane<T: InertialFrame>(state: &State<T>) -> KeteResult<BPlane> {
-    let gm = gm_for_center(state.center_id)?;
+    let gm = gm_for_center(state.center_id())?;
     let pos: Vector3<f64> = state.pos.into();
     let vel: Vector3<f64> = state.vel.into();
     let r = pos.norm();

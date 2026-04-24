@@ -29,7 +29,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use kete_core::forces::{GravParams, NonGravModel};
-use kete_core::frames::Equatorial;
+use kete_core::frames::{Equatorial, SSB};
 use kete_core::integrators::RadauIntegrator;
 use kete_core::prelude::{KeteResult, State};
 use kete_core::time::{TDB, Time};
@@ -42,9 +42,9 @@ use nalgebra::{DMatrix, Matrix3, SVector, Vector3};
 /// Compute the state transition matrix and optional parameter sensitivities using the
 /// Radau 15th-order integrator with full N-body physics.
 ///
-/// The input state **must** be centered on the solar system barycenter (SSB,
-/// `center_id == 0`).  The returned state is also SSB-centered.  Callers that
-/// work in a different center must convert before calling and convert back after.
+/// The input state must be typed as `State<Equatorial, SSB>`, enforcing at compile
+/// time that the center is the solar system barycenter.  The returned state is also
+/// SSB-centered.
 ///
 /// When `include_asteroids` is `true`, the force model includes asteroid
 /// masses from [`GravParams::selected_masses()`]; otherwise only the
@@ -60,21 +60,14 @@ use nalgebra::{DMatrix, Matrix3, SVector, Vector3};
 /// ```
 ///
 /// # Errors
-/// Returns an error if `state.center_id != 0`, or if SPK queries fail or
-/// integration does not converge.
+/// Returns an error if SPK queries fail or integration does not converge.
 pub fn compute_state_transition(
-    state: &State<Equatorial>,
+    state: &State<Equatorial, SSB>,
     jd: Time<TDB>,
     include_asteroids: bool,
     non_grav_model: Option<NonGravModel>,
-) -> KeteResult<(State<Equatorial>, DMatrix<f64>)> {
+) -> KeteResult<(State<Equatorial, SSB>, DMatrix<f64>)> {
     let np = n_params(non_grav_model.as_ref());
-
-    if state.center_id != 0 {
-        return Err(kete_core::errors::Error::ValueError(
-            "compute_state_transition requires an SSB-centered state (center_id == 0)".into(),
-        ));
-    }
 
     // Build initial augmented state (30-dim, unused elements stay zero)
     let mut pos_aug = SVector::<f64, 30>::zeros();
@@ -121,14 +114,13 @@ pub fn compute_state_transition(
         Some(3),
     )?;
 
-    let final_state = State::new(
-        state.desig.clone(),
-        jd,
-        [pos_f[0], pos_f[1], pos_f[2]].into(),
-        [vel_f[0], vel_f[1], vel_f[2]].into(),
-        // SSB-centered
-        0,
-    );
+    let final_state = State {
+        desig: state.desig.clone(),
+        epoch: jd,
+        pos: [pos_f[0], pos_f[1], pos_f[2]].into(),
+        vel: [vel_f[0], vel_f[1], vel_f[2]].into(),
+        center: SSB,
+    };
 
     // Build the 6x(6+N) sensitivity matrix
     let ncols = 6 + np;

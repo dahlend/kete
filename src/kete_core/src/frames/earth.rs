@@ -95,7 +95,7 @@ pub fn geocentric_radius(geodetic_lat: f64) -> f64 {
 pub fn ecef_to_geodetic_lat_lon(x: f64, y: f64, z: f64) -> (f64, f64, f64) {
     let longitude = f64::atan2(y, x);
     let p = (x * x + y * y).sqrt();
-    let geocen_lat = f64::atan2(p, z);
+    let geocen_lat = f64::atan2(z, p);
 
     // initial guess, and iterate.
     let mut geodetic_lat = geocen_lat;
@@ -137,6 +137,24 @@ pub fn geodetic_lat_lon_to_ecef(geodetic_lat: f64, geodetic_lon: f64, height: f6
     let y = (n + height) * cos_gd_lat * sin_gd_lon;
     let z = ((1.0 - EARTH_E2) * n + height) * sin_gd_lat;
     [x, y, z]
+}
+
+/// Compute MPC parallax constants (rho*cos(phi'), rho*sin(phi')) from geodetic coordinates.
+///
+/// phi' is the geocentric latitude and rho is the distance from Earth's center, both expressed
+/// in units of Earth's equatorial radius. These constants, combined with a longitude, specify
+/// the 3D position of an observatory.
+///
+/// # Arguments
+/// * `geodetic_lat` - Geodetic latitude in radians.
+/// * `height` - Height above the WGS84 ellipsoid in km.
+#[must_use]
+pub fn geodetic_to_parallax(geodetic_lat: f64, height: f64) -> (f64, f64) {
+    let n = prime_vert_radius(geodetic_lat);
+    let (sin_gd_lat, cos_gd_lat) = geodetic_lat.sin_cos();
+    let rho_cos = (n + height) * cos_gd_lat / EARTH_A;
+    let rho_sin = ((1.0 - EARTH_E2) * n + height) * sin_gd_lat / EARTH_A;
+    (rho_cos, rho_sin)
 }
 
 /// Compute the angle of obliquity of Earth in radians.

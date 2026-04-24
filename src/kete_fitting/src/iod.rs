@@ -217,11 +217,15 @@ pub fn initial_orbit_determination(
 
     // Propagate to common epoch, discarding candidates that fail.
     let mut propagated: Vec<(f64, State<Equatorial>)> = Vec::with_capacity(results.len());
+    let spk = kete_spice::prelude::LOADED_SPK.try_read().ok();
     for (score, state) in results {
         if (state.epoch.jd - ref_epoch.jd).abs() < 1e-12 {
             propagated.push((score, state));
-        } else if let Ok(prop) = propagate_two_body(&state, ref_epoch) {
-            propagated.push((score, prop));
+        } else if let Some(ref spk) = spk
+            && let Ok(sun_state) = spk.try_to_sun(state.clone())
+            && let Ok(prop) = propagate_two_body(&sun_state, ref_epoch)
+        {
+            propagated.push((score, prop.into()));
         }
     }
 
@@ -935,10 +939,7 @@ fn observation_residual(state: &State<Equatorial>, obs: &[AstrometricObservation
 
     // Convert to Sun-centered for two-body propagation and light-time correction.
     let spk = kete_spice::prelude::LOADED_SPK.try_read().ok()?;
-    let mut sun_state = state.clone();
-    if sun_state.center_id != 10 {
-        spk.try_change_center(&mut sun_state, 10).ok()?;
-    }
+    let sun_state = spk.try_to_sun(state.clone()).ok()?;
 
     for ob in obs {
         let Ok((ra_obs, dec_obs, obs_state)) = ob.as_optical() else {
@@ -947,12 +948,9 @@ fn observation_residual(state: &State<Equatorial>, obs: &[AstrometricObservation
         let Ok(predicted) = propagate_two_body(&sun_state, obs_state.epoch) else {
             continue;
         };
-        let mut obs_helio = obs_state.clone();
-        if obs_helio.center_id != 10 {
-            let Ok(()) = spk.try_change_center(&mut obs_helio, 10) else {
-                continue;
-            };
-        }
+        let Some(obs_helio) = spk.try_to_sun(obs_state.clone().into()).ok() else {
+            continue;
+        };
         let Ok(predicted) = light_time_correct(&predicted, &obs_helio.pos) else {
             continue;
         };
@@ -1016,10 +1014,7 @@ fn curvature_residual(state: &State<Equatorial>, obs: &[AstrometricObservation])
 
     // Propagate candidate and compute cross-track deviations.
     let spk = kete_spice::prelude::LOADED_SPK.try_read().ok()?;
-    let mut sun_state = state.clone();
-    if sun_state.center_id != 10 {
-        spk.try_change_center(&mut sun_state, 10).ok()?;
-    }
+    let sun_state = spk.try_to_sun(state.clone()).ok()?;
 
     let mut residuals: Vec<f64> = Vec::new();
 
@@ -1035,10 +1030,9 @@ fn curvature_residual(state: &State<Equatorial>, obs: &[AstrometricObservation])
         let Ok(predicted) = propagate_two_body(&sun_state, obs_state.epoch) else {
             continue;
         };
-        let mut obs_helio = obs_state.clone();
-        if obs_helio.center_id != 10 && spk.try_change_center(&mut obs_helio, 10).is_err() {
+        let Some(obs_helio) = spk.try_to_sun(obs_state.clone().into()).ok() else {
             continue;
-        }
+        };
         let Ok(predicted) = light_time_correct(&predicted, &obs_helio.pos) else {
             continue;
         };
@@ -1144,14 +1138,21 @@ mod tests {
     use super::*;
     use kete_core::constants::GMS;
     use kete_core::desigs::Desig;
+    use kete_core::frames::{SSB, SunCenter};
     use kete_core::kepler::{light_time_correct, propagate_two_body};
     use kete_core::time::{TDB, Time};
     use kete_spice::prelude::{LOADED_SPK, propagate_n_body_spk};
 
     use kete_spice::test_data::ensure_test_spk;
 
-    fn make_state(pos: [f64; 3], vel: [f64; 3], jd: f64) -> State<Equatorial> {
-        State::new(Desig::Empty, jd.into(), pos.into(), vel.into(), 0)
+    fn make_state(pos: [f64; 3], vel: [f64; 3], jd: f64) -> State<Equatorial, SunCenter> {
+        State {
+            desig: Desig::Empty,
+            epoch: jd.into(),
+            pos: pos.into(),
+            vel: vel.into(),
+            center: SunCenter,
+        }
     }
 
     struct Rng(u64);
@@ -1179,7 +1180,7 @@ mod tests {
 
     /// Synthesize observations with an ecliptic-plane observer.
     fn synth_optical_ecliptic(
-        obj: &State<Equatorial>,
+        obj: &State<Equatorial, SunCenter>,
         epochs: &[f64],
         noise_arcsec: f64,
         seed: u64,
@@ -1201,8 +1202,16 @@ mod tests {
             .map(|&jd| {
                 let obj_at = propagate_two_body(obj, Time::<TDB>::new(jd))
                     .expect("two-body propagation failed");
-                let observer = propagate_two_body(&earth_ref, Time::<TDB>::new(jd))
+                let observer_sun = propagate_two_body(&earth_ref, Time::<TDB>::new(jd))
                     .expect("earth propagation failed");
+                // Convert to SSB (approximate: sun ~= ssb for test purposes)
+                let observer = State::<Equatorial, SSB> {
+                    desig: observer_sun.desig,
+                    epoch: observer_sun.epoch,
+                    pos: observer_sun.pos,
+                    vel: observer_sun.vel,
+                    center: SSB,
+                };
                 let d = obj_at.pos - observer.pos;
                 let (ra, dec) = d.to_ra_dec();
                 let ra_noisy = ra + rng.gaussian() * noise_rad / dec.cos().max(0.1);
@@ -1214,14 +1223,15 @@ mod tests {
                     dec: dec_noisy,
                     sigma_ra: sigma,
                     sigma_dec: sigma,
+                    time_sigma: 0.0,
                 }
             })
             .collect()
     }
 
-    fn best_candidate<'a>(
+    fn best_candidate<'a, C: kete_core::frames::CenterBody>(
         candidates: &'a [(f64, State<Equatorial>)],
-        truth: &State<Equatorial>,
+        truth: &State<Equatorial, C>,
     ) -> &'a State<Equatorial> {
         candidates
             .iter()
@@ -1548,20 +1558,29 @@ mod tests {
         let observations: Vec<AstrometricObservation> = epochs
             .iter()
             .map(|&jd| {
-                let obj_at = propagate_n_body_spk(obj.clone(), Time::<TDB>::new(jd), false, None)
-                    .expect("N-body propagation failed");
+                let obj_at = propagate_n_body_spk(
+                    spk.try_to_ssb(obj.clone().into()).expect("Center conversion failed"),
+                    Time::<TDB>::new(jd),
+                    false,
+                    None,
+                )
+                .expect("N-body propagation failed");
 
                 let observer: State<Equatorial> = spk
                     .try_get_state_with_center(399, Time::<TDB>::new(jd), 0)
                     .expect("Earth SPK lookup failed");
+                let observer_ssb: State<Equatorial, SSB> = observer
+                    .clone()
+                    .try_into()
+                    .expect("Earth state should be SSB-centered (center_id=0)");
 
-                let mut sun_at = obj_at.clone();
-                spk.try_change_center(&mut sun_at, 10)
+                let sun_at = spk
+                    .try_to_sun(obj_at.clone().into())
                     .expect("SPK center change failed");
                 let obs_helio = observer.pos - obj_at.pos + sun_at.pos;
-                let mut obj_lt =
+                let obj_lt_sun =
                     light_time_correct(&sun_at, &obs_helio).expect("light-time correction failed");
-                spk.try_change_center(&mut obj_lt, 0)
+                let obj_lt = spk.try_to_ssb(obj_lt_sun.into())
                     .expect("SPK center change failed");
 
                 let d = obj_lt.pos - observer.pos;
@@ -1570,11 +1589,12 @@ mod tests {
                 let dec_noisy = dec + rng.gaussian() * noise_rad;
 
                 AstrometricObservation::Optical {
-                    observer,
+                    observer: observer_ssb,
                     ra: ra_noisy,
                     dec: dec_noisy,
                     sigma_ra: noise_rad,
                     sigma_dec: noise_rad,
+                    time_sigma: 0.0,
                 }
             })
             .collect();
@@ -1590,7 +1610,12 @@ mod tests {
         let results = results.unwrap();
         assert!(!results.is_empty(), "Should find at least one candidate");
 
-        let obj_at = propagate_n_body_spk(obj.clone(), results[0].1.epoch, false, None).unwrap();
+        let obj_at = {
+            let spk = LOADED_SPK.try_read().unwrap();
+            let obj_ssb = spk.try_to_ssb(obj.clone().into()).unwrap();
+            drop(spk);
+            propagate_n_body_spk(obj_ssb, results[0].1.epoch, false, None).unwrap()
+        };
         let best = best_candidate(&results, &obj_at);
         let pos_err = (best.pos - obj_at.pos).norm();
         let r_true = obj_at.pos.norm();
@@ -1824,13 +1849,21 @@ mod tests {
     /// Uses a fixed position and direction — only the epoch matters for
     /// apparition grouping tests.
     fn dummy_obs(jd: f64) -> AstrometricObservation {
-        let observer = make_state([1.0, 0.0, 0.0], [0.0, 0.01, 0.0], jd);
+        let s = make_state([1.0, 0.0, 0.0], [0.0, 0.01, 0.0], jd);
+        let observer = State::<Equatorial, SSB> {
+            desig: s.desig,
+            epoch: s.epoch,
+            pos: s.pos,
+            vel: s.vel,
+            center: SSB,
+        };
         AstrometricObservation::Optical {
             observer,
             ra: 0.0,
             dec: 0.0,
             sigma_ra: 1e-5,
             sigma_dec: 1e-5,
+            time_sigma: 0.0,
         }
     }
 
