@@ -164,7 +164,11 @@ impl AstrometricObservation {
     /// When `time_sigma == 0` the result is `diag(weights())`.
     /// For radar observations, `motion_ra` and `motion_dec` are ignored.
     #[must_use]
-    pub fn weight_matrix(&self, motion_ra_rad_per_day: f64, motion_dec_rad_per_day: f64) -> nalgebra::DMatrix<f64> {
+    pub fn weight_matrix(
+        &self,
+        motion_ra_rad_per_day: f64,
+        motion_dec_rad_per_day: f64,
+    ) -> nalgebra::DMatrix<f64> {
         match self {
             Self::Optical {
                 sigma_ra,
@@ -175,28 +179,40 @@ impl AstrometricObservation {
                 let w_ra = 1.0 / (sigma_ra * sigma_ra);
                 let w_dec = 1.0 / (sigma_dec * sigma_dec);
                 if *time_sigma == 0.0 {
-                    return nalgebra::DMatrix::from_diagonal(&DVector::from_column_slice(&[w_ra, w_dec]));
+                    return nalgebra::DMatrix::from_diagonal(&DVector::from_column_slice(&[
+                        w_ra, w_dec,
+                    ]));
                 }
                 // Timing displacement vector u = time_sigma_days * motion.
                 let t_days = time_sigma / 86_400.0;
-                let u_ra  = t_days * motion_ra_rad_per_day;
+                let u_ra = t_days * motion_ra_rad_per_day;
                 let u_dec = t_days * motion_dec_rad_per_day;
                 // Wu = W * u (diagonal case).
-                let wu_ra  = w_ra  * u_ra;
+                let wu_ra = w_ra * u_ra;
                 let wu_dec = w_dec * u_dec;
                 // Denominator 1 + u^T W u is always >= 1.
                 let denom = 1.0 + u_ra * wu_ra + u_dec * wu_dec;
-                nalgebra::DMatrix::from_row_slice(2, 2, &[
-                    w_ra  - wu_ra  * wu_ra  / denom, -wu_ra  * wu_dec / denom,
-                   -wu_ra * wu_dec / denom,           w_dec - wu_dec * wu_dec / denom,
-                ])
+                nalgebra::DMatrix::from_row_slice(
+                    2,
+                    2,
+                    &[
+                        w_ra - wu_ra * wu_ra / denom,
+                        -wu_ra * wu_dec / denom,
+                        -wu_ra * wu_dec / denom,
+                        w_dec - wu_dec * wu_dec / denom,
+                    ],
+                )
             }
             Self::RadarRange { sigma_range, .. } => {
                 nalgebra::DMatrix::from_column_slice(1, 1, &[1.0 / (sigma_range * sigma_range)])
             }
-            Self::RadarRate { sigma_range_rate, .. } => {
-                nalgebra::DMatrix::from_column_slice(1, 1, &[1.0 / (sigma_range_rate * sigma_range_rate)])
-            }
+            Self::RadarRate {
+                sigma_range_rate, ..
+            } => nalgebra::DMatrix::from_column_slice(
+                1,
+                1,
+                &[1.0 / (sigma_range_rate * sigma_range_rate)],
+            ),
         }
     }
 }
@@ -303,7 +319,10 @@ impl AstrometricObservation {
 ///
 /// Velocity partials are zero (RA/Dec do not depend on velocity at the
 /// instant of observation, neglecting light-time rate corrections).
-fn optical_partials_pos(obj: &State<Equatorial, SSB>, obs: &State<Equatorial, SSB>) -> Matrix2x3<f64> {
+fn optical_partials_pos(
+    obj: &State<Equatorial, SSB>,
+    obs: &State<Equatorial, SSB>,
+) -> Matrix2x3<f64> {
     let d = obj.pos - obs.pos;
     let dx = d[0];
     let dy = d[1];
@@ -334,7 +353,10 @@ fn optical_partials_pos(obj: &State<Equatorial, SSB>, obs: &State<Equatorial, SS
 /// Radar range partials: d(range)/d(pos) as a 3x1 column vector.
 ///
 /// Uses the round-trip average `(incoming + outgoing) / 2`.
-fn range_partials_pos(obj: &State<Equatorial, SSB>, obs: &State<Equatorial, SSB>) -> Matrix3x1<f64> {
+fn range_partials_pos(
+    obj: &State<Equatorial, SSB>,
+    obs: &State<Equatorial, SSB>,
+) -> Matrix3x1<f64> {
     let d_rx = obj.pos - obs.pos;
     let incoming = d_rx.norm();
     let obs_tx_pos = obs.pos - obs.vel * (2.0 * incoming * C_AU_PER_DAY_INV);
@@ -364,7 +386,10 @@ fn range_partials_pos(obj: &State<Equatorial, SSB>, obs: &State<Equatorial, SSB>
 /// where `beta_tx = 2/c * [(d_vel . v_obs) - rr_tx * (unit_tx . v_obs)] / range_tx`.
 ///
 /// The velocity partial is `(d_hat_rx + d_hat_tx) / 2` (no indirect term).
-fn range_rate_partials(obj: &State<Equatorial, SSB>, obs: &State<Equatorial, SSB>) -> RowVector6<f64> {
+fn range_rate_partials(
+    obj: &State<Equatorial, SSB>,
+    obs: &State<Equatorial, SSB>,
+) -> RowVector6<f64> {
     let d_pos_rx = obj.pos - obs.pos;
     let d_vel = obj.vel - obs.vel;
     let range = d_pos_rx.norm();
@@ -386,9 +411,8 @@ fn range_rate_partials(obj: &State<Equatorial, SSB>, obs: &State<Equatorial, SSB
     //               + beta_tx * unit_rx                        [indirect term]
     // beta_tx = 2/c * [(d_vel . v_obs) - rr_tx * (unit_tx . v_obs)] / range_tx
     let dr_tx_direct = (d_vel - d_hat_tx * rr_tx) * (1.0 / range_tx);
-    let beta_tx = 2.0 * C_AU_PER_DAY_INV
-        * (d_vel.dot(&obs.vel) - rr_tx * d_hat_tx.dot(&obs.vel))
-        / range_tx;
+    let beta_tx =
+        2.0 * C_AU_PER_DAY_INV * (d_vel.dot(&obs.vel) - rr_tx * d_hat_tx.dot(&obs.vel)) / range_tx;
     let dr = (dr_rx + dr_tx_direct + d_hat_rx * beta_tx) * 0.5;
 
     // d(rr)/d(v) = (d_hat_rx + d_hat_tx) / 2  (no indirect term)
@@ -446,7 +470,13 @@ mod tests {
 
     /// Helper: build a simple state at the given position/velocity.
     fn make_state(pos: [f64; 3], vel: [f64; 3], jd: f64) -> State<Equatorial, SSB> {
-        State { desig: Desig::Empty, epoch: jd.into(), pos: pos.into(), vel: vel.into(), center: SSB }
+        State {
+            desig: Desig::Empty,
+            epoch: jd.into(),
+            pos: pos.into(),
+            vel: vel.into(),
+            center: SSB,
+        }
     }
 
     /// Finite-difference helper: perturb component `idx` of the object state
@@ -500,8 +530,7 @@ mod tests {
                 // Two-way Doppler: average of rx and tx path range rates.
                 let d_pos_rx = obj.pos - observer.pos;
                 let range = d_pos_rx.norm();
-                let obs_tx_pos =
-                    observer.pos - observer.vel * (2.0 * range * C_AU_PER_DAY_INV);
+                let obs_tx_pos = observer.pos - observer.vel * (2.0 * range * C_AU_PER_DAY_INV);
                 let d_pos_tx = obj.pos - obs_tx_pos;
                 let v_rel = obj.vel - observer.vel;
                 let rr_rx = d_pos_rx.dot(&v_rel) / range;

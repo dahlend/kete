@@ -352,36 +352,28 @@ fn solve_with_rejection(
             include_asteroids,
             fit.uncertain_state.non_grav.as_ref(),
         )?;
-        // CMC leverage requires the unscaled Fisher inverse C_0 = (H^T W H)^+.
-        // The stored cov_matrix has been scaled by max(rms^2, 1) for correct
-        // formal sigmas, so we reverse that here.  The hat-matrix trace
-        // trace(H C_0 H^T W) must lie in [0, m] (hat-matrix eigenvalue
-        // property); using the scaled matrix would inflate it by rms^2,
-        // pushing the denominator (m - leverage) negative for most
-        // observations.
-        let rms_sq = fit.rms.powi(2).max(1.0);
-        let cov_fisher = &fit.uncertain_state.cov_matrix / rms_sq;
+        // CMC leverage uses the Fisher inverse C_0 = (H^T W H)^+, which is
+        // stored directly in cov_matrix (no chi-square scaling applied).
+        let cov_fisher = &fit.uncertain_state.cov_matrix;
 
         let mut z_scores: Vec<f64> = Vec::with_capacity(sweep.len());
         for entry in &sweep {
             let m = entry.weight_matrix.nrows();
             // Parameter-space design block: H_i = h_local * phi_cum (m x d).
             let h_full: DMatrix<f64> = &entry.h_local * &entry.phi_cum;
-            let hch: DMatrix<f64> = &h_full * &cov_fisher * h_full.transpose();
+            let hch: DMatrix<f64> = &h_full * cov_fisher * h_full.transpose();
             // leverage = tr(H C_0 H^T W)  (full matrix trace for non-diagonal W).
             let leverage: f64 = (&hch * &entry.weight_matrix).trace();
             // chi2 = r^T W r  (full weight matrix, includes timing correction).
             let wr = &entry.weight_matrix * &entry.residual;
             let chi2: f64 = entry.residual.dot(&wr);
             let expected = (m as f64 - leverage).max(0.5);
-            // Normalize by rms_sq so that a typical well-fitting observation
-            // has z ≈ 1 regardless of weight calibration.  Without this,
-            // chi2 is inflated by rms^2 (since weights underestimate the
-            // true noise), so z ≈ rms^2 for all good observations and the
-            // threshold chi2_threshold (calibrated for rms ≈ 1) rejects the
-            // majority of the arc.  CMC 2003 assumes unit-weight RMS; this
-            // normalization extends the formula to miscalibrated weights.
-            z_scores.push(chi2 / expected / rms_sq);
+            // z = chi2 / (m - leverage): reject when the weighted squared
+            // residual exceeds chi2_threshold times the leverage-corrected
+            // expected value.  With calibrated weights this is equivalent to
+            // an absolute sigma threshold: threshold 4.5 rejects at ~3-sigma
+            // per component for a 2-component optical observation.
+            z_scores.push(chi2 / expected);
         }
 
         // Apply hysteresis to build the new included mask.
@@ -690,16 +682,12 @@ fn iterate_to_convergence(
 
                     let n_params = 6 + non_grav.as_ref().map_or(0, NonGravModel::n_free_params);
                     let rms = weighted_rms(&residuals, obs, included, n_params);
-                    // Scale formal covariance by max(rms^2, 1.0).  When
-                    // observation weights are perfectly calibrated rms ~ 1
-                    // and this is a no-op.  When the unit-weight assumption
-                    // is violated (typical without catalog debiasing, rms
-                    // often 2-5) the unscaled Fisher inverse underestimates
-                    // formal sigmas by a factor of rms, which is the unsafe
-                    // direction for hazard assessment.  Flooring at 1
-                    // prevents deflating well-constrained covariances.
-                    // (Danby 1988 §7.5.21; matches OrbFit / Find_Orb.)
-                    let covariance = raw_cov * rms.powi(2).max(1.0);
+                    // Use the raw Fisher inverse (H^T W H)^{-1} as the
+                    // formal covariance.  This matches JPL's orbit
+                    // determination convention, which trusts calibrated
+                    // per-observation weights rather than rescaling by
+                    // the unit-weight RMS.
+                    let covariance = raw_cov;
                     let uncertain_state =
                         UncertainState::new(state_epoch.into(), covariance, non_grav)?;
                     return Ok(OrbitFit {
@@ -762,7 +750,7 @@ fn make_non_converged_result(
                     .unwrap_or_else(|_| DMatrix::zeros(n_params, n_params));
                 let res = compute_residuals(state, obs, include_asteroids, non_grav.as_ref())?;
                 let r = weighted_rms(&res, obs, included, n_params);
-                Ok((cov * r.powi(2).max(1.0), res, r))
+                Ok((cov, res, r))
             })
             .unwrap_or_else(|_: Error| {
                 let nan_res = obs

@@ -49,7 +49,7 @@ pub use horizons::HorizonsProperties;
 pub use iod::initial_orbit_determination;
 pub use lambert::lambert;
 pub use mcmc::{OrbitSamples, fit_orbit_mcmc};
-pub use mpc::{ObsResiduals, get_obs_residuals};
+pub use mpc::{ObservatoryStats, get_observatory_stats};
 pub use obs::AstrometricObservation;
 pub use orbit_fitting::{OrbitFit, fit_orbit};
 pub use uncertain_state::UncertainState;

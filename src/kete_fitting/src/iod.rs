@@ -1559,7 +1559,8 @@ mod tests {
             .iter()
             .map(|&jd| {
                 let obj_at = propagate_n_body_spk(
-                    spk.try_to_ssb(obj.clone().into()).expect("Center conversion failed"),
+                    spk.try_to_ssb(obj.clone().into())
+                        .expect("Center conversion failed"),
                     Time::<TDB>::new(jd),
                     false,
                     None,
@@ -1580,7 +1581,8 @@ mod tests {
                 let obs_helio = observer.pos - obj_at.pos + sun_at.pos;
                 let obj_lt_sun =
                     light_time_correct(&sun_at, &obs_helio).expect("light-time correction failed");
-                let obj_lt = spk.try_to_ssb(obj_lt_sun.into())
+                let obj_lt = spk
+                    .try_to_ssb(obj_lt_sun.into())
                     .expect("SPK center change failed");
 
                 let d = obj_lt.pos - observer.pos;

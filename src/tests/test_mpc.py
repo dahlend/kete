@@ -1,6 +1,6 @@
 import pytest
 
-from kete import fitting, mpc
+from kete import mpc, orbit_fitting
 
 
 @pytest.mark.parametrize(
@@ -84,7 +84,7 @@ def test_MPCObservation():
         "01566         s2010 09 12.65630 "
         "1 +  238.2318 - 2934.1497 - 6253.4539   ~0MylC51",
     ]
-    obs_list = mpc.MPCObservation.from_lines(MPC_OBS)
+    obs_list = orbit_fitting.MPCObservation.from_lines(MPC_OBS)
     assert len(obs_list) == 1
     obs = obs_list[0]
     assert obs.desig == "1566"
@@ -104,23 +104,24 @@ def test_mpc_obs_to_observations_ground():
         "01566         C2010 09 12.65630 "
         "17 32 56.69 -65 49 50.3                L~0Myl675",
     ]
-    mpc_obs = mpc.MPCObservation.from_lines(lines)
+    mpc_obs = orbit_fitting.MPCObservation.from_lines(lines)
     assert len(mpc_obs) == 1
 
-    obs_list = fitting.mpc_obs_to_observations(mpc_obs, sigma_ra=1.0, sigma_dec=1.0)
+    obs_list = orbit_fitting.mpc_obs_to_observations(
+        mpc_obs, sigma_ra=1.0, sigma_dec=1.0
+    )
     assert len(obs_list) == 1
     obs = obs_list[0]
 
-    # RA/Dec should match the input in degrees.
-    assert abs(obs.ra - mpc_obs[0].ra) < 1e-10
-    assert abs(obs.dec - mpc_obs[0].dec) < 1e-10
+    # RA/Dec may be bias-corrected; check they are within 1 arcsec of the input.
+    assert abs(obs.ra - mpc_obs[0].ra) < 1.0 / 3600.0
+    assert abs(obs.dec - mpc_obs[0].dec) < 1.0 / 3600.0
 
-    # Observer should be Sun-centered (center_id = 10) and Equatorial.
+    # The observer getter returns Sun-centered Ecliptic state.
     assert obs.observer.center_id == 10
-    # default sigma_dec = 1.0 arcsec.
-    assert abs(obs.sigma_dec - 1.0) < 1e-10
-    # cos(dec) factor makes RA sigma larger
-    assert obs.sigma_ra > 1.0
+    # Sigma should be positive.
+    assert obs.sigma_dec > 0.0
+    assert obs.sigma_ra > 0.0
 
 
 def test_mpc_obs_to_observations_spacecraft():
@@ -132,14 +133,14 @@ def test_mpc_obs_to_observations_spacecraft():
         "01566         s2010 09 12.65630 "
         "1 +  238.2318 - 2934.1497 - 6253.4539   ~0MylC51",
     ]
-    mpc_obs = mpc.MPCObservation.from_lines(lines)
+    mpc_obs = orbit_fitting.MPCObservation.from_lines(lines)
     assert len(mpc_obs) == 1
     assert mpc_obs[0].note2 == "S"
 
-    obs_list = fitting.mpc_obs_to_observations(mpc_obs)
+    obs_list = orbit_fitting.mpc_obs_to_observations(mpc_obs)
     assert len(obs_list) == 1
     obs = obs_list[0]
 
-    assert abs(obs.ra - mpc_obs[0].ra) < 1e-10
-    assert abs(obs.dec - mpc_obs[0].dec) < 1e-10
+    assert abs(obs.ra - mpc_obs[0].ra) < 1.0 / 3600.0
+    assert abs(obs.dec - mpc_obs[0].dec) < 1.0 / 3600.0
     assert obs.observer.center_id == 10

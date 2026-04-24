@@ -85,7 +85,7 @@ impl PyObservation {
     ///     matrix.
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (observer, ra, dec, sigma_ra, sigma_dec, band="V".to_string(), mag=f64::NAN, time_sigma=0.5))]
+    #[pyo3(signature = (observer, ra, dec, sigma_ra, sigma_dec, band="V".to_string(), mag=f64::NAN, time_sigma=0.1))]
     fn optical(
         observer: PyState,
         ra: f64,
@@ -885,22 +885,23 @@ pub fn fit_orbit_mcmc_py(
     Ok(PyOrbitSamples(result))
 }
 
-/// Get per-observatory code residuals.
+/// If available, return the MPC observatory uncertainties.
+///
+/// These stds were computed by taking the JPL Horizons ephemeris for each of the
+/// first 20k numbered asteroids, and calculating the residual error for every submitted
+/// observation for each of these objects. These residuals were combined together by
+/// observatory code and basic statistics were computed.
+///
+/// The standard deviations were computed with the catalog debias applied.
+///
+/// This function returns the standard deviation of the RA and Dec
+/// residuals for the specified observatory code, if available.
 #[pyfunction]
 #[pyo3(
-    name = "_get_obs_residuals",
+    name = "_get_observatory_stats",
     signature = (code)
 )]
-pub fn get_obs_residuals_py(code: &str) -> Option<Vec<f32>> {
-    let resid = kete_fitting::get_obs_residuals(code)?;
-    Some(vec![
-        resid.ra_low,
-        resid.ra_med,
-        resid.ra_high,
-        resid.ra_std,
-        resid.dec_low,
-        resid.dec_med,
-        resid.dec_high,
-        resid.dec_std,
-    ])
+pub fn get_observatory_stats_py(code: &str) -> Option<Vec<f32>> {
+    let resid = kete_fitting::get_observatory_stats(code)?;
+    Some(vec![resid.ra_std, resid.dec_std])
 }

@@ -6,7 +6,7 @@ Observe Ceres 10 times over six months using SPICE ephemerides, then recover
 the orbit from scratch using initial orbit determination (IOD) and batch
 least-squares differential correction.
 
-This demonstrates the full workflow of the ``kete.fitting`` module:
+This demonstrates the full workflow of the ``kete.orbit_fitting`` module:
 
 1. Generate synthetic optical observations from an Earth-based observer.
 2. Run IOD to get a preliminary orbit.
@@ -50,7 +50,7 @@ for vis in visible:
     observer = vis.fov.observer.as_equatorial.change_center(0)
     ra, dec, _, _ = vis.ra_dec_with_rates[0]
 
-    obs = kete.fitting.Observation.optical(
+    obs = kete.orbit_fitting.Observation.optical(
         observer=observer,
         ra=ra,
         dec=dec,
@@ -69,7 +69,7 @@ for i, obs in enumerate(observations):
 # Initial Orbit Determination
 # ---------------------------
 
-candidates = kete.fitting.initial_orbit_determination(observations)
+candidates = kete.orbit_fitting.initial_orbit_determination(observations)
 print(f"\nIOD returned {len(candidates)} candidate(s)")
 
 # Candidates are (score, state) tuples sorted best-first.
@@ -85,7 +85,7 @@ print(
 # -----------------------
 # Refine the IOD solution using all 10 observations.
 
-fit = kete.fitting.fit_orbit(best, observations)
+fit = kete.orbit_fitting.fit_orbit(best, observations)
 print(f"\nFit converged: RMS = {fit.rms:.4e}")
 print(f"Fitted state epoch: JD {fit.state.jd:.6f}")
 

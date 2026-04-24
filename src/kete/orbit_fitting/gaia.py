@@ -12,25 +12,24 @@ import logging
 
 import numpy as np
 
-from .fitting import Observation
-from .tap import query_tap
-from .time import Time
-from .vector import Frames, State
+from .._core import Observation
+from ..tap import query_tap
+from ..time import Time
+from ..vector import Frames, State
 
 __all__ = ["fetch_gaia_observations"]
 
 logger = logging.getLogger(__name__)
 
-# Gaia DR3 sso_observation table identifier.
 _GAIA_TABLE = "gaiadr3.sso_observation"
 
 # The epoch column stores JD_TCB(Gaia) - J2010.0 in days.
 # J2010.0 = JD 2455197.5 (TCB).  Adding this offset converts to JD_TCB.
 _J2010_JD = 2455197.5
 
-# Columns retrieved from the table.
 _COLUMNS = (
     "epoch",
+    "epoch_err",
     "ra",
     "dec",
     "ra_error_random",
@@ -77,7 +76,7 @@ def fetch_gaia_observations(
     Parameters
     ----------
     desig :
-        Object identifier as recognised by Gaia DR3.  If the string parses
+        Object identifier as recognized by Gaia DR3.  If the string parses
         as an integer it is matched against the ``number_mp`` column
         (recommended for numbered minor planets); otherwise it is matched
         against the ``denomination`` column (e.g. ``"Apophis"``,
@@ -97,18 +96,15 @@ def fetch_gaia_observations(
 
         import kete
 
-        observations = kete.gaia.fetch_gaia_observations("Apophis")
+        observations = kete.observations.fetch_gaia_observations("Apophis")
         fit = kete.fitting.fit_orbit(initial_state, observations)
     """
     cols = ", ".join(_COLUMNS)
 
-    # Build the WHERE clause.  Use number_mp for numeric designations to
-    # avoid ambiguity with denomination strings.
     try:
         number_mp = int(desig.strip())
         where = f"number_mp = {number_mp}"
     except ValueError:
-        # Sanitize: escape any single-quotes in the name.
         safe_desig = desig.replace("'", "''")
         where = f"denomination = '{safe_desig}'"
 
@@ -121,7 +117,6 @@ def fetch_gaia_observations(
 
     observations = []
     for _, row in df.iterrows():
-        # Only keep transits with a clean astrometric solution.
         outcome = row.get("astrometric_outcome_transit")
         if outcome is None or int(outcome) != 1:
             continue
@@ -131,6 +126,8 @@ def fetch_gaia_observations(
             continue
         jd = Time(float(epoch) + _J2010_JD, scaling="tcb").jd
 
+        jd_err = row.get("epoch_err", 0.5 / 24 / 60 / 60) * 24 * 60 * 60
+
         ra = row.get("ra")
         dec = row.get("dec")
         if ra is None or dec is None:
@@ -138,28 +135,20 @@ def fetch_gaia_observations(
         ra = float(ra)
         dec = float(dec)
 
-        # Combine random and systematic errors in quadrature.
-        # The ra_error_* columns are in mas and already multiplied by
-        # cos(dec); dec_error_* columns are in mas (no cos factor).
         ra_rand = float(row.get("ra_error_random") or 0.0)
         ra_sys = float(row.get("ra_error_systematic") or 0.0)
         dec_rand = float(row.get("dec_error_random") or 0.0)
         dec_sys = float(row.get("dec_error_systematic") or 0.0)
 
-        # Total sky-projected RA uncertainty in arcseconds (includes cos(dec)).
         sigma_ra_sky = np.hypot(ra_rand, ra_sys) / 1000.0
         sigma_dec = np.hypot(dec_rand, dec_sys) / 1000.0
 
         if sigma_ra_sky <= 0.0 or sigma_dec <= 0.0:
             continue
 
-        # Observation.optical expects sigma_ra in arcseconds with the
-        # cos(dec) factor removed (i.e. uncertainty in the RA coordinate).
         cos_dec = np.cos(np.radians(dec))
         sigma_ra = sigma_ra_sky / max(cos_dec, 1e-6)
 
-        # Gaia position and velocity: barycentric ICRS (Equatorial J2000),
-        # SSB-centered, in AU and AU/day.
         try:
             x = float(row["x_gaia"])
             y = float(row["y_gaia"])
@@ -196,6 +185,7 @@ def fetch_gaia_observations(
                 sigma_dec=sigma_dec,
                 band="G",
                 mag=mag,
+                time_sigma=jd_err,
             )
         )
 
