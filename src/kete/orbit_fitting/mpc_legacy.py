@@ -201,7 +201,8 @@ def mpc_obs_to_observations(
     mpc_obs :
         List of ``MPCObservation`` objects (see :mod:`kete.observations`).
     sigma_ra :
-        Fallback 1-sigma RA uncertainty in arcseconds when no per-observatory
+        Fallback 1-sigma sky-plane RA uncertainty in arcseconds (sigma_ra * cos(dec))
+        when no per-observatory
         data is available.  Defaults to 1.
     sigma_dec :
         Fallback 1-sigma Dec uncertainty in arcseconds when no per-observatory
@@ -252,9 +253,13 @@ def mpc_obs_to_observations(
         ra = obs.ra
         dec = obs.dec
 
+        # Observation.optical expects sky-plane sigma_ra (sigma_ra * cos(dec)).
         obs_errors = get_observatory_std(obs.obs_code)
         if obs_errors is not None:
-            s_ra, s_dec = obs_errors
+            # Table ra_std is computed from raw RA coordinate residuals;
+            # multiply by cos(dec) to match the sky-plane input convention.
+            s_ra = obs_errors[0] * np.cos(np.radians(dec))
+            s_dec = obs_errors[1]
         else:
             s_ra = sigma_ra
             s_dec = sigma_dec
@@ -264,9 +269,6 @@ def mpc_obs_to_observations(
             if shift is not None:
                 ra -= shift[0] / 3600.0
                 dec -= shift[1] / 3600.0
-
-        cos_dec = np.cos(np.radians(dec))
-        s_ra = s_ra / max(cos_dec, 1e-6)
 
         if is_sc and not any(np.isnan(obs.sun2sc)):
             sun_pos = spice.get_state("Sun", obs.jd, center=0).pos

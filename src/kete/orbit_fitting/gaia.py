@@ -36,6 +36,8 @@ _COLUMNS = (
     "dec_error_random",
     "ra_error_systematic",
     "dec_error_systematic",
+    "ra_dec_correlation_random",
+    "ra_dec_correlation_systematic",
     "x_gaia",
     "y_gaia",
     "z_gaia",
@@ -139,15 +141,32 @@ def fetch_gaia_observations(
         ra_sys = float(row.get("ra_error_systematic") or 0.0)
         dec_rand = float(row.get("dec_error_random") or 0.0)
         dec_sys = float(row.get("dec_error_systematic") or 0.0)
+        # Gaia DR3 exposes per-transit correlation between RA and Dec for
+        # both the random and systematic error components.  Absent in older
+        # schemas; fall back to zero.
+        corr_rand = row.get("ra_dec_correlation_random")
+        corr_sys = row.get("ra_dec_correlation_systematic")
+        corr_rand = float(corr_rand) if corr_rand is not None and np.isfinite(corr_rand) else 0.0
+        corr_sys = float(corr_sys) if corr_sys is not None and np.isfinite(corr_sys) else 0.0
 
-        sigma_ra_sky = np.hypot(ra_rand, ra_sys) / 1000.0
-        sigma_dec = np.hypot(dec_rand, dec_sys) / 1000.0
-
-        if sigma_ra_sky <= 0.0 or sigma_dec <= 0.0:
+        # Sum random and systematic covariance matrices (mas^2, sky
+        # projection -- the random/systematic RA components already include
+        # cos(dec)).  Extract effective sigmas and correlation from the
+        # summed matrix.
+        c_ra2 = ra_rand * ra_rand + ra_sys * ra_sys
+        c_dec2 = dec_rand * dec_rand + dec_sys * dec_sys
+        c_rd = corr_rand * ra_rand * dec_rand + corr_sys * ra_sys * dec_sys
+        if c_ra2 <= 0.0 or c_dec2 <= 0.0:
             continue
-
-        cos_dec = np.cos(np.radians(dec))
-        sigma_ra = sigma_ra_sky / max(cos_dec, 1e-6)
+        # Gaia DR3 ra_error_* fields are sky-plane (already include cos(dec)),
+        # which matches the input convention of Observation.optical.
+        sigma_ra = np.sqrt(c_ra2) / 1000.0  # mas -> arcsec
+        sigma_dec = np.sqrt(c_dec2) / 1000.0
+        # Effective correlation from the summed covariance: in mas units,
+        # dividing numerator and denominator by 1e6 cancels the scaling.
+        sigma_corr_eff = c_rd / np.sqrt(c_ra2 * c_dec2)
+        # Clamp strictly inside (-1, 1) for numerical safety.
+        sigma_corr_eff = max(min(sigma_corr_eff, 0.999), -0.999)
 
         try:
             x = float(row["x_gaia"])
@@ -183,6 +202,7 @@ def fetch_gaia_observations(
                 dec=dec,
                 sigma_ra=sigma_ra,
                 sigma_dec=sigma_dec,
+                sigma_corr=sigma_corr_eff,
                 band="G",
                 mag=mag,
                 time_sigma=jd_err,

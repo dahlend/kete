@@ -403,7 +403,20 @@ fn forward_pass(
         };
 
         // ── Measurement update ────────────────────────────────────
-        let Ok(obj_lt_ssb) = apply_light_time(&new_state, observation.observer()) else {
+        let Ok(observer_state) = observation.observer() else {
+            push_skipped_epoch(
+                &mut epochs,
+                &mut accepted_flags,
+                &xv_pred,
+                &cov_pred,
+                phi_full,
+            );
+            xv = xv_pred;
+            cov = cov_pred;
+            state_cur = new_state;
+            continue;
+        };
+        let Ok(obj_lt_ssb) = apply_light_time(&new_state, &observer_state) else {
             // Light-time correction failed — skip this observation
             // but advance the state to the predicted epoch.
             push_skipped_epoch(
@@ -418,17 +431,52 @@ fn forward_pass(
             state_cur = new_state;
             continue;
         };
-        let residual = observation.residual_from_corrected(&obj_lt_ssb);
-        let h_local = observation.partials(&obj_lt_ssb);
+        let Ok(residual) = observation.residual_from_corrected(&obj_lt_ssb) else {
+            push_skipped_epoch(
+                &mut epochs,
+                &mut accepted_flags,
+                &xv_pred,
+                &cov_pred,
+                phi_full,
+            );
+            xv = xv_pred;
+            cov = cov_pred;
+            state_cur = new_state;
+            continue;
+        };
+        let Ok(h_local) = observation.partials(&obj_lt_ssb) else {
+            push_skipped_epoch(
+                &mut epochs,
+                &mut accepted_flags,
+                &xv_pred,
+                &cov_pred,
+                phi_full,
+            );
+            xv = xv_pred;
+            cov = cov_pred;
+            state_cur = new_state;
+            continue;
+        };
         let h_full = expand_h(&h_local, dim);
-        let weights = observation.weights();
 
-        // Measurement noise: R = diag(sigma^2) = diag(1/w).
-        let meas_dim = weights.len();
-        let mut r_mat = DMatrix::zeros(meas_dim, meas_dim);
-        for idx in 0..meas_dim {
-            r_mat[(idx, idx)] = 1.0 / weights[idx];
-        }
+        // Measurement noise R is the inverse of the base information
+        // matrix (which carries any RA/Dec correlation).  We invert via
+        // pseudo-inverse for robustness; the matrix is small and
+        // well-conditioned for all realistic sigma combinations.
+        let w_base = observation.base_weight_matrix();
+        let Some(r_mat) = w_base.clone().try_inverse() else {
+            push_skipped_epoch(
+                &mut epochs,
+                &mut accepted_flags,
+                &xv_pred,
+                &cov_pred,
+                phi_full,
+            );
+            xv = xv_pred;
+            cov = cov_pred;
+            state_cur = new_state;
+            continue;
+        };
 
         // Innovation covariance: S = H P_pred H^T + R
         let innov_cov = &h_full * &cov_pred * h_full.transpose() + &r_mat;
@@ -592,12 +640,14 @@ fn build_result(
         let mut recon_state = vec_to_state(xs, initial_state, &mut non_grav.cloned());
         recon_state.epoch = observation.epoch();
 
-        let obj_lt_ssb = apply_light_time(&recon_state, observation.observer())?;
-        let res = observation.residual_from_corrected(&obj_lt_ssb);
-        let wt = observation.weights();
-        for jj in 0..res.len() {
-            chi2_sum += res[jj] * res[jj] * wt[jj];
-        }
+        let observer_state = observation.observer()?;
+        let obj_lt_ssb = apply_light_time(&recon_state, &observer_state)?;
+        let res = observation.residual_from_corrected(&obj_lt_ssb)?;
+        // Use the full base weight matrix so correlated-axis observations
+        // contribute correctly to chi^2.
+        let w_base = observation.base_weight_matrix();
+        let wr = &w_base * &res;
+        chi2_sum += res.dot(&wr);
         n_meas += res.len();
         residuals.push(res);
     }
@@ -615,12 +665,13 @@ fn build_result(
     })
 }
 
-/// Sort observations by epoch, filtering out non-finite observer states.
+/// Sort observations by epoch, filtering out observations whose observer
+/// state cannot be resolved or contains non-finite components.
 fn sort_by_epoch(obs: &[AstrometricObservation]) -> Vec<AstrometricObservation> {
     let mut sorted: Vec<AstrometricObservation> = obs
         .iter()
         .filter(|ob| {
-            let st = ob.observer();
+            let Ok(st) = ob.observer() else { return false };
             let pos_ok: bool = st.pos.into_iter().all(|val: f64| val.is_finite());
             let vel_ok: bool = st.vel.into_iter().all(|val: f64| val.is_finite());
             pos_ok && vel_ok
@@ -701,7 +752,9 @@ mod tests {
                 dec,
                 sigma_ra: sigma,
                 sigma_dec: sigma,
+                sigma_corr: 0.0,
                 time_sigma: 0.0,
+                is_occultation: false,
             });
         }
         observations

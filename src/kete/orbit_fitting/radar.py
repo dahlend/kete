@@ -8,11 +8,10 @@ import os
 import pandas as pd
 import requests
 
-from .. import constants, spice
+from .. import constants
 from .._core import Observation
 from ..cache import cache_path
 from ..time import Time
-from ..vector import Frames, State
 
 logger = logging.getLogger(__name__)
 
@@ -105,10 +104,11 @@ def fetch_radar_table(desig: str | None = None, update_cache: bool = False):
     return table
 
 
-def _build_radar_observer(jd: float, rec: dict, prefix: str):
-    """Build an equatorial Earth-centered observer for one radar station.
+def _station_coords(rec: dict, prefix: str) -> tuple[float, float, float] | None:
+    """Extract WGS84 geodetic (lat_deg, lon_deg, height_km) for a station.
 
-    ``prefix`` is either ``"rcvr"`` or ``"xmit"``.
+    ``prefix`` is either ``"rcvr"`` or ``"xmit"``.  Returns None when any
+    coordinate is missing or the altitude units are unsupported.
     """
     lat = rec.get(f"{prefix}_latitude")
     lon = rec.get(f"{prefix}_longitude")
@@ -132,13 +132,7 @@ def _build_radar_observer(jd: float, rec: dict, prefix: str):
     else:
         logger.debug("Unsupported altitude units '%s' for stn %s", alt_units, code)
         return None
-    try:
-        return spice.earth_pos_to_ecliptic(
-            jd, lat, lon, alt_km, name=str(code), center=10
-        ).as_equatorial
-    except Exception as exc:
-        logger.debug("Failed to build observer for stn %s: %s", code, exc)
-        return None
+    return (lat, lon, alt_km)
 
 
 def fetch_radar_observations(
@@ -201,35 +195,25 @@ def fetch_radar_observations(
         epoch = rec.get("epoch")
         if epoch is None or pd.isna(epoch):
             continue
-        jd = Time.from_iso(pd.Timestamp(epoch).isoformat()).jd
-
-        rcvr_state = _build_radar_observer(jd, rec, "rcvr")
-        if rcvr_state is None:
-            continue
-
-        if xmit == rcvr:
-            observer = rcvr_state
-        else:
-            xmit_state = _build_radar_observer(jd, rec, "xmit")
-            if xmit_state is None:
-                continue
-            # Midpoint approximation for bistatic geometry.
-            mid_pos = (rcvr_state.pos + xmit_state.pos) * 0.5
-            mid_vel = (rcvr_state.vel + xmit_state.vel) * 0.5
-            observer = State(
-                f"{rcvr}+{xmit}",
-                jd,
-                mid_pos,
-                mid_vel,
-                Frames.Equatorial,
-                center_id=rcvr_state.center_id,
-            )
+        # JPL publishes radar epochs as the receive time (UTC).
+        jd_rx = Time.from_iso(pd.Timestamp(epoch).isoformat()).jd
 
         value = rec.get("value")
         sigma = rec.get("sigma")
         units = rec.get("units")
         if value is None or pd.isna(value) or units is None:
             continue
+
+        # Extract the WGS84 geodetic coordinates for both stations.  The
+        # Rust residual computes their inertial states at the appropriate
+        # epochs (rcvr at t_rx, xmit at iteratively-refined t_tx) via
+        # PCK kernel lookups.
+        rcvr_coords = _station_coords(rec, "rcvr")
+        xmit_coords = _station_coords(rec, "xmit")
+        if rcvr_coords is None or xmit_coords is None:
+            continue
+        rcvr_lat, rcvr_lon, rcvr_height = rcvr_coords
+        xmit_lat, xmit_lon, xmit_height = xmit_coords
 
         if units == "us":
             range_au = c_m_s * (float(value) * 1e-6) / 2.0 / au_m
@@ -238,7 +222,15 @@ def fetch_radar_observations(
                 continue
             observations.append(
                 Observation.radar_range(
-                    observer=observer, range=range_au, sigma_range=sigma_au
+                    xmit_lat=xmit_lat,
+                    xmit_lon=xmit_lon,
+                    xmit_height=xmit_height,
+                    rcvr_lat=rcvr_lat,
+                    rcvr_lon=rcvr_lon,
+                    rcvr_height=rcvr_height,
+                    epoch=Time(jd_rx),
+                    range=range_au,
+                    sigma_range=sigma_au,
                 )
             )
         elif units == "Hz":
@@ -254,7 +246,13 @@ def fetch_radar_observations(
                 continue
             observations.append(
                 Observation.radar_rate(
-                    observer=observer,
+                    xmit_lat=xmit_lat,
+                    xmit_lon=xmit_lon,
+                    xmit_height=xmit_height,
+                    rcvr_lat=rcvr_lat,
+                    rcvr_lon=rcvr_lon,
+                    rcvr_height=rcvr_height,
+                    epoch=Time(jd_rx),
                     range_rate=rr_au_day,
                     sigma_range_rate=sigma_au_day,
                 )

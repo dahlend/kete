@@ -29,10 +29,40 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use kete_core::constants::C_AU_PER_DAY_INV;
-use kete_core::frames::{Equatorial, SSB};
+use kete_core::constants::{AU_KM, C_AU_PER_DAY_INV};
+use kete_core::desigs::Desig;
+use kete_core::frames::{Equatorial, SSB, geodetic_lat_lon_to_ecef};
 use kete_core::prelude::{Error, KeteResult, State};
-use nalgebra::{DVector, Matrix2x3, Matrix3x1, RowVector6};
+use kete_core::time::{TDB, Time};
+use kete_spice::prelude::{LOADED_PCK, LOADED_SPK};
+use nalgebra::{DVector, Matrix2x3, Matrix3x1, RowVector6, Vector3};
+
+/// Compute the SSB-centered Equatorial state of an Earth ground station at
+/// the given epoch.
+///
+/// Uses the loaded PCK kernels for Earth orientation (delivers position +
+/// inertial velocity, including Earth surface rotation) and the loaded SPK
+/// kernels to recenter from geocentric to SSB.  This is the same conversion
+/// used by `spice.earth_pos_to_ecliptic` on the Python side.
+fn station_state_at(
+    lat_rad: f64,
+    lon_rad: f64,
+    height_km: f64,
+    epoch: Time<TDB>,
+) -> KeteResult<State<Equatorial, SSB>> {
+    let pos_ecef_km = geodetic_lat_lon_to_ecef(lat_rad, lon_rad, height_km);
+    let pos_ecef_au: Vector3<f64> =
+        Vector3::new(pos_ecef_km[0], pos_ecef_km[1], pos_ecef_km[2]) / AU_KM;
+
+    let pcks = LOADED_PCK.try_read()?;
+    let frame = pcks.try_get_orientation(3000, epoch)?;
+    let (pos_eq, vel_eq) = frame.to_equatorial(pos_ecef_au, Vector3::zeros())?;
+
+    let geocentric =
+        State::<Equatorial>::new(Desig::Empty, epoch, pos_eq.into(), vel_eq.into(), 399);
+    let spks = LOADED_SPK.try_read()?;
+    spks.try_to_ssb(geocentric)
+}
 
 /// A single astrometric or radar observation.
 ///
@@ -41,6 +71,14 @@ use nalgebra::{DVector, Matrix2x3, Matrix3x1, RowVector6};
 #[derive(Debug, Clone)]
 pub enum AstrometricObservation {
     /// Optical astrometry: RA and Dec on the sky.
+    ///
+    /// Covers both telescope astrometry (catalog-referenced star positions)
+    /// and stellar occultations (timing of an occulted background star);
+    /// the math is identical.  The `is_occultation` flag preserves the
+    /// distinction so that ingestion paths can apply different rules:
+    /// occultations bypass the per-observatory residual table, EFCC18
+    /// debiasing, and over-observation reweighting because their sigmas are
+    /// already Gaia-anchored and per-event.
     Optical {
         /// Observer state (SSB-centered, Equatorial).
         observer: State<Equatorial, SSB>,
@@ -48,20 +86,51 @@ pub enum AstrometricObservation {
         ra: f64,
         /// Declination (radians).
         dec: f64,
-        /// 1-sigma RA uncertainty (radians, includes cos(dec) factor).
+        /// 1-sigma RA uncertainty in the RA coordinate direction (radians, pure RA, no cos(dec)).
         sigma_ra: f64,
         /// 1-sigma Dec uncertainty (radians).
         sigma_dec: f64,
+        /// Correlation coefficient between RA and Dec uncertainties, in
+        /// `[-1, 1]`.  Set to `0.0` for axis-aligned (uncorrelated) sigmas.
+        /// Values from ADES `rmscorr` or Gaia `ra_dec_corr_*` fields.  For
+        /// non-zero values, the base position covariance is tilted:
+        /// `Sigma = [[sigma_ra^2, corr * sigma_ra * sigma_dec],
+        ///           [corr * sigma_ra * sigma_dec, sigma_dec^2]]`.
+        sigma_corr: f64,
         /// 1-sigma timing uncertainty (seconds). When non-zero, the
         /// along-track positional uncertainty is inflated by
         /// `time_sigma * apparent_speed`. Set to 0 to disable.
         time_sigma: f64,
+        /// True if this measurement was derived from a stellar occultation
+        /// rather than direct astrometry.  Used by ingestion code to
+        /// route sigma resolution and bias-correction differently;
+        /// fitting math is identical for both cases.
+        is_occultation: bool,
     },
 
     /// Radar range measurement.
+    ///
+    /// The two ground stations are stored as Earth-fixed (WGS84 geodetic)
+    /// coordinates.  The receive epoch `t_rx` is stored explicitly; the
+    /// transmit epoch `t_tx` is derived inside the residual computation
+    /// from the predicted round-trip geometry.  Station inertial states
+    /// at the appropriate epochs are produced via PCK lookups during the
+    /// residual computation, mirroring `find_orb`'s approach.
     RadarRange {
-        /// Observer state (SSB-centered, Equatorial).
-        observer: State<Equatorial, SSB>,
+        /// Transmitter station: WGS84 geodetic latitude (radians).
+        xmit_lat_rad: f64,
+        /// Transmitter station: WGS84 geodetic longitude (radians).
+        xmit_lon_rad: f64,
+        /// Transmitter station: height above the WGS84 ellipsoid (km).
+        xmit_height_km: f64,
+        /// Receiver station: WGS84 geodetic latitude (radians).
+        rcvr_lat_rad: f64,
+        /// Receiver station: WGS84 geodetic longitude (radians).
+        rcvr_lon_rad: f64,
+        /// Receiver station: height above the WGS84 ellipsoid (km).
+        rcvr_height_km: f64,
+        /// Receive epoch `t_rx` (TDB).
+        epoch: Time<TDB>,
         /// Measured range (AU).
         range: f64,
         /// 1-sigma range uncertainty (AU).
@@ -69,9 +138,23 @@ pub enum AstrometricObservation {
     },
 
     /// Radar range-rate (Doppler) measurement.
+    ///
+    /// Same conventions as [`Self::RadarRange`].
     RadarRate {
-        /// Observer state (SSB-centered, Equatorial).
-        observer: State<Equatorial, SSB>,
+        /// Transmitter station: WGS84 geodetic latitude (radians).
+        xmit_lat_rad: f64,
+        /// Transmitter station: WGS84 geodetic longitude (radians).
+        xmit_lon_rad: f64,
+        /// Transmitter station: height above the WGS84 ellipsoid (km).
+        xmit_height_km: f64,
+        /// Receiver station: WGS84 geodetic latitude (radians).
+        rcvr_lat_rad: f64,
+        /// Receiver station: WGS84 geodetic longitude (radians).
+        rcvr_lon_rad: f64,
+        /// Receiver station: height above the WGS84 ellipsoid (km).
+        rcvr_height_km: f64,
+        /// Receive epoch `t_rx` (TDB).
+        epoch: Time<TDB>,
         /// Measured range-rate (AU/day, positive = receding).
         range_rate: f64,
         /// 1-sigma range-rate uncertainty (AU/day).
@@ -80,18 +163,40 @@ pub enum AstrometricObservation {
 }
 
 impl AstrometricObservation {
-    /// Reference to the observer state (carries the observation epoch).
-    pub fn observer(&self) -> &State<Equatorial, SSB> {
+    /// Owned observer state at the observation's primary epoch.
+    ///
+    /// For optical observations this clones the stored observer state.  For
+    /// radar observations the receiver state at `t_rx` is computed via the
+    /// loaded PCK and SPK kernels.
+    ///
+    /// # Errors
+    /// Fails if the PCK / SPK lookup for radar fails.
+    pub fn observer(&self) -> KeteResult<State<Equatorial, SSB>> {
         match self {
-            Self::Optical { observer, .. }
-            | Self::RadarRange { observer, .. }
-            | Self::RadarRate { observer, .. } => observer,
+            Self::Optical { observer, .. } => Ok(observer.clone()),
+            Self::RadarRange {
+                rcvr_lat_rad,
+                rcvr_lon_rad,
+                rcvr_height_km,
+                epoch,
+                ..
+            }
+            | Self::RadarRate {
+                rcvr_lat_rad,
+                rcvr_lon_rad,
+                rcvr_height_km,
+                epoch,
+                ..
+            } => station_state_at(*rcvr_lat_rad, *rcvr_lon_rad, *rcvr_height_km, *epoch),
         }
     }
 
-    /// Observation epoch (shorthand for `self.observer().epoch`).
-    pub fn epoch(&self) -> kete_core::time::Time<kete_core::time::TDB> {
-        self.observer().epoch
+    /// Observation epoch.  For radar this is the receive epoch `t_rx`.
+    pub fn epoch(&self) -> Time<TDB> {
+        match self {
+            Self::Optical { observer, .. } => observer.epoch,
+            Self::RadarRange { epoch, .. } | Self::RadarRate { epoch, .. } => *epoch,
+        }
     }
 
     /// Extract RA, Dec, and observer state from an Optical observation.
@@ -115,6 +220,51 @@ impl AstrometricObservation {
         matches!(self, Self::RadarRange { .. } | Self::RadarRate { .. })
     }
 
+    /// Returns true if this optical measurement came from a stellar
+    /// occultation rather than direct astrometry.  False for radar.
+    #[must_use]
+    pub fn is_occultation(&self) -> bool {
+        matches!(
+            self,
+            Self::Optical {
+                is_occultation: true,
+                ..
+            }
+        )
+    }
+
+    /// Return a copy of this observation with `sigma_ra` and `sigma_dec`
+    /// clamped to at least `floor` (in radians).  Radar observations are
+    /// returned unchanged.  Used during the windowed-expansion passes of
+    /// `fit_orbit` to prevent high-precision observations (e.g. occultations,
+    /// Gaia transits) from dominating the gradient before the orbit has
+    /// converged near the true solution.
+    #[must_use]
+    pub fn with_sigma_floor(&self, floor: f64) -> Self {
+        match self {
+            Self::Optical {
+                observer,
+                ra,
+                dec,
+                sigma_ra,
+                sigma_dec,
+                sigma_corr,
+                time_sigma,
+                is_occultation,
+            } => Self::Optical {
+                observer: observer.clone(),
+                ra: *ra,
+                dec: *dec,
+                sigma_ra: sigma_ra.max(floor),
+                sigma_dec: sigma_dec.max(floor),
+                sigma_corr: *sigma_corr,
+                time_sigma: *time_sigma,
+                is_occultation: *is_occultation,
+            },
+            Self::RadarRange { .. } | Self::RadarRate { .. } => self.clone(),
+        }
+    }
+
     /// Number of measurement components (2 for optical, 1 for radar).
     #[must_use]
     pub fn measurement_dim(&self) -> usize {
@@ -126,8 +276,12 @@ impl AstrometricObservation {
 
     /// Diagonal weight vector (1 / sigma^2 for each measurement component).
     ///
-    /// This does not include the timing correction; use [`Self::weight_matrix`]
-    /// for the full weight matrix with timing.
+    /// This is the marginal `1 / sigma^2` per axis and does **not** include
+    /// the RA/Dec correlation or the timing correction.  For numerically
+    /// correct chi^2 accumulation, use [`Self::base_weight_matrix`] or
+    /// [`Self::weight_matrix`] which carry the full (possibly non-diagonal)
+    /// information matrix.  This method is retained only for consumers that
+    /// need a quick per-axis scalar or the measurement dimension.
     #[must_use]
     pub fn weights(&self) -> DVector<f64> {
         match self {
@@ -148,61 +302,30 @@ impl AstrometricObservation {
         }
     }
 
-    /// Full weight matrix (inverse noise covariance) for this observation.
+    /// Full base inverse-covariance matrix for this observation, **without**
+    /// timing correction.
     ///
-    /// For optical observations with a non-zero `time_sigma`, the along-track
-    /// uncertainty is inflated by the timing displacement
-    /// `t = time_sigma * apparent_velocity`, producing a non-diagonal 2x2
-    /// matrix via Sherman-Morrison:
+    /// For optical observations with non-zero `sigma_corr`, the base
+    /// covariance is the tilted 2x2 matrix
     ///
-    ///   `W_new` = W - (Wu)(Wu)^T / (1 + u^T W u)
+    /// ```text
+    /// Sigma = [[sigma_ra^2,            corr * sigma_ra * sigma_dec],
+    ///          [corr * sigma_ra * sigma_dec, sigma_dec^2]]
+    /// ```
     ///
-    /// where `u = (motion_ra_rad_per_day * time_sigma_days,
-    ///             motion_dec_rad_per_day * time_sigma_days)` is the timing
-    /// displacement in radians.
+    /// and the returned information matrix is `Sigma^{-1}`.  With
+    /// `sigma_corr == 0` the result is `diag(1/sigma_ra^2, 1/sigma_dec^2)`.
     ///
-    /// When `time_sigma == 0` the result is `diag(weights())`.
-    /// For radar observations, `motion_ra` and `motion_dec` are ignored.
+    /// Radar observations return a 1x1 matrix (same as [`Self::weights`]).
     #[must_use]
-    pub fn weight_matrix(
-        &self,
-        motion_ra_rad_per_day: f64,
-        motion_dec_rad_per_day: f64,
-    ) -> nalgebra::DMatrix<f64> {
+    pub fn base_weight_matrix(&self) -> nalgebra::DMatrix<f64> {
         match self {
             Self::Optical {
                 sigma_ra,
                 sigma_dec,
-                time_sigma,
+                sigma_corr,
                 ..
-            } => {
-                let w_ra = 1.0 / (sigma_ra * sigma_ra);
-                let w_dec = 1.0 / (sigma_dec * sigma_dec);
-                if *time_sigma == 0.0 {
-                    return nalgebra::DMatrix::from_diagonal(&DVector::from_column_slice(&[
-                        w_ra, w_dec,
-                    ]));
-                }
-                // Timing displacement vector u = time_sigma_days * motion.
-                let t_days = time_sigma / 86_400.0;
-                let u_ra = t_days * motion_ra_rad_per_day;
-                let u_dec = t_days * motion_dec_rad_per_day;
-                // Wu = W * u (diagonal case).
-                let wu_ra = w_ra * u_ra;
-                let wu_dec = w_dec * u_dec;
-                // Denominator 1 + u^T W u is always >= 1.
-                let denom = 1.0 + u_ra * wu_ra + u_dec * wu_dec;
-                nalgebra::DMatrix::from_row_slice(
-                    2,
-                    2,
-                    &[
-                        w_ra - wu_ra * wu_ra / denom,
-                        -wu_ra * wu_dec / denom,
-                        -wu_ra * wu_dec / denom,
-                        w_dec - wu_dec * wu_dec / denom,
-                    ],
-                )
-            }
+            } => optical_base_weight_matrix(*sigma_ra, *sigma_dec, *sigma_corr),
             Self::RadarRange { sigma_range, .. } => {
                 nalgebra::DMatrix::from_column_slice(1, 1, &[1.0 / (sigma_range * sigma_range)])
             }
@@ -215,6 +338,110 @@ impl AstrometricObservation {
             ),
         }
     }
+
+    /// Full weight matrix (inverse noise covariance) for this observation,
+    /// including the timing correction.
+    ///
+    /// Starts from [`Self::base_weight_matrix`] (which carries the RA/Dec
+    /// correlation) and, when `time_sigma > 0`, applies a Sherman-Morrison
+    /// update that convolves the position Gaussian with the timing
+    /// Gaussian:
+    ///
+    ///   `W_new` = W - (Wu)(Wu)^T / (1 + u^T W u)
+    ///
+    /// where `u = (motion_ra_rad_per_day * time_sigma_days,
+    ///             motion_dec_rad_per_day * time_sigma_days)` is the timing
+    /// displacement in radians.
+    ///
+    /// The Sherman-Morrison math is valid for any symmetric positive-definite
+    /// `W`, so tilted base covariances propagate correctly through the
+    /// timing stretch.  For radar observations, `motion_ra` and `motion_dec`
+    /// are ignored and the base matrix is returned unchanged.
+    #[must_use]
+    pub fn weight_matrix(
+        &self,
+        motion_ra_rad_per_day: f64,
+        motion_dec_rad_per_day: f64,
+    ) -> nalgebra::DMatrix<f64> {
+        let w = self.base_weight_matrix();
+        match self {
+            Self::Optical { time_sigma, .. } => {
+                if *time_sigma == 0.0 {
+                    return w;
+                }
+                // Timing displacement vector u = time_sigma_days * motion.
+                let t_days = time_sigma / 86_400.0;
+                let u_ra = t_days * motion_ra_rad_per_day;
+                let u_dec = t_days * motion_dec_rad_per_day;
+                apply_timing_to_weight_matrix(&w, u_ra, u_dec)
+            }
+            Self::RadarRange { .. } | Self::RadarRate { .. } => w,
+        }
+    }
+}
+
+/// Build the 2x2 information matrix (inverse covariance) for an optical
+/// observation with RA/Dec correlation.
+///
+/// Returns `diag(1/sigma_ra^2, 1/sigma_dec^2)` when `sigma_corr == 0`.
+/// Otherwise inverts the tilted 2x2 covariance analytically:
+///
+/// ```text
+/// Sigma   = [[sr^2, c*sr*sd], [c*sr*sd, sd^2]]
+/// det     = sr^2 * sd^2 * (1 - c^2)
+/// Sigma^{-1} = 1/det * [[sd^2, -c*sr*sd], [-c*sr*sd, sr^2]]
+///            = 1/(1-c^2) * [[1/sr^2, -c/(sr*sd)], [-c/(sr*sd), 1/sd^2]]
+/// ```
+fn optical_base_weight_matrix(
+    sigma_ra: f64,
+    sigma_dec: f64,
+    sigma_corr: f64,
+) -> nalgebra::DMatrix<f64> {
+    if sigma_corr == 0.0 {
+        return nalgebra::DMatrix::from_diagonal(&DVector::from_column_slice(&[
+            1.0 / (sigma_ra * sigma_ra),
+            1.0 / (sigma_dec * sigma_dec),
+        ]));
+    }
+    let one_minus_c2 = 1.0 - sigma_corr * sigma_corr;
+    // Caller is responsible for rejecting degenerate (|corr| = 1)
+    // observations before they reach this point; guard against numerical
+    // divide-by-zero with a small floor.
+    let denom = one_minus_c2.max(1e-12);
+    let w_rr = 1.0 / (sigma_ra * sigma_ra * denom);
+    let w_dd = 1.0 / (sigma_dec * sigma_dec * denom);
+    let w_rd = -sigma_corr / (sigma_ra * sigma_dec * denom);
+    nalgebra::DMatrix::from_row_slice(2, 2, &[w_rr, w_rd, w_rd, w_dd])
+}
+
+/// Apply the Sherman-Morrison timing update to a 2x2 information matrix.
+///
+/// `(W_pos)^{-1} + sigma_t^2 * v v^T = (W_new)^{-1}`, equivalently
+/// `W_new = W - (W u)(W u)^T / (1 + u^T W u)` with `u = sigma_t * v`.
+/// The caller supplies `u = (u_ra, u_dec)` already scaled by `sigma_t`.
+fn apply_timing_to_weight_matrix(
+    w: &nalgebra::DMatrix<f64>,
+    u_ra: f64,
+    u_dec: f64,
+) -> nalgebra::DMatrix<f64> {
+    let w00 = w[(0, 0)];
+    let w01 = w[(0, 1)];
+    let w11 = w[(1, 1)];
+    // Wu = W * u.
+    let wu_ra = w00 * u_ra + w01 * u_dec;
+    let wu_dec = w01 * u_ra + w11 * u_dec;
+    // Denominator 1 + u^T W u is always >= 1 for positive-definite W.
+    let denom = 1.0 + u_ra * wu_ra + u_dec * wu_dec;
+    nalgebra::DMatrix::from_row_slice(
+        2,
+        2,
+        &[
+            w00 - wu_ra * wu_ra / denom,
+            w01 - wu_ra * wu_dec / denom,
+            w01 - wu_ra * wu_dec / denom,
+            w11 - wu_dec * wu_dec / denom,
+        ],
+    )
 }
 
 impl AstrometricObservation {
@@ -231,42 +458,50 @@ impl AstrometricObservation {
         &self,
         obj_state: State<Equatorial>,
     ) -> KeteResult<(DVector<f64>, DVector<f64>)> {
-        let obs = self.observer();
-        let spk = kete_spice::prelude::LOADED_SPK.try_read()?;
+        let obs = self.observer()?;
+        let spk = LOADED_SPK.try_read()?;
         // Convert object to heliocentric for two-body light-time correction.
         let obj_sun = spk.try_to_sun(obj_state)?;
         // Convert observer to heliocentric so the light-travel offset is
         // computed from the correct observer position.
-        let obs_helio_sun = spk.try_to_sun(obs.clone().into())?;
+        let obs_helio_sun = spk.try_to_sun(obs.into())?;
         // Apply light-time correction (heliocentric in, heliocentric out).
         let obj_lt_helio = kete_core::kepler::light_time_correct(&obj_sun, &obs_helio_sun.pos)?;
         // Convert the light-time-corrected object state back to SSB so that
         // residual_predicted_from_corrected sees consistent SSB positions.
         let obj_lt_ssb = spk.try_to_ssb(obj_lt_helio.into())?;
-        Ok(self.residual_predicted_from_corrected(&obj_lt_ssb))
+        self.residual_predicted_from_corrected(&obj_lt_ssb)
     }
 
     /// Compute residual from an already light-time-corrected object state.
     ///
     /// This avoids a redundant two-body propagation when the caller has
     /// already applied `light_time_correct`.
-    #[must_use]
-    pub fn residual_from_corrected(&self, obj_lt: &State<Equatorial, SSB>) -> DVector<f64> {
-        self.residual_predicted_from_corrected(obj_lt).0
+    ///
+    /// # Errors
+    /// Fails if PCK / SPK lookups for radar station states fail.
+    pub fn residual_from_corrected(
+        &self,
+        obj_lt: &State<Equatorial, SSB>,
+    ) -> KeteResult<DVector<f64>> {
+        Ok(self.residual_predicted_from_corrected(obj_lt)?.0)
     }
 
     /// Core residual computation from a light-time-corrected state.
     ///
     /// Returns `(residual, predicted)`.
+    ///
+    /// # Errors
+    /// Fails if PCK / SPK lookups for radar station states fail.
     fn residual_predicted_from_corrected(
         &self,
         obj_lt: &State<Equatorial, SSB>,
-    ) -> (DVector<f64>, DVector<f64>) {
-        let obs = self.observer();
-
+    ) -> KeteResult<(DVector<f64>, DVector<f64>)> {
         match self {
-            Self::Optical { ra, dec, .. } => {
-                let (ra_pred, dec_pred) = (obj_lt.pos - obs.pos).to_ra_dec();
+            Self::Optical {
+                observer, ra, dec, ..
+            } => {
+                let (ra_pred, dec_pred) = (obj_lt.pos - observer.pos).to_ra_dec();
                 // Wrap RA residual to [-pi, pi]
                 let mut d_ra = ra - ra_pred;
                 if d_ra > std::f64::consts::PI {
@@ -274,42 +509,107 @@ impl AstrometricObservation {
                 } else if d_ra < -std::f64::consts::PI {
                     d_ra += 2.0 * std::f64::consts::PI;
                 }
-                (
+                Ok((
                     DVector::from_column_slice(&[d_ra, dec - dec_pred]),
                     DVector::from_column_slice(&[ra_pred, dec_pred]),
-                )
+                ))
             }
-            Self::RadarRange { range, .. } => {
-                // Monostatic round-trip model: measured = (outgoing + incoming) / 2.
-                // obj_lt is the object at bounce time t_b = t_rx - incoming/c;
-                // obs is the observer at receive time t_rx.
-                // Transmitter position at t_tx ≈ t_rx - 2*incoming/c:
-                //   r_obs_tx ≈ r_obs_rx - v_obs * 2 * incoming / c.
-                let incoming = (obj_lt.pos - obs.pos).norm();
-                let obs_tx_pos = obs.pos - obs.vel * (2.0 * incoming * C_AU_PER_DAY_INV);
-                let outgoing = (obj_lt.pos - obs_tx_pos).norm();
+            Self::RadarRange {
+                xmit_lat_rad,
+                xmit_lon_rad,
+                xmit_height_km,
+                rcvr_lat_rad,
+                rcvr_lon_rad,
+                rcvr_height_km,
+                epoch,
+                range,
+                ..
+            } => {
+                // Round-trip model: (incoming + outgoing) / 2.
+                // Compute rcvr at t_rx and iteratively refine xmit at t_tx
+                // via predicted geometry (matches find_orb's `compute_radar_info`).
+                let rcvr_state =
+                    station_state_at(*rcvr_lat_rad, *rcvr_lon_rad, *rcvr_height_km, *epoch)?;
+                let incoming = (obj_lt.pos - rcvr_state.pos).norm();
+                let mut outgoing = incoming;
+                for _ in 0..3 {
+                    let rtt_days = (incoming + outgoing) * C_AU_PER_DAY_INV;
+                    let t_tx = *epoch - rtt_days;
+                    let xmit_state =
+                        station_state_at(*xmit_lat_rad, *xmit_lon_rad, *xmit_height_km, t_tx)?;
+                    outgoing = (obj_lt.pos - xmit_state.pos).norm();
+                }
                 let pred = f64::midpoint(incoming, outgoing);
-                (
+                Ok((
                     DVector::from_column_slice(&[range - pred]),
                     DVector::from_column_slice(&[pred]),
-                )
+                ))
             }
-            Self::RadarRate { range_rate, .. } => {
-                // Two-way Doppler: average of receive-path and transmit-path range rates.
-                // Use receiver velocity for both paths (observer acceleration over the
-                // ~10 s round-trip light time is negligible compared to measurement sigma).
-                let d_pos_rx = obj_lt.pos - obs.pos;
-                let range = d_pos_rx.norm();
-                let obs_tx_pos = obs.pos - obs.vel * (2.0 * range * C_AU_PER_DAY_INV);
-                let d_pos_tx = obj_lt.pos - obs_tx_pos;
-                let v_rel = obj_lt.vel - obs.vel;
-                let rr_rx = d_pos_rx.dot(&v_rel) / range;
-                let rr_tx = d_pos_tx.dot(&v_rel) / d_pos_tx.norm();
-                let pred = f64::midpoint(rr_rx, rr_tx);
-                (
+            Self::RadarRate {
+                xmit_lat_rad,
+                xmit_lon_rad,
+                xmit_height_km,
+                rcvr_lat_rad,
+                rcvr_lon_rad,
+                rcvr_height_km,
+                epoch,
+                range_rate,
+                ..
+            } => {
+                // Full relativistic two-way Doppler (matches find_orb's formula):
+                //   f_obs / f_emit = sqrt((1 - beta_rx)(1 - beta_tx) /
+                //                        ((1 + beta_rx)(1 + beta_tx)))
+                // where beta = v_radial / c for each leg (dimensionless).
+                // Predicted range-rate = -c/2 * (f_obs/f_emit - 1) in AU/day.
+                //
+                // The transmitter epoch t_tx is iteratively refined from the
+                // current orbit's predicted geometry; both stations are then
+                // produced by PCK lookup at their respective epochs.
+                //
+                // The Jacobian retains the classical approximation because the
+                // relativistic correction is O(v^2/c^2) ~ 1e-8 and its gradient
+                // contribution is negligible.
+                let rcvr_state =
+                    station_state_at(*rcvr_lat_rad, *rcvr_lon_rad, *rcvr_height_km, *epoch)?;
+                let d_pos_rx = obj_lt.pos - rcvr_state.pos;
+                let range_rx = d_pos_rx.norm();
+
+                // Iterate to converge on t_tx and the corresponding xmit state.
+                let mut range_tx = range_rx;
+                let mut xmit_state = rcvr_state.clone();
+                for _ in 0..3 {
+                    let rtt_days = (range_rx + range_tx) * C_AU_PER_DAY_INV;
+                    let t_tx = *epoch - rtt_days;
+                    xmit_state =
+                        station_state_at(*xmit_lat_rad, *xmit_lon_rad, *xmit_height_km, t_tx)?;
+                    range_tx = (obj_lt.pos - xmit_state.pos).norm();
+                }
+                let d_pos_tx = obj_lt.pos - xmit_state.pos;
+
+                // Radial velocities (AU/day, positive = receding).
+                let v_rel_rx = obj_lt.vel - rcvr_state.vel;
+                let v_rel_tx = obj_lt.vel - xmit_state.vel;
+                let rr_rx = d_pos_rx.dot(&v_rel_rx) / range_rx;
+                let rr_tx = d_pos_tx.dot(&v_rel_tx) / range_tx;
+
+                // Convert to dimensionless beta = v_radial / c.
+                // C_AU_PER_DAY_INV = 1/c in units of day/AU; multiply to get AU/day → dimensionless.
+                let c_au_per_day = 1.0 / C_AU_PER_DAY_INV;
+                let beta_rx = rr_rx / c_au_per_day;
+                let beta_tx = rr_tx / c_au_per_day;
+
+                // Relativistic two-way Doppler factor.
+                let doppler_factor = ((1.0 - beta_rx) * (1.0 - beta_tx)
+                    / ((1.0 + beta_rx) * (1.0 + beta_tx)))
+                    .sqrt();
+
+                // Predicted range-rate: derived from frequency shift via
+                //   Δf/f = doppler_factor - 1,  range_rate = -c * Δf / (2f)
+                let pred = -c_au_per_day * 0.5 * (doppler_factor - 1.0);
+                Ok((
                     DVector::from_column_slice(&[range_rate - pred]),
                     DVector::from_column_slice(&[pred]),
-                )
+                ))
             }
         }
     }
@@ -352,68 +652,50 @@ fn optical_partials_pos(
 
 /// Radar range partials: d(range)/d(pos) as a 3x1 column vector.
 ///
-/// Uses the round-trip average `(incoming + outgoing) / 2`.
+/// Round-trip average `(incoming + outgoing) / 2`.  With xmit and rcvr
+/// positions both held fixed (pre-computed by ingestion), there is no
+/// indirect correction term: `d(outgoing)/d(r_obj) = unit_tx` only.
 fn range_partials_pos(
     obj: &State<Equatorial, SSB>,
-    obs: &State<Equatorial, SSB>,
+    xmit: &State<Equatorial, SSB>,
+    rcvr: &State<Equatorial, SSB>,
 ) -> Matrix3x1<f64> {
-    let d_rx = obj.pos - obs.pos;
-    let incoming = d_rx.norm();
-    let obs_tx_pos = obs.pos - obs.vel * (2.0 * incoming * C_AU_PER_DAY_INV);
-    let d_tx = obj.pos - obs_tx_pos;
-    let outgoing = d_tx.norm();
-    // Indirect correction: d(outgoing)/d(r) includes the change in obs_tx_pos
-    // through d(incoming)/d(r) = unit_rx.
-    // alpha = (unit_tx . v_obs) * 2/c
-    let alpha = d_tx.dot(&obs.vel) / outgoing * 2.0 * C_AU_PER_DAY_INV;
-    Matrix3x1::new(
-        ((1.0 + alpha) * d_rx[0] / incoming + d_tx[0] / outgoing) * 0.5,
-        ((1.0 + alpha) * d_rx[1] / incoming + d_tx[1] / outgoing) * 0.5,
-        ((1.0 + alpha) * d_rx[2] / incoming + d_tx[2] / outgoing) * 0.5,
-    )
+    let d_rx = obj.pos - rcvr.pos;
+    let d_tx = obj.pos - xmit.pos;
+    let unit_rx = d_rx / d_rx.norm();
+    let unit_tx = d_tx / d_tx.norm();
+    let avg = (unit_rx + unit_tx) * 0.5;
+    Matrix3x1::new(avg[0], avg[1], avg[2])
 }
 
 /// Radar range-rate partials: `d(range_rate)/d(pos,vel)` as a 1x6 row vector.
 ///
-/// Two-way Doppler partial: average of receive-path and transmit-path
-/// contributions.  The transmitter position at `t_tx ≈ t_rx - 2*range/c`
-/// depends on `range` (and hence on `r_obj`), producing an indirect correction
-/// to the position partial:
-///
-/// `d(rr_tx)/d(r) = (d_vel - d_hat_tx * rr_tx) / range_tx
-///                 + beta_tx * unit_rx`
-///
-/// where `beta_tx = 2/c * [(d_vel . v_obs) - rr_tx * (unit_tx . v_obs)] / range_tx`.
-///
-/// The velocity partial is `(d_hat_rx + d_hat_tx) / 2` (no indirect term).
+/// Classical two-way Doppler partial; the relativistic correction in the
+/// residual is O(v^2/c^2), so its gradient contribution is negligible and
+/// is dropped here.  With xmit and rcvr held fixed there are no indirect
+/// terms: only the direct geometric derivatives remain.
 fn range_rate_partials(
     obj: &State<Equatorial, SSB>,
-    obs: &State<Equatorial, SSB>,
+    xmit: &State<Equatorial, SSB>,
+    rcvr: &State<Equatorial, SSB>,
 ) -> RowVector6<f64> {
-    let d_pos_rx = obj.pos - obs.pos;
-    let d_vel = obj.vel - obs.vel;
-    let range = d_pos_rx.norm();
-
-    // Transmitter position at t_tx ≈ t_rx - 2*range/c.
-    let obs_tx_pos = obs.pos - obs.vel * (2.0 * range * C_AU_PER_DAY_INV);
-    let d_pos_tx = obj.pos - obs_tx_pos;
+    let d_pos_rx = obj.pos - rcvr.pos;
+    let d_pos_tx = obj.pos - xmit.pos;
+    let range_rx = d_pos_rx.norm();
     let range_tx = d_pos_tx.norm();
+    let d_hat_rx = d_pos_rx / range_rx;
+    let d_hat_tx = d_pos_tx / range_tx;
 
-    let rr_rx = d_pos_rx.dot(&d_vel) / range;
-    let rr_tx = d_pos_tx.dot(&d_vel) / range_tx;
-    let d_hat_rx = d_pos_rx.normalize();
-    let d_hat_tx = d_pos_tx.normalize();
+    let v_rel_rx = obj.vel - rcvr.vel;
+    let v_rel_tx = obj.vel - xmit.vel;
+    let rr_rx = d_pos_rx.dot(&v_rel_rx) / range_rx;
+    let rr_tx = d_pos_tx.dot(&v_rel_tx) / range_tx;
 
-    // d(rr_rx)/d(r) = (d_vel - d_hat_rx * rr_rx) / range
-    let dr_rx = (d_vel - d_hat_rx * rr_rx) * (1.0 / range);
-
-    // d(rr_tx)/d(r) = (d_vel - d_hat_tx * rr_tx) / range_tx  [direct term]
-    //               + beta_tx * unit_rx                        [indirect term]
-    // beta_tx = 2/c * [(d_vel . v_obs) - rr_tx * (unit_tx . v_obs)] / range_tx
-    let dr_tx_direct = (d_vel - d_hat_tx * rr_tx) * (1.0 / range_tx);
-    let beta_tx =
-        2.0 * C_AU_PER_DAY_INV * (d_vel.dot(&obs.vel) - rr_tx * d_hat_tx.dot(&obs.vel)) / range_tx;
-    let dr = (dr_rx + dr_tx_direct + d_hat_rx * beta_tx) * 0.5;
+    // d(rr_rx)/d(r) = (v_rel_rx - d_hat_rx * rr_rx) / range_rx
+    let dr_rx = (v_rel_rx - d_hat_rx * rr_rx) * (1.0 / range_rx);
+    // d(rr_tx)/d(r) = (v_rel_tx - d_hat_tx * rr_tx) / range_tx
+    let dr_tx = (v_rel_tx - d_hat_tx * rr_tx) * (1.0 / range_tx);
+    let dr = (dr_rx + dr_tx) * 0.5;
 
     // d(rr)/d(v) = (d_hat_rx + d_hat_tx) / 2  (no indirect term)
     let dv = (d_hat_rx + d_hat_tx) * 0.5;
@@ -429,31 +711,66 @@ impl AstrometricObservation {
     /// `[dx, dy, dz, dvx, dvy, dvz]` of the object state.
     ///
     /// The input `obj_state` should already be light-time-corrected.
-    #[must_use]
-    pub fn partials(&self, obj_state: &State<Equatorial, SSB>) -> nalgebra::DMatrix<f64> {
-        let obs = self.observer();
+    ///
+    /// For radar observations the xmit and rcvr station states are
+    /// looked up via PCK at `t_rx` (a fixed approximation -- the
+    /// indirect-correction term from the orbit-dependence of `t_tx` is
+    /// `O(v_surface/c)` and dropped, matching `find_orb`'s simplification).
+    ///
+    /// # Errors
+    /// Fails if PCK / SPK lookups for radar station states fail.
+    pub fn partials(
+        &self,
+        obj_state: &State<Equatorial, SSB>,
+    ) -> KeteResult<nalgebra::DMatrix<f64>> {
         match self {
-            Self::Optical { .. } => {
-                let h = optical_partials_pos(obj_state, obs);
+            Self::Optical { observer, .. } => {
+                let h = optical_partials_pos(obj_state, observer);
                 let mut out = nalgebra::DMatrix::zeros(2, 6);
                 out.view_mut((0, 0), (2, 3)).copy_from(&h);
-                out
+                Ok(out)
             }
-            Self::RadarRange { .. } => {
-                let h = range_partials_pos(obj_state, obs);
+            Self::RadarRange {
+                xmit_lat_rad,
+                xmit_lon_rad,
+                xmit_height_km,
+                rcvr_lat_rad,
+                rcvr_lon_rad,
+                rcvr_height_km,
+                epoch,
+                ..
+            } => {
+                let rcvr_state =
+                    station_state_at(*rcvr_lat_rad, *rcvr_lon_rad, *rcvr_height_km, *epoch)?;
+                let xmit_state =
+                    station_state_at(*xmit_lat_rad, *xmit_lon_rad, *xmit_height_km, *epoch)?;
+                let h = range_partials_pos(obj_state, &xmit_state, &rcvr_state);
                 let mut out = nalgebra::DMatrix::zeros(1, 6);
                 out[(0, 0)] = h[0];
                 out[(0, 1)] = h[1];
                 out[(0, 2)] = h[2];
-                out
+                Ok(out)
             }
-            Self::RadarRate { .. } => {
-                let h = range_rate_partials(obj_state, obs);
+            Self::RadarRate {
+                xmit_lat_rad,
+                xmit_lon_rad,
+                xmit_height_km,
+                rcvr_lat_rad,
+                rcvr_lon_rad,
+                rcvr_height_km,
+                epoch,
+                ..
+            } => {
+                let rcvr_state =
+                    station_state_at(*rcvr_lat_rad, *rcvr_lon_rad, *rcvr_height_km, *epoch)?;
+                let xmit_state =
+                    station_state_at(*xmit_lat_rad, *xmit_lon_rad, *xmit_height_km, *epoch)?;
+                let h = range_rate_partials(obj_state, &xmit_state, &rcvr_state);
                 let mut out = nalgebra::DMatrix::zeros(1, 6);
                 for j in 0..6 {
                     out[(0, j)] = h[j];
                 }
-                out
+                Ok(out)
             }
         }
     }
@@ -479,15 +796,14 @@ mod tests {
         }
     }
 
-    /// Finite-difference helper: perturb component `idx` of the object state
-    /// by `eps`, recompute the predicted measurement, return the numerical
-    /// partial derivative.
-    fn fd_partial(
-        obs: &AstrometricObservation,
-        obj: &State<Equatorial, SSB>,
-        idx: usize,
-        eps: f64,
-    ) -> DVector<f64> {
+    /// Finite-difference helper for an arbitrary scalar-or-vector predictor.
+    /// Perturb component `idx` of the object state by `eps`, recompute the
+    /// predicted value, return the numerical partial derivative.
+    fn fd_partial<F, T>(predictor: F, obj: &State<Equatorial, SSB>, idx: usize, eps: f64) -> T
+    where
+        F: Fn(&State<Equatorial, SSB>) -> T,
+        T: std::ops::Sub<T, Output = T> + std::ops::Mul<f64, Output = T>,
+    {
         let mut pos_p = [obj.pos[0], obj.pos[1], obj.pos[2]];
         let mut vel_p = [obj.vel[0], obj.vel[1], obj.vel[2]];
         let mut pos_m = pos_p;
@@ -504,40 +820,44 @@ mod tests {
         let obj_p = make_state(pos_p, vel_p, obj.epoch.jd);
         let obj_m = make_state(pos_m, vel_m, obj.epoch.jd);
 
-        let pred_p = predict_for_fd(obs, &obj_p);
-        let pred_m = predict_for_fd(obs, &obj_m);
-
-        (pred_p - pred_m) / (2.0 * eps)
+        (predictor(&obj_p) - predictor(&obj_m)) * (1.0 / (2.0 * eps))
     }
 
-    /// Direct prediction without light-time (for FD tests where we want to
-    /// test the geometric partials in isolation).
-    fn predict_for_fd(obs: &AstrometricObservation, obj: &State<Equatorial, SSB>) -> DVector<f64> {
-        let observer = obs.observer();
-        match obs {
-            AstrometricObservation::Optical { .. } => {
-                let (ra, dec) = (obj.pos - observer.pos).to_ra_dec();
-                DVector::from_vec(vec![ra, dec])
-            }
-            AstrometricObservation::RadarRange { .. } => {
-                // Round-trip range: (incoming + outgoing) / 2.
-                let incoming = (obj.pos - observer.pos).norm();
-                let obs_tx_pos = observer.pos - observer.vel * (2.0 * incoming * C_AU_PER_DAY_INV);
-                let outgoing = (obj.pos - obs_tx_pos).norm();
-                DVector::from_vec(vec![f64::midpoint(incoming, outgoing)])
-            }
-            AstrometricObservation::RadarRate { .. } => {
-                // Two-way Doppler: average of rx and tx path range rates.
-                let d_pos_rx = obj.pos - observer.pos;
-                let range = d_pos_rx.norm();
-                let obs_tx_pos = observer.pos - observer.vel * (2.0 * range * C_AU_PER_DAY_INV);
-                let d_pos_tx = obj.pos - obs_tx_pos;
-                let v_rel = obj.vel - observer.vel;
-                let rr_rx = d_pos_rx.dot(&v_rel) / range;
-                let rr_tx = d_pos_tx.dot(&v_rel) / d_pos_tx.norm();
-                DVector::from_vec(vec![f64::midpoint(rr_rx, rr_tx)])
-            }
-        }
+    /// Direct optical prediction without light-time (for FD tests).
+    fn predict_optical_for_fd(
+        observer: &State<Equatorial, SSB>,
+        obj: &State<Equatorial, SSB>,
+    ) -> DVector<f64> {
+        let (ra, dec) = (obj.pos - observer.pos).to_ra_dec();
+        DVector::from_vec(vec![ra, dec])
+    }
+
+    /// Direct round-trip range prediction with explicit xmit/rcvr states
+    /// (for FD tests of `range_partials_pos`).
+    fn predict_range_for_fd(
+        xmit: &State<Equatorial, SSB>,
+        rcvr: &State<Equatorial, SSB>,
+        obj: &State<Equatorial, SSB>,
+    ) -> f64 {
+        let incoming = (obj.pos - rcvr.pos).norm();
+        let outgoing = (obj.pos - xmit.pos).norm();
+        f64::midpoint(incoming, outgoing)
+    }
+
+    /// Direct two-way Doppler prediction (classical) with explicit xmit/rcvr
+    /// states (for FD tests of `range_rate_partials`).
+    fn predict_rate_for_fd(
+        xmit: &State<Equatorial, SSB>,
+        rcvr: &State<Equatorial, SSB>,
+        obj: &State<Equatorial, SSB>,
+    ) -> f64 {
+        let d_pos_rx = obj.pos - rcvr.pos;
+        let d_pos_tx = obj.pos - xmit.pos;
+        let v_rel_rx = obj.vel - rcvr.vel;
+        let v_rel_tx = obj.vel - xmit.vel;
+        let rr_rx = d_pos_rx.dot(&v_rel_rx) / d_pos_rx.norm();
+        let rr_tx = d_pos_tx.dot(&v_rel_tx) / d_pos_tx.norm();
+        f64::midpoint(rr_rx, rr_tx)
     }
 
     #[test]
@@ -552,14 +872,20 @@ mod tests {
             dec: 0.0,
             sigma_ra: 1e-6,
             sigma_dec: 1e-6,
+            sigma_corr: 0.0,
             time_sigma: 0.0,
+            is_occultation: false,
         };
 
-        let h = obs.partials(&obj);
+        let h = obs.partials(&obj).unwrap();
+        let observer = match &obs {
+            AstrometricObservation::Optical { observer, .. } => observer.clone(),
+            _ => unreachable!(),
+        };
         let eps = 1e-8;
 
         for idx in 0..6 {
-            let fd = fd_partial(&obs, &obj, idx, eps);
+            let fd = fd_partial(|o| predict_optical_for_fd(&observer, o), &obj, idx, eps);
             for row in 0..2 {
                 let analytic = h[(row, idx)];
                 let numeric = fd[row];
@@ -575,54 +901,48 @@ mod tests {
 
     #[test]
     fn test_range_partials_vs_fd() {
-        let observer = make_state([1.0, 0.0, 0.0], [0.0, 0.01, 0.0], 2460000.5);
+        // Test the analytic Jacobian of `range_partials_pos` directly against
+        // FD using arbitrary state vectors -- no PCK lookup involved.
+        let rcvr = make_state([1.0, 0.0, 0.0], [0.0, 0.01, 0.0], 2460000.5);
+        let xmit = make_state([0.99, 0.001, 0.0], [0.0, 0.0099, 0.0], 2460000.5);
         let obj = make_state([2.3, 0.5, -0.2], [0.002, -0.001, 0.001], 2460000.5);
 
-        let obs = AstrometricObservation::RadarRange {
-            observer: observer.clone(),
-            range: 1.0,
-            sigma_range: 1e-6,
-        };
-
-        let h = obs.partials(&obj);
+        let h = range_partials_pos(&obj, &xmit, &rcvr);
         let eps = 1e-8;
 
         for idx in 0..6 {
-            let fd = fd_partial(&obs, &obj, idx, eps);
-            let analytic = h[(0, idx)];
-            let numeric = fd[0];
-            let abs_err = (analytic - numeric).abs();
-            let scale = analytic.abs().max(numeric.abs()).max(1e-15);
+            let fd = fd_partial(|o| predict_range_for_fd(&xmit, &rcvr, o), &obj, idx, eps);
+            // Range partials only depend on position (idx 0..3); velocity
+            // partials are zero by construction.
+            let analytic = if idx < 3 { h[idx] } else { 0.0 };
+            let abs_err = (analytic - fd).abs();
+            let scale = analytic.abs().max(fd.abs()).max(1e-15);
             assert!(
                 abs_err < 1e-7 || abs_err / scale < 1e-5,
-                "Range partial ({idx}) mismatch: analytic={analytic}, fd={numeric}",
+                "Range partial ({idx}) mismatch: analytic={analytic}, fd={fd}",
             );
         }
     }
 
     #[test]
     fn test_range_rate_partials_vs_fd() {
-        let observer = make_state([1.0, 0.0, 0.0], [0.0, 0.01, 0.0], 2460000.5);
+        // Test the analytic Jacobian of `range_rate_partials` directly against
+        // FD using arbitrary state vectors -- no PCK lookup involved.
+        let rcvr = make_state([1.0, 0.0, 0.0], [0.0, 0.01, 0.0], 2460000.5);
+        let xmit = make_state([0.99, 0.001, 0.0], [0.0, 0.0099, 0.0], 2460000.5);
         let obj = make_state([2.3, 0.5, -0.2], [0.002, -0.001, 0.001], 2460000.5);
 
-        let obs = AstrometricObservation::RadarRate {
-            observer: observer.clone(),
-            range_rate: 0.01,
-            sigma_range_rate: 1e-6,
-        };
-
-        let h = obs.partials(&obj);
+        let h = range_rate_partials(&obj, &xmit, &rcvr);
         let eps = 1e-8;
 
         for idx in 0..6 {
-            let fd = fd_partial(&obs, &obj, idx, eps);
-            let analytic = h[(0, idx)];
-            let numeric = fd[0];
-            let abs_err = (analytic - numeric).abs();
-            let scale = analytic.abs().max(numeric.abs()).max(1e-15);
+            let fd = fd_partial(|o| predict_rate_for_fd(&xmit, &rcvr, o), &obj, idx, eps);
+            let analytic = h[idx];
+            let abs_err = (analytic - fd).abs();
+            let scale = analytic.abs().max(fd.abs()).max(1e-15);
             assert!(
                 abs_err < 1e-7 || abs_err / scale < 1e-5,
-                "Range-rate partial ({idx}) mismatch: analytic={analytic}, fd={numeric}",
+                "Range-rate partial ({idx}) mismatch: analytic={analytic}, fd={fd}",
             );
         }
     }
@@ -668,7 +988,9 @@ mod tests {
             dec: true_dec + 0.005,
             sigma_ra: 1e-6,
             sigma_dec: 1e-6,
+            sigma_corr: 0.0,
             time_sigma: 0.0,
+            is_occultation: false,
         };
 
         let (resid, _pred) = obs.residual(obj.into()).unwrap();
@@ -686,12 +1008,73 @@ mod tests {
             dec: 0.0,
             sigma_ra: 0.5,
             sigma_dec: 0.25,
+            sigma_corr: 0.0,
             time_sigma: 0.0,
+            is_occultation: false,
         };
         let w = obs.weights();
         // 1/0.5^2 = 4
         assert!((w[0] - 4.0).abs() < 1e-12);
         // 1/0.25^2 = 16
         assert!((w[1] - 16.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_base_weight_matrix_zero_correlation_equals_diagonal() {
+        let obs = AstrometricObservation::Optical {
+            observer: make_state([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], 2460000.5),
+            ra: 0.0,
+            dec: 0.0,
+            sigma_ra: 0.5,
+            sigma_dec: 0.25,
+            sigma_corr: 0.0,
+            time_sigma: 0.0,
+            is_occultation: false,
+        };
+        let w = obs.base_weight_matrix();
+        assert_eq!(w.nrows(), 2);
+        assert!((w[(0, 0)] - 4.0).abs() < 1e-12);
+        assert!((w[(1, 1)] - 16.0).abs() < 1e-12);
+        assert!(w[(0, 1)].abs() < 1e-12);
+        assert!(w[(1, 0)].abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_base_weight_matrix_with_correlation_inverts_tilted_covariance() {
+        // Correlation coefficient 0.5, sigmas 1.0 and 2.0.
+        let sigma_ra = 1.0;
+        let sigma_dec = 2.0;
+        let corr = 0.5;
+        let obs = AstrometricObservation::Optical {
+            observer: make_state([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], 2460000.5),
+            ra: 0.0,
+            dec: 0.0,
+            sigma_ra,
+            sigma_dec,
+            sigma_corr: corr,
+            time_sigma: 0.0,
+            is_occultation: false,
+        };
+        let w = obs.base_weight_matrix();
+
+        // Build Sigma directly and invert it numerically; W should match.
+        let sigma = nalgebra::Matrix2::new(
+            sigma_ra * sigma_ra,
+            corr * sigma_ra * sigma_dec,
+            corr * sigma_ra * sigma_dec,
+            sigma_dec * sigma_dec,
+        );
+        let sigma_inv = sigma.try_inverse().unwrap();
+        for i in 0..2 {
+            for j in 0..2 {
+                let abs_err = (w[(i, j)] - sigma_inv[(i, j)]).abs();
+                assert!(
+                    abs_err < 1e-12,
+                    "W[{i},{j}] = {} but Sigma^-1 = {}",
+                    w[(i, j)],
+                    sigma_inv[(i, j)]
+                );
+            }
+        }
     }
 }

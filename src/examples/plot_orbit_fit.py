@@ -54,7 +54,7 @@ for vis in visible:
         observer=observer,
         ra=ra,
         dec=dec,
-        sigma_ra=0.1 / max(np.cos(np.radians(dec)), 1e-6),
+        sigma_ra=0.1,
         sigma_dec=0.1,
     )
     observations.append(obs)

@@ -1223,7 +1223,9 @@ mod tests {
                     dec: dec_noisy,
                     sigma_ra: sigma,
                     sigma_dec: sigma,
+                    sigma_corr: 0.0,
                     time_sigma: 0.0,
+                    is_occultation: false,
                 }
             })
             .collect()
@@ -1596,12 +1598,12 @@ mod tests {
                     dec: dec_noisy,
                     sigma_ra: noise_rad,
                     sigma_dec: noise_rad,
+                    sigma_corr: 0.0,
                     time_sigma: 0.0,
+                    is_occultation: false,
                 }
             })
             .collect();
-
-        drop(spk);
 
         let results = initial_orbit_determination(&observations);
         assert!(
@@ -1613,9 +1615,7 @@ mod tests {
         assert!(!results.is_empty(), "Should find at least one candidate");
 
         let obj_at = {
-            let spk = LOADED_SPK.try_read().unwrap();
             let obj_ssb = spk.try_to_ssb(obj.clone().into()).unwrap();
-            drop(spk);
             propagate_n_body_spk(obj_ssb, results[0].1.epoch, false, None).unwrap()
         };
         let best = best_candidate(&results, &obj_at);
@@ -1865,7 +1865,9 @@ mod tests {
             dec: 0.0,
             sigma_ra: 1e-5,
             sigma_dec: 1e-5,
+            sigma_corr: 0.0,
             time_sigma: 0.0,
+            is_occultation: false,
         }
     }
 

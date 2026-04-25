@@ -207,14 +207,37 @@ def fetch_mpc_observations(
     # Pass 1: validate and collect all fields needed for reweighting.
     valid = []
     for rec in records["ADES_DF"]:
-        if rec.get("Obstype") != "optical":
+        obstype = rec.get("Obstype")
+
+        if obstype == "optical":
+            ra_str = rec.get("ra")
+            dec_str = rec.get("dec")
+            if ra_str is None or dec_str is None:
+                continue
+            ra_deg = float(ra_str)
+            dec_deg = float(dec_str)
+            is_occultation = False
+
+        elif obstype == "occultation":
+            # Occultation: the asteroid occulted a background star.  The
+            # reported star position (rastar, decstar) is the asteroid's sky
+            # location, offset by (deltara, deltadec) in arcseconds.  The
+            # per-observation rmsra/rmsdec/rmscorr uncertainties come directly
+            # from the Gaia-referenced star catalog -- typically sub-mas --
+            # so the per-observatory sigma table is not used.
+            rastar = rec.get("rastar")
+            decstar = rec.get("decstar")
+            if rastar is None or decstar is None:
+                continue
+            dec_deg = float(decstar) + float(rec.get("deltadec") or 0.0) / 3600.0
+            cos_dec = np.cos(np.radians(dec_deg))
+            ra_deg = float(rastar) + float(rec.get("deltara") or 0.0) / (
+                3600.0 * max(cos_dec, 1e-6)
+            )
+            is_occultation = True
+
+        else:
             continue
-        ra_str = rec.get("ra")
-        dec_str = rec.get("dec")
-        if ra_str is None or dec_str is None:
-            continue
-        ra_deg = float(ra_str)
-        dec_deg = float(dec_str)
 
         obstime = rec.get("obstime")
         if obstime is None:
@@ -232,14 +255,57 @@ def fetch_mpc_observations(
         if observer is None:
             continue
 
-        obs_errors = get_observatory_std(stn)
-        if obs_errors is not None and use_observatory_residuals:
-            s_ra, s_dec = obs_errors
+        # Observation.optical expects sky-plane sigma_ra (sigma_ra * cos(dec))
+        # to match the convention of MPC ADES, Gaia DR3, and other astrometric
+        # data formats.
+        #
+        # Sigma resolution priority (matches JPL Horizons practice):
+        #   1. Per-observation ADES rmsra/rmsdec when present (modern submitters
+        #      report measurement-specific uncertainties that reflect actual
+        #      conditions on the night).
+        #   2. Per-observatory residual table from get_observatory_std().
+        #   3. Hardcoded 1.0 arcsec fallback.
+        # Occultation records always come through path 1; the per-observatory
+        # table reflects optical astrometry residuals and does not apply.
+        ades_rmsra = rec.get("rmsra")
+        ades_rmsdec = rec.get("rmsdec")
+        used_table = False
+        if ades_rmsra is not None and ades_rmsdec is not None:
+            s_ra = float(ades_rmsra)
+            s_dec = float(ades_rmsdec)
+        elif (
+            not is_occultation
+            and use_observatory_residuals
+            and (obs_errors := get_observatory_std(stn)) is not None
+        ):
+            # Table ra_std is computed from raw RA coordinate residuals;
+            # multiply by cos(dec) to match the sky-plane input convention.
+            s_ra = obs_errors[0] * np.cos(np.radians(dec_deg))
+            s_dec = obs_errors[1]
+            used_table = True
         else:
-            s_ra = float(rec.get("rmsra") or 1.0)
-            s_dec = float(rec.get("rmsdec") or 1.0)
+            s_ra = 1.0
+            s_dec = 1.0
 
-        if debias_table is not None:
+        # ADES ``rmscorr`` is the RA/Dec correlation coefficient in [-1, 1].
+        # Occultation records routinely have significant correlation (the
+        # timing uncertainty stretches the ellipse along-track).  When falling
+        # back to per-observatory sigmas, the table carries no correlation, so
+        # we leave it at zero.  Clamp strictly inside (-1, 1).
+        sigma_corr = 0.0
+        if not used_table:
+            rmscorr = rec.get("rmscorr")
+            if rmscorr is not None:
+                try:
+                    rmscorr = float(rmscorr)
+                    if np.isfinite(rmscorr):
+                        sigma_corr = max(min(rmscorr, 0.999), -0.999)
+                except (TypeError, ValueError):
+                    pass
+
+        if debias_table is not None and not is_occultation:
+            # Occultation positions are tied to the Gaia reference frame
+            # directly; the EFCC18 catalog-bias correction does not apply.
             astcat = rec.get("astcat")
             if astcat:
                 mpc_code = _ADES_TO_MPC_CODE.get(astcat.upper())
@@ -263,21 +329,23 @@ def fetch_mpc_observations(
                 "dec": dec_deg,
                 "s_ra": s_ra,
                 "s_dec": s_dec,
+                "sigma_corr": sigma_corr,
                 "band": band,
                 "mag": mag,
                 "observer": observer,
+                "is_occultation": is_occultation,
             }
         )
 
     if not valid:
         return []
 
-    # Pass 2: per-night sigma reweighting.
+    # Pass 2: per-night sigma reweighting (occultations are always independent).
     if apply_over_obs_reweight:
         factors = _over_obs_reweight_factors(
             [r["stn"] for r in valid],
             [r["jd"] for r in valid],
-            [False] * len(valid),  # ADES format does not distinguish spacecraft
+            [r["is_occultation"] for r in valid],
         )
     else:
         factors = [1.0] * len(valid)
@@ -285,6 +353,10 @@ def fetch_mpc_observations(
     # Pass 3: build Observation objects.
     observations = []
     for r, factor in zip(valid, factors):
+        # Occultation positional uncertainties already encode the timing
+        # constraint (rmsra/rmsdec are derived from timing error projected
+        # onto the sky).  Set time_sigma=0 to avoid double-counting.
+        time_sigma = 0.0 if r["is_occultation"] else 0.1
         observations.append(
             Observation.optical(
                 observer=r["observer"],
@@ -292,8 +364,11 @@ def fetch_mpc_observations(
                 dec=r["dec"],
                 sigma_ra=float(r["s_ra"]) * factor,
                 sigma_dec=float(r["s_dec"]) * factor,
+                sigma_corr=r["sigma_corr"],
                 band=r["band"],
                 mag=r["mag"],
+                time_sigma=time_sigma,
+                is_occultation=r["is_occultation"],
             )
         )
 
