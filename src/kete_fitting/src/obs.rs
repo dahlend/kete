@@ -29,13 +29,44 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use kete_core::constants::{AU_KM, C_AU_PER_DAY_INV};
+use kete_core::constants::{AU_KM, C_AU_PER_DAY, C_AU_PER_DAY_INV, GMS};
 use kete_core::desigs::Desig;
 use kete_core::frames::{Equatorial, SSB, geodetic_lat_lon_to_ecef};
 use kete_core::prelude::{Error, KeteResult, State};
 use kete_core::time::{TDB, Time};
 use kete_spice::prelude::{LOADED_PCK, LOADED_SPK};
 use nalgebra::{DVector, Matrix2x3, Matrix3x1, RowVector6, Vector3};
+
+/// Solar Schwarzschild radius in AU: ``2 GM_sun / c^2``.
+///
+/// Used by [`shapiro_range_au`] to compute the gravitational time-delay
+/// contribution to one-way radar range.  Numerical value ~1.97e-8 AU
+/// (~2.95 km), matching the standard literature value.
+const SHAPIRO_RS_AU: f64 = 2.0 * GMS / (C_AU_PER_DAY * C_AU_PER_DAY);
+
+/// Shapiro (gravitational) range delay along a one-way light path, in AU.
+///
+/// Returns the contribution that should be **added** to the geometric
+/// one-way range `leg` to obtain the predicted radar light-time path
+/// length.  The formula follows the standard parametrized post-Newtonian
+/// expression with `gamma = 1`:
+///
+/// ```text
+///     dr = (2 GM_sun / c^2) * ln((r1 + r2 + R) / (r1 + r2 - R))
+/// ```
+///
+/// where `r1`, `r2` are the heliocentric distances of the two leg
+/// endpoints (AU) and `R = leg` is the geometric leg length (AU).  For
+/// near-Earth radar geometries the term is sub-meter; it grows to tens
+/// of kilometers at solar conjunction and is required to match JPL's
+/// radar predictions.
+fn shapiro_range_au(r1: f64, r2: f64, leg: f64) -> f64 {
+    let denom = r1 + r2 - leg;
+    if denom <= 0.0 {
+        return 0.0;
+    }
+    SHAPIRO_RS_AU * ((r1 + r2 + leg) / denom).ln()
+}
 
 /// Compute the SSB-centered Equatorial state of an Earth ground station at
 /// the given epoch.
@@ -525,21 +556,33 @@ impl AstrometricObservation {
                 range,
                 ..
             } => {
-                // Round-trip model: (incoming + outgoing) / 2.
+                // Round-trip model: (incoming + outgoing) / 2 + Shapiro delay.
                 // Compute rcvr at t_rx and iteratively refine xmit at t_tx
                 // via predicted geometry (matches find_orb's `compute_radar_info`).
                 let rcvr_state =
                     station_state_at(*rcvr_lat_rad, *rcvr_lon_rad, *rcvr_height_km, *epoch)?;
                 let incoming = (obj_lt.pos - rcvr_state.pos).norm();
                 let mut outgoing = incoming;
+                let mut xmit_state = rcvr_state.clone();
                 for _ in 0..3 {
                     let rtt_days = (incoming + outgoing) * C_AU_PER_DAY_INV;
                     let t_tx = *epoch - rtt_days;
-                    let xmit_state =
+                    xmit_state =
                         station_state_at(*xmit_lat_rad, *xmit_lon_rad, *xmit_height_km, t_tx)?;
                     outgoing = (obj_lt.pos - xmit_state.pos).norm();
                 }
-                let pred = f64::midpoint(incoming, outgoing);
+                // Shapiro (gravitational) delay along each leg.  Sun position
+                // at t_rx is used as a single reference; Sun moves <5e-3 AU
+                // over a round-trip light time so the heliocentric distances
+                // are insensitive to which epoch is sampled.
+                let spk = LOADED_SPK.try_read()?;
+                let sun_pos = spk.try_get_state::<Equatorial>(10, *epoch)?.pos;
+                let r_obj = (obj_lt.pos - sun_pos).norm();
+                let r_rcvr = (rcvr_state.pos - sun_pos).norm();
+                let r_xmit = (xmit_state.pos - sun_pos).norm();
+                let shapiro_in = shapiro_range_au(r_obj, r_rcvr, incoming);
+                let shapiro_out = shapiro_range_au(r_obj, r_xmit, outgoing);
+                let pred = f64::midpoint(incoming + shapiro_in, outgoing + shapiro_out);
                 Ok((
                     DVector::from_column_slice(&[range - pred]),
                     DVector::from_column_slice(&[pred]),

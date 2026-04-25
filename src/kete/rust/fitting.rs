@@ -299,6 +299,50 @@ impl PyObservation {
         Ok(st.into())
     }
 
+    /// Compute the residual ``(observed - predicted)`` and the predicted
+    /// measurement for this observation against a given object state.
+    ///
+    /// The state is expected at this observation's epoch (use
+    /// :func:`~kete.propagate_n_body` to bring an arbitrary-epoch state to
+    /// ``self.epoch`` first).  Light-time correction is applied internally;
+    /// for radar the iterative ``t_tx`` refinement and relativistic two-way
+    /// Doppler are handled by the same code path used during fitting.
+    ///
+    /// Parameters
+    /// ----------
+    /// obj_state : :class:`~kete.State`
+    ///     Object state at the observation epoch (any center / frame).
+    ///
+    /// Returns
+    /// -------
+    /// tuple[list[float], list[float]]
+    ///     ``(residual, predicted)``.
+    ///
+    ///     - Optical: 2-element lists.  ``residual`` is
+    ///       ``[dRA_sky, dDec]`` in arcseconds, sky-plane convention
+    ///       (``dRA`` includes ``cos(dec)``, matching
+    ///       :py:meth:`Observation.optical`'s ``sigma_ra`` units).
+    ///       ``predicted`` is ``[ra_deg, dec_deg]``.
+    ///     - Radar range: 1-element lists in AU.
+    ///     - Radar range-rate: 1-element lists in AU/day.
+    fn residual(&self, obj_state: PyState) -> PyResult<(Vec<f64>, Vec<f64>)> {
+        let raw: State<Equatorial> = obj_state.raw.into();
+        let (resid, pred) = self.obs.residual(raw)?;
+
+        match &self.obs {
+            AstrometricObservation::Optical { dec, .. } => {
+                let cos_dec = dec.cos().abs();
+                let r = vec![resid[0] * RAD_TO_ARCSEC * cos_dec, resid[1] * RAD_TO_ARCSEC];
+                let p = vec![pred[0].to_degrees(), pred[1].to_degrees()];
+                Ok((r, p))
+            }
+            _ => Ok((
+                resid.iter().copied().collect(),
+                pred.iter().copied().collect(),
+            )),
+        }
+    }
+
     /// Right ascension in degrees (optical only, None otherwise).
     #[getter]
     fn ra(&self) -> Option<f64> {
