@@ -680,7 +680,7 @@ impl PyOrbitFit {
 ///     corrected expected value, and recovered when it falls below 6/7
 ///     of this threshold. For a 2-component optical observation with
 ///     calibrated weights, a 3-sigma outlier in one axis gives z = 9/2 = 4.5,
-///     so values of 4–5 match per-component 3-sigma rejection. Default is 4.5.
+///     so values of 4-5 match per-component 3-sigma rejection. Default is 4.5.
 /// max_reject_passes : int
 ///     Maximum number of outlier-rejection passes.  Set to 0 to disable
 ///     outlier rejection entirely.  Default is 10.

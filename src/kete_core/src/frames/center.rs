@@ -17,7 +17,7 @@ pub trait CenterBody: Sized + Sync + Send + Clone + Copy + Debug + PartialEq {
     fn center_id(&self) -> i32;
 }
 
-/// Runtime-determined center body — the default.
+/// Runtime-determined center body -- the default.
 ///
 /// Carries the NAIF center id at runtime; states may be re-centered via
 /// [`SpkCollection::try_change_center`].

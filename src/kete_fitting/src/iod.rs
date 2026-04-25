@@ -1848,7 +1848,7 @@ mod tests {
     // -- Apparition selection tests ----------------------------------
 
     /// Make a minimal optical observation at a given JD.
-    /// Uses a fixed position and direction — only the epoch matters for
+    /// Uses a fixed position and direction -- only the epoch matters for
     /// apparition grouping tests.
     fn dummy_obs(jd: f64) -> AstrometricObservation {
         let s = make_state([1.0, 0.0, 0.0], [0.0, 0.01, 0.0], jd);

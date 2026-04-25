@@ -636,7 +636,7 @@ impl AstrometricObservation {
                 let rr_tx = d_pos_tx.dot(&v_rel_tx) / range_tx;
 
                 // Convert to dimensionless beta = v_radial / c.
-                // C_AU_PER_DAY_INV = 1/c in units of day/AU; multiply to get AU/day → dimensionless.
+                // C_AU_PER_DAY_INV = 1/c in units of day/AU; multiply to get AU/day -> dimensionless.
                 let c_au_per_day = 1.0 / C_AU_PER_DAY_INV;
                 let beta_rx = rr_rx / c_au_per_day;
                 let beta_tx = rr_tx / c_au_per_day;
@@ -647,7 +647,7 @@ impl AstrometricObservation {
                     .sqrt();
 
                 // Predicted range-rate: derived from frequency shift via
-                //   Δf/f = doppler_factor - 1,  range_rate = -c * Δf / (2f)
+                //   df/f = doppler_factor - 1,  range_rate = -c * df / (2f)
                 let pred = -c_au_per_day * 0.5 * (doppler_factor - 1.0);
                 Ok((
                     DVector::from_column_slice(&[range_rate - pred]),

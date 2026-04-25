@@ -2,11 +2,11 @@
 //!
 //! Two output types are supported:
 //!
-//! - **Type 2** (Chebyshev position polynomials) — best for slow-moving objects
+//! - **Type 2** (Chebyshev position polynomials) -- best for slow-moving objects
 //!   (asteroids, planets, deep-space missions).  Excellent compression for smooth
 //!   orbits.
 //!
-//! - **Type 13** (Hermite interpolation, unequal time steps) — best for fast
+//! - **Type 13** (Hermite interpolation, unequal time steps) -- best for fast
 //!   orbiters (LEO, MEO) or any object whose source data is already dense.
 //!   Stores position + velocity at each node; Hermite interpolation naturally
 //!   follows the orbital dynamics between nodes.
@@ -61,7 +61,7 @@ const T13_S_MAX_DEFAULT: f64 = 86400.0;
 /// Number of validation points between each pair of neighboring nodes.
 const T13_N_VALIDATE: usize = 5;
 
-// ── Segment-domain helpers ──────────────────────────────────────────────────
+// -- Segment-domain helpers --------------------------------------------------
 
 /// Buffer (SPICE seconds) to shrink each segment boundary inward, ensuring
 /// that queries after JD round-trip stay within the segment.  100 us gives
@@ -828,7 +828,7 @@ fn t13_probe_max_error(
             win_start
         };
 
-        // Skip probe windows that straddle a source segment boundary —
+        // Skip probe windows that straddle a source segment boundary --
         // nodes from different segments may have small discontinuities
         // that produce misleading error estimates.
         let t_win_lo = t_start + win_start as f64 * actual_step;
@@ -1044,7 +1044,7 @@ fn t13_validate_sampled(
     Ok(max_err)
 }
 
-// ── Segment-domain helpers ──────────────────────────────────────────────────
+// -- Segment-domain helpers --------------------------------------------------
 
 /// Sort raw `(start, end)` ranges and shrink each inward by `buffer` to
 /// protect against JD round-trip imprecision.
@@ -1087,7 +1087,7 @@ fn merge_continuous_runs(
     for &(s, e) in &sorted_segments[1..] {
         let gap = s - cur.1;
         if gap <= 0.0 {
-            // Overlapping or exactly abutting — always merge.
+            // Overlapping or exactly abutting -- always merge.
             cur.1 = cur.1.max(e);
         } else if gap <= gap_tolerance
             && is_boundary_continuous(
@@ -1219,9 +1219,9 @@ fn raw_boundaries(
     Ok(raw)
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
+// =============================================================================
 //  Tests
-// ═════════════════════════════════════════════════════════════════════════════
+// =============================================================================
 
 #[cfg(test)]
 mod tests {

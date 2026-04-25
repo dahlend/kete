@@ -287,7 +287,7 @@ pub fn fit_orbit_filter(
         let n_accepted = accepted_flags.iter().filter(|&&a| a).count();
         if n_accepted == 0 {
             return Err(Error::ValueError(
-                "Filter could not process any observations — the initial state \
+                "Filter could not process any observations -- the initial state \
                  may be too far from the truth."
                     .into(),
             ));
@@ -315,7 +315,7 @@ pub fn fit_orbit_filter(
         best_cov_smoothed = cov_smoothed;
 
         if change < CONVERGENCE_THRESHOLD && iteration + 1 < MAX_ITERATIONS {
-            // Converged early — do one final pass with the gate enabled.
+            // Converged early -- do one final pass with the gate enabled.
             let (final_epochs, final_accepted, final_xv, final_cov) = forward_pass(
                 &iter_state,
                 &iter_cov,
@@ -339,7 +339,7 @@ pub fn fit_orbit_filter(
         }
     }
 
-    // ── Build result ──────────────────────────────────────────────────
+    // -- Build result ------------------------------------------------
     build_result(
         &sorted,
         initial_state,
@@ -376,7 +376,7 @@ fn forward_pass(
         let obs_epoch = observation.epoch();
         let dt = obs_epoch.jd - state_cur.epoch.jd;
 
-        // ── Prediction ────────────────────────────────────────────
+        // -- Prediction --------------------------------------------
         // EKF: propagate the state nonlinearly; use the STM only for
         // the covariance prediction.
         let (phi_full, xv_pred, cov_pred, new_state) = if dt.abs() > 1e-12 {
@@ -390,7 +390,7 @@ fn forward_pass(
                 cov_pred = (&cov_pred + cov_pred.transpose()) * 0.5;
                 (phi, xv_pred, cov_pred, propagated_ssb)
             } else {
-                // Propagation failed — skip this observation.
+                // Propagation failed -- skip this observation.
                 // State remains at the current epoch; the next observation
                 // will attempt a longer propagation from here.
                 let phi = DMatrix::identity(dim, dim);
@@ -402,7 +402,7 @@ fn forward_pass(
             (phi, xv.clone(), cov.clone(), state_cur.clone())
         };
 
-        // ── Measurement update ────────────────────────────────────
+        // -- Measurement update ------------------------------------
         let Ok(observer_state) = observation.observer() else {
             push_skipped_epoch(
                 &mut epochs,
@@ -417,7 +417,7 @@ fn forward_pass(
             continue;
         };
         let Ok(obj_lt_ssb) = apply_light_time(&new_state, &observer_state) else {
-            // Light-time correction failed — skip this observation
+            // Light-time correction failed -- skip this observation
             // but advance the state to the predicted epoch.
             push_skipped_epoch(
                 &mut epochs,
@@ -624,7 +624,7 @@ fn build_result(
         non_grav: ng.clone(),
     };
 
-    // ── Compute final residuals from smoothed states ──────────────────
+    // -- Compute final residuals from smoothed states --------------
     let mut residuals: Vec<DVector<f64>> = Vec::with_capacity(n_obs);
     let mut chi2_sum = 0.0;
     let mut n_meas = 0_usize;

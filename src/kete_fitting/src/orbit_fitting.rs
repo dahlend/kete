@@ -55,7 +55,7 @@ const EXPANSION_INITIAL_RADIUS_DAYS: f64 = 30.0;
 /// Released for the final full-arc pass.
 const EXPANSION_SIGMA_FLOOR_RAD: f64 = 0.5 / 3600.0 * (std::f64::consts::PI / 180.0);
 
-/// CMC recovery threshold = rejection threshold × this factor (Carpino et al. 2003).
+/// CMC recovery threshold = rejection threshold * this factor (Carpino et al. 2003).
 const CMC_RECOVERY_FRACTION: f64 = 6.0 / 7.0;
 
 /// Minimum leverage-corrected expected chi2 denominator (prevents division instability).
