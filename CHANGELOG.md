@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Significant improvements to orbit fitting, mostly done through improved modeling of
+  known systematic errors in existing catalogs/observatory biases.
+- EFCC18 star-catalog astrometric debiasing applied when fetching MPC observations.
+- Gaia DR3 observation queries (`kete.orbit_fitting.fetch_gaia_observations`).
+- Per-night sigma reweighting for over-observed nights following Veres et al. 2017.
+- `fetch_observations` convenience function that combines MPC optical, Gaia DR3, and
+  JPL radar observations into a single list.
+- HEALPix implementation in `kete_stats`, used by the debiasing tables.
+
+### Changed
+
+- `kete.fitting` and `kete.gaia` have been merged into a new `kete.orbit_fitting` package
+  that consolidates all orbit fitting and observation ingestion tools in one place.
+- `kete.mpc` now contains only designation packing/unpacking and MPC orbit catalog fetching.
+  Observation parsing (`MPCObservation`, `mpc_obs_to_observations`, `fetch_mpc_observations`)
+  has moved to `kete.orbit_fitting`.
+- `kete.horizons` now contains only SPICE kernel downloads and the Horizons orbit catalog.
+  Radar observation fetching has moved to `kete.orbit_fitting`.
+- Updated per-observatory astrometric uncertainty table.
+- Rust backend representation of `State` is now generic over the center body as well as
+  the reference frame. No Python change.
+
+### Fixed
+
+- Timing uncertainties for MPC observations are now assigned per-observation based on
+  the observation era and type, rather than using a single fixed value.
+- Outlier-rejection chi-squared threshold corrected: a 3-sigma outlier in one axis of
+  a 2D optical observation gives z = 4.5, the threshold is now documented and set
+  accordingly.
+
+
 ## [3.1.0]
 
 ## Added
