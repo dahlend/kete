@@ -146,8 +146,14 @@ def fetch_gaia_observations(
         # schemas; fall back to zero.
         corr_rand = row.get("ra_dec_correlation_random")
         corr_sys = row.get("ra_dec_correlation_systematic")
-        corr_rand = float(corr_rand) if corr_rand is not None and np.isfinite(corr_rand) else 0.0
-        corr_sys = float(corr_sys) if corr_sys is not None and np.isfinite(corr_sys) else 0.0
+        corr_rand = (
+            float(corr_rand)
+            if corr_rand is not None and np.isfinite(corr_rand)
+            else 0.0
+        )
+        corr_sys = (
+            float(corr_sys) if corr_sys is not None and np.isfinite(corr_sys) else 0.0
+        )
 
         # Sum random and systematic covariance matrices (mas^2, sky
         # projection -- the random/systematic RA components already include
