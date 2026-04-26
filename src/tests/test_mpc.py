@@ -107,9 +107,7 @@ def test_mpc_obs_to_observations_ground():
     mpc_obs = orbit_fitting.MPCObservation.from_lines(lines)
     assert len(mpc_obs) == 1
 
-    obs_list = orbit_fitting.mpc_obs_to_observations(
-        mpc_obs, sigma_ra=1.0, sigma_dec=1.0
-    )
+    obs_list = orbit_fitting.mpc_obs_to_observations(mpc_obs)
     assert len(obs_list) == 1
     obs = obs_list[0]
 

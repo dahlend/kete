@@ -20,7 +20,7 @@ pub trait CenterBody: Sized + Sync + Send + Clone + Copy + Debug + PartialEq {
 /// Runtime-determined center body -- the default.
 ///
 /// Carries the NAIF center id at runtime; states may be re-centered via
-/// [`SpkCollection::try_change_center`].
+/// `SpkCollection::try_change_center` in `kete_spice`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DynCenter(pub i32);
 
