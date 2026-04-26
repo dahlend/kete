@@ -6,13 +6,13 @@ Overview
 
 When an asteroid is first discovered, we typically have only a handful of
 observations spanning a few nights.  Standard orbit fitting
-(:func:`~kete.fitting.fit_orbit`) produces a best-fit orbit and an uncertainty
+(:func:`~kete.orbit_fitting.fit_orbit`) produces a best-fit orbit and an uncertainty
 estimate, but it assumes the uncertainty is Gaussian.  For short arcs this
 assumption breaks down badly: the family of orbits consistent with the data
 can be multi-modal, banana-shaped, or have long tails toward parabolic and
 hyperbolic solutions.
 
-:func:`~kete.fitting.fit_orbit_mcmc` makes no Gaussian assumption.  By
+:func:`~kete.orbit_fitting.fit_orbit_mcmc` makes no Gaussian assumption.  By
 exploring the full space of possible orbits, it produces a set of orbit samples
 that faithfully represent the true uncertainty -- however non-Gaussian it may
 be.  This is essential for impact probability assessment, where the tails
@@ -23,7 +23,7 @@ This tutorial walks through the complete workflow on a synthetic example:
 1. Build a realistic Apollo-type NEO orbit with a close Earth approach.
 2. Generate six astrometric observations over three nights from Palomar.
 3. Recover candidate orbits with IOD and refine with differential correction.
-4. Estimate the orbit uncertainty with :func:`~kete.fitting.fit_orbit_mcmc`.
+4. Estimate the orbit uncertainty with :func:`~kete.orbit_fitting.fit_orbit_mcmc`.
 5. Propagate the sampled orbits to the close-approach epoch to assess the
    miss-distance distribution.
 
@@ -144,7 +144,7 @@ to account for the convergence of right ascension lines toward the poles.
 
         # arcsec
         sigma = 0.3
-        obs = kete.fitting.Observation.optical(
+        obs = kete.orbit_fitting.Observation.optical(
             observer=observer,
             ra=ra + np.random.normal(0, sigma / 3600)
             / max(np.cos(np.radians(dec)), 0.1),
@@ -171,9 +171,9 @@ function scans a range of topocentric distances for each observation pair
 and uses Lambert's problem to connect them, returning one or more candidate
 orbits consistent with the data.
 
-Each IOD candidate is then refined with :func:`~kete.fitting.fit_orbit`
+Each IOD candidate is then refined with :func:`~kete.orbit_fitting.fit_orbit`
 (differential correction).  The converged states are passed to
-:func:`~kete.fitting.fit_orbit_mcmc` along with the observations.
+:func:`~kete.orbit_fitting.fit_orbit_mcmc` along with the observations.
 
 If IOD returns multiple candidates, we fit each one and pass all converged
 states to MCMC.  The sampler runs separate chains from each seed and pools
@@ -181,7 +181,7 @@ the results, which naturally captures multi-modality.
 
 .. code-block:: python
 
-    candidates = kete.fitting.initial_orbit_determination(observations)
+    candidates = kete.orbit_fitting.initial_orbit_determination(observations)
     print(f"IOD returned {len(candidates)} candidate(s)")
     for i, (score, c) in enumerate(candidates):
         e = c.elements
@@ -190,7 +190,7 @@ the results, which naturally captures multi-modality.
     # Refine each IOD candidate with differential correction.
     fits = []
     for _score, c in candidates:
-        fit = kete.fitting.fit_orbit(c, observations)
+        fit = kete.orbit_fitting.fit_orbit(c, observations)
         if fit.converged:
             fits.append(fit)
     print(f"{len(fits)} converged fit(s)")
@@ -209,7 +209,7 @@ the results, which naturally captures multi-modality.
 4. Orbit Uncertainty Estimation
 --------------------------------
 
-:func:`~kete.fitting.fit_orbit_mcmc` uses an adaptive MCMC algorithm to
+:func:`~kete.orbit_fitting.fit_orbit_mcmc` uses an adaptive MCMC algorithm to
 explore the space of orbits consistent with the observations.  Each step
 requires a full numerical propagation, which is the dominant cost.
 
@@ -229,7 +229,7 @@ robust when the stated uncertainties are imperfect.
 
 .. code-block:: python
 
-    samples = kete.fitting.fit_orbit_mcmc(
+    samples = kete.orbit_fitting.fit_orbit_mcmc(
         seeds=[fit.state for fit in fits],
         observations=observations,
         num_draws=2000,
@@ -483,24 +483,24 @@ NEO problems.
 When to Use MCMC vs. Standard Orbit Fitting
 ----------------------------------------------
 
-MCMC (:func:`~kete.fitting.fit_orbit_mcmc`) is powerful but expensive.
+MCMC (:func:`~kete.orbit_fitting.fit_orbit_mcmc`) is powerful but expensive.
 Here are guidelines for choosing the right tool:
 
 - **Long, well-sampled arcs** (months to years of observations): use
-  :func:`~kete.fitting.fit_orbit` alone.  The Gaussian
+  :func:`~kete.orbit_fitting.fit_orbit` alone.  The Gaussian
   approximation is excellent and the uncertainty from least squares
   is reliable.
 
 - **Short arcs** (a few nights) where the uncertainty is non-Gaussian: use
-  :func:`~kete.fitting.fit_orbit_mcmc`.  The cost is justified because the
+  :func:`~kete.orbit_fitting.fit_orbit_mcmc`.  The cost is justified because the
   shape of the uncertainty matters for risk assessment.
 
-- **Intermediate cases**: run :func:`~kete.fitting.fit_orbit` first.  If the
+- **Intermediate cases**: run :func:`~kete.orbit_fitting.fit_orbit` first.  If the
   uncertainty is suspiciously large or the orbit is poorly constrained,
   follow up with MCMC.
 
 The MCMC sampler accepts raw :class:`~kete.State` objects (e.g. from
-:func:`~kete.fitting.initial_orbit_determination` or
-:func:`~kete.fitting.fit_orbit`), so it can be used directly with IOD 
+:func:`~kete.orbit_fitting.initial_orbit_determination` or
+:func:`~kete.orbit_fitting.fit_orbit`), so it can be used directly with IOD 
 candidates or converged states.  A linearization at each seed builds the
 initial mass matrix internally.
