@@ -4,7 +4,7 @@
 //! turning center-mismatch errors into type errors.
 //!
 //! The default type parameter is [`DynCenter`], which carries the center NAIF
-//! id at runtime and may be re-centered via [`SpkCollection::try_change_center`].
+//! id at runtime.
 //! The typed variants [`SSB`], [`SunCenter`], and [`EarthCenter`] are zero-sized
 //! and guarantee a specific center at compile time.
 use std::fmt::Debug;
@@ -20,7 +20,7 @@ pub trait CenterBody: Sized + Sync + Send + Clone + Copy + Debug + PartialEq {
 /// Runtime-determined center body -- the default.
 ///
 /// Carries the NAIF center id at runtime; states may be re-centered via
-/// `SpkCollection::try_change_center` in `kete_spice`.
+/// ``SpkCollection::try_change_center`` in `kete_spice`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DynCenter(pub i32);
 
