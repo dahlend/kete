@@ -29,6 +29,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+use kete_core::Band;
 use kete_core::constants::{AU_KM, C_AU_PER_DAY, C_AU_PER_DAY_INV, GMS};
 use kete_core::desigs::Desig;
 use kete_core::frames::{Equatorial, SSB, Vector, geodetic_lat_lon_to_ecef};
@@ -38,10 +39,6 @@ use kete_spice::prelude::{LOADED_PCK, LOADED_SPK};
 use nalgebra::{DVector, Matrix2x3, Matrix3x1, RowVector6, Vector3};
 
 /// Solar Schwarzschild radius in AU: ``2 GM_sun / c^2``.
-///
-/// Used by [`shapiro_range_au`] to compute the gravitational time-delay
-/// contribution to one-way radar range.  Numerical value ~1.97e-8 AU
-/// (~2.95 km), matching the standard literature value.
 const SHAPIRO_RS_AU: f64 = 2.0 * GMS / (C_AU_PER_DAY * C_AU_PER_DAY);
 
 /// Shapiro (gravitational) range delay along a one-way light path, in AU.
@@ -184,6 +181,10 @@ pub enum AstrometricObservation {
         /// route sigma resolution and bias-correction differently;
         /// fitting math is identical for both cases.
         is_occultation: bool,
+        /// Photometric band identifier.
+        band: Band,
+        /// Apparent magnitude.  `f64::NAN` when unavailable.
+        mag: f64,
     },
 
     /// Radar range measurement.
@@ -329,6 +330,8 @@ impl AstrometricObservation {
                 sigma_corr,
                 time_sigma,
                 is_occultation,
+                band,
+                mag,
             } => Self::Optical {
                 observer: observer.clone(),
                 ra: *ra,
@@ -338,6 +341,8 @@ impl AstrometricObservation {
                 sigma_corr: *sigma_corr,
                 time_sigma: *time_sigma,
                 is_occultation: *is_occultation,
+                band: *band,
+                mag: *mag,
             },
             Self::RadarRange { .. } | Self::RadarRate { .. } => self.clone(),
         }
@@ -972,12 +977,17 @@ mod tests {
             sigma_corr: 0.0,
             time_sigma: 0.0,
             is_occultation: false,
+            band: Band::Unknown([0; 8]),
+            mag: f64::NAN,
         };
 
         let h = obs.partials(&obj).unwrap();
         let observer = match &obs {
             AstrometricObservation::Optical { observer, .. } => observer.clone(),
-            _ => unreachable!(),
+            AstrometricObservation::RadarRange { .. }
+            | AstrometricObservation::RadarRate { .. } => {
+                unreachable!()
+            }
         };
         let eps = 1e-8;
 
@@ -1088,6 +1098,8 @@ mod tests {
             sigma_corr: 0.0,
             time_sigma: 0.0,
             is_occultation: false,
+            band: Band::Unknown([0; 8]),
+            mag: f64::NAN,
         };
 
         let (resid, _pred) = obs.residual(obj.into()).unwrap();
@@ -1108,6 +1120,8 @@ mod tests {
             sigma_corr: 0.0,
             time_sigma: 0.0,
             is_occultation: false,
+            band: Band::Unknown([0; 8]),
+            mag: f64::NAN,
         };
         let w = obs.weights();
         // 1/0.5^2 = 4
@@ -1127,6 +1141,8 @@ mod tests {
             sigma_corr: 0.0,
             time_sigma: 0.0,
             is_occultation: false,
+            band: Band::Unknown([0; 8]),
+            mag: f64::NAN,
         };
         let w = obs.base_weight_matrix();
         assert_eq!(w.nrows(), 2);
@@ -1151,6 +1167,8 @@ mod tests {
             sigma_corr: corr,
             time_sigma: 0.0,
             is_occultation: false,
+            band: Band::Unknown([0; 8]),
+            mag: f64::NAN,
         };
         let w = obs.base_weight_matrix();
 

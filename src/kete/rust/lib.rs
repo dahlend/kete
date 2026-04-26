@@ -225,6 +225,7 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fitting::lambert_py, m)?)?;
     m.add_function(wrap_pyfunction!(fitting::fit_orbit_mcmc_py, m)?)?;
     m.add_function(wrap_pyfunction!(fitting::get_observatory_stats_py, m)?)?;
+    m.add_function(wrap_pyfunction!(fitting::band_calibration_py, m)?)?;
 
     m.add_function(wrap_pyfunction!(kete_core::cache::cache_path, m)?)?;
 

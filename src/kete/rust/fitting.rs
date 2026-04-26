@@ -2,6 +2,7 @@
 //!
 //! Wraps `kete_fitting` types and functions for use from Python.
 
+use kete_core::Band;
 use kete_core::forces::NonGravModel;
 use kete_core::frames::{Equatorial, Vector};
 use kete_core::prelude::*;
@@ -35,10 +36,6 @@ const RAD_TO_ARCSEC: f64 = 180.0 * 3600.0 / std::f64::consts::PI;
 pub struct PyObservation {
     /// The core observation data (astrometry / radar).
     pub obs: AstrometricObservation,
-    /// Photometric filter name (e.g. "V", "W1").  Metadata only.
-    pub band: String,
-    /// Apparent magnitude.  NaN when unavailable.  Metadata only.
-    pub mag: f64,
 }
 
 #[pymethods]
@@ -148,9 +145,9 @@ impl PyObservation {
                 sigma_corr,
                 time_sigma,
                 is_occultation,
+                band: Band::from_name(&band),
+                mag,
             },
-            band,
-            mag,
         })
     }
 
@@ -214,8 +211,6 @@ impl PyObservation {
                 range,
                 sigma_range,
             },
-            band: String::new(),
-            mag: f64::NAN,
         })
     }
 
@@ -276,8 +271,6 @@ impl PyObservation {
                 range_rate,
                 sigma_range_rate,
             },
-            band: String::new(),
-            mag: f64::NAN,
         })
     }
 
@@ -452,13 +445,19 @@ impl PyObservation {
     /// Photometric filter name (optical only, empty string for radar).
     #[getter]
     fn band(&self) -> &str {
-        &self.band
+        match &self.obs {
+            AstrometricObservation::Optical { band, .. } => band.name(),
+            _ => "",
+        }
     }
 
     /// Apparent magnitude (NaN when unavailable).
     #[getter]
     fn mag(&self) -> f64 {
-        self.mag
+        match &self.obs {
+            AstrometricObservation::Optical { mag, .. } => *mag,
+            _ => f64::NAN,
+        }
     }
 
     /// String representation.
@@ -470,6 +469,8 @@ impl PyObservation {
                 dec,
                 sigma_ra,
                 sigma_dec,
+                band,
+                mag,
                 ..
             } => {
                 format!(
@@ -480,8 +481,8 @@ impl PyObservation {
                     dec.to_degrees(),
                     sigma_ra * RAD_TO_ARCSEC * dec.cos().abs(),
                     sigma_dec * RAD_TO_ARCSEC,
-                    self.band,
-                    self.mag,
+                    band.name(),
+                    mag,
                 )
             }
             AstrometricObservation::RadarRange {
@@ -517,9 +518,6 @@ impl PyObservation {
 pub struct PyOrbitFit {
     /// The fitted orbit, covariance, residuals, and diagnostics.
     pub inner: OrbitFit,
-    /// Per-observation (band, mag) in the same time-sorted order as
-    /// ``inner.observations``.  Parallel to ``inner.observations``.
-    obs_metadata: Vec<(String, f64)>,
 }
 
 #[pymethods]
@@ -549,18 +547,17 @@ impl PyOrbitFit {
     #[getter]
     fn residuals(&self) -> Vec<Vec<f64>> {
         self.inner
-            .residuals
+            .observations
             .iter()
+            .zip(self.inner.residuals.iter())
             .zip(self.inner.included.iter())
             .filter(|&(_, &inc)| inc)
-            .map(|(r, _)| {
-                // Optical residuals have 2 elements (RA, Dec) in radians;
-                // radar residuals have 1 element in AU or AU/day.
-                if r.len() == 2 {
-                    r.iter().map(|v| v * RAD_TO_ARCSEC).collect()
-                } else {
-                    r.iter().copied().collect()
+            .map(|((obs, r), _)| match obs {
+                AstrometricObservation::Optical { dec, .. } => {
+                    let cos_dec = dec.cos().abs();
+                    vec![r[0] * RAD_TO_ARCSEC * cos_dec, r[1] * RAD_TO_ARCSEC]
                 }
+                _ => r.iter().copied().collect(),
             })
             .collect()
     }
@@ -578,31 +575,18 @@ impl PyOrbitFit {
             .observations
             .iter()
             .zip(self.inner.included.iter())
-            .zip(self.obs_metadata.iter())
-            .filter(|&((_, &inc), _)| inc)
-            .map(|((o, _), (band, mag))| PyObservation {
-                obs: o.clone(),
-                band: band.clone(),
-                mag: *mag,
-            })
+            .filter(|&(_, &inc)| inc)
+            .map(|(o, _)| PyObservation { obs: o.clone() })
             .collect()
     }
 
     /// All input observations (time-sorted), including rejected outliers.
-    ///
-    /// Band and magnitude metadata from the original
-    /// :class:`~kete.fitting.Observation` inputs are preserved.
     #[getter]
     fn all_observations(&self) -> Vec<PyObservation> {
         self.inner
             .observations
             .iter()
-            .zip(self.obs_metadata.iter())
-            .map(|(o, (band, mag))| PyObservation {
-                obs: o.clone(),
-                band: band.clone(),
-                mag: *mag,
-            })
+            .map(|o| PyObservation { obs: o.clone() })
             .collect()
     }
 
@@ -733,31 +717,6 @@ pub fn fit_orbit_py(
         spk.try_to_ssb(raw_state)?
     };
 
-    // Sort and filter observations the same way fit_orbit does internally so
-    // obs_metadata aligns with OrbitFit.observations.  fit_orbit sorts by epoch
-    // and drops observations with non-finite observer states.
-    let mut sorted_py = observations.clone();
-    sorted_py.sort_by(|a, b| {
-        a.obs
-            .epoch()
-            .jd
-            .partial_cmp(&b.obs.epoch().jd)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let obs_metadata: Vec<(String, f64)> = sorted_py
-        .into_iter()
-        .filter(|o| {
-            o.obs
-                .observer()
-                .map(|s| {
-                    s.pos.into_iter().all(|v: f64| v.is_finite())
-                        && s.vel.into_iter().all(|v: f64| v.is_finite())
-                })
-                .unwrap_or(false)
-        })
-        .map(|o| (o.band, o.mag))
-        .collect();
-
     let obs: Vec<AstrometricObservation> = observations.into_iter().map(|o| o.obs).collect();
     let ng = non_grav.as_ref().map(|m| &m.0);
 
@@ -771,10 +730,7 @@ pub fn fit_orbit_py(
         chi2_threshold,
         max_reject_passes,
     )?;
-    Ok(PyOrbitFit {
-        inner: fit,
-        obs_metadata,
-    })
+    Ok(PyOrbitFit { inner: fit })
 }
 
 /// Compute an initial orbit from observations.
@@ -1118,4 +1074,28 @@ pub fn fit_orbit_mcmc_py(
 pub fn get_observatory_stats_py(code: &str) -> Option<Vec<f32>> {
     let resid = kete_fitting::get_observatory_stats(code)?;
     Some(vec![resid.ra_std, resid.dec_std])
+}
+
+/// Return ``(wavelength_nm, zero_mag_jy)`` for a recognized band name, or
+/// ``None`` if the name has no calibration.
+///
+/// Parameters
+/// ----------
+/// name : str
+///     Band name, e.g. ``"V"``, ``"W1"``, ``"g"``.
+///
+/// Returns
+/// -------
+/// tuple[float, float] or None
+///
+/// Examples
+/// --------
+/// .. code-block:: python
+///
+///     known = [o for o in observations if kete.band_calibration(o.band)]
+#[pyfunction]
+#[pyo3(name = "band_calibration", signature = (name))]
+pub fn band_calibration_py(name: &str) -> Option<(f64, f64)> {
+    let info = Band::from_name(name).calibration()?;
+    Some((info.wavelength, info.zero_mag))
 }

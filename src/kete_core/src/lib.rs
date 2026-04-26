@@ -70,6 +70,8 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 pub mod analysis;
+pub mod bands;
+pub use bands::{Band, BandInfo, ColorCorrFn};
 pub mod cache;
 pub mod constants;
 pub mod desigs;

@@ -908,8 +908,12 @@ fn iterate_to_convergence(
             } else {
                 // Reject step: increase damping and re-solve from
                 // the same linearization point.
-                lambda = if lambda < 1e-6 { 1.0 } else { lambda * 10.0 };
-                if lambda > 1e12 {
+                lambda = if lambda < LM_LAMBDA_RESET_THRESHOLD {
+                    1.0
+                } else {
+                    lambda * LM_LAMBDA_INCREASE
+                };
+                if lambda > LM_LAMBDA_MAX {
                     break;
                 }
             }
@@ -1797,6 +1801,7 @@ fn weighted_rms(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kete_core::Band;
     use kete_core::constants::GMS;
     use kete_core::desigs::Desig;
     use kete_core::time::{TDB, Time};
@@ -1860,6 +1865,8 @@ mod tests {
                 sigma_corr: 0.0,
                 time_sigma: 0.0,
                 is_occultation: false,
+                band: Band::Unknown([0; 8]),
+                mag: f64::NAN,
             });
         }
         observations
@@ -2665,6 +2672,8 @@ mod tests {
                     sigma_ra,
                     sigma_dec,
                     time_sigma,
+                    band,
+                    mag,
                     ..
                 } = ob
                 {
@@ -2677,6 +2686,8 @@ mod tests {
                         sigma_corr: 0.6,
                         time_sigma: *time_sigma,
                         is_occultation: false,
+                        band: *band,
+                        mag: *mag,
                     }
                 } else {
                     ob.clone()

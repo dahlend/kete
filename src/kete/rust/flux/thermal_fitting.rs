@@ -6,58 +6,37 @@
 use crate::frame::PyFrames;
 use crate::stats::PyData;
 use crate::vector::VectorLike;
-use kete_flux::BandInfo;
+use kete_core::BandInfo;
 use kete_flux::fitting::{self, FitResult, FluxObs, FluxPriors, Model, ParamPrior};
 use kete_stats::prelude::Data;
 use pyo3::prelude::*;
 
-/// Accept either a band name or a wavelength in nm.
-/// Supported band names: ``"W1"``-``"W4"``, ``"NEOS1"``, ``"NEOS2"``, ``"V"``,
+/// Resolve a band argument — either a recognised name or a wavelength in nm.
+///
+/// Accepted names: ``"W1"``-``"W4"``, ``"NEOS1"``, ``"NEOS2"``, ``"V"``,
 /// ``"IRAC1"``-``"IRAC4"``, ``"MIPS24"``, ``"MIPS70"``, ``"MIPS160"``,
-/// ``"IRS Peak-Up Blue"``, ``"IRS Peak-Up Red"``.
-/// If a wavelength is provided, no zero-magnitude will be used, and magnitudes will
-/// need to be computed manually.
+/// ``"IRS Peak-Up Blue"``, ``"IRS Peak-Up Red"``.  If a wavelength (float)
+/// is supplied the returned ``BandInfo`` has no zero-magnitude.
 #[derive(Debug, FromPyObject)]
-enum BandSpec {
+enum BandArg {
     Name(String),
     Wavelength(f64),
+    WavelengthZmag(f64, f64),
 }
 
-impl BandSpec {
+impl BandArg {
     fn into_band_info(self) -> PyResult<BandInfo> {
         match self {
-            BandSpec::Name(s) => {
-                let wise = BandInfo::WISE;
-                let neos = BandInfo::NEOS;
-                let irac = BandInfo::IRAC;
-                let mips = BandInfo::MIPS;
-                let irs_pu = BandInfo::IRS_PU;
-                match s.to_uppercase().as_str() {
-                    "W1" => Ok(wise[0]),
-                    "W2" => Ok(wise[1]),
-                    "W3" => Ok(wise[2]),
-                    "W4" => Ok(wise[3]),
-                    "NEOS1" => Ok(neos[0]),
-                    "NEOS2" => Ok(neos[1]),
-                    "IRAC1" => Ok(irac[0]),
-                    "IRAC2" => Ok(irac[1]),
-                    "IRAC3" => Ok(irac[2]),
-                    "IRAC4" => Ok(irac[3]),
-                    "MIPS24" => Ok(mips[0]),
-                    "MIPS70" => Ok(mips[1]),
-                    "MIPS160" => Ok(mips[2]),
-                    "IRS PEAK-UP BLUE" => Ok(irs_pu[0]),
-                    "IRS PEAK-UP RED" => Ok(irs_pu[1]),
-                    "V" => Ok(BandInfo::V),
-                    other => Err(pyo3::exceptions::PyValueError::new_err(format!(
-                        "Unknown band name '{other}'. Supported: 'W1'-'W4', 'NEOS1'-'NEOS2', \
-                         'IRAC1'-'IRAC4', 'MIPS24', 'MIPS70', 'MIPS160', \
-                         'IRS Peak-Up Blue', 'IRS Peak-Up Red', 'V', \
-                         or a wavelength in nm."
-                    ))),
-                }
-            }
-            BandSpec::Wavelength(w) => Ok(BandInfo::new(w, 1.0, f64::NAN, None)),
+            BandArg::Name(s) => BandInfo::from_name(&s).ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "Unknown band name '{s}'. Supported: 'W1'-'W4', 'NEOS1'-'NEOS2', \
+                     'IRAC1'-'IRAC4', 'MIPS24', 'MIPS70', 'MIPS160', \
+                     'IRS Peak-Up Blue', 'IRS Peak-Up Red', 'V', \
+                     or a wavelength in nm."
+                ))
+            }),
+            BandArg::Wavelength(w) => Ok(BandInfo::new(w, 1.0, f64::NAN, None)),
+            BandArg::WavelengthZmag(w, z) => Ok(BandInfo::new(w, 1.0, z, None)),
         }
     }
 }
@@ -89,7 +68,7 @@ impl PyFluxObs {
     fn new(
         flux: f64,
         sigma: f64,
-        band: BandSpec,
+        band: BandArg,
         sun2obj: VectorLike,
         sun2obs: VectorLike,
         is_upper_limit: bool,

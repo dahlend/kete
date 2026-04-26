@@ -1,6 +1,7 @@
 //! Model inputs and outputs for NEATM/FRM/Reflected.
 
-use kete_flux::{BandInfo, frm_total_flux, neatm_total_flux, resolve_hg_params};
+use kete_core::BandInfo;
+use kete_flux::{frm_total_flux, neatm_total_flux, resolve_hg_params};
 use pyo3::prelude::*;
 
 use crate::{frame::PyFrames, vector::VectorLike};
@@ -292,7 +293,12 @@ pub fn frm_model_flux_py(
     .into())
 }
 
-/// Helper to build band info from either explicit wavelengths or a preset name.
+/// Build a band list from either explicit wavelengths or a preset group name.
+///
+/// ``bands`` accepts ``"wise"``, ``"neos"``, ``"irac"``, ``"mips"``, ``"irs_pu"``,
+/// or a single band name recognised by [`BandInfo::from_name`].
+/// ``band_wavelengths`` accepts a list of wavelengths in nm (with optional
+/// ``zero_mags``); ``solar_correction`` and color correction are not set.
 fn resolve_bands(
     band_wavelengths: Option<Vec<f64>>,
     bands: Option<&str>,
@@ -305,10 +311,12 @@ fn resolve_bands(
             "irac" => Ok(BandInfo::IRAC.to_vec()),
             "mips" => Ok(BandInfo::MIPS.to_vec()),
             "irs_pu" => Ok(BandInfo::IRS_PU.to_vec()),
-            other => Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "Unknown band preset '{other}'. \
-                 Use 'wise', 'neos', 'irac', 'mips', or 'irs_pu'."
-            ))),
+            _ => BandInfo::from_name(name).map(|b| vec![b]).ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "Unknown band '{name}'. Use a preset group ('wise', 'neos', 'irac', \
+                         'mips', 'irs_pu') or a single band name ('W1', 'V', etc.)."
+                ))
+            }),
         },
         (None, Some(wavelengths)) => {
             let zm = zero_mags.unwrap_or(vec![f64::NAN; wavelengths.len()]);

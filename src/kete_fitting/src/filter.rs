@@ -700,6 +700,7 @@ fn sort_by_epoch(obs: &[AstrometricObservation]) -> Vec<AstrometricObservation> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kete_core::Band;
     use kete_core::constants::GMS;
     use kete_core::desigs::Desig;
     use kete_core::frames::Equatorial;
@@ -771,6 +772,8 @@ mod tests {
                 sigma_corr: 0.0,
                 time_sigma: 0.0,
                 is_occultation: false,
+                band: Band::Unknown([0; 8]),
+                mag: f64::NAN,
             });
         }
         observations
