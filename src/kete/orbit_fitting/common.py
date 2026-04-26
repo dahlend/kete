@@ -73,18 +73,25 @@ def _over_obs_reweight_factors(
     return factors
 
 
-def _time_sigma_for_obs(note2: str, year: float) -> float:
-    """Return 1-sigma timing uncertainty in seconds for an MPC observation.
-
-    Observations are assigned by epoch, since note2 is unreliable for pre-2000 data.
+def _time_sigma_for_obs(note2: str, year: float) -> tuple[float, float]:
+    """Return 1-sigma for timing and default astrometry uncertainty in seconds and
+    arcseconds for an MPC observation.
     """
+
+    # These are rough fallbacks if there is no submitted astrometry/timing, and the
+    # uncertainty is not available from the lookup table.
     if note2 in ("S", "s"):
         # internal clocks on spacecraft often drift.
-        return 1.0
+        return 1.0, 0.1
+    if note2 == "n":
+        # video observations with accurate timestamps
+        return 0.5, 0.01
     if year >= 2010:
-        return 0.2  # GPS-synced modern surveys
+        return 0.5, 0.5
     if year >= 2000:
-        return 0.5  # NTP-era CCD
+        return 1.0, 0.5
     if year >= 1993:
-        return 2.0  # early CCD, manual clock sync
-    return 10.0  # predominantly photographic
+        return 2.0, 1.0
+    if year >= 1970:
+        return 5.0, 2.0
+    return 60.0, 3.0  # old stuff

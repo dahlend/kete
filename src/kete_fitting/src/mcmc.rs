@@ -82,8 +82,8 @@ pub struct OrbitSamples {
     /// Each inner vector is `[x, y, z, vx, vy, vz, ng_params...]` in the
     /// Equatorial frame at `epoch`.
     pub draws: Vec<Vec<f64>>,
-    /// Fit index (0-based) that generated each draw.
-    pub chain_id: Vec<usize>,
+    /// Seed index (0-based) that generated each draw.
+    pub seed_id: Vec<usize>,
     /// True if the draw was a divergent transition.
     pub divergent: Vec<bool>,
 }
@@ -279,7 +279,12 @@ impl OrbitalPosterior {
     fn vec_to_state(
         &self,
         cart_full: &DVector<f64>,
-    ) -> (State<Equatorial, SSB>, Option<NonGravModel>, [f64; 3], [f64; 3]) {
+    ) -> (
+        State<Equatorial, SSB>,
+        Option<NonGravModel>,
+        [f64; 3],
+        [f64; 3],
+    ) {
         let pos: [f64; 3] = cart_full.as_slice()[..3].try_into().unwrap();
         let vel: [f64; 3] = cart_full.as_slice()[3..6].try_into().unwrap();
 
@@ -643,14 +648,14 @@ pub fn fit_orbit_mcmc(
 
     // Collect results.
     let mut all_draws = Vec::new();
-    let mut all_chain_id = Vec::new();
+    let mut all_seed_id = Vec::new();
     let mut all_divergent = Vec::new();
 
     for (seed_idx, result) in chain_results {
         let (draws, divergent) = result?;
         let n = draws.len();
         all_draws.extend(draws);
-        all_chain_id.extend(std::iter::repeat_n(seed_idx, n));
+        all_seed_id.extend(std::iter::repeat_n(seed_idx, n));
         all_divergent.extend(divergent);
     }
 
@@ -658,7 +663,7 @@ pub fn fit_orbit_mcmc(
         desig: seeds[0].desig.to_string(),
         epoch: epoch.jd,
         draws: all_draws,
-        chain_id: all_chain_id,
+        seed_id: all_seed_id,
         divergent: all_divergent,
     })
 }

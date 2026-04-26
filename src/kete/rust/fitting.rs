@@ -367,9 +367,9 @@ impl PyObservation {
     #[getter]
     fn sigma_ra(&self) -> Option<f64> {
         match &self.obs {
-            AstrometricObservation::Optical {
-                sigma_ra, dec, ..
-            } => Some(*sigma_ra * RAD_TO_ARCSEC * dec.cos().abs()),
+            AstrometricObservation::Optical { sigma_ra, dec, .. } => {
+                Some(*sigma_ra * RAD_TO_ARCSEC * dec.cos().abs())
+            }
             _ => None,
         }
     }
@@ -514,14 +514,20 @@ impl PyObservation {
 /// its uncertainty (covariance), and diagnostic information about the fit.
 #[pyclass(frozen, module = "kete.fitting", name = "OrbitFit", from_py_object)]
 #[derive(Debug, Clone)]
-pub struct PyOrbitFit(pub OrbitFit);
+pub struct PyOrbitFit {
+    /// The fitted orbit, covariance, residuals, and diagnostics.
+    pub inner: OrbitFit,
+    /// Per-observation (band, mag) in the same time-sorted order as
+    /// ``inner.observations``.  Parallel to ``inner.observations``.
+    obs_metadata: Vec<(String, f64)>,
+}
 
 #[pymethods]
 impl PyOrbitFit {
     /// The uncertain orbit state (state + covariance + non-grav model).
     #[getter]
     fn uncertain_state(&self) -> PyUncertainState {
-        PyUncertainState(self.0.uncertain_state.clone())
+        PyUncertainState(self.inner.uncertain_state.clone())
     }
 
     /// Best-fit state at the reference epoch (Sun-centered, Ecliptic).
@@ -529,7 +535,7 @@ impl PyOrbitFit {
     /// Convenience shortcut for ``self.uncertain_state.state``.
     #[getter]
     fn state(&self) -> PyResult<PyState> {
-        let st = self.0.uncertain_state.state.clone();
+        let st = self.inner.uncertain_state.state.clone();
         let spk = LOADED_SPK.try_read().map_err(Error::from)?;
         let st: State<Equatorial> = spk.try_to_sun(st)?.into();
         Ok(st.into())
@@ -542,10 +548,10 @@ impl PyOrbitFit {
     /// **arcseconds**.  Radar residuals remain in AU or AU/day.
     #[getter]
     fn residuals(&self) -> Vec<Vec<f64>> {
-        self.0
+        self.inner
             .residuals
             .iter()
-            .zip(self.0.included.iter())
+            .zip(self.inner.included.iter())
             .filter(|&(_, &inc)| inc)
             .map(|(r, _)| {
                 // Optical residuals have 2 elements (RA, Dec) in radians;
@@ -562,33 +568,40 @@ impl PyOrbitFit {
     /// Observations included in the final fit (time-sorted).
     ///
     /// Rejected outliers are not present in this list.  To see all
-    /// observations (including rejected ones), use
-    /// ``all_observations``.
+    /// observations (including rejected ones), use ``all_observations``.
+    ///
+    /// Band and magnitude metadata from the original
+    /// :class:`~kete.fitting.Observation` inputs are preserved.
     #[getter]
     fn observations(&self) -> Vec<PyObservation> {
-        self.0
+        self.inner
             .observations
             .iter()
-            .zip(self.0.included.iter())
-            .filter(|&(_, &inc)| inc)
-            .map(|(o, _)| PyObservation {
+            .zip(self.inner.included.iter())
+            .zip(self.obs_metadata.iter())
+            .filter(|&((_, &inc), _)| inc)
+            .map(|((o, _), (band, mag))| PyObservation {
                 obs: o.clone(),
-                band: String::new(),
-                mag: f64::NAN,
+                band: band.clone(),
+                mag: *mag,
             })
             .collect()
     }
 
     /// All input observations (time-sorted), including rejected outliers.
+    ///
+    /// Band and magnitude metadata from the original
+    /// :class:`~kete.fitting.Observation` inputs are preserved.
     #[getter]
     fn all_observations(&self) -> Vec<PyObservation> {
-        self.0
+        self.inner
             .observations
             .iter()
-            .map(|o| PyObservation {
+            .zip(self.obs_metadata.iter())
+            .map(|(o, (band, mag))| PyObservation {
                 obs: o.clone(),
-                band: String::new(),
-                mag: f64::NAN,
+                band: band.clone(),
+                mag: *mag,
             })
             .collect()
     }
@@ -599,13 +612,13 @@ impl PyOrbitFit {
     /// ``False`` means it was rejected as an outlier.
     #[getter]
     fn included(&self) -> Vec<bool> {
-        self.0.included.clone()
+        self.inner.included.clone()
     }
 
     /// Reduced weighted RMS of post-fit residuals.
     #[getter]
     fn rms(&self) -> f64 {
-        self.0.rms
+        self.inner.rms
     }
 
     /// Fitted non-gravitational model, or None if not fitted.
@@ -613,7 +626,11 @@ impl PyOrbitFit {
     /// Convenience shortcut for ``self.uncertain_state.non_grav``.
     #[getter]
     fn non_grav(&self) -> Option<PyNonGravModel> {
-        self.0.uncertain_state.non_grav.clone().map(PyNonGravModel)
+        self.inner
+            .uncertain_state
+            .non_grav
+            .clone()
+            .map(PyNonGravModel)
     }
 
     /// Whether the solver achieved strict convergence.
@@ -622,20 +639,20 @@ impl PyOrbitFit {
     /// limit but the correction norm did not drop below `tol`.
     #[getter]
     fn converged(&self) -> bool {
-        self.0.converged
+        self.inner.converged
     }
 
     /// String representation.
     fn __repr__(&self) -> String {
-        let n_included = self.0.included.iter().filter(|&&v| v).count();
-        let n_total = self.0.observations.len();
+        let n_included = self.inner.included.iter().filter(|&&v| v).count();
+        let n_total = self.inner.observations.len();
         format!(
             "OrbitFit(rms={:.6e}, observations={}/{}, converged={}, epoch={:.6})",
-            self.0.rms,
+            self.inner.rms,
             n_included,
             n_total,
-            self.0.converged,
-            self.0.uncertain_state.state.epoch.jd,
+            self.inner.converged,
+            self.inner.uncertain_state.state.epoch.jd,
         )
     }
 }
@@ -716,6 +733,31 @@ pub fn fit_orbit_py(
         spk.try_to_ssb(raw_state)?
     };
 
+    // Sort and filter observations the same way fit_orbit does internally so
+    // obs_metadata aligns with OrbitFit.observations.  fit_orbit sorts by epoch
+    // and drops observations with non-finite observer states.
+    let mut sorted_py = observations.clone();
+    sorted_py.sort_by(|a, b| {
+        a.obs
+            .epoch()
+            .jd
+            .partial_cmp(&b.obs.epoch().jd)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let obs_metadata: Vec<(String, f64)> = sorted_py
+        .into_iter()
+        .filter(|o| {
+            o.obs
+                .observer()
+                .map(|s| {
+                    s.pos.into_iter().all(|v: f64| v.is_finite())
+                        && s.vel.into_iter().all(|v: f64| v.is_finite())
+                })
+                .unwrap_or(false)
+        })
+        .map(|o| (o.band, o.mag))
+        .collect();
+
     let obs: Vec<AstrometricObservation> = observations.into_iter().map(|o| o.obs).collect();
     let ng = non_grav.as_ref().map(|m| &m.0);
 
@@ -729,7 +771,10 @@ pub fn fit_orbit_py(
         chi2_threshold,
         max_reject_passes,
     )?;
-    Ok(PyOrbitFit(fit))
+    Ok(PyOrbitFit {
+        inner: fit,
+        obs_metadata,
+    })
 }
 
 /// Compute an initial orbit from observations.
@@ -898,9 +943,12 @@ impl PyOrbitSamples {
     }
 
     /// Seed index (0-based) that generated each draw.
+    ///
+    /// Each seed produces an independent NUTS chain.  This field records
+    /// which seed produced each draw so per-seed diagnostics can be computed.
     #[getter]
-    fn chain_id(&self) -> Vec<usize> {
-        self.0.chain_id.clone()
+    fn seed_id(&self) -> Vec<usize> {
+        self.0.seed_id.clone()
     }
 
     /// Per-draw divergence flag.
@@ -921,16 +969,16 @@ impl PyOrbitSamples {
     /// String representation.
     fn __repr__(&self) -> String {
         let n = self.0.draws.len();
-        let n_chains = self
+        let n_seeds = self
             .0
-            .chain_id
+            .seed_id
             .iter()
             .copied()
             .collect::<std::collections::HashSet<_>>()
             .len();
         let n_div = self.0.divergent.iter().filter(|&&d| d).count();
         format!(
-            "OrbitSamples(desig={}, draws={n}, chains={n_chains}, divergent={n_div}, epoch={:.6})",
+            "OrbitSamples(desig={}, draws={n}, seeds={n_seeds}, divergent={n_div}, epoch={:.6})",
             self.0.desig, self.0.epoch
         )
     }
@@ -966,9 +1014,9 @@ impl PyOrbitSamples {
 ///
 /// Sampling is parallelized automatically across available CPU cores.
 /// When there are fewer seeds than cores, each seed spawns multiple
-/// independent sub-chains.  The ``chain_id`` in the returned
-/// :class:`~kete.fitting.OrbitSamples` identifies the seed (orbital
-/// mode), not the sub-chain.
+/// independent sub-chains.  The ``seed_id`` in the returned
+/// :class:`~kete.fitting.OrbitSamples` identifies which seed (orbital
+/// mode) produced each draw.
 ///
 /// ``num_draws`` is the **total** number of orbit samples returned
 /// across all seeds.  Each seed receives roughly

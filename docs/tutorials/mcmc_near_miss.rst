@@ -238,12 +238,12 @@ robust when the stated uncertainties are imperfect.
 
     n_div = sum(samples.divergent)
     print(f"MCMC complete: {len(samples)} draws, "
-          f"{len(set(samples.chain_id))} chain(s), "
+          f"{len(set(samples.seed_id))} seed(s), "
           f"{n_div} divergent ({100*n_div/max(len(samples),1):.1f}%)")
 
 ::
 
-    MCMC complete: 2000 draws, 1 chain(s), 0 divergent (0.0%)
+    MCMC complete: 2000 draws, 1 seed(s), 0 divergent (0.0%)
 
 A small fraction of divergent transitions is normal and those draws are
 still valid posterior samples.  A high divergence rate (>10%) suggests the
@@ -270,7 +270,7 @@ alone cannot capture.
     good = ~divergent
 
     draw_states = [s for s, g in zip(all_draws, good) if g]
-    chain_ids = np.array(samples.chain_id)[good]
+    seed_ids = np.array(samples.seed_id)[good]
 
     semi_majors = np.array([s.elements.semi_major for s in draw_states])
     eccentricities = np.array([s.elements.eccentricity for s in draw_states])

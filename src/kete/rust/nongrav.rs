@@ -21,7 +21,8 @@ use crate::vector::VectorLike;
 ///
 /// There are two generic non-gravitational models available, one is specifically
 /// intended for dust modeling, and includes the solar radiation pressure, the other
-/// model is a mathematical match to the JPL Horizons comet model.
+/// implements the functional form documented for the JPL Horizons comet model
+/// (see :py:meth:`NonGravModel.new_comet` for the formula).
 ///
 /// See :py:meth:`NonGravModel.new_dust` and :py:meth:`NonGravModel.new_comet` for more
 /// details. Note that the Comet model can also represent asteroids which undergo the

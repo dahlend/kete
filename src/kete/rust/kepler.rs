@@ -129,9 +129,7 @@ pub fn propagation_kepler_py(
             new_pystate
                 .change_frame(frame)
                 .change_center(crate::desigs::NaifIDLike::Int(center))
-                .unwrap_or(
-                    State::<Ecliptic>::new_nan(state.raw.desig, epoch, center).into(),
-                )
+                .unwrap_or(State::<Ecliptic>::new_nan(state.raw.desig, epoch, center).into())
         })
         .collect();
     maybe_vec_to_pyobj(py, states, was_vec)

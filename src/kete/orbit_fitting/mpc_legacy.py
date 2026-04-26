@@ -174,8 +174,6 @@ class MPCObservation:
 
 def mpc_obs_to_observations(
     mpc_obs: list,
-    sigma_ra: float = 1.0,
-    sigma_dec: float = 1.0,
     apply_over_obs_reweight: bool = True,
     debias: bool = True,
 ) -> list[Observation]:
@@ -189,7 +187,8 @@ def mpc_obs_to_observations(
 
     Per-observatory uncertainties are applied when available from the
     pre-computed residual table.  When no table entry exists for an observatory
-    code, the caller-supplied ``sigma_ra`` and ``sigma_dec`` are used instead.
+    code, an epoch- and observation-type-based fallback is used (see
+    :func:`~kete.orbit_fitting.common._time_sigma_for_obs`).
 
     When ``debias`` is True, the EFCC18 star-catalog bias correction is applied
     using the catalog code stored on each observation (column 72 of the 80-char
@@ -200,13 +199,6 @@ def mpc_obs_to_observations(
     ----------
     mpc_obs :
         List of ``MPCObservation`` objects (see :mod:`kete.observations`).
-    sigma_ra :
-        Fallback 1-sigma sky-plane RA uncertainty in arcseconds (sigma_ra * cos(dec))
-        when no per-observatory
-        data is available.  Defaults to 1.
-    sigma_dec :
-        Fallback 1-sigma Dec uncertainty in arcseconds when no per-observatory
-        data is available.  Defaults to 1.
     apply_over_obs_reweight :
         When True (default), inflate sigma by sqrt(n/4) for groups of more
         than 4 observations from the same observatory on the same night,
@@ -254,6 +246,8 @@ def mpc_obs_to_observations(
         dec = obs.dec
 
         # Observation.optical expects sky-plane sigma_ra (sigma_ra * cos(dec)).
+        # Priority: per-observatory table, then epoch/type-based fallback.
+        time_std, std = _time_sigma_for_obs(obs.note2, _Time(obs.jd).year_float)
         obs_errors = get_observatory_std(obs.obs_code)
         if obs_errors is not None:
             # Table ra_std is computed from raw RA coordinate residuals;
@@ -261,8 +255,8 @@ def mpc_obs_to_observations(
             s_ra = obs_errors[0] * np.cos(np.radians(dec))
             s_dec = obs_errors[1]
         else:
-            s_ra = sigma_ra
-            s_dec = sigma_dec
+            s_ra = std * np.cos(np.radians(dec))
+            s_dec = std
 
         if debias_table is not None and obs.catalog_code:
             shift = debias_table.lookup(obs.catalog_code, ra, dec, obs.jd)
@@ -286,7 +280,6 @@ def mpc_obs_to_observations(
                 obs.obs_code, obs.jd, center=0
             ).as_equatorial
 
-        time_sigma = _time_sigma_for_obs(obs.note2, _Time(obs.jd).year_float)
         observations.append(
             Observation.optical(
                 observer=observer,
@@ -294,7 +287,7 @@ def mpc_obs_to_observations(
                 dec=dec,
                 sigma_ra=s_ra * factor,
                 sigma_dec=s_dec * factor,
-                time_sigma=time_sigma,
+                time_sigma=time_std,
             )
         )
 

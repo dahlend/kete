@@ -179,9 +179,10 @@ pub fn propagation_n_body_spk_py(
                         Ok(ssb_result) => {
                             let mut dyn_result = State::<Equatorial>::from(ssb_result);
                             {
-                                let spk = kete_spice::prelude::LOADED_SPK
-                                    .try_read()
-                                    .map_err(|_| Error::ValueError("SPK lock unavailable".into()))?;
+                                let spk =
+                                    kete_spice::prelude::LOADED_SPK.try_read().map_err(|_| {
+                                        Error::ValueError("SPK lock unavailable".into())
+                                    })?;
                                 spk.try_change_center(&mut dyn_result, center)?;
                             }
                             Ok(Into::<PyState>::into(dyn_result).change_frame(frame))

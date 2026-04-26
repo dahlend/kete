@@ -31,7 +31,7 @@
 
 use kete_core::constants::{AU_KM, C_AU_PER_DAY, C_AU_PER_DAY_INV, GMS};
 use kete_core::desigs::Desig;
-use kete_core::frames::{Equatorial, SSB, geodetic_lat_lon_to_ecef};
+use kete_core::frames::{Equatorial, SSB, Vector, geodetic_lat_lon_to_ecef};
 use kete_core::prelude::{Error, KeteResult, State};
 use kete_core::time::{TDB, Time};
 use kete_spice::prelude::{LOADED_PCK, LOADED_SPK};
@@ -58,14 +58,61 @@ const SHAPIRO_RS_AU: f64 = 2.0 * GMS / (C_AU_PER_DAY * C_AU_PER_DAY);
 /// where `r1`, `r2` are the heliocentric distances of the two leg
 /// endpoints (AU) and `R = leg` is the geometric leg length (AU).  For
 /// near-Earth radar geometries the term is sub-meter; it grows to tens
-/// of kilometers at solar conjunction and is required to match JPL's
-/// radar predictions.
+/// of kilometers when the radar path passes near the Sun.
 fn shapiro_range_au(r1: f64, r2: f64, leg: f64) -> f64 {
     let denom = r1 + r2 - leg;
     if denom <= 0.0 {
         return 0.0;
     }
     SHAPIRO_RS_AU * ((r1 + r2 + leg) / denom).ln()
+}
+
+/// Differential gravitational light deflection due to the Sun.
+///
+/// Adjusts the apparent heliocentric position of a Solar System object to
+/// account for the difference between the solar gravitational bending of the
+/// photon path from the object and the bending from background stars at
+/// infinity.  On a plate-solved CCD frame the common-mode bending (same for
+/// all reference stars and the object) cancels in the plate solution.  Only
+/// the differential term, arising from the object being at finite heliocentric
+/// distance rather than at infinity, survives.
+///
+/// Both `observer_helio` and `obj_lt_pos` are Sun-centered positions in AU.
+/// Returns the corrected apparent heliocentric position.
+pub(crate) fn differential_light_deflect(
+    observer_helio: &Vector<Equatorial>,
+    obj_lt_pos: Vector<Equatorial>,
+) -> Vector<Equatorial> {
+    let bend_factor = 2.0 * GMS / (C_AU_PER_DAY * C_AU_PER_DAY);
+
+    let p = obj_lt_pos - observer_helio;
+    let plen = p.norm();
+    if plen < 1e-10 {
+        return obj_lt_pos;
+    }
+    let olen = observer_helio.norm();
+    let rlen = obj_lt_pos.norm();
+    if olen < 1e-10 || rlen < 1e-10 {
+        return obj_lt_pos;
+    }
+
+    let xprod = observer_helio.cross(&obj_lt_pos);
+    let dir_unnorm = p.cross(&xprod);
+    let dlen = dir_unnorm.norm();
+    if dlen < 1e-30 {
+        return obj_lt_pos;
+    }
+    let dir = dir_unnorm / dlen;
+
+    let psi1 = (obj_lt_pos.dot(observer_helio) / (rlen * olen))
+        .clamp(-1.0, 1.0)
+        .acos();
+    let psi2 = (p.dot(observer_helio) / (plen * olen))
+        .clamp(-1.0, 1.0)
+        .acos();
+
+    let bending = bend_factor * ((psi2 / 2.0).tan() - (psi1 / 2.0).tan()) * plen;
+    obj_lt_pos + dir * bending
 }
 
 /// Compute the SSB-centered Equatorial state of an Earth ground station at
@@ -146,7 +193,7 @@ pub enum AstrometricObservation {
     /// transmit epoch `t_tx` is derived inside the residual computation
     /// from the predicted round-trip geometry.  Station inertial states
     /// at the appropriate epochs are produced via PCK lookups during the
-    /// residual computation, mirroring `find_orb`'s approach.
+    /// residual computation.
     RadarRange {
         /// Transmitter station: WGS84 geodetic latitude (radians).
         xmit_lat_rad: f64,
@@ -498,9 +545,16 @@ impl AstrometricObservation {
         let obs_helio_sun = spk.try_to_sun(obs.into())?;
         // Apply light-time correction (heliocentric in, heliocentric out).
         let obj_lt_helio = kete_core::kepler::light_time_correct(&obj_sun, &obs_helio_sun.pos)?;
-        // Convert the light-time-corrected object state back to SSB so that
-        // residual_predicted_from_corrected sees consistent SSB positions.
-        let obj_lt_ssb = spk.try_to_ssb(obj_lt_helio.into())?;
+        // Apply differential gravitational light deflection (solar bending relative
+        // to background stars at infinity).  The common-mode bending cancels in
+        // plate-solved frames; only this differential term survives.
+        let deflected_pos = differential_light_deflect(&obs_helio_sun.pos, obj_lt_helio.pos);
+        let obj_lt_deflected = State {
+            pos: deflected_pos,
+            ..obj_lt_helio
+        };
+        // Convert back to SSB so residual_predicted_from_corrected sees consistent positions.
+        let obj_lt_ssb = spk.try_to_ssb(obj_lt_deflected.into())?;
         self.residual_predicted_from_corrected(&obj_lt_ssb)
     }
 
@@ -558,7 +612,7 @@ impl AstrometricObservation {
             } => {
                 // Round-trip model: (incoming + outgoing) / 2 + Shapiro delay.
                 // Compute rcvr at t_rx and iteratively refine xmit at t_tx
-                // via predicted geometry (matches find_orb's `compute_radar_info`).
+                // via predicted geometry.
                 let rcvr_state =
                     station_state_at(*rcvr_lat_rad, *rcvr_lon_rad, *rcvr_height_km, *epoch)?;
                 let incoming = (obj_lt.pos - rcvr_state.pos).norm();
@@ -599,7 +653,7 @@ impl AstrometricObservation {
                 range_rate,
                 ..
             } => {
-                // Full relativistic two-way Doppler (matches find_orb's formula):
+                // Full relativistic two-way Doppler:
                 //   f_obs / f_emit = sqrt((1 - beta_rx)(1 - beta_tx) /
                 //                        ((1 + beta_rx)(1 + beta_tx)))
                 // where beta = v_radial / c for each leg (dimensionless).
@@ -758,7 +812,7 @@ impl AstrometricObservation {
     /// For radar observations the xmit and rcvr station states are
     /// looked up via PCK at `t_rx` (a fixed approximation -- the
     /// indirect-correction term from the orbit-dependence of `t_tx` is
-    /// `O(v_surface/c)` and dropped, matching `find_orb`'s simplification).
+    /// `O(v_surface/c)` and dropped).
     ///
     /// # Errors
     /// Fails if PCK / SPK lookups for radar station states fail.

@@ -29,10 +29,10 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use crate::obs::AstrometricObservation;
+use crate::obs::{AstrometricObservation, differential_light_deflect};
 use crate::uncertain_state::UncertainState;
 use kete_core::forces::NonGravModel;
-use kete_core::frames::{Equatorial, SSB, SunCenter, Vector};
+use kete_core::frames::{Equatorial, SSB, SunCenter};
 use kete_core::kepler::{analytic_2_body_stm, light_time_correct};
 use kete_core::prelude::{Error, KeteResult, State};
 use kete_spice::prelude::{LOADED_SPK, compute_state_transition};
@@ -51,7 +51,6 @@ const EXPANSION_INITIAL_RADIUS_DAYS: f64 = 30.0;
 /// Sigma floor applied to every observation during windowed expansion (radians, ~0.5 arcsec).
 /// Prevents high-precision observations (occultations, Gaia transits) from dominating
 /// the gradient before the orbit has converged near the true solution.
-/// Matches `find_orb`'s `use_sigmas=false` fallback of 0.5 arcsec (see sigma.txt default entry).
 /// Released for the final full-arc pass.
 const EXPANSION_SIGMA_FLOOR_RAD: f64 = 0.5 / 3600.0 * (std::f64::consts::PI / 180.0);
 
@@ -714,66 +713,6 @@ fn sort_by_epoch(obs: &[AstrometricObservation]) -> Vec<AstrometricObservation> 
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     sorted
-}
-
-/// Differential gravitational light deflection due to the Sun.
-///
-/// Adjusts the apparent heliocentric position of a Solar System object to
-/// account for the difference between the solar gravitational bending of the
-/// photon path from the object and the bending from background stars at
-/// infinity.  On a plate-solved CCD frame the common-mode bending (same for
-/// all reference stars and the object) cancels in the plate solution.  Only
-/// the differential term, arising from the object being at finite
-/// heliocentric distance rather than at infinity, survives.
-///
-/// Both `observer_helio` and `obj_lt_pos` are Sun-centered positions in AU.
-/// Returns the corrected apparent heliocentric position.
-///
-fn differential_light_deflect(
-    observer_helio: &Vector<Equatorial>,
-    obj_lt_pos: Vector<Equatorial>,
-) -> Vector<Equatorial> {
-    use kete_core::constants::{C_AU_PER_DAY, GMS};
-
-    let bend_factor = 2.0 * GMS / (C_AU_PER_DAY * C_AU_PER_DAY);
-
-    // Topocentric vector: observer to light-time-corrected object.
-    let p = obj_lt_pos - observer_helio;
-    let plen = p.norm();
-    if plen < 1e-10 {
-        return obj_lt_pos;
-    }
-
-    let olen = observer_helio.norm();
-    let rlen = obj_lt_pos.norm();
-    if olen < 1e-10 || rlen < 1e-10 {
-        return obj_lt_pos;
-    }
-
-    // Direction perpendicular to p, in the Sun-Observer-Object plane, pointing
-    // away from the Sun: cross(p, cross(observer, obj)), normalized.
-    let xprod = observer_helio.cross(&obj_lt_pos);
-    let dir_unnorm = p.cross(&xprod);
-    let dlen = dir_unnorm.norm();
-    if dlen < 1e-30 {
-        // Observer, Sun, and object are collinear; deflection direction is undefined.
-        return obj_lt_pos;
-    }
-    let dir = dir_unnorm / dlen;
-
-    // psi1: angle at the Sun between observer and object heliocentric directions.
-    let psi1 = (obj_lt_pos.dot(observer_helio) / (rlen * olen))
-        .clamp(-1.0, 1.0)
-        .acos();
-
-    // psi2: angle between topocentric direction and heliocentric observer direction
-    // (equals 180 degrees minus the solar elongation of the object).
-    let psi2 = (p.dot(observer_helio) / (plen * olen))
-        .clamp(-1.0, 1.0)
-        .acos();
-
-    let bending = bend_factor * ((psi2 / 2.0).tan() - (psi1 / 2.0).tan()) * plen;
-    obj_lt_pos + dir * bending
 }
 
 /// Apply light-time correction to an SSB-centered object state.
@@ -1479,7 +1418,12 @@ pub(crate) fn stm_sweep_two_body(
             let observer_state = observation.observer()?;
             let obs_helio = spk.try_to_sun(observer_state.into())?;
             let obj_lt_helio = light_time_correct(&cur_state_helio, &obs_helio.pos)?;
-            spk.try_to_ssb(obj_lt_helio.into())?
+            let deflected_pos = differential_light_deflect(&obs_helio.pos, obj_lt_helio.pos);
+            let obj_lt_deflected = State {
+                pos: deflected_pos,
+                ..obj_lt_helio
+            };
+            spk.try_to_ssb(obj_lt_deflected.into())?
         };
 
         let residual = observation.residual_from_corrected(&obj_lt_ssb)?;

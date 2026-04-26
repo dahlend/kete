@@ -471,7 +471,10 @@ pub fn light_time_correct<T: InertialFrame>(
 ///
 /// # Errors
 /// Can fail due to orbital element conversion errors, or failing to find minimum.
-pub fn moid<T: InertialFrame>(mut state_a: State<T, SunCenter>, mut state_b: State<T, SunCenter>) -> KeteResult<f64> {
+pub fn moid<T: InertialFrame>(
+    mut state_a: State<T, SunCenter>,
+    mut state_b: State<T, SunCenter>,
+) -> KeteResult<f64> {
     const N_STEPS: i32 = 50;
 
     let elements_a = CometElements::from_state(&state_a.clone().into_frame());

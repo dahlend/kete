@@ -34,6 +34,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use crate::obs::AstrometricObservation;
+use crate::obs::differential_light_deflect;
 use crate::orbit_fitting::OrbitFit;
 use crate::uncertain_state::UncertainState;
 use kete_core::forces::NonGravModel;
@@ -63,7 +64,10 @@ fn n_nongrav_params(ng: Option<&NonGravModel>) -> usize {
 }
 
 /// Pack a [`State`] (and optional non-grav params) into a state vector.
-fn state_to_vec<C: CenterBody>(state: &State<Equatorial, C>, non_grav: Option<&NonGravModel>) -> DVector<f64> {
+fn state_to_vec<C: CenterBody>(
+    state: &State<Equatorial, C>,
+    non_grav: Option<&NonGravModel>,
+) -> DVector<f64> {
     let np = n_nongrav_params(non_grav);
     let dim = 6 + np;
     let mut xv = DVector::zeros(dim);
@@ -151,7 +155,12 @@ fn apply_light_time(
     let sun_state = spk.try_to_sun(obj_state.clone().into())?;
     let obs_sun = spk.try_to_sun(observer.clone().into())?.pos;
     let obj_lt_sun = light_time_correct(&sun_state, &obs_sun)?;
-    spk.try_to_ssb(obj_lt_sun.into())
+    let deflected_pos = differential_light_deflect(&obs_sun, obj_lt_sun.pos);
+    let obj_lt_deflected = State {
+        pos: deflected_pos,
+        ..obj_lt_sun
+    };
+    spk.try_to_ssb(obj_lt_deflected.into())
 }
 
 /// Store the predicted state as the filtered state (observation skipped)
@@ -380,7 +389,8 @@ fn forward_pass(
         // EKF: propagate the state nonlinearly; use the STM only for
         // the covariance prediction.
         let (phi_full, xv_pred, cov_pred, new_state) = if dt.abs() > 1e-12 {
-            let ssb_result = compute_state_transition(&state_cur, obs_epoch, include_asteroids, ng.clone()).ok();
+            let ssb_result =
+                compute_state_transition(&state_cur, obs_epoch, include_asteroids, ng.clone()).ok();
             if let Some((propagated_ssb, phi_6xd)) = ssb_result {
                 let phi = expand_phi(&phi_6xd, dim);
                 let qmat = build_process_noise(dim, process_noise_q, dt);
@@ -702,7 +712,13 @@ mod tests {
 
     /// Build a simple SSB-centered state.
     fn make_state(pos: [f64; 3], vel: [f64; 3], jd: f64) -> State<Equatorial, SSB> {
-        State { desig: Desig::Empty, epoch: jd.into(), pos: pos.into(), vel: vel.into(), center: SSB }
+        State {
+            desig: Desig::Empty,
+            epoch: jd.into(),
+            pos: pos.into(),
+            vel: vel.into(),
+            center: SSB,
+        }
     }
 
     /// Earth-like observer on a circular orbit at 1 AU with slight inclination.

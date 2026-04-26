@@ -442,7 +442,12 @@ fn state_at_time(
         spk.try_get_state_with_center(id, time, center)
     } else {
         let ssb = spk.try_to_ssb(state.clone())?;
-        propagate_n_body_spk(ssb, time, include_extended, None).map(Into::into)
+        let ssb_result = propagate_n_body_spk(ssb, time, include_extended, None)?;
+        let mut result: State<Equatorial> = ssb_result.into();
+        if center != 0 {
+            spk.try_change_center(&mut result, center)?;
+        }
+        Ok(result)
     }
 }
 

@@ -18,6 +18,7 @@ from ..vector import Frames, State
 from .common import (
     _fetch_debias_table,
     _over_obs_reweight_factors,
+    _time_sigma_for_obs,
     get_observatory_std,
 )
 
@@ -204,7 +205,7 @@ def fetch_mpc_observations(
 
     debias_table = _fetch_debias_table() if debias else None
 
-    # Pass 1: validate and collect all fields needed for reweighting.
+    # validate and collect all fields needed for reweighting.
     valid = []
     for rec in records["ADES_DF"]:
         obstype = rec.get("Obstype")
@@ -243,7 +244,8 @@ def fetch_mpc_observations(
         if obstime is None:
             continue
         try:
-            jd = Time.from_iso(obstime).jd
+            epoch = Time.from_iso(obstime)
+            jd = epoch.jd
         except ValueError:
             continue
 
@@ -255,53 +257,47 @@ def fetch_mpc_observations(
         if observer is None:
             continue
 
+        time_std, std = _time_sigma_for_obs(rec.get("note2", ""), epoch.ymd[0])
+
         # Observation.optical expects sky-plane sigma_ra (sigma_ra * cos(dec))
         # to match the convention of MPC ADES, Gaia DR3, and other astrometric
         # data formats.
         #
-        # Sigma resolution priority (matches JPL Horizons practice):
-        #   1. Per-observation ADES rmsra/rmsdec when present (modern submitters
-        #      report measurement-specific uncertainties that reflect actual
-        #      conditions on the night).
-        #   2. Per-observatory residual table from get_observatory_std().
-        #   3. Hardcoded 1.0 arcsec fallback.
-        # Occultation records always come through path 1; the per-observatory
-        # table reflects optical astrometry residuals and does not apply.
+        # Sigma resolution priority:
+        #   1. Per-observation ADES rmsra/rmsdec when present.
+        #   2. Per-observatory residual table from get_observatory_std()
+        #      (non-occultations only; the table is derived from optical
+        #      astrometry residuals and does not apply to occultations).
+        #   3. Epoch/type-based fallback from _time_sigma_for_obs().
+        # Initialize to the fallback so all paths produce a valid sigma.
+        s_ra = std * np.cos(np.radians(dec_deg))
+        s_dec = std
         ades_rmsra = rec.get("rmsra")
         ades_rmsdec = rec.get("rmsdec")
-        used_table = False
         if ades_rmsra is not None and ades_rmsdec is not None:
             s_ra = float(ades_rmsra)
             s_dec = float(ades_rmsdec)
-        elif (
-            not is_occultation
-            and use_observatory_residuals
-            and (obs_errors := get_observatory_std(stn)) is not None
-        ):
-            # Table ra_std is computed from raw RA coordinate residuals;
-            # multiply by cos(dec) to match the sky-plane input convention.
-            s_ra = obs_errors[0] * np.cos(np.radians(dec_deg))
-            s_dec = obs_errors[1]
-            used_table = True
-        else:
-            s_ra = 1.0
-            s_dec = 1.0
+        elif not is_occultation and use_observatory_residuals:
+            if (obs_errors := get_observatory_std(stn)) is not None:
+                # Table ra_std is computed from raw RA coordinate residuals;
+                # multiply by cos(dec) to match the sky-plane input convention.
+                s_ra = obs_errors[0] * np.cos(np.radians(dec_deg))
+                s_dec = obs_errors[1]
 
         # ADES ``rmscorr`` is the RA/Dec correlation coefficient in [-1, 1].
-        # Occultation records routinely have significant correlation (the
-        # timing uncertainty stretches the ellipse along-track).  When falling
-        # back to per-observatory sigmas, the table carries no correlation, so
-        # we leave it at zero.  Clamp strictly inside (-1, 1).
+        # It captures the geometry of the uncertainty ellipse (e.g. along-track
+        # elongation from timing uncertainty) independently of sigma magnitude,
+        # so it is applied regardless of whether sigmas came from the
+        # per-observatory table or the ADES record.  Clamp strictly inside (-1, 1).
         sigma_corr = 0.0
-        if not used_table:
-            rmscorr = rec.get("rmscorr")
-            if rmscorr is not None:
-                try:
-                    rmscorr = float(rmscorr)
-                    if np.isfinite(rmscorr):
-                        sigma_corr = max(min(rmscorr, 0.999), -0.999)
-                except (TypeError, ValueError):
-                    pass
+        rmscorr = rec.get("rmscorr")
+        if rmscorr is not None:
+            try:
+                rmscorr = float(rmscorr)
+                if np.isfinite(rmscorr):
+                    sigma_corr = max(min(rmscorr, 0.999), -0.999)
+            except (TypeError, ValueError):
+                pass
 
         if debias_table is not None and not is_occultation:
             # Occultation positions are tied to the Gaia reference frame
@@ -334,13 +330,14 @@ def fetch_mpc_observations(
                 "mag": mag,
                 "observer": observer,
                 "is_occultation": is_occultation,
+                "time_std": time_std,
             }
         )
 
     if not valid:
         return []
 
-    # Pass 2: per-night sigma reweighting (occultations are always independent).
+    # per-night sigma reweighting (occultations are always independent).
     if apply_over_obs_reweight:
         factors = _over_obs_reweight_factors(
             [r["stn"] for r in valid],
@@ -350,13 +347,13 @@ def fetch_mpc_observations(
     else:
         factors = [1.0] * len(valid)
 
-    # Pass 3: build Observation objects.
+    # build Observation objects.
     observations = []
     for r, factor in zip(valid, factors):
         # Occultation positional uncertainties already encode the timing
         # constraint (rmsra/rmsdec are derived from timing error projected
         # onto the sky).  Set time_sigma=0 to avoid double-counting.
-        time_sigma = 0.0 if r["is_occultation"] else 0.1
+        time_sigma = 0.0 if r["is_occultation"] else r["time_std"]
         observations.append(
             Observation.optical(
                 observer=r["observer"],
