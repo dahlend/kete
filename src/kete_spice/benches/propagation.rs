@@ -53,25 +53,27 @@ static HYPERBOLIC: std::sync::LazyLock<State<Ecliptic>> = std::sync::LazyLock::n
 
 fn prop_n_body_radau(state: State<Ecliptic>, dt: f64) {
     let jd = state.epoch + dt;
-    let _ = propagate_n_body_spk(state.into_frame(), jd, false, None).unwrap();
+    let eq_state: State<Equatorial, SSB> = state.into_frame().try_into().unwrap();
+    let _ = propagate_n_body_spk(eq_state, jd, false, None).unwrap();
 }
 
-fn prop_n_body_vec_radau(mut state: State<Ecliptic>, dt: f64) {
+fn prop_n_body_vec_radau(state: State<Ecliptic>, dt: f64) {
     let spk = &LOADED_SPK.read().unwrap();
-    spk.try_change_center(&mut state, 10).unwrap();
-    let jd = state.epoch + dt;
-    let states = vec![state.into_frame().clone(); 100];
+    let state_sun = spk.try_to_sun(state).unwrap();
+    let jd = state_sun.epoch + dt;
+    let states: Vec<State<Equatorial, SunCenter>> = vec![state_sun.into_frame(); 100];
     let non_gravs = vec![None; 100];
     let _ = propagate_n_body_vec(states, jd, None, non_gravs).unwrap();
 }
 
 fn prop_n_body_radau_par(state: &State<Ecliptic>, dt: f64) {
     let states: Vec<State<_>> = (0..100).map(|_| state.clone()).collect();
-    let _tmp: Vec<State<_>> = states
+    let _tmp: Vec<_> = states
         .into_par_iter()
         .map(|s| {
             let jd = s.epoch + dt;
-            propagate_n_body_spk(s.into_frame(), jd, false, None).unwrap()
+            let eq: State<Equatorial, SSB> = s.into_frame().try_into().unwrap();
+            propagate_n_body_spk(eq, jd, false, None).unwrap()
         })
         .collect();
 }

@@ -1,6 +1,6 @@
 //! Python support for kepler orbit calculations
 use itertools::Itertools;
-use kete_core::frames::{Ecliptic, Equatorial, Vector};
+use kete_core::frames::{Ecliptic, Equatorial, SunCenter, Vector};
 use kete_core::state::State;
 use kete_core::{constants, kepler};
 use pyo3::{Py, PyAny, PyErr, Python, exceptions};
@@ -89,7 +89,15 @@ pub fn propagation_kepler_py(
                 return nan_state.change_frame(frame);
             };
 
-            let Some(mut new_state) = kepler::propagate_two_body(&state.raw, epoch).ok() else {
+            let Ok(sun_state): Result<State<Equatorial, SunCenter>, _> =
+                state.raw.clone().try_into()
+            else {
+                let nan_state: PyState =
+                    State::<Ecliptic>::new_nan(state.raw.desig.clone(), epoch, center).into();
+                return nan_state.change_frame(frame);
+            };
+
+            let Some(mut new_state) = kepler::propagate_two_body(&sun_state, epoch).ok() else {
                 let nan_state: PyState =
                     State::<Ecliptic>::new_nan(state.raw.desig.clone(), epoch, center).into();
                 return nan_state.change_frame(frame);
@@ -100,17 +108,28 @@ pub fn propagation_kepler_py(
                 let delay = -(new_state.pos - observer_pos).norm() / constants::C_AU_PER_DAY;
                 new_state = match kepler::propagate_two_body(&new_state, new_state.epoch + delay) {
                     Ok(state) => state,
-                    Err(_) => State::new_nan(state.raw.desig.clone(), epoch, center),
+                    Err(_) => State {
+                        desig: state.raw.desig.clone(),
+                        epoch,
+                        pos: [f64::NAN; 3].into(),
+                        vel: [f64::NAN; 3].into(),
+                        center: SunCenter,
+                    },
                 };
             }
-            let new_pystate: PyState = new_state.into();
+            let new_pystate: PyState = State::new(
+                new_state.desig,
+                new_state.epoch,
+                new_state.pos,
+                new_state.vel,
+                10,
+            )
+            .into();
 
             new_pystate
                 .change_frame(frame)
                 .change_center(crate::desigs::NaifIDLike::Int(center))
-                .unwrap_or(
-                    State::<Ecliptic>::new_nan(state.raw.desig, epoch, state.raw.center_id).into(),
-                )
+                .unwrap_or(State::<Ecliptic>::new_nan(state.raw.desig, epoch, center).into())
         })
         .collect();
     maybe_vec_to_pyobj(py, states, was_vec)

@@ -14,6 +14,7 @@ These are more in-depth worked examples.
    palomar
    kona
    mcmc_near_miss
+   2024yr4
    spherex
    wise
    323p

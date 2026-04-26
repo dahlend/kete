@@ -77,7 +77,7 @@ use crate::spice_jd_to_jd;
 use kete_core::cache::cache_path;
 use kete_core::desigs::{NaifId, naif_ids_from_name};
 use kete_core::errors::Error;
-use kete_core::frames::InertialFrame;
+use kete_core::frames::{InertialFrame, SSB, SunCenter};
 use kete_core::prelude::KeteResult;
 use kete_core::state::State;
 use kete_core::time::{TDB, Time};
@@ -154,7 +154,7 @@ impl SpkCollection {
         center: i32,
     ) -> KeteResult<State<T>> {
         let mut state = self.try_get_state(id, jd)?;
-        if state.center_id != center {
+        if state.center_id() != center {
             self.try_change_center(&mut state, center)?;
         }
         Ok(state)
@@ -169,7 +169,7 @@ impl SpkCollection {
         state: &mut State<T>,
         new_center: i32,
     ) -> KeteResult<()> {
-        match (state.center_id, new_center) {
+        match (state.center_id(), new_center) {
             (a, b) if a == b => (),
             (i, 0) if i <= 10 => {
                 state.try_change_center(self.try_get_state(i, state.epoch)?)?;
@@ -187,7 +187,7 @@ impl SpkCollection {
                 state.try_change_center(self.try_get_state(i, state.epoch)?)?;
             }
             _ => {
-                let path = self.find_path(state.center_id, new_center)?;
+                let path = self.find_path(state.center_id(), new_center)?;
                 for intermediate in path {
                     let next = self.try_get_state(intermediate, state.epoch)?;
                     state.try_change_center(next)?;
@@ -195,6 +195,33 @@ impl SpkCollection {
             }
         }
         Ok(())
+    }
+
+    /// Change the center of a state to the Solar System Barycenter, returning a
+    /// typed `State<T, SSB>` that carries the SSB guarantee at compile time.
+    ///
+    /// # Errors
+    /// Fails when the required NAIF lookups are not available in the loaded SPKs.
+    pub fn try_to_ssb<T: InertialFrame>(&self, mut state: State<T>) -> KeteResult<State<T, SSB>> {
+        if state.center_id() != 0 {
+            self.try_change_center(&mut state, 0)?;
+        }
+        State::<T, SSB>::try_from(state)
+    }
+
+    /// Change the center of a state to the Sun, returning a typed `State<T, SunCenter>`
+    /// that carries the Sun-centered guarantee at compile time.
+    ///
+    /// # Errors
+    /// Fails when the required NAIF lookups are not available in the loaded SPKs.
+    pub fn try_to_sun<T: InertialFrame>(
+        &self,
+        mut state: State<T>,
+    ) -> KeteResult<State<T, SunCenter>> {
+        if state.center_id() != 10 {
+            self.try_change_center(&mut state, 10)?;
+        }
+        State::<T, SunCenter>::try_from(state)
     }
 
     /// For a given NAIF ID, return all increments of time which are currently loaded.

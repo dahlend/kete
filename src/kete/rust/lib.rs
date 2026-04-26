@@ -36,6 +36,7 @@ use pyo3::prelude::*;
 use state::PyState;
 
 pub mod analysis;
+pub mod debias;
 pub mod desigs;
 pub mod elements;
 pub mod fitting;
@@ -103,6 +104,8 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<horizons::PyHorizonsProperties>()?;
 
     m.add_class::<uncertain_state::PyUncertainState>()?;
+
+    m.add_class::<debias::PyDebiasTable>()?;
 
     m.add_function(wrap_pyfunction!(known_masses, m)?)?;
     m.add_function(wrap_pyfunction!(register_mass, m)?)?;
@@ -221,7 +224,8 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     m.add_function(wrap_pyfunction!(fitting::lambert_py, m)?)?;
     m.add_function(wrap_pyfunction!(fitting::fit_orbit_mcmc_py, m)?)?;
-    m.add_function(wrap_pyfunction!(fitting::get_obs_residuals_py, m)?)?;
+    m.add_function(wrap_pyfunction!(fitting::get_observatory_stats_py, m)?)?;
+    m.add_function(wrap_pyfunction!(fitting::band_calibration_py, m)?)?;
 
     m.add_function(wrap_pyfunction!(kete_core::cache::cache_path, m)?)?;
 

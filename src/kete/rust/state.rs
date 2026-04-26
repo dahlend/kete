@@ -178,7 +178,7 @@ impl PyState {
     /// Central ID of the object used as reference for the coordinate frame.
     #[getter]
     pub fn center_id(&self) -> i32 {
-        self.raw.center_id
+        self.raw.center_id()
     }
 
     /// Cometary orbital elements of the state.
@@ -276,7 +276,7 @@ impl PyState {
 
     /// Text representation of the state.
     pub fn __repr__(&self) -> String {
-        let center = Desig::Naif(self.raw.center_id)
+        let center = Desig::Naif(self.raw.center_id())
             .try_naif_id_to_name()
             .to_string();
 

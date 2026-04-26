@@ -2,7 +2,7 @@
 
 use kete_core::{
     errors::Error,
-    time::{TAI, TDB, Time, UTC},
+    time::{TAI, TCB, TDB, Time, UTC},
 };
 use pyo3::prelude::*;
 
@@ -22,8 +22,9 @@ use pyo3::prelude::*;
 /// vs accuracy. Conversion between time scales is only accurate on the millisecond
 /// scale, however internal representation accuracy is on the microsecond scale.
 ///
-/// TDB is treated as equivalent to TT and TCB, because these times only differ by less
-/// than milliseconds per century.
+/// TDB is treated as equivalent to TT, because these times only differ by less
+/// than milliseconds per century. TCB is properly converted via a linear secular
+/// drift of L_B = 1.550519768e-8 relative to TDB (IAU 2006).
 ///
 /// Parameters
 /// ----------
@@ -75,7 +76,7 @@ impl PyTime {
         Ok(match scaling.to_ascii_lowercase().as_str() {
             "tt" => PyTime(Time::<TDB>::new(jd)),
             "tdb" => PyTime(Time::<TDB>::new(jd)),
-            "tcb" => PyTime(Time::<TDB>::new(jd)),
+            "tcb" => PyTime(Time::<TCB>::new(jd).tdb()),
             "tai" => PyTime(Time::<TAI>::new(jd).tdb()),
             "utc" => PyTime(Time::<UTC>::new(jd).tdb()),
             s => Err(Error::ValueError(format!(
@@ -91,7 +92,7 @@ impl PyTime {
     /// mjd:
     ///     Modified Julian Date in days.
     /// scaling:
-    ///     Accepts 'tdb', 'tai', 'utc', and 'tt', but they are converted to TDB
+    ///     Accepts 'tdb', 'tai', 'utc', 'tcb', and 'tt', but they are converted to TDB
     ///     immediately.
     #[staticmethod]
     #[pyo3(signature = (mjd, scaling="tdb"))]
@@ -101,10 +102,11 @@ impl PyTime {
         Ok(match scaling.as_str() {
             "tt" => PyTime(Time::<TDB>::from_mjd(mjd)),
             "tdb" => PyTime(Time::<TDB>::from_mjd(mjd)),
+            "tcb" => PyTime(Time::<TCB>::from_mjd(mjd).tdb()),
             "tai" => PyTime(Time::<TAI>::from_mjd(mjd).tdb()),
             "utc" => PyTime(Time::<UTC>::from_mjd(mjd).tdb()),
             s => Err(Error::ValueError(format!(
-                "Scaling of type ({s}) is not supported, must be one of: 'tt', 'tdb', 'tai', 'utc'",
+                "Scaling of type ({s}) is not supported, must be one of: 'tt', 'tdb', 'tcb', 'tai', 'utc'",
             )))?,
         })
     }

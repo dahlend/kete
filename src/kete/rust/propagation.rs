@@ -2,7 +2,11 @@
 use itertools::Itertools;
 use kete_core::kepler::moid;
 use kete_core::{
-    desigs::try_name_from_id, errors::Error, forces::NonGravModel, frames::Ecliptic, state::State,
+    desigs::try_name_from_id,
+    errors::Error,
+    forces::NonGravModel,
+    frames::{Ecliptic, Equatorial, SunCenter},
+    state::State,
 };
 use pyo3::{IntoPyObjectExt, Py, PyAny, PyResult, Python, pyfunction};
 use rayon::prelude::*;
@@ -40,20 +44,30 @@ pub fn moid_py(
         ))?;
     }
 
-    let state_b = state_b.map(|x| x.raw).unwrap_or(
-        kete_spice::prelude::LOADED_SPK
-            .try_read()
-            .map_err(Error::from)?
-            .try_get_state_with_center(399, states[0].raw.epoch, 10)?,
-    );
+    let spk = kete_spice::prelude::LOADED_SPK
+        .try_read()
+        .map_err(Error::from)?;
+
+    let state_b_raw = match state_b {
+        Some(x) => x.raw,
+        None => spk.try_get_state_with_center(399, states[0].raw.epoch, 10)?,
+    };
+    let state_b_sun: State<Equatorial, SunCenter> = spk.try_to_sun(state_b_raw)?;
+
+    let states_sun: Vec<Option<State<Equatorial, SunCenter>>> = states
+        .iter()
+        .map(|s| spk.try_to_sun(s.raw.clone()).ok())
+        .collect();
+    drop(spk);
 
     let moids: Vec<f64> = py.detach(|| {
-        states
+        states_sun
             .into_par_iter()
             .with_min_len(30)
-            .map(|state| {
-                let state = state.raw;
-                moid(state, state_b.clone()).unwrap_or(f64::NAN)
+            .map(|state_sun| {
+                state_sun
+                    .and_then(|s| moid(s, state_b_sun.clone()).ok())
+                    .unwrap_or(f64::NAN)
             })
             .collect::<Vec<_>>()
     });
@@ -150,13 +164,29 @@ pub fn propagation_n_body_spk_py(
                         ))
                         .change_frame(frame));
                     }
+                    let ssb_state = {
+                        let spk = kete_spice::prelude::LOADED_SPK
+                            .try_read()
+                            .map_err(|_| Error::ValueError("SPK lock unavailable".into()))?;
+                        spk.try_to_ssb(state)?
+                    };
                     match kete_spice::prelude::propagate_n_body_spk(
-                        state,
+                        ssb_state,
                         jd,
                         include_asteroids,
                         model,
                     ) {
-                        Ok(state) => Ok(Into::<PyState>::into(state).change_frame(frame)),
+                        Ok(ssb_result) => {
+                            let mut dyn_result = State::<Equatorial>::from(ssb_result);
+                            {
+                                let spk =
+                                    kete_spice::prelude::LOADED_SPK.try_read().map_err(|_| {
+                                        Error::ValueError("SPK lock unavailable".into())
+                                    })?;
+                                spk.try_change_center(&mut dyn_result, center)?;
+                            }
+                            Ok(Into::<PyState>::into(dyn_result).change_frame(frame))
+                        }
                         Err(er) => {
                             if !suppress_errors {
                                 Err(er)?
@@ -276,6 +306,13 @@ pub fn propagation_n_body_py(
                 let (chunk_state, chunk_nongrav): (Vec<_>, Vec<Option<NonGravModel>>) =
                     chunk.iter().cloned().unzip();
 
+                let spk = kete_spice::prelude::LOADED_SPK
+                    .try_read()
+                    .map_err(Error::from)?;
+                let chunk_state: Vec<_> = chunk_state
+                    .into_iter()
+                    .map(|s| spk.try_to_sun(s))
+                    .collect::<kete_core::errors::KeteResult<Vec<_>>>()?;
                 kete_spice::propagation::propagate_n_body_vec(
                     chunk_state,
                     jd,

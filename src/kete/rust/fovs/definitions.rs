@@ -1514,6 +1514,7 @@ impl PySpitzerFrame {
     /// Construct a Spitzer FOV from a pointing vector, rotation, observer, and explicit
     /// FOV dimensions.
     #[staticmethod]
+    #[allow(clippy::too_many_arguments)]
     pub fn from_pointing(
         pointing: VectorLike,
         rotation: f64,

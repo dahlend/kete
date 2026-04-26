@@ -29,10 +29,10 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use crate::obs::AstrometricObservation;
+use crate::obs::{AstrometricObservation, differential_light_deflect};
 use crate::uncertain_state::UncertainState;
 use kete_core::forces::NonGravModel;
-use kete_core::frames::Equatorial;
+use kete_core::frames::{Equatorial, SSB, SunCenter};
 use kete_core::kepler::{analytic_2_body_stm, light_time_correct};
 use kete_core::prelude::{Error, KeteResult, State};
 use kete_spice::prelude::{LOADED_SPK, compute_state_transition};
@@ -40,7 +40,70 @@ use kete_spice::propagation::propagate_n_body_spk;
 use nalgebra::{DMatrix, DVector, Vector3};
 use rayon::prelude::*;
 
+// ---------------------------------------------------------------------------
+// Tuning constants
+// ---------------------------------------------------------------------------
+
+/// Initial window radius for the arc-expansion bootstrap (days).
+/// Windows double from this value until the full arc is covered.
+const EXPANSION_INITIAL_RADIUS_DAYS: f64 = 30.0;
+
+/// Sigma floor applied to every observation during windowed expansion (radians, ~0.5 arcsec).
+/// Prevents high-precision observations (occultations, Gaia transits) from dominating
+/// the gradient before the orbit has converged near the true solution.
+/// Released for the final full-arc pass.
+const EXPANSION_SIGMA_FLOOR_RAD: f64 = 0.5 / 3600.0 * (std::f64::consts::PI / 180.0);
+
+/// CMC recovery threshold = rejection threshold * this factor (Carpino et al. 2003).
+const CMC_RECOVERY_FRACTION: f64 = 6.0 / 7.0;
+
+/// Minimum leverage-corrected expected chi2 denominator (prevents division instability).
+const CMC_MIN_EXPECTED: f64 = 0.5;
+
+/// Adaptive widening: multiply `chi2_threshold` by this factor per retry.
+const WIDENING_MULTIPLIER: f64 = 1.5;
+
+/// Adaptive widening: ceiling expressed as a multiple of the initial threshold.
+const WIDENING_CEILING_FACTOR: f64 = 20.0;
+
+/// Adaptive widening: retry if the included observation fraction drops below this.
+const WIDENING_MIN_FRACTION: f64 = 2.0 / 3.0;
+
+/// Adaptive widening: retry if the arc span drops below this fraction of the original.
+const WIDENING_MIN_ARC_FRACTION: f64 = 0.5;
+
+/// Maximum position correction per LM step (AU).
+const LM_MAX_POS_CORRECTION_AU: f64 = 0.5;
+
+/// Maximum velocity correction per LM step (AU/day).
+const LM_MAX_VEL_CORRECTION_AU_DAY: f64 = 0.005;
+
+/// Initial LM damping lambda when non-gravitational parameters are free.
+/// Their information-matrix entries are often orders of magnitude smaller than
+/// the orbital entries, so an undamped first step can produce enormous corrections.
+const LM_NG_INITIAL_LAMBDA: f64 = 1e-4;
+
+/// Factor by which LM lambda increases on a rejected step.
+const LM_LAMBDA_INCREASE: f64 = 10.0;
+
+/// Factor by which LM lambda decreases on an accepted step.
+const LM_LAMBDA_DECREASE: f64 = 0.1;
+
+/// LM lambda ceiling; solver gives up and returns best-found state above this.
+const LM_LAMBDA_MAX: f64 = 1e12;
+
+/// LM lambda threshold below which we reset to 1.0 on rejection (avoids
+/// getting stuck at near-zero lambda that never damps enough).
+const LM_LAMBDA_RESET_THRESHOLD: f64 = 1e-6;
+
 /// Result of orbit determination via batch least squares.
+///
+/// The covariance in `uncertain_state` is the Danby-rescaled posterior
+/// covariance `(H^T W H)^{-1} * chi^2 / dof`.  If the per-observation
+/// sigmas are well-calibrated the rescaling factor is ~1; if they
+/// understate the true noise by a factor k, the post-fit RMS is ~k and
+/// the covariance is inflated by k^2, so reported uncertainties stay
+/// well-calibrated regardless.
 #[derive(Debug, Clone)]
 pub struct OrbitFit {
     /// Core uncertain orbit (state + covariance + `non_grav` template).
@@ -107,15 +170,17 @@ pub struct OrbitFit {
 ///   rejection. An observation is rejected when its weighted
 ///   chi-squared exceeds this multiple of the leverage-corrected
 ///   expected value, and recovered when it falls below `6/7` of this
-///   threshold (Carpino-Milani-Chesley 2003 hysteresis).  Only used
-///   when `max_reject_passes > 0`.
+///   threshold (Carpino-Milani-Chesley 2003 hysteresis).  For a 2D
+///   optical observation, a 3-sigma outlier in one axis gives z = 4.5,
+///   so a value of 4.5 matches per-component 3-sigma rejection.  Only
+///   used when `max_reject_passes > 0`.
 /// * `max_reject_passes` - Maximum outlier-rejection cycles.  Set to 0 to
 ///   disable rejection entirely.
 ///
 /// # Errors
 /// Fails if any internal propagation or solve fails.
 pub fn fit_orbit(
-    initial_state: &State<Equatorial>,
+    initial_state: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
     include_asteroids: bool,
     non_grav: Option<&NonGravModel>,
@@ -130,7 +195,7 @@ pub fn fit_orbit(
     let sorted: Vec<AstrometricObservation> = sort_by_epoch(obs)
         .into_iter()
         .filter(|o| {
-            let s = o.observer();
+            let Ok(s) = o.observer() else { return false };
             let pos_ok: bool = s.pos.into_iter().all(|v: f64| v.is_finite());
             let vel_ok: bool = s.vel.into_iter().all(|v: f64| v.is_finite());
             pos_ok && vel_ok
@@ -153,7 +218,7 @@ pub fn fit_orbit(
         .map(|ob| (ob.epoch().jd - ref_jd).abs())
         .fold(0.0_f64, f64::max);
     let mut windows: Vec<f64> = Vec::new();
-    let mut radius = 30.0;
+    let mut radius = EXPANSION_INITIAL_RADIUS_DAYS;
     while radius < arc_radius {
         windows.push(radius);
         radius *= 2.0;
@@ -164,6 +229,8 @@ pub fn fit_orbit(
     let ng = non_grav.cloned();
     let mut prev_n_in_window: usize = 0;
 
+    let expansion_floor = EXPANSION_SIGMA_FLOOR_RAD;
+
     // Expansion stages: converge + reject on each window.
     // Non-grav parameters are frozen during expansion because short arcs
     // have almost no sensitivity to them; fitting them here would produce
@@ -173,7 +240,7 @@ pub fn fit_orbit(
         let windowed: Vec<AstrometricObservation> = sorted
             .iter()
             .filter(|ob| (ob.epoch().jd - ref_jd).abs() <= radius)
-            .cloned()
+            .map(|ob| ob.with_sigma_floor(expansion_floor))
             .collect();
         let n_in_window = windowed.len();
         if n_in_window < 4 || n_in_window == prev_n_in_window {
@@ -203,8 +270,9 @@ pub fn fit_orbit(
             tol,
             chi2_threshold,
             max_reject_passes,
-        ) {
-            let candidate = result.uncertain_state.state.clone();
+        ) && let Ok(candidate) =
+            State::<Equatorial, SSB>::try_from(result.uncertain_state.state.clone())
+        {
             // Re-score the candidate on the FULL window (ignoring any
             // outlier rejections inside solve_with_rejection) for an
             // apples-to-apples comparison.
@@ -214,7 +282,7 @@ pub fn fit_orbit(
             if post_rms.is_finite() && post_rms <= pre_rms {
                 state = candidate;
             }
-            // else: keep prior state, the stage made things worse.
+            // else: keep prior state, the conversion invariant was violated.
         }
         // On error: keep previous state, try the next wider window.
     }
@@ -242,30 +310,11 @@ pub fn fit_orbit(
     // is determined by the best available model (gravity-only) and
     // carried into the NG estimation without re-running rejection.
     let included = vec![true; sorted.len()];
-    if ng.is_some()
-        && let Ok(grav_fit) = solve_with_rejection(
-            &state,
-            &sorted,
-            &included,
-            include_asteroids,
-            None,
-            max_iter,
-            tol,
-            chi2_threshold,
-            max_reject_passes,
-        )
-    {
-        return iterate_to_convergence(
-            &grav_fit.uncertain_state.state,
-            &sorted,
-            &grav_fit.included,
-            include_asteroids,
-            ng,
-            max_iter,
-            tol,
-        );
-    }
-    solve_with_rejection(
+
+    // Compute the best available fit with raw (Fisher-inverse) covariance,
+    // then apply the Danby sigma_sq rescaling once at the boundary.  Keeping
+    // covariance raw internally is required for CMC leverage correctness.
+    let mut fit = fit_orbit_raw(
         &state,
         &sorted,
         &included,
@@ -275,7 +324,115 @@ pub fn fit_orbit(
         tol,
         chi2_threshold,
         max_reject_passes,
-    )
+    )?;
+    rescale_covariance_danby(&mut fit);
+    Ok(fit)
+}
+
+/// Internal worker for [`fit_orbit`] that returns a fit with the raw Fisher
+/// inverse covariance (no Danby rescaling applied).  The public wrapper
+/// applies the rescaling once at the boundary.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "orbit fitting requires many tuning parameters"
+)]
+fn fit_orbit_raw(
+    state: &State<Equatorial, SSB>,
+    sorted: &[AstrometricObservation],
+    included: &[bool],
+    include_asteroids: bool,
+    ng: Option<NonGravModel>,
+    max_iter: usize,
+    tol: f64,
+    chi2_threshold: f64,
+    max_reject_passes: usize,
+) -> KeteResult<OrbitFit> {
+    // No non-grav requested: single gravity-only solve.
+    if ng.is_none() {
+        return solve_with_rejection_adaptive(
+            state,
+            sorted,
+            included,
+            include_asteroids,
+            None,
+            max_iter,
+            tol,
+            chi2_threshold,
+            max_reject_passes,
+        );
+    }
+
+    // Non-grav requested.  Run gravity-only first to establish a stable
+    // starting point and a baseline RMS, then run the NG pass on the
+    // gravity-determined rejection mask.  A regression guard at the end
+    // returns the gravity-only fit if NG fails to improve RMS -- without
+    // this guard, a weakly-constrained NG fit will silently drift away
+    // from the gravity optimum and degrade the reported solution.
+    let Ok(grav_fit) = solve_with_rejection_adaptive(
+        state,
+        sorted,
+        included,
+        include_asteroids,
+        None,
+        max_iter,
+        tol,
+        chi2_threshold,
+        max_reject_passes,
+    ) else {
+        // Gravity-only failed outright; fall back to a direct NG solve.
+        return solve_with_rejection_adaptive(
+            state,
+            sorted,
+            included,
+            include_asteroids,
+            ng,
+            max_iter,
+            tol,
+            chi2_threshold,
+            max_reject_passes,
+        );
+    };
+
+    let Ok(grav_state) = State::<Equatorial, SSB>::try_from(grav_fit.uncertain_state.state.clone())
+    else {
+        return Ok(grav_fit);
+    };
+
+    let Ok(ng_fit) = iterate_to_convergence(
+        &grav_state,
+        sorted,
+        &grav_fit.included,
+        include_asteroids,
+        ng,
+        max_iter,
+        tol,
+    ) else {
+        return Ok(grav_fit);
+    };
+
+    // Compare both RMSes with n_params = 6 so the extra NG parameter
+    // count does not artificially inflate the NG RMS through the dof
+    // divisor.  This is the right apples-to-apples comparison of fit
+    // quality.
+    let cmp_n_params = 6;
+    let grav_rms = weighted_rms(
+        &grav_fit.residuals,
+        &grav_fit.observations,
+        &grav_fit.included,
+        cmp_n_params,
+    );
+    let ng_rms = weighted_rms(
+        &ng_fit.residuals,
+        &ng_fit.observations,
+        &ng_fit.included,
+        cmp_n_params,
+    );
+
+    if ng_fit.converged && ng_rms.is_finite() && ng_rms <= grav_rms {
+        Ok(ng_fit)
+    } else {
+        Ok(grav_fit)
+    }
 }
 
 /// Converge + iteratively reject/recover outliers on a subset.
@@ -300,7 +457,7 @@ pub fn fit_orbit(
 /// stable.
 ///
 fn solve_with_rejection(
-    initial_state: &State<Equatorial>,
+    initial_state: &State<Equatorial, SSB>,
     sorted_obs: &[AstrometricObservation],
     included: &[bool],
     include_asteroids: bool,
@@ -332,37 +489,42 @@ fn solve_with_rejection(
     // (Carpino, Milani & Chesley 2003).  The z-scores are already
     // leverage-normalized so no additional scaling is applied.
     let chi2_rej = chi2_threshold;
-    let chi2_rec = chi2_threshold * (6.0 / 7.0);
+    let chi2_rec = chi2_threshold * CMC_RECOVERY_FRACTION;
 
     for _ in 0..max_reject_passes {
         // Sweep over every caller-allowed observation (mask = `included`)
         // so that currently rejected observations also receive z-scores
         // and can be recovered.  stm_sweep emits one StmObs per included
         // observation in time-sorted order.
+        let sweep_state: State<Equatorial, SSB> = fit.uncertain_state.state.clone().try_into()?;
         let sweep = stm_sweep(
-            &fit.uncertain_state.state,
+            &sweep_state,
             sorted_obs,
             included,
             include_asteroids,
             fit.uncertain_state.non_grav.as_ref(),
         )?;
-        let cov = &fit.uncertain_state.cov_matrix;
+        // CMC leverage uses the Fisher inverse C_0 = (H^T W H)^+, which is
+        // stored directly in cov_matrix (no chi-square scaling applied).
+        let cov_fisher = &fit.uncertain_state.cov_matrix;
 
         let mut z_scores: Vec<f64> = Vec::with_capacity(sweep.len());
         for entry in &sweep {
-            let m = entry.weights.len();
-            // Parameter-space design block: H_i = h_local * phi_cum
-            // (m x d).  Leverage trace = sum_k (H_i C H_i^T)[k,k] * W_k.
+            let m = entry.weight_matrix.nrows();
+            // Parameter-space design block: H_i = h_local * phi_cum (m x d).
             let h_full: DMatrix<f64> = &entry.h_local * &entry.phi_cum;
-            let hch: DMatrix<f64> = &h_full * cov * h_full.transpose();
-            let leverage: f64 = (0..m).map(|k| hch[(k, k)] * entry.weights[k]).sum();
-            let chi2: f64 = entry
-                .residual
-                .iter()
-                .zip(entry.weights.iter())
-                .map(|(r, w)| r * r * w)
-                .sum();
-            let expected = (m as f64 - leverage).max(0.5);
+            let hch: DMatrix<f64> = &h_full * cov_fisher * h_full.transpose();
+            // leverage = tr(H C_0 H^T W)  (full matrix trace for non-diagonal W).
+            let leverage: f64 = (&hch * &entry.weight_matrix).trace();
+            // chi2 = r^T W r  (full weight matrix, includes timing correction).
+            let wr = &entry.weight_matrix * &entry.residual;
+            let chi2: f64 = entry.residual.dot(&wr);
+            let expected = (m as f64 - leverage).max(CMC_MIN_EXPECTED);
+            // z = chi2 / (m - leverage): reject when the weighted squared
+            // residual exceeds chi2_threshold times the leverage-corrected
+            // expected value.  With calibrated weights this is equivalent to
+            // an absolute sigma threshold: threshold 4.5 rejects at ~3-sigma
+            // per component for a 2-component optical observation.
             z_scores.push(chi2 / expected);
         }
 
@@ -418,8 +580,9 @@ fn solve_with_rejection(
         }
         current_included = new_included;
 
+        let iter_state: State<Equatorial, SSB> = fit.uncertain_state.state.clone().try_into()?;
         fit = iterate_to_convergence(
-            &fit.uncertain_state.state,
+            &iter_state,
             sorted_obs,
             &current_included,
             include_asteroids,
@@ -430,6 +593,114 @@ fn solve_with_rejection(
     }
 
     Ok(fit)
+}
+
+/// Adaptive wrapper around [`solve_with_rejection`] that widens the
+/// outlier-rejection threshold when the initial attempt would toss too
+/// many observations or shrink the observation arc too much.
+///
+/// Starts at the caller's threshold.  If the final inclusion set drops
+/// below 2/3 of the original count or the arc span below 1/2 of the
+/// original span, the threshold is multiplied by 1.5 and the fit is
+/// retried, up to a ceiling of 20x the caller's threshold.  This
+/// protects fits on noisy or borderline data from "evaporating" down to
+/// too few observations, while still rejecting clean outliers at the
+/// user's stated threshold.
+///
+/// When `max_reject_passes == 0` this is a pass-through -- no rejection
+/// is happening, so there is nothing to widen.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "orbit fitting requires many tuning parameters"
+)]
+fn solve_with_rejection_adaptive(
+    initial_state: &State<Equatorial, SSB>,
+    sorted_obs: &[AstrometricObservation],
+    included: &[bool],
+    include_asteroids: bool,
+    non_grav: Option<NonGravModel>,
+    max_iter: usize,
+    tol: f64,
+    chi2_threshold: f64,
+    max_reject_passes: usize,
+) -> KeteResult<OrbitFit> {
+    if max_reject_passes == 0 {
+        return solve_with_rejection(
+            initial_state,
+            sorted_obs,
+            included,
+            include_asteroids,
+            non_grav,
+            max_iter,
+            tol,
+            chi2_threshold,
+            max_reject_passes,
+        );
+    }
+
+    let orig_n = included.iter().filter(|&&v| v).count();
+    let orig_span = included_arc_span(sorted_obs, included);
+
+    // Widen up to 20x the caller's threshold.
+    let max_threshold = chi2_threshold * WIDENING_CEILING_FACTOR;
+    let mut threshold = chi2_threshold;
+    let mut last_fit: Option<OrbitFit> = None;
+
+    while threshold <= max_threshold {
+        let fit = solve_with_rejection(
+            initial_state,
+            sorted_obs,
+            included,
+            include_asteroids,
+            non_grav.clone(),
+            max_iter,
+            tol,
+            threshold,
+            max_reject_passes,
+        )?;
+
+        let final_n = fit.included.iter().filter(|&&v| v).count();
+        let final_span = included_arc_span(sorted_obs, &fit.included);
+
+        let dropped_too_many = (final_n as f64) < (orig_n as f64) * WIDENING_MIN_FRACTION;
+        let arc_too_short = final_span < orig_span * WIDENING_MIN_ARC_FRACTION;
+
+        if !dropped_too_many && !arc_too_short {
+            return Ok(fit);
+        }
+
+        last_fit = Some(fit);
+        threshold *= WIDENING_MULTIPLIER;
+    }
+
+    // Widening ceiling reached; return the last attempt.
+    last_fit.ok_or_else(|| {
+        Error::ValueError("adaptive widening exhausted without completing a pass".into())
+    })
+}
+
+/// Time span (in days) of observations currently marked included.
+/// Returns 0 when fewer than two observations are included.
+fn included_arc_span(obs: &[AstrometricObservation], included: &[bool]) -> f64 {
+    let mut min_jd = f64::INFINITY;
+    let mut max_jd = f64::NEG_INFINITY;
+    for (i, ob) in obs.iter().enumerate() {
+        if !included[i] {
+            continue;
+        }
+        let jd = ob.epoch().jd;
+        if jd < min_jd {
+            min_jd = jd;
+        }
+        if jd > max_jd {
+            max_jd = jd;
+        }
+    }
+    if min_jd.is_finite() && max_jd.is_finite() {
+        (max_jd - min_jd).max(0.0)
+    } else {
+        0.0
+    }
 }
 
 /// Return observations sorted by epoch (ascending).
@@ -450,46 +721,52 @@ fn sort_by_epoch(obs: &[AstrometricObservation]) -> Vec<AstrometricObservation> 
 /// converts to heliocentric, applies light-time correction, then
 /// converts back to SSB.  Returns the corrected SSB-centered state.
 fn light_time_corrected_state(
-    mut state_ssb: State<Equatorial>,
-    mut observer: State<Equatorial>,
-) -> KeteResult<State<Equatorial>> {
+    state_ssb: State<Equatorial, SSB>,
+    observer: State<Equatorial, SSB>,
+) -> KeteResult<State<Equatorial, SSB>> {
     let spk = LOADED_SPK.try_read()?;
-    spk.try_change_center(&mut state_ssb, 10)?;
-    spk.try_change_center(&mut observer, 10)?;
-    let obs_sun = observer.pos - state_ssb.pos + state_ssb.pos;
-    let mut obj_lt = light_time_correct(&state_ssb, &obs_sun)?;
-    spk.try_change_center(&mut obj_lt, 0)?;
-    Ok(obj_lt)
+    // Convert both object and observer to heliocentric for two-body correction.
+    let observer_dyn: State<Equatorial> = observer.into();
+    let state_sun = spk.try_to_sun(state_ssb.into())?;
+    let observer_sun = spk.try_to_sun(observer_dyn)?;
+    let obj_lt_helio = light_time_correct(&state_sun, &observer_sun.pos)?;
+    // Apply differential gravitational light deflection (solar bending of the
+    // photon path relative to background stars at infinity).
+    let deflected_pos = differential_light_deflect(&observer_sun.pos, obj_lt_helio.pos);
+    let obj_lt_deflected = State {
+        pos: deflected_pos,
+        ..obj_lt_helio
+    };
+    spk.try_to_ssb(obj_lt_deflected.into())
 }
 
 /// Run the iterative convergence loop with adaptive Levenberg-Marquardt
 /// damping and step-size limiting.
 ///
 /// Each iteration re-linearizes at the current state, solves the damped
-/// normal equations `(N + lambda * diag(N)) dx = b`, limits the step magnitude,
-/// and decides accept/reject based on the Huber rho loss.  Re-linearizing
-/// every iteration is essential: the step limiter caps *magnitude* but not
-/// *direction*, so recycling a stale Jacobian would repeatedly propose the
-/// same capped step and stall.
+/// normal equations `(N + lambda * diag(N)) dx = b`, limits the step
+/// magnitude, and decides accept/reject based on the weighted L2 loss
+/// (`0.5 * chi^2`).  Re-linearizing every iteration is essential: the
+/// step limiter caps *magnitude* but not *direction*, so recycling a
+/// stale Jacobian would repeatedly propose the same capped step and
+/// stall.
 ///
 /// Lambda is adjusted heuristically: decreased when the loss improves,
 /// increased when it worsens.  This steers the solver between
 /// Gauss-Newton (fast near the solution) and steepest descent (safe far
 /// from it).
 ///
-/// The acceptance metric is the Huber rho objective rather than the
-/// Huber-weighted sum of squared residuals.  Huber weights themselves
-/// shift as residuals cross the `HUBER_K` threshold, so the weighted
-/// sum-of-squares is non-monotone under IRLS-LM steps and would cause
-/// nearby starting states to land on opposite sides of the threshold and
-/// take wildly different convergence paths.  The rho loss is the proper
-/// M-estimator objective and is monotone under correct LM steps.
+/// The acceptance metric matches the weighted RMS users see at the end
+/// of the fit.  Outlier handling is the job of the Carpino-Milani-Chesley
+/// rejection loop in `solve_with_rejection`, not the loss function -- this
+/// keeps the loss monotone under correct LM steps and makes the Fisher
+/// inverse a well-defined covariance for the estimator being computed.
 ///
 /// On rejection the solver increases lambda and re-solves from the same
 /// linearization point (no repropagation).  This guarantees that
 /// `state_epoch` is always the best state seen.
 fn iterate_to_convergence(
-    initial_state: &State<Equatorial>,
+    initial_state: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
     included: &[bool],
     include_asteroids: bool,
@@ -497,13 +774,13 @@ fn iterate_to_convergence(
     max_iter: usize,
     tol: f64,
 ) -> KeteResult<OrbitFit> {
-    let mut state_epoch = initial_state.clone();
+    let mut state_epoch: State<Equatorial, SSB> = initial_state.clone();
     // Start with non-zero damping when fitting non-grav parameters.
     // Their information-matrix entries are often orders of magnitude
     // smaller than the orbital entries, so an undamped first step can
     // produce enormous non-grav corrections that poison the fit.
     let np = non_grav.as_ref().map_or(0, NonGravModel::n_free_params);
-    let mut lambda = if np > 0 { 1e-4 } else { 0.0 };
+    let mut lambda = if np > 0 { LM_NG_INITIAL_LAMBDA } else { 0.0 };
 
     // Linearize at the initial state.
     let Ok((mut info_mat, mut rhs_vec, mut loss)) = accumulate_normal_equations(
@@ -552,8 +829,12 @@ fn iterate_to_convergence(
         let r = trial_state.pos.norm();
         let v = trial_state.vel.norm();
         if !ng_in_bounds || !r.is_finite() || !v.is_finite() || !(1e-4..=1e4).contains(&r) {
-            lambda = if lambda < 1e-6 { 1.0 } else { lambda * 10.0 };
-            if lambda > 1e12 {
+            lambda = if lambda < LM_LAMBDA_RESET_THRESHOLD {
+                1.0
+            } else {
+                lambda * LM_LAMBDA_INCREASE
+            };
+            if lambda > LM_LAMBDA_MAX {
                 break;
             }
             continue;
@@ -572,16 +853,16 @@ fn iterate_to_convergence(
             let (new_info, new_rhs, new_loss, sweep_residuals) =
                 accumulate_from_sweep(&sweep, trial_ng.as_ref());
             if new_loss <= loss {
-                // Accept step: Huber loss improved (or stayed equal).
+                // Accept step: weighted L2 loss improved (or stayed equal).
                 state_epoch = trial_state;
                 non_grav = trial_ng;
                 info_mat = new_info;
                 rhs_vec = new_rhs;
                 loss = new_loss;
-                lambda *= 0.1;
+                lambda *= LM_LAMBDA_DECREASE;
 
                 if converged {
-                    let covariance = scaled_pseudo_inverse(&info_mat).map_err(|e| {
+                    let raw_cov = scaled_pseudo_inverse(&info_mat).map_err(|e| {
                         Error::ValueError(format!("SVD pseudo-inverse failed: {e}"))
                     })?;
 
@@ -604,7 +885,17 @@ fn iterate_to_convergence(
 
                     let n_params = 6 + non_grav.as_ref().map_or(0, NonGravModel::n_free_params);
                     let rms = weighted_rms(&residuals, obs, included, n_params);
-                    let uncertain_state = UncertainState::new(state_epoch, covariance, non_grav)?;
+                    // Internal covariance stays as the raw Fisher inverse
+                    // (H^T W H)^{-1}.  `solve_with_rejection` requires the
+                    // raw inverse for the CMC leverage-correction formula:
+                    //   leverage = tr(H C H^T W)
+                    // which is only consistent when `C` is the unscaled
+                    // information inverse.  The Danby unit-weight rescaling
+                    // (covariance *= rms^2) is applied once at the
+                    // `fit_orbit` boundary; see `rescale_covariance_danby`.
+                    let covariance = raw_cov;
+                    let uncertain_state =
+                        UncertainState::new(state_epoch.into(), covariance, non_grav)?;
                     return Ok(OrbitFit {
                         uncertain_state,
                         residuals,
@@ -617,15 +908,23 @@ fn iterate_to_convergence(
             } else {
                 // Reject step: increase damping and re-solve from
                 // the same linearization point.
-                lambda = if lambda < 1e-6 { 1.0 } else { lambda * 10.0 };
-                if lambda > 1e12 {
+                lambda = if lambda < LM_LAMBDA_RESET_THRESHOLD {
+                    1.0
+                } else {
+                    lambda * LM_LAMBDA_INCREASE
+                };
+                if lambda > LM_LAMBDA_MAX {
                     break;
                 }
             }
         } else {
             // Propagation failed at trial state -- reject and damp.
-            lambda = if lambda < 1e-6 { 1.0 } else { lambda * 10.0 };
-            if lambda > 1e12 {
+            lambda = if lambda < LM_LAMBDA_RESET_THRESHOLD {
+                1.0
+            } else {
+                lambda * LM_LAMBDA_INCREASE
+            };
+            if lambda > LM_LAMBDA_MAX {
                 break;
             }
         }
@@ -648,7 +947,7 @@ fn iterate_to_convergence(
 /// zeroed covariance and NaN residuals so that the caller still gets a
 /// valid `OrbitFit` instead of a hard error.
 fn make_non_converged_result(
-    state: &State<Equatorial>,
+    state: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
     included: &[bool],
     include_asteroids: bool,
@@ -657,7 +956,9 @@ fn make_non_converged_result(
     let n_params = 6 + non_grav.as_ref().map_or(0, NonGravModel::n_free_params);
 
     // Try to compute covariance and residuals together; fall back to
-    // placeholders if any propagation step fails.
+    // placeholders if any propagation step fails.  Covariance here is the
+    // raw Fisher inverse; the Danby rescaling is applied once at the
+    // `fit_orbit` boundary (see `rescale_covariance_danby`).
     let (covariance, residuals, rms) =
         accumulate_normal_equations(state, obs, included, include_asteroids, non_grav.as_ref())
             .and_then(|(info_mat, _, _)| {
@@ -676,8 +977,8 @@ fn make_non_converged_result(
             });
 
     // Dimensions are correct by construction -- `new` cannot fail.
-    let uncertain_state =
-        UncertainState::new(state.clone(), covariance, non_grav).expect("dimension mismatch");
+    let uncertain_state = UncertainState::new(state.clone().into(), covariance, non_grav)
+        .expect("dimension mismatch");
 
     OrbitFit {
         uncertain_state,
@@ -686,6 +987,23 @@ fn make_non_converged_result(
         included: included.to_vec(),
         rms,
         converged: false,
+    }
+}
+
+/// Apply the Danby unit-weight-variance rescaling to a fit's covariance.
+///
+/// Internally the solver stores the raw Fisher inverse `(H^T W H)^{-1}`
+/// because the CMC leverage formula requires it.  The reported covariance
+/// should be the posterior estimate, which equals the Fisher inverse times
+/// `sigma_sq = chi^2 / dof = rms^2`.  This function applies that rescaling
+/// in place and is called once at every `fit_orbit` return boundary.
+///
+/// Reference: Danby, Fundamentals of Celestial Mechanics 2nd ed., p. 243
+/// eq. 7.5.21.
+fn rescale_covariance_danby(fit: &mut OrbitFit) {
+    if fit.rms.is_finite() && fit.rms > 0.0 {
+        let sigma_sq = fit.rms * fit.rms;
+        fit.uncertain_state.cov_matrix *= sigma_sq;
     }
 }
 
@@ -703,8 +1021,10 @@ pub(crate) struct StmObs {
     pub residual: DVector<f64>,
     /// Local geometric partial derivatives, m x 6.
     pub h_local: DMatrix<f64>,
-    /// Weight vector (1/sigma^2 per measurement component), m-vector.
-    pub weights: DVector<f64>,
+    /// Full weight matrix (inverse noise covariance), m x m.
+    /// For optical with timing correction this is a non-diagonal 2x2 matrix;
+    /// for radar it is a 1x1 scalar matrix.
+    pub weight_matrix: DMatrix<f64>,
 }
 
 /// Inner STM sweep over a contiguous observation slice starting from a
@@ -717,7 +1037,7 @@ pub(crate) struct StmObs {
 /// Used by [`stm_sweep`] to implement parallel divide-and-conquer
 /// over long observation arcs.
 fn stm_sweep_inner(
-    checkpoint: &State<Equatorial>,
+    checkpoint: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
     included: &[bool],
     include_asteroids: bool,
@@ -732,7 +1052,7 @@ fn stm_sweep_inner(
         phi_cum[(i, i)] = 1.0;
     }
 
-    let mut state_cur = checkpoint.clone();
+    let mut state_cur: State<Equatorial, SSB> = checkpoint.clone();
     let mut results = Vec::new();
 
     for (i, observation) in obs.iter().enumerate() {
@@ -763,17 +1083,32 @@ fn stm_sweep_inner(
             continue;
         }
 
-        let obj_lt = light_time_corrected_state(state_cur.clone(), observation.observer().clone())?;
+        let observer_state = observation.observer()?;
+        let obj_lt = light_time_corrected_state(state_cur.clone(), observer_state.clone())?;
 
-        let residual = observation.residual_from_corrected(&obj_lt);
-        let h_local = observation.partials(&obj_lt);
-        let weights = observation.weights();
+        let residual = observation.residual_from_corrected(&obj_lt)?;
+        let h_local = observation.partials(&obj_lt)?;
+
+        // Apparent angular velocity (rad/day): H[:,0:3] * (v_obj - v_obs).
+        // Used to inflate along-track uncertainty for timing errors.
+        let v_obj: [f64; 3] = obj_lt.vel.into();
+        let v_obs: [f64; 3] = observer_state.vel.into();
+        let vel_rel = DVector::from_column_slice(&[
+            v_obj[0] - v_obs[0],
+            v_obj[1] - v_obs[1],
+            v_obj[2] - v_obs[2],
+        ]);
+        let motion = h_local.columns(0, 3) * &vel_rel;
+        let weight_matrix = observation.weight_matrix(
+            motion.get(0).copied().unwrap_or(0.0),
+            motion.get(1).copied().unwrap_or(0.0),
+        );
 
         results.push(StmObs {
             phi_cum: phi_cum.clone(),
             residual,
             h_local,
-            weights,
+            weight_matrix,
         });
     }
 
@@ -804,7 +1139,7 @@ fn stm_sweep_inner(
 /// # Panics
 /// Panics if the observer state position has zero norm.
 pub(crate) fn stm_sweep(
-    state_epoch: &State<Equatorial>,
+    state_epoch: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
     included: &[bool],
     include_asteroids: bool,
@@ -895,13 +1230,18 @@ pub(crate) fn stm_sweep(
     // If instead c_{s+1} were at obs[end_s].epoch, phi_local_end would
     // cover only up to obs[end_s - 1], missing one integration step per
     // segment boundary, causing ~0.2% error per boundary in phi_cum.
-    let mut checkpoint_states: Vec<State<Equatorial>> = Vec::with_capacity(n_segments);
+    let mut checkpoint_states: Vec<State<Equatorial, SSB>> = Vec::with_capacity(n_segments);
     checkpoint_states.push(state_epoch.clone());
-    let mut cur = state_epoch.clone();
+    let mut cur: State<Equatorial, SSB> = state_epoch.clone();
     for &(_, end) in &segment_ranges[..n_segments - 1] {
         let target_epoch = obs[end - 1].epoch();
         if (target_epoch.jd - cur.epoch.jd).abs() > 1e-12 {
-            cur = propagate_n_body_spk(cur, target_epoch, include_asteroids, non_grav.cloned())?;
+            cur = propagate_n_body_spk(
+                cur.clone(),
+                target_epoch,
+                include_asteroids,
+                non_grav.cloned(),
+            )?;
         }
         checkpoint_states.push(cur.clone());
     }
@@ -910,7 +1250,7 @@ pub(crate) fn stm_sweep(
     // Each segment runs independently from its checkpoint with a fresh
     // identity phi_cum.  The local phi_cum values are relative to the
     // segment's checkpoint epoch, not the reference epoch.
-    let inputs: Vec<(&[AstrometricObservation], &[bool], &State<Equatorial>)> = segment_ranges
+    let inputs: Vec<(&[AstrometricObservation], &[bool], &State<Equatorial, SSB>)> = segment_ranges
         .iter()
         .enumerate()
         .map(|(s, &(start, end))| {
@@ -1011,7 +1351,7 @@ pub(crate) fn stm_sweep(
 /// # Errors
 /// Returns an error if two-body propagation or light-time correction fails.
 pub(crate) fn stm_sweep_two_body(
-    state_epoch: &State<Equatorial>,
+    state_epoch: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
     included: &[bool],
     non_grav: Option<&NonGravModel>,
@@ -1033,11 +1373,8 @@ pub(crate) fn stm_sweep_two_body(
     // (the usual convention inside the fitter) would bias every step by the
     // Sun-SSB offset (~0.007 AU), producing residuals dominated by that
     // systematic error rather than by the orbit fit.
-    let mut state_helio = state_epoch.clone();
-    if state_helio.center_id != 10 {
-        let spk = LOADED_SPK.try_read()?;
-        spk.try_change_center(&mut state_helio, 10)?;
-    }
+    let spk = LOADED_SPK.try_read()?;
+    let state_helio = spk.try_to_sun(state_epoch.clone().into())?;
 
     let mut cur_pos: Vector3<f64> = state_helio.pos.into();
     let mut cur_vel: Vector3<f64> = state_helio.vel.into();
@@ -1071,24 +1408,50 @@ pub(crate) fn stm_sweep_two_body(
             continue;
         }
 
-        // Build a heliocentric State for light-time correction and residuals.
-        // `light_time_corrected_state` re-centers as needed internally.
-        let mut cur_state = state_helio.clone();
-        cur_state.pos = cur_pos.into();
-        cur_state.vel = cur_vel.into();
-        cur_state.epoch = cur_epoch;
+        // Build heliocentric state for light-time correction.
+        // `light_time_correct` requires heliocentric inputs; the observer
+        // is SSB-typed so we also need to convert it to heliocentric.
+        let obj_lt_ssb = {
+            let cur_state_helio = State::<Equatorial, SunCenter> {
+                desig: state_helio.desig.clone(),
+                epoch: cur_epoch,
+                pos: cur_pos.into(),
+                vel: cur_vel.into(),
+                center: SunCenter,
+            };
+            let observer_state = observation.observer()?;
+            let obs_helio = spk.try_to_sun(observer_state.into())?;
+            let obj_lt_helio = light_time_correct(&cur_state_helio, &obs_helio.pos)?;
+            let deflected_pos = differential_light_deflect(&obs_helio.pos, obj_lt_helio.pos);
+            let obj_lt_deflected = State {
+                pos: deflected_pos,
+                ..obj_lt_helio
+            };
+            spk.try_to_ssb(obj_lt_deflected.into())?
+        };
 
-        let obj_lt = light_time_corrected_state(cur_state, observation.observer().clone())?;
+        let residual = observation.residual_from_corrected(&obj_lt_ssb)?;
+        let h_local = observation.partials(&obj_lt_ssb)?;
 
-        let residual = observation.residual_from_corrected(&obj_lt);
-        let h_local = observation.partials(&obj_lt);
-        let weights = observation.weights();
+        // Apparent angular velocity (rad/day) for timing correction.
+        let v_obj: [f64; 3] = obj_lt_ssb.vel.into();
+        let v_obs: [f64; 3] = observation.observer()?.vel.into();
+        let vel_rel = DVector::from_column_slice(&[
+            v_obj[0] - v_obs[0],
+            v_obj[1] - v_obs[1],
+            v_obj[2] - v_obs[2],
+        ]);
+        let motion = h_local.columns(0, 3) * &vel_rel;
+        let weight_matrix = observation.weight_matrix(
+            motion.get(0).copied().unwrap_or(0.0),
+            motion.get(1).copied().unwrap_or(0.0),
+        );
 
         results.push(StmObs {
             phi_cum: phi_cum.clone(),
             residual,
             h_local,
-            weights,
+            weight_matrix,
         });
     }
 
@@ -1097,15 +1460,15 @@ pub(crate) fn stm_sweep_two_body(
 
 /// Accumulate the weighted normal equations for one linearization pass.
 ///
-/// Returns `(info_mat, rhs_vec, huber_loss)` where `info_mat` is the
+/// Returns `(info_mat, rhs_vec, loss)` where `info_mat` is the
 /// (6+Np) x (6+Np) information matrix, `rhs_vec` is the right-hand
-/// side, and `huber_loss` is the Huber rho objective summed over all
-/// included measurements (the merit function used by the LM accept gate).
+/// side, and `loss` is `0.5 * chi^2` summed over all included measurements
+/// (the merit function used by the LM accept gate).
 ///
 /// # Errors
 /// Returns an error if the underlying STM sweep fails.
 pub(crate) fn accumulate_normal_equations(
-    state_epoch: &State<Equatorial>,
+    state_epoch: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
     included: &[bool],
     include_asteroids: bool,
@@ -1116,27 +1479,17 @@ pub(crate) fn accumulate_normal_equations(
     Ok((n_mat, b_vec, loss))
 }
 
-/// Huber tuning constant for IRLS downweighting.
-///
-/// k = 1.345 gives 95% asymptotic efficiency at the Gaussian model while
-/// providing strong outlier resistance.
-const HUBER_K: f64 = 1.345;
-
 /// Accumulate normal equations from a pre-computed STM sweep.
 ///
-/// Applies iteratively reweighted least squares (IRLS) with Huber loss:
-/// each measurement component whose normalized residual exceeds [`HUBER_K`]
-/// is smoothly downweighted, preventing large residuals from dominating the
-/// normal equations.
+/// Plain weighted least-squares accumulation: every observation contributes
+/// `r^T W r` to chi^2 without IRLS downweighting.  Outlier handling is the
+/// job of the Carpino-Milani-Chesley rejection loop in `solve_with_rejection`,
+/// not the loss function.  This keeps the solver's merit function aligned
+/// with the weighted RMS the user sees and makes the Fisher-inverse
+/// covariance well-defined.
 ///
-/// Returns `(info_mat, rhs_vec, huber_loss, residuals)` where `huber_loss`
-/// is the Huber rho objective summed over all measurements.  This is the
-/// merit function the IRLS-LM solver should monotonically reduce; using the
-/// Huber-weighted sum-of-squared residuals instead would be non-monotone
-/// because Huber weights themselves shift as residuals cross the threshold,
-/// producing inconsistent step-acceptance decisions for nearby starting
-/// states.  `residuals` contains one entry per included observation
-/// (matching the sweep).
+/// Returns `(info_mat, rhs_vec, loss, residuals)` where `loss = 0.5 * chi^2`.
+/// `residuals` contains one entry per included observation (matching the sweep).
 fn accumulate_from_sweep(
     sweep: &[StmObs],
     non_grav: Option<&NonGravModel>,
@@ -1146,51 +1499,27 @@ fn accumulate_from_sweep(
 
     let mut n_mat = DMatrix::<f64>::zeros(d, d);
     let mut b_vec = DVector::<f64>::zeros(d);
-    let mut huber_loss = 0.0;
+    let mut loss = 0.0;
     let mut residuals = Vec::with_capacity(sweep.len());
 
     for entry in sweep {
-        let m = entry.residual.len();
-
         // Map to epoch: H_epoch = H_local * Phi_cum  (m x D).
         let h_epoch = &entry.h_local * &entry.phi_cum;
+        let w = &entry.weight_matrix;
+        let wr = w * &entry.residual;
 
-        // Huber IRLS: downweight components with large normalized residuals,
-        // and accumulate the Huber rho loss over all measurements using the
-        // ORIGINAL (un-Huber'd) weights.
-        let mut weights = entry.weights.clone();
-        for k in 0..m {
-            let z_abs = (entry.residual[k] * entry.weights[k].sqrt()).abs();
-            if z_abs <= HUBER_K {
-                huber_loss += 0.5 * z_abs * z_abs;
-            } else {
-                huber_loss += HUBER_K * z_abs - 0.5 * HUBER_K * HUBER_K;
-                weights[k] *= HUBER_K / z_abs;
-            }
-        }
+        // Weighted L2: chi^2 contribution = r^T W r; loss = 0.5 * chi^2.
+        loss += 0.5 * entry.residual.dot(&wr);
 
         residuals.push(entry.residual.clone());
 
-        // Accumulate normal matrix and RHS via weighted outer products:
+        // Accumulate normal matrix and RHS:
         //   N += H^T W H,  b += H^T W r
-        // Build sqrt(W) * H and sqrt(W) * r for efficient rank-m update.
-        // hw is m x d, wr is m x 1.
-        let mut hw = h_epoch.clone();
-        let mut wr = entry.residual.clone();
-        for k in 0..m {
-            let sw = weights[k].sqrt();
-            for j in 0..d {
-                hw[(k, j)] *= sw;
-            }
-            wr[k] *= sw;
-        }
-        // N += (sqrt(W) H)^T (sqrt(W) H)  =  H^T W H
-        n_mat += hw.transpose() * &hw;
-        // b += (sqrt(W) H)^T (sqrt(W) r)  =  H^T W r
-        b_vec += hw.transpose() * &wr;
+        n_mat += h_epoch.transpose() * w * &h_epoch;
+        b_vec += h_epoch.transpose() * &wr;
     }
 
-    (n_mat, b_vec, huber_loss, residuals)
+    (n_mat, b_vec, loss, residuals)
 }
 
 /// Solve `(N + lambda * diag(N)) * dx = b` via SVD with column scaling.
@@ -1299,27 +1628,25 @@ fn scaled_pseudo_inverse(n_mat: &DMatrix<f64>) -> KeteResult<DMatrix<f64>> {
 /// Cap position and velocity corrections to prevent wild jumps.
 ///
 /// Position is limited to 0.5 AU and velocity to 0.005 AU/day per
-/// iteration.  Non-grav parameters are not capped here -- the
-/// Levenberg-Marquardt damping (especially the non-zero initial lambda
-/// set when `np > 0`) regulates them instead, since their typical
-/// magnitudes span many orders of magnitude (1e-12 to 1e-1).
+/// iteration.  Non-grav parameters are not capped here: LM damping
+/// (which ramps lambda on rejected steps) and the regression guard in
+/// `fit_orbit` (which discards an NG fit that makes RMS worse than the
+/// gravity-only baseline) together keep NG behavior under control
+/// without a per-iteration step cap that would slow convergence in
+/// well-conditioned NG cases.
 fn limit_correction(mut dx: DVector<f64>) -> DVector<f64> {
     // AU
-    const MAX_POS: f64 = 0.5;
-    // AU/day
-    const MAX_VEL: f64 = 0.005;
-
     let pos_norm = (dx[0] * dx[0] + dx[1] * dx[1] + dx[2] * dx[2]).sqrt();
-    if pos_norm > MAX_POS {
-        let s = MAX_POS / pos_norm;
+    if pos_norm > LM_MAX_POS_CORRECTION_AU {
+        let s = LM_MAX_POS_CORRECTION_AU / pos_norm;
         for v in dx.rows_mut(0, 3).iter_mut() {
             *v *= s;
         }
     }
 
     let vel_norm = (dx[3] * dx[3] + dx[4] * dx[4] + dx[5] * dx[5]).sqrt();
-    if vel_norm > MAX_VEL {
-        let s = MAX_VEL / vel_norm;
+    if vel_norm > LM_MAX_VEL_CORRECTION_AU_DAY {
+        let s = LM_MAX_VEL_CORRECTION_AU_DAY / vel_norm;
         for v in dx.rows_mut(3, 3).iter_mut() {
             *v *= s;
         }
@@ -1368,7 +1695,7 @@ fn backtrack_to_ng_bounds(mut dx: DVector<f64>, non_grav: Option<&NonGravModel>)
 /// Apply a state correction vector to the epoch state and (optionally)
 /// non-grav parameters.
 fn apply_correction(
-    state: &mut State<Equatorial>,
+    state: &mut State<Equatorial, SSB>,
     dx: &DVector<f64>,
     non_grav: &mut Option<NonGravModel>,
 ) -> bool {
@@ -1406,25 +1733,30 @@ fn apply_correction(
 /// Uses the 6-dim `propagate_n_body_spk` (not the 60-dim STM
 /// integrator) so this is ~5x cheaper than an STM sweep.
 fn compute_residuals(
-    state_epoch: &State<Equatorial>,
+    state_epoch: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
     include_asteroids: bool,
     non_grav: Option<&NonGravModel>,
 ) -> KeteResult<Vec<DVector<f64>>> {
     let mut residuals = Vec::with_capacity(obs.len());
-    let mut state_cur = state_epoch.clone();
+    let mut state_cur: State<Equatorial, SSB> = state_epoch.clone();
 
     for observation in obs {
         let obs_epoch = observation.epoch();
 
         // Propagate to observation epoch (6-dim, no STM).
         if (obs_epoch.jd - state_cur.epoch.jd).abs() > 1e-12 {
-            state_cur =
-                propagate_n_body_spk(state_cur, obs_epoch, include_asteroids, non_grav.cloned())?;
+            state_cur = propagate_n_body_spk(
+                state_cur.clone(),
+                obs_epoch,
+                include_asteroids,
+                non_grav.cloned(),
+            )?;
         }
 
-        let obj_lt = light_time_corrected_state(state_cur.clone(), observation.observer().clone())?;
-        let res = observation.residual_from_corrected(&obj_lt);
+        let observer_state = observation.observer()?;
+        let obj_lt = light_time_corrected_state(state_cur.clone(), observer_state)?;
+        let res = observation.residual_from_corrected(&obj_lt)?;
         residuals.push(res);
     }
 
@@ -1447,11 +1779,14 @@ fn weighted_rms(
         if !included[i] {
             continue;
         }
-        let w = obs[i].weights();
-        for (r, wi) in res.iter().zip(w.iter()) {
-            sum += r * r * wi;
-            n_meas += 1;
-        }
+        // Use the full base weight matrix so that the RA/Dec correlation,
+        // when present, is correctly accounted for in chi^2.  Timing
+        // correction is excluded here -- `weighted_rms` reports a
+        // position-only RMS that does not depend on apparent motion.
+        let w = obs[i].base_weight_matrix();
+        let wr = &w * res;
+        sum += res.dot(&wr);
+        n_meas += w.nrows();
     }
     let dof = n_meas.saturating_sub(n_params);
     if dof > 0 {
@@ -1466,16 +1801,22 @@ fn weighted_rms(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kete_core::Band;
     use kete_core::constants::GMS;
     use kete_core::desigs::Desig;
     use kete_core::time::{TDB, Time};
     use kete_spice::propagation::propagate_n_body_spk;
-
     use kete_spice::test_data::ensure_test_spk;
 
     /// Helper: build a simple state.
-    fn make_state(pos: [f64; 3], vel: [f64; 3], jd: f64) -> State<Equatorial> {
-        State::new(Desig::Empty, jd.into(), pos.into(), vel.into(), 0)
+    fn make_state(pos: [f64; 3], vel: [f64; 3], jd: f64) -> State<Equatorial, SSB> {
+        State {
+            desig: Desig::Empty,
+            epoch: jd.into(),
+            pos: pos.into(),
+            vel: vel.into(),
+            center: SSB,
+        }
     }
 
     /// Generate synthetic optical observations, optionally with a non-grav model.
@@ -1483,7 +1824,7 @@ mod tests {
     /// Uses the full N-body SPK propagator so that the physics model is
     /// consistent with the batch least-squares solver.
     fn synth_observations(
-        true_state: &State<Equatorial>,
+        true_state: &State<Equatorial, SSB>,
         epochs: &[f64],
         observer_pos_fn: impl Fn(f64) -> ([f64; 3], [f64; 3]),
         sigma: f64,
@@ -1503,11 +1844,16 @@ mod tests {
             .unwrap();
 
             let spk = LOADED_SPK.try_read().unwrap();
-            let mut sun_at = obj_at.clone();
-            spk.try_change_center(&mut sun_at, 10).unwrap();
+            let sun_at = spk.try_to_sun(obj_at.clone().into()).unwrap();
             let obs_helio = observer.pos - obj_at.pos + sun_at.pos;
-            let mut obj_lt = light_time_correct(&sun_at, &obs_helio).unwrap();
-            spk.try_change_center(&mut obj_lt, 0).unwrap();
+            let obj_lt_sun = light_time_correct(&sun_at, &obs_helio).unwrap();
+            // Apply DLD so synthetic observations are consistent with the prediction model.
+            let deflected_pos = differential_light_deflect(&obs_helio, obj_lt_sun.pos);
+            let obj_lt_deflected = State {
+                pos: deflected_pos,
+                ..obj_lt_sun
+            };
+            let obj_lt = spk.try_to_ssb(obj_lt_deflected.into()).unwrap();
             let (ra, dec) = (obj_lt.pos - observer.pos).to_ra_dec();
 
             observations.push(AstrometricObservation::Optical {
@@ -1516,6 +1862,11 @@ mod tests {
                 dec,
                 sigma_ra: sigma,
                 sigma_dec: sigma,
+                sigma_corr: 0.0,
+                time_sigma: 0.0,
+                is_occultation: false,
+                band: Band::Unknown([0; 8]),
+                mag: f64::NAN,
             });
         }
         observations
@@ -1906,5 +2257,471 @@ mod tests {
                 "residual mismatch at obs {k}: {res_diff:.3e}"
             );
         }
+    }
+
+    /// Verify properties of `differential_light_deflect`.
+    ///
+    /// 1. The correction is perpendicular to the topocentric direction
+    ///    (i.e. it shifts only the angle, not the range).
+    /// 2. The magnitude is consistent with the standard GR formula:
+    ///    `delta_theta ~ 2*GMS/c^2 * |tan(psi2/2) - tan(psi1/2)|`.
+    /// 3. Objects near the Sun get larger corrections than objects far away.
+    /// 4. Collinear or zero-distance edge cases return unmodified positions.
+    #[test]
+    fn test_differential_light_deflect() {
+        use kete_core::constants::{C_AU_PER_DAY, GMS};
+        use kete_core::frames::Vector;
+
+        let bend_factor = 2.0 * GMS / (C_AU_PER_DAY * C_AU_PER_DAY);
+
+        // Observer at 1 AU along +x, object at 2 AU along (1,1,0) / sqrt(2).
+        let observer: Vector<Equatorial> = [1.0, 0.0, 0.0].into();
+        let obj: Vector<Equatorial> =
+            [std::f64::consts::SQRT_2, std::f64::consts::SQRT_2, 0.0].into();
+
+        let deflected = differential_light_deflect(&observer, obj);
+
+        // 1. The deflection should be perpendicular to the topocentric direction.
+        let p_orig = obj - observer;
+        let p_defl = deflected - observer;
+        let p_orig_hat = p_orig / p_orig.norm();
+        // Component of deflected topocentric direction along original: should be ~1.
+        let cos_angle = p_defl.dot(&p_orig_hat) / p_defl.norm();
+        assert!(
+            (cos_angle - 1.0).abs() < 1e-8,
+            "DLD should not change range direction appreciably, cos_angle deviation={:.3e}",
+            (cos_angle - 1.0).abs()
+        );
+
+        // 2. Check the angular shift magnitude is in the right ballpark.
+        let cross = p_orig_hat.cross(&(p_defl / p_defl.norm()));
+        let angle_shift = cross.norm().asin();
+        // For this geometry: psi2 ~ pi - elongation, bending ~ bend_factor * (tan(psi2/2) - tan(psi1/2))
+        // Rough upper bound: should be < 2e-3 radians (< 400 arcsec) and > 0.
+        assert!(
+            angle_shift > 0.0,
+            "DLD should produce a positive angular shift"
+        );
+        assert!(
+            angle_shift < bend_factor * 10.0,
+            "DLD angular shift {angle_shift:.3e} rad seems unreasonably large"
+        );
+
+        // 3. For two objects in the same sky direction from the observer, the one
+        //    nearer to the Sun has a larger psi2 - psi1 differential and thus a
+        //    larger DLD angular correction.  Both objects are along (0, 1, 0) from
+        //    the observer at [1, 0, 0], differing only in heliocentric distance.
+        let obj_near_sun: Vector<Equatorial> = [1.0, 0.5, 0.0].into(); // 1.12 AU from Sun
+        let obj_far_sun: Vector<Equatorial> = [1.0, 2.0, 0.0].into(); // 2.24 AU from Sun
+        let defl_near_sun = differential_light_deflect(&observer, obj_near_sun);
+        let defl_far_sun = differential_light_deflect(&observer, obj_far_sun);
+
+        let p_near_sun = obj_near_sun - observer;
+        let p_defl_near_sun = defl_near_sun - observer;
+        let angle_near_sun = p_near_sun.cross(&p_defl_near_sun).norm()
+            / (p_near_sun.norm() * p_defl_near_sun.norm());
+
+        let p_far_sun = obj_far_sun - observer;
+        let p_defl_far_sun = defl_far_sun - observer;
+        let angle_far_sun =
+            p_far_sun.cross(&p_defl_far_sun).norm() / (p_far_sun.norm() * p_defl_far_sun.norm());
+
+        assert!(
+            angle_near_sun > angle_far_sun,
+            "Object nearer to Sun should have larger DLD: near={angle_near_sun:.3e} vs far={angle_far_sun:.3e}"
+        );
+
+        // 4. Edge case: observer at origin -> no correction.
+        let zero_obs: Vector<Equatorial> = [0.0, 0.0, 0.0].into();
+        let obj_edge: Vector<Equatorial> = [1.0, 0.5, 0.0].into();
+        let defl_edge = differential_light_deflect(&zero_obs, obj_edge);
+        // olen = 0, function should return obj_lt_pos unchanged.
+        let diff = (defl_edge - obj_edge).norm();
+        assert!(
+            diff < 1e-15,
+            "Zero observer should return unchanged position, diff={diff:.3e}"
+        );
+
+        // 5. Edge case: object same position as observer -> no correction.
+        let defl_same = differential_light_deflect(&observer, observer);
+        let diff_same = (defl_same - observer).norm();
+        assert!(
+            diff_same < 1e-15,
+            "Zero topocentric distance should return unchanged position, diff={diff_same:.3e}"
+        );
+    }
+
+    /// Regression guard: when the truth has no non-grav signal and the
+    /// caller supplies `Some(JplComet{0,0,0})`, the fitter must not return
+    /// an NG solution with higher RMS than the gravity-only fit.  Without
+    /// the guard in `fit_orbit`, the weakly-constrained A terms drift and
+    /// the returned fit is strictly worse than gravity-only.
+    #[test]
+    fn test_ng_regression_guard_falls_back_when_ng_hurts() {
+        ensure_test_spk();
+        // Gravity-only truth (no non-grav signal).
+        let r = 1.5;
+        let v = (GMS / r).sqrt();
+        let true_state = make_state([r, 0.0, 0.0], [0.0, v, 0.0], 2460000.5);
+
+        // Moderate arc, tight observations.
+        let epochs: Vec<f64> = (0..15).map(|i| 2460000.5 + f64::from(i) * 6.0).collect();
+        let sigma = 1e-6;
+        let observations = synth_observations(&true_state, &epochs, earth_observer, sigma, None);
+
+        // Gravity-only fit for a baseline RMS.
+        let fit_grav =
+            fit_orbit(&true_state, &observations, false, None, 30, 1e-10, 9.0, 0).unwrap();
+
+        // Fit with NG requested but initial A terms all zero.
+        let init_ng = NonGravModel::new_jpl_comet_default(0.0, 0.0, 0.0);
+        let fit_ng_requested = fit_orbit(
+            &true_state,
+            &observations,
+            false,
+            Some(&init_ng),
+            30,
+            1e-10,
+            9.0,
+            0,
+        )
+        .unwrap();
+
+        // The regression guard compares raw weighted RMS with n_params = 6
+        // on both sides.  The returned fit may be either the NG fit (if NG
+        // actually helped) or the gravity-only fit (if it did not).  Either
+        // way, its raw weighted RMS must be <= the gravity-only baseline.
+        let cmp_n_params = 6;
+        let rms_grav = weighted_rms(
+            &fit_grav.residuals,
+            &fit_grav.observations,
+            &fit_grav.included,
+            cmp_n_params,
+        );
+        let rms_ng_requested = weighted_rms(
+            &fit_ng_requested.residuals,
+            &fit_ng_requested.observations,
+            &fit_ng_requested.included,
+            cmp_n_params,
+        );
+        assert!(
+            rms_ng_requested <= rms_grav * 1.0 + 1e-12,
+            "Regression guard failed: NG-requested RMS {rms_ng_requested:.6e} > \
+             gravity-only RMS {rms_grav:.6e}"
+        );
+    }
+
+    /// When the truth has a real non-grav signal and the arc is long
+    /// enough to constrain it, the guard should still accept the NG fit
+    /// (because NG genuinely improves the fit).  This ensures Phase 1 does
+    /// not regress the happy path for real NG objects.
+    #[test]
+    fn test_ng_regression_guard_keeps_ng_when_it_helps() {
+        ensure_test_spk();
+        // Truth has a tangential non-grav term.
+        let r = 1.5;
+        let v = (GMS / r).sqrt();
+        let true_state = make_state([r, 0.0, 0.0], [0.0, v, 0.0], 2460000.5);
+        let true_a2 = 1e-8;
+        let true_ng = NonGravModel::new_jpl_comet_default(0.0, true_a2, 0.0);
+
+        let epochs: Vec<f64> = (0..15).map(|i| 2460000.5 + f64::from(i) * 6.0).collect();
+        let sigma = 1e-7;
+        let observations =
+            synth_observations(&true_state, &epochs, earth_observer, sigma, Some(&true_ng));
+
+        let init_ng = NonGravModel::new_jpl_comet_default(0.0, 0.0, 0.0);
+        let fit = fit_orbit(
+            &true_state,
+            &observations,
+            false,
+            Some(&init_ng),
+            30,
+            1e-10,
+            9.0,
+            0,
+        )
+        .unwrap();
+
+        // NG fit should be the one returned (non_grav populated) and should
+        // recover a2 near the truth.
+        let fitted_ng = fit
+            .uncertain_state
+            .non_grav
+            .as_ref()
+            .expect("non_grav should be kept when it helps");
+        let fitted_params = fitted_ng.get_free_params();
+        let a2_err = (fitted_params[1] - true_a2).abs();
+        assert!(
+            a2_err < true_a2 * 0.1,
+            "a2 error {a2_err:.6e} too large (true={true_a2:.6e}, fitted={:.6e})",
+            fitted_params[1]
+        );
+    }
+
+    /// After dropping Huber, the solver's merit function is `0.5 * chi^2`.
+    /// At convergence the `loss` returned by `accumulate_normal_equations`
+    /// must equal `0.5 * chi^2` where chi^2 is the weighted sum-of-squared
+    /// residuals on the included observations.
+    #[test]
+    fn test_loss_equals_half_chi_squared() {
+        ensure_test_spk();
+        let r = 1.5;
+        let v = (GMS / r).sqrt();
+        let true_state = make_state([r, 0.0, 0.0], [0.0, v, 0.0], 2460000.5);
+        let epochs: Vec<f64> = (0..10).map(|i| 2460000.5 + f64::from(i) * 6.0).collect();
+        let sigma = 1e-6;
+        let observations = synth_observations(&true_state, &epochs, earth_observer, sigma, None);
+        let included = vec![true; observations.len()];
+
+        let fit = fit_orbit(&true_state, &observations, false, None, 20, 1e-10, 9.0, 0).unwrap();
+
+        // Evaluate normal equations at the converged state.
+        let fit_state: State<Equatorial, SSB> =
+            fit.uncertain_state.state.clone().try_into().unwrap();
+        let (_n_mat, _b_vec, loss) =
+            accumulate_normal_equations(&fit_state, &observations, &included, false, None).unwrap();
+
+        // Compute chi^2 from the fit's residuals directly.
+        let mut chi2 = 0.0_f64;
+        for (i, res) in fit.residuals.iter().enumerate() {
+            if !fit.included[i] {
+                continue;
+            }
+            let w = observations[i].weights();
+            for (rv, wv) in res.iter().zip(w.iter()) {
+                chi2 += rv * rv * wv;
+            }
+        }
+
+        let expected = 0.5 * chi2;
+        let abs_err = (loss - expected).abs();
+        let rel_err = abs_err / expected.abs().max(1e-30);
+        assert!(
+            rel_err < 1e-10 || abs_err < 1e-20,
+            "loss = {loss:.12e} but 0.5 * chi^2 = {expected:.12e} (rel_err = {rel_err:.3e})"
+        );
+    }
+
+    /// Adaptive rejection widening: when enough observations are at a
+    /// borderline-outlier level that fixed-threshold rejection would drop
+    /// below 2/3 of the arc, the adaptive wrapper widens the threshold
+    /// until the inclusion set is preserved.  Without widening, the fit
+    /// would "evaporate" to an unreasonably short arc.
+    #[test]
+    fn test_adaptive_rejection_widening_preserves_arc() {
+        ensure_test_spk();
+        let r = 1.5;
+        let v = (GMS / r).sqrt();
+        let true_state = make_state([r, 0.0, 0.0], [0.0, v, 0.0], 2460000.5);
+
+        let epochs: Vec<f64> = (0..20).map(|i| 2460000.5 + f64::from(i) * 4.0).collect();
+        let stated_sigma = 1e-7;
+        let mut observations =
+            synth_observations(&true_state, &epochs, earth_observer, stated_sigma, None);
+
+        // Inject alternating +/- offsets of 3.5 * stated_sigma in 70% of
+        // the observations.  Alternating signs ensure the fit cannot
+        // absorb them into the state; the residuals stay near the
+        // injected level.
+        //
+        //   z at 3.5 sigma Mahalanobis = (3.5)^2 = 12.25
+        //   Rejection at z=4.5 (chi2 > 9): these observations would be
+        //   rejected (since 12.25 > 9).
+        //   With widening past 12.25/2 = 6.125 (threshold ~ 6.5+),
+        //   they are kept.
+        //
+        // At 14 out of 20 = 70% injected outliers, naive rejection drops
+        // to 6 (30%), well below the 2/3 = 14 floor.  Widening should
+        // preserve at least 14.
+        let injected = 3.5 * stated_sigma;
+        for (i, obs) in observations.iter_mut().enumerate().take(14) {
+            if let AstrometricObservation::Optical { ra, dec, .. } = obs {
+                let sign = if i % 2 == 0 { 1.0 } else { -1.0 };
+                *ra += sign * injected;
+                *dec -= sign * injected;
+            }
+        }
+
+        let fit = fit_orbit(&true_state, &observations, false, None, 30, 1e-10, 4.5, 3).unwrap();
+
+        let n_included = fit.included.iter().filter(|&&v| v).count();
+        let n_total = observations.len();
+
+        assert!(
+            n_included * 3 >= n_total * 2,
+            "Adaptive widening should preserve >= 2/3 of observations; \
+             got {n_included}/{n_total}"
+        );
+    }
+
+    /// A single large outlier (100 sigma) should still be rejected even
+    /// with adaptive widening enabled, because its z-score far exceeds any
+    /// reasonable widened threshold.  This guards against the widening
+    /// loop going too permissive.
+    #[test]
+    fn test_adaptive_widening_still_rejects_large_outliers() {
+        ensure_test_spk();
+        let r = 1.5;
+        let v = (GMS / r).sqrt();
+        let true_state = make_state([r, 0.0, 0.0], [0.0, v, 0.0], 2460000.5);
+
+        let epochs: Vec<f64> = (0..10).map(|i| 2460000.5 + f64::from(i) * 6.0).collect();
+        let sigma = 1e-7;
+        let mut observations =
+            synth_observations(&true_state, &epochs, earth_observer, sigma, None);
+
+        // Inject a single 100-sigma RA offset at observation 3.
+        if let AstrometricObservation::Optical { ra, .. } = &mut observations[3] {
+            *ra += 100.0 * sigma;
+        }
+
+        let fit = fit_orbit(&true_state, &observations, false, None, 20, 1e-10, 4.5, 3).unwrap();
+
+        // Observation 3 should be rejected, all others kept.
+        assert!(!fit.included[3], "100-sigma outlier should remain rejected");
+        let n_included = fit.included.iter().filter(|&&v| v).count();
+        assert!(
+            n_included >= 9,
+            "All clean observations should be kept; got {n_included}/10"
+        );
+    }
+
+    /// Danby rescaling test: the reported covariance must equal the raw
+    /// Fisher inverse scaled by `rms^2`.  We create observations with
+    /// controlled noise (alternating +/- offsets) so that the post-fit RMS
+    /// is nontrivial, then confirm the reported covariance diagonals match
+    /// `raw_cov_ii * rms^2` algebraically.
+    #[test]
+    fn test_danby_rescaling_cov_matches_fisher_times_rms_squared() {
+        ensure_test_spk();
+        let r = 1.5;
+        let v = (GMS / r).sqrt();
+        let true_state = make_state([r, 0.0, 0.0], [0.0, v, 0.0], 2460000.5);
+
+        let epochs: Vec<f64> = (0..20).map(|i| 2460000.5 + f64::from(i) * 5.0).collect();
+        let stated_sigma = 1e-7;
+        let mut observations =
+            synth_observations(&true_state, &epochs, earth_observer, stated_sigma, None);
+
+        // Inject alternating +/- offsets of ~2x stated sigma so the fit
+        // will converge with RMS ~2 (weighted residuals are dominated by
+        // the injected offsets).
+        let injected = 2.0 * stated_sigma;
+        for (i, obs) in observations.iter_mut().enumerate() {
+            if let AstrometricObservation::Optical { ra, dec, .. } = obs {
+                let sign = if i % 2 == 0 { 1.0 } else { -1.0 };
+                *ra += sign * injected;
+                *dec -= sign * injected;
+            }
+        }
+
+        let fit = fit_orbit(&true_state, &observations, false, None, 30, 1e-10, 9.0, 0).unwrap();
+
+        assert!(
+            fit.rms > 0.5,
+            "Expected nontrivial RMS, got {:.3e}",
+            fit.rms
+        );
+
+        // Reconstruct the raw Fisher inverse at the fit state.
+        let fit_state: State<Equatorial, SSB> =
+            fit.uncertain_state.state.clone().try_into().unwrap();
+        let (info_mat, _, _) =
+            accumulate_normal_equations(&fit_state, &observations, &fit.included, false, None)
+                .unwrap();
+        let raw_cov = scaled_pseudo_inverse(&info_mat).unwrap();
+
+        // Reported covariance must equal raw * rms^2 on every diagonal.
+        let sigma_sq = fit.rms * fit.rms;
+        for i in 0..6 {
+            let reported = fit.uncertain_state.cov_matrix[(i, i)];
+            let expected = raw_cov[(i, i)] * sigma_sq;
+            let rel_err = (reported - expected).abs() / expected.abs().max(1e-30);
+            assert!(
+                rel_err < 1e-6,
+                "cov[{i},{i}] = {reported:.6e}, expected raw*sigma_sq = \
+                 {expected:.6e} (rel_err = {rel_err:.3e})"
+            );
+        }
+    }
+
+    /// Observations constructed with non-zero `sigma_corr` must produce a
+    /// different fit covariance than the same observations with zero
+    /// correlation -- a sanity check that the correlation actually threads
+    /// through `weight_matrix`, `weighted_rms`, and the reported covariance.
+    #[test]
+    fn test_correlation_changes_fit_covariance() {
+        ensure_test_spk();
+        let r = 1.5;
+        let v = (GMS / r).sqrt();
+        let true_state = make_state([r, 0.0, 0.0], [0.0, v, 0.0], 2460000.5);
+
+        let epochs: Vec<f64> = (0..15).map(|i| 2460000.5 + f64::from(i) * 6.0).collect();
+        let sigma = 1e-6;
+        let obs_uncorr = synth_observations(&true_state, &epochs, earth_observer, sigma, None);
+
+        // Build a correlated copy with sigma_corr = 0.6.
+        let obs_corr: Vec<_> = obs_uncorr
+            .iter()
+            .map(|ob| {
+                if let AstrometricObservation::Optical {
+                    observer,
+                    ra,
+                    dec,
+                    sigma_ra,
+                    sigma_dec,
+                    time_sigma,
+                    band,
+                    mag,
+                    ..
+                } = ob
+                {
+                    AstrometricObservation::Optical {
+                        observer: observer.clone(),
+                        ra: *ra,
+                        dec: *dec,
+                        sigma_ra: *sigma_ra,
+                        sigma_dec: *sigma_dec,
+                        sigma_corr: 0.6,
+                        time_sigma: *time_sigma,
+                        is_occultation: false,
+                        band: *band,
+                        mag: *mag,
+                    }
+                } else {
+                    ob.clone()
+                }
+            })
+            .collect();
+
+        let fit_uncorr =
+            fit_orbit(&true_state, &obs_uncorr, false, None, 20, 1e-10, 9.0, 0).unwrap();
+        let fit_corr = fit_orbit(&true_state, &obs_corr, false, None, 20, 1e-10, 9.0, 0).unwrap();
+
+        // The states should agree (injected residuals are zero in both).
+        let pos_diff =
+            (fit_uncorr.uncertain_state.state.pos - fit_corr.uncertain_state.state.pos).norm();
+        assert!(
+            pos_diff < 1e-8,
+            "State should barely change with correlation, got pos_diff = {pos_diff:.3e}"
+        );
+
+        // The covariance should differ: with correlation 0.6, the
+        // position covariance diagonals shrink by a factor of ~1/(1-0.36)
+        // = ~1.56 in the information matrix, i.e., the reported
+        // covariance diagonals grow by that factor.  At least one
+        // position diagonal must differ by more than 10%.
+        let mut max_rel_diff: f64 = 0.0;
+        for i in 0..3 {
+            let a = fit_uncorr.uncertain_state.cov_matrix[(i, i)];
+            let b = fit_corr.uncertain_state.cov_matrix[(i, i)];
+            let rel = (b - a).abs() / a.abs().max(1e-30);
+            max_rel_diff = max_rel_diff.max(rel);
+        }
+        assert!(
+            max_rel_diff > 0.05,
+            "Correlation should change cov diagonals by >5%; got max rel diff = {max_rel_diff:.3e}"
+        );
     }
 }

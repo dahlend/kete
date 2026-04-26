@@ -41,7 +41,7 @@ use crate::obs::AstrometricObservation;
 use crate::orbit_fitting::{StmObs, accumulate_normal_equations, stm_sweep, stm_sweep_two_body};
 use kete_core::constants::GMS;
 use kete_core::forces::NonGravModel;
-use kete_core::frames::Equatorial;
+use kete_core::frames::{Equatorial, SSB};
 use kete_core::kepler::propagate_two_body;
 use kete_core::prelude::{Error, KeteResult, State};
 use nalgebra::{DMatrix, DVector};
@@ -82,8 +82,8 @@ pub struct OrbitSamples {
     /// Each inner vector is `[x, y, z, vx, vy, vz, ng_params...]` in the
     /// Equatorial frame at `epoch`.
     pub draws: Vec<Vec<f64>>,
-    /// Fit index (0-based) that generated each draw.
-    pub chain_id: Vec<usize>,
+    /// Seed index (0-based) that generated each draw.
+    pub seed_id: Vec<usize>,
     /// True if the draw was a divergent transition.
     pub divergent: Vec<bool>,
 }
@@ -252,7 +252,7 @@ fn log_sigmoid_with_grad(z: f64, k: f64) -> (f64, f64) {
 /// Cartesian coordinates centered on the seed state.
 struct OrbitalPosterior {
     /// Seed state at the reference epoch.
-    seed_state: State<Equatorial>,
+    seed_state: State<Equatorial, SSB>,
     /// Whitening factor (sqrt-covariance), D x D.
     whiten_l: DMatrix<f64>,
     /// Seed vector `[x, y, z, vx, vy, vz, ng_params...]`, D-vector.
@@ -279,7 +279,12 @@ impl OrbitalPosterior {
     fn vec_to_state(
         &self,
         cart_full: &DVector<f64>,
-    ) -> (State<Equatorial>, Option<NonGravModel>, [f64; 3], [f64; 3]) {
+    ) -> (
+        State<Equatorial, SSB>,
+        Option<NonGravModel>,
+        [f64; 3],
+        [f64; 3],
+    ) {
         let pos: [f64; 3] = cart_full.as_slice()[..3].try_into().unwrap();
         let vel: [f64; 3] = cart_full.as_slice()[3..6].try_into().unwrap();
 
@@ -316,26 +321,29 @@ impl OrbitalPosterior {
         let gaussian = nu.is_infinite();
 
         for entry in sweep {
-            let m = entry.residual.len();
+            let m = entry.residual.len() as f64;
             let h_epoch = &entry.h_local * &entry.phi_cum;
 
-            for k in 0..m {
-                let r = entry.residual[k];
-                let sigma2 = 1.0 / entry.weights[k];
+            // Mahalanobis distance squared: q = r^T W r.
+            let wr = &entry.weight_matrix * &entry.residual;
+            let q = entry.residual.dot(&wr);
 
-                if gaussian {
-                    logp += -0.5 * r * r / sigma2;
-                    let dl_dx_factor = r / sigma2;
-                    for j in 0..d {
-                        grad_cart[j] += h_epoch[(k, j)] * dl_dx_factor;
-                    }
-                } else {
-                    let s = r * r / (nu * sigma2);
-                    logp += -0.5 * (nu + 1.0) * (1.0 + s).ln();
-                    let dl_dx_factor = (nu + 1.0) * r / (nu * sigma2 + r * r);
-                    for j in 0..d {
-                        grad_cart[j] += h_epoch[(k, j)] * dl_dx_factor;
-                    }
+            if gaussian {
+                // Gaussian: logp -= 0.5 * q, grad += H^T W r.
+                logp -= 0.5 * q;
+                let g = h_epoch.transpose() * &wr;
+                for j in 0..d {
+                    grad_cart[j] += g[j];
+                }
+            } else {
+                // Multivariate Student-t with nu d.o.f.:
+                //   logp -= 0.5 * (nu + m) * ln(1 + q/nu)
+                //   grad += (nu + m) / (nu + q) * H^T W r
+                logp -= 0.5 * (nu + m) * (1.0 + q / nu).ln();
+                let dl_factor = (nu + m) / (nu + q);
+                let g = h_epoch.transpose() * &wr;
+                for j in 0..d {
+                    grad_cart[j] += dl_factor * g[j];
                 }
             }
         }
@@ -426,7 +434,7 @@ impl CpuLogpFunc for OrbitalPosterior {
 /// linearization.  If the STM sweep or information matrix inversion fails,
 /// fall back to a diagonal heuristic.
 fn build_cholesky(
-    seed: &State<Equatorial>,
+    seed: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
     include_asteroids: bool,
     non_grav: Option<&NonGravModel>,
@@ -472,7 +480,7 @@ fn sqrt_cov_from_info(info: &DMatrix<f64>) -> Option<DMatrix<f64>> {
 ///
 /// Position uncertainties are set to 1% of the current heliocentric
 /// distance, velocity uncertainties to 1% of the current speed.
-fn diagonal_heuristic_whiten_cart(seed: &State<Equatorial>, np: usize) -> DMatrix<f64> {
+fn diagonal_heuristic_whiten_cart(seed: &State<Equatorial, SSB>, np: usize) -> DMatrix<f64> {
     let d = 6 + np;
     let pos: [f64; 3] = seed.pos.into();
     let vel: [f64; 3] = seed.vel.into();
@@ -536,7 +544,7 @@ fn diagonal_heuristic_whiten_cart(seed: &State<Equatorial>, np: usize) -> DMatri
 /// # Errors
 /// Returns an error if `seeds` is empty or two-body propagation fails.
 pub fn fit_orbit_mcmc(
-    seeds: &[State<Equatorial>],
+    seeds: &[State<Equatorial, SSB>],
     obs: &[AstrometricObservation],
     include_asteroids: bool,
     num_draws: usize,
@@ -551,16 +559,22 @@ pub fn fit_orbit_mcmc(
 
     // Propagate all seeds to the first seed's epoch if needed.
     let epoch = seeds[0].epoch;
-    let seeds: Vec<State<Equatorial>> = seeds
+    let spk = kete_spice::prelude::LOADED_SPK
+        .try_read()
+        .map_err(|_| Error::ValueError("SPK lock unavailable".into()))?;
+    let seeds: Vec<State<Equatorial, SSB>> = seeds
         .iter()
-        .map(|s| {
-            if (s.epoch.jd - epoch.jd).abs() > 1e-12 {
-                propagate_two_body(s, epoch)
+        .map(|s| -> KeteResult<State<Equatorial, SSB>> {
+            let sun_s = spk.try_to_sun(s.clone().into())?;
+            let propagated = if (sun_s.epoch.jd - epoch.jd).abs() > 1e-12 {
+                propagate_two_body(&sun_s, epoch)?
             } else {
-                Ok(s.clone())
-            }
+                sun_s
+            };
+            spk.try_to_ssb(propagated.into())
         })
         .collect::<KeteResult<Vec<_>>>()?;
+    drop(spk);
 
     // Sort observations once and share across chains.
     let mut sorted_obs = obs.to_vec();
@@ -634,14 +648,14 @@ pub fn fit_orbit_mcmc(
 
     // Collect results.
     let mut all_draws = Vec::new();
-    let mut all_chain_id = Vec::new();
+    let mut all_seed_id = Vec::new();
     let mut all_divergent = Vec::new();
 
     for (seed_idx, result) in chain_results {
         let (draws, divergent) = result?;
         let n = draws.len();
         all_draws.extend(draws);
-        all_chain_id.extend(std::iter::repeat_n(seed_idx, n));
+        all_seed_id.extend(std::iter::repeat_n(seed_idx, n));
         all_divergent.extend(divergent);
     }
 
@@ -649,14 +663,14 @@ pub fn fit_orbit_mcmc(
         desig: seeds[0].desig.to_string(),
         epoch: epoch.jd,
         draws: all_draws,
-        chain_id: all_chain_id,
+        seed_id: all_seed_id,
         divergent: all_divergent,
     })
 }
 
 /// Run a single NUTS chain for one seed.
 fn run_single_chain(
-    seed: &State<Equatorial>,
+    seed: &State<Equatorial, SSB>,
     whiten_l: &DMatrix<f64>,
     sorted_obs: &Arc<[AstrometricObservation]>,
     include_asteroids: bool,
@@ -900,13 +914,13 @@ mod tests {
         // logp = physical_prior only (no likelihood term).
         let seed_pos = [1.5, 0.3, -0.1];
         let seed_vel = [0.002, -0.014, 0.001];
-        let seed_state: State<Equatorial> = State::new(
-            Desig::Empty,
-            2460000.5.into(),
-            seed_pos.into(),
-            seed_vel.into(),
-            0,
-        );
+        let seed_state: State<Equatorial, SSB> = State {
+            desig: Desig::Empty,
+            epoch: 2460000.5.into(),
+            pos: seed_pos.into(),
+            vel: seed_vel.into(),
+            center: SSB,
+        };
 
         let d = 6;
         let mut seed_vec = DVector::<f64>::zeros(d);
@@ -971,13 +985,13 @@ mod tests {
         // Same as above but with a realistic, correlated whitening matrix.
         let seed_pos = [1.5, 0.3, -0.1];
         let seed_vel = [0.002, -0.014, 0.001];
-        let seed_state: State<Equatorial> = State::new(
-            Desig::Empty,
-            2460000.5.into(),
-            seed_pos.into(),
-            seed_vel.into(),
-            0,
-        );
+        let seed_state: State<Equatorial, SSB> = State {
+            desig: Desig::Empty,
+            epoch: 2460000.5.into(),
+            pos: seed_pos.into(),
+            vel: seed_vel.into(),
+            center: SSB,
+        };
 
         let d = 6;
         let mut seed_vec = DVector::<f64>::zeros(d);

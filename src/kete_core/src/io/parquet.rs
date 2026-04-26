@@ -99,7 +99,7 @@ pub fn write_states_parquet(
     );
     let center = Column::new(
         "center".into(),
-        states.iter().map(|state| state.center_id).collect_vec(),
+        states.iter().map(State::center_id).collect_vec(),
     );
 
     if let Some(updated) = &last_updated

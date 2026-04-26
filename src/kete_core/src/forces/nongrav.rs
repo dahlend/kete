@@ -424,7 +424,7 @@ impl NonGravModel {
                 }
                 let rr0 = pos.norm() / r_0;
                 let scale = alpha * rr0.powf(-m) * (1.0 + rr0.powf(*n)).powf(-k);
-                // NaN A terms are absent — treat as zero.
+                // NaN A terms are absent -- treat as zero.
                 let a1_eff = if a1.is_finite() { *a1 } else { 0.0 };
                 let a2_eff = if a2.is_finite() { *a2 } else { 0.0 };
                 let a3_eff = if a3.is_finite() { *a3 } else { 0.0 };

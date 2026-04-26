@@ -338,7 +338,7 @@ where
     /// value to maintain the invariant that `Data` is never empty.
     ///
     /// # Arguments
-    /// * `lower_std` - Lower standard deviation threshold.
+    /// * `lower_std` - Lower standard deviation threshold
     /// * `upper_std` - Upper standard deviation threshold.
     /// * `n_iter` - Number of iterations to perform.
     #[must_use]

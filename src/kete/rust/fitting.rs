@@ -2,6 +2,7 @@
 //!
 //! Wraps `kete_fitting` types and functions for use from Python.
 
+use kete_core::Band;
 use kete_core::forces::NonGravModel;
 use kete_core::frames::{Equatorial, Vector};
 use kete_core::prelude::*;
@@ -35,10 +36,6 @@ const RAD_TO_ARCSEC: f64 = 180.0 * 3600.0 / std::f64::consts::PI;
 pub struct PyObservation {
     /// The core observation data (astrometry / radar).
     pub obs: AstrometricObservation,
-    /// Photometric filter name (e.g. "V", "W1").  Metadata only.
-    pub band: String,
-    /// Apparent magnitude.  NaN when unavailable.  Metadata only.
-    pub mag: f64,
 }
 
 #[pymethods]
@@ -70,16 +67,41 @@ impl PyObservation {
     /// dec : float
     ///     Declination in degrees.
     /// sigma_ra : float
-    ///     1-sigma RA uncertainty in arcseconds (should include cos(dec)
-    ///     factor).
+    ///     1-sigma sky-plane RA uncertainty in arcseconds (``sigma_ra * cos(dec)``).
+    ///     This matches the convention used by all standard astrometric data
+    ///     formats (MPC ADES ``rmsRA``, Gaia DR3 ``ra_error_*``, etc.).  The
+    ///     ``cos(dec)`` factor is removed internally to convert to the RA
+    ///     coordinate direction used during chi-squared accumulation.
     /// sigma_dec : float
     ///     1-sigma Dec uncertainty in arcseconds.
     /// band : str
     ///     Photometric filter name (default ``"V"``).
     /// mag : float
     ///     Apparent magnitude (default ``NaN``).
+    /// time_sigma : float
+    ///     1-sigma timing uncertainty in seconds (default ``0.5``).  When
+    ///     non-zero the along-track positional uncertainty is inflated by
+    ///     ``time_sigma * apparent_speed``, producing a non-diagonal weight
+    ///     matrix.
+    /// sigma_corr : float
+    ///     Correlation coefficient between RA and Dec uncertainties
+    ///     (default ``0.0``, i.e. axis-aligned).  Must lie in ``(-1, 1)``.
+    ///     Used when ADES-format astrometry reports ``rmscorr`` or Gaia
+    ///     DR3 reports a correlation between RA and Dec errors -- the
+    ///     position covariance ellipse is tilted accordingly.
+    /// is_occultation : bool
+    ///     Set to True when the measurement was derived from a stellar
+    ///     occultation rather than direct astrometry.  Default ``False``.
+    ///     The fitting math is identical for both, but ingestion code
+    ///     uses this flag to skip the per-observatory residual table,
+    ///     EFCC18 debiasing, and over-observation reweighting -- which
+    ///     do not apply to occultations.
     #[staticmethod]
-    #[pyo3(signature = (observer, ra, dec, sigma_ra, sigma_dec, band="V".to_string(), mag=f64::NAN))]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "optical observations carry many independent measurement parameters"
+    )]
+    #[pyo3(signature = (observer, ra, dec, sigma_ra, sigma_dec, band="V".to_string(), mag=f64::NAN, time_sigma=0.1, sigma_corr=0.0, is_occultation=false))]
     fn optical(
         observer: PyState,
         ra: f64,
@@ -88,116 +110,230 @@ impl PyObservation {
         sigma_dec: f64,
         band: String,
         mag: f64,
+        time_sigma: f64,
+        sigma_corr: f64,
+        is_occultation: bool,
     ) -> PyResult<Self> {
         if sigma_ra <= 0.0 || sigma_dec <= 0.0 {
             return Err(Error::ValueError("sigma_ra and sigma_dec must be positive".into()).into());
         }
-        let mut raw = observer.raw;
-        if raw.center_id != 0 {
-            let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-            spk.try_change_center(&mut raw, 0)?;
+        if time_sigma < 0.0 {
+            return Err(Error::ValueError("time_sigma must be non-negative".into()).into());
         }
+        if !sigma_corr.is_finite() || !(-1.0..1.0).contains(&sigma_corr) {
+            return Err(Error::ValueError(
+                "sigma_corr must be finite and strictly between -1 and 1".into(),
+            )
+            .into());
+        }
+        let raw = observer.raw;
+        let spk = LOADED_SPK.try_read().map_err(Error::from)?;
+        let observer_ssb = spk.try_to_ssb(raw)?;
         let arcsec_to_rad = 1.0 / RAD_TO_ARCSEC;
+        // Convert sky-plane sigma_ra to the RA coordinate direction by
+        // dividing out cos(dec).  Stored internally in pure RA radians so
+        // that chi^2 = (ra_obs - ra_pred)^2 / sigma_ra^2 is dimensionally
+        // consistent (both numerator and denominator in pure RA).
+        let cos_dec = dec.to_radians().cos().abs().max(1e-6);
         Ok(Self {
             obs: AstrometricObservation::Optical {
-                observer: raw,
+                observer: observer_ssb,
                 ra: ra.to_radians(),
                 dec: dec.to_radians(),
-                sigma_ra: sigma_ra * arcsec_to_rad,
+                sigma_ra: sigma_ra * arcsec_to_rad / cos_dec,
                 sigma_dec: sigma_dec * arcsec_to_rad,
+                sigma_corr,
+                time_sigma,
+                is_occultation,
+                band: Band::from_name(&band),
+                mag,
             },
-            band,
-            mag,
         })
     }
 
     /// Create a radar range observation.
     ///
-    /// The observer state is automatically re-centered to SSB.
+    /// The transmitter and receiver are stored as WGS84 geodetic coordinates.
+    /// Their inertial states are computed inside the residual via PCK kernel
+    /// lookups at the receive epoch (and at the iteratively-refined transmit
+    /// epoch for the xmit station).  Use the same site coordinates for
+    /// monostatic observations.
     ///
     /// Parameters
     /// ----------
-    /// observer : :class:`~kete.State`
-    ///     Observer state (any center / frame -- will be converted).
+    /// xmit_lat : float
+    ///     Transmitter geodetic latitude in degrees.
+    /// xmit_lon : float
+    ///     Transmitter geodetic longitude in degrees.
+    /// xmit_height : float
+    ///     Transmitter height above the WGS84 ellipsoid in km.
+    /// rcvr_lat : float
+    ///     Receiver geodetic latitude in degrees.
+    /// rcvr_lon : float
+    ///     Receiver geodetic longitude in degrees.
+    /// rcvr_height : float
+    ///     Receiver height above the WGS84 ellipsoid in km.
+    /// epoch : :class:`~kete.Time`
+    ///     Receive epoch ``t_rx`` (TDB).
     /// range : float
     ///     Measured range in AU.
     /// sigma_range : float
     ///     1-sigma range uncertainty in AU.
     #[staticmethod]
-    #[pyo3(signature = (observer, range, sigma_range))]
-    fn radar_range(observer: PyState, range: f64, sigma_range: f64) -> PyResult<Self> {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "radar geometry requires both stations and a measurement"
+    )]
+    #[pyo3(signature = (xmit_lat, xmit_lon, xmit_height, rcvr_lat, rcvr_lon, rcvr_height, epoch, range, sigma_range))]
+    fn radar_range(
+        xmit_lat: f64,
+        xmit_lon: f64,
+        xmit_height: f64,
+        rcvr_lat: f64,
+        rcvr_lon: f64,
+        rcvr_height: f64,
+        epoch: PyTime,
+        range: f64,
+        sigma_range: f64,
+    ) -> PyResult<Self> {
         if sigma_range <= 0.0 {
             return Err(Error::ValueError("sigma_range must be positive".into()).into());
         }
-        let mut raw = observer.raw;
-        if raw.center_id != 0 {
-            let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-            spk.try_change_center(&mut raw, 0)?;
-        }
         Ok(Self {
             obs: AstrometricObservation::RadarRange {
-                observer: raw,
+                xmit_lat_rad: xmit_lat.to_radians(),
+                xmit_lon_rad: xmit_lon.to_radians(),
+                xmit_height_km: xmit_height,
+                rcvr_lat_rad: rcvr_lat.to_radians(),
+                rcvr_lon_rad: rcvr_lon.to_radians(),
+                rcvr_height_km: rcvr_height,
+                epoch: epoch.into(),
                 range,
                 sigma_range,
             },
-            band: String::new(),
-            mag: f64::NAN,
         })
     }
 
     /// Create a radar range-rate (Doppler) observation.
     ///
-    /// The observer state is automatically re-centered to SSB.
+    /// See :py:meth:`Observation.radar_range` for the station-coordinate
+    /// convention.
     ///
     /// Parameters
     /// ----------
-    /// observer : :class:`~kete.State`
-    ///     Observer state (any center / frame -- will be converted).
+    /// xmit_lat : float
+    ///     Transmitter geodetic latitude in degrees.
+    /// xmit_lon : float
+    ///     Transmitter geodetic longitude in degrees.
+    /// xmit_height : float
+    ///     Transmitter height above the WGS84 ellipsoid in km.
+    /// rcvr_lat : float
+    ///     Receiver geodetic latitude in degrees.
+    /// rcvr_lon : float
+    ///     Receiver geodetic longitude in degrees.
+    /// rcvr_height : float
+    ///     Receiver height above the WGS84 ellipsoid in km.
+    /// epoch : :class:`~kete.Time`
+    ///     Receive epoch ``t_rx`` (TDB).
     /// range_rate : float
     ///     Measured range-rate in AU/day (positive = receding).
     /// sigma_range_rate : float
     ///     1-sigma range-rate uncertainty in AU/day.
     #[staticmethod]
-    #[pyo3(signature = (observer, range_rate, sigma_range_rate))]
-    fn radar_rate(observer: PyState, range_rate: f64, sigma_range_rate: f64) -> PyResult<Self> {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "radar geometry requires both stations and a measurement"
+    )]
+    #[pyo3(signature = (xmit_lat, xmit_lon, xmit_height, rcvr_lat, rcvr_lon, rcvr_height, epoch, range_rate, sigma_range_rate))]
+    fn radar_rate(
+        xmit_lat: f64,
+        xmit_lon: f64,
+        xmit_height: f64,
+        rcvr_lat: f64,
+        rcvr_lon: f64,
+        rcvr_height: f64,
+        epoch: PyTime,
+        range_rate: f64,
+        sigma_range_rate: f64,
+    ) -> PyResult<Self> {
         if sigma_range_rate <= 0.0 {
             return Err(Error::ValueError("sigma_range_rate must be positive".into()).into());
         }
-        let mut raw = observer.raw;
-        if raw.center_id != 0 {
-            let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-            spk.try_change_center(&mut raw, 0)?;
-        }
         Ok(Self {
             obs: AstrometricObservation::RadarRate {
-                observer: raw,
+                xmit_lat_rad: xmit_lat.to_radians(),
+                xmit_lon_rad: xmit_lon.to_radians(),
+                xmit_height_km: xmit_height,
+                rcvr_lat_rad: rcvr_lat.to_radians(),
+                rcvr_lon_rad: rcvr_lon.to_radians(),
+                rcvr_height_km: rcvr_height,
+                epoch: epoch.into(),
                 range_rate,
                 sigma_range_rate,
             },
-            band: String::new(),
-            mag: f64::NAN,
         })
     }
 
-    /// The observation epoch (from the observer state).
+    /// The observation epoch.  For radar this is the receive epoch ``t_rx``.
     #[getter]
     fn epoch(&self) -> PyTime {
         self.obs.epoch().jd.into()
     }
 
     /// The observer state (Sun-centered, Ecliptic).
+    ///
+    /// For radar observations this returns the receiver state at the
+    /// receive epoch (computed via PCK lookup on demand).
     #[getter]
     fn observer(&self) -> PyResult<PyState> {
-        let mut st = match &self.obs {
-            AstrometricObservation::Optical { observer, .. }
-            | AstrometricObservation::RadarRange { observer, .. }
-            | AstrometricObservation::RadarRate { observer, .. } => observer.clone(),
-        };
-        if st.center_id != 10 {
-            let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-            spk.try_change_center(&mut st, 10)?;
-        }
+        let observer_ssb = self.obs.observer()?;
+        let spk = LOADED_SPK.try_read().map_err(Error::from)?;
+        let st: State<Equatorial> = spk.try_to_sun(observer_ssb.into())?.into();
         Ok(st.into())
+    }
+
+    /// Compute the residual ``(observed - predicted)`` and the predicted
+    /// measurement for this observation against a given object state.
+    ///
+    /// The state is expected at this observation's epoch (use
+    /// :func:`~kete.propagate_n_body` to bring an arbitrary-epoch state to
+    /// ``self.epoch`` first).  Light-time correction is applied internally;
+    /// for radar the iterative ``t_tx`` refinement and relativistic two-way
+    /// Doppler are handled by the same code path used during fitting.
+    ///
+    /// Parameters
+    /// ----------
+    /// obj_state : :class:`~kete.State`
+    ///     Object state at the observation epoch (any center / frame).
+    ///
+    /// Returns
+    /// -------
+    /// tuple[list[float], list[float]]
+    ///     ``(residual, predicted)``.
+    ///
+    ///     - Optical: 2-element lists.  ``residual`` is
+    ///       ``[dRA_sky, dDec]`` in arcseconds, sky-plane convention
+    ///       (``dRA`` includes ``cos(dec)``, matching
+    ///       :py:meth:`Observation.optical`'s ``sigma_ra`` units).
+    ///       ``predicted`` is ``[ra_deg, dec_deg]``.
+    ///     - Radar range: 1-element lists in AU.
+    ///     - Radar range-rate: 1-element lists in AU/day.
+    fn residual(&self, obj_state: PyState) -> PyResult<(Vec<f64>, Vec<f64>)> {
+        let raw: State<Equatorial> = obj_state.raw.into();
+        let (resid, pred) = self.obs.residual(raw)?;
+
+        match &self.obs {
+            AstrometricObservation::Optical { dec, .. } => {
+                let cos_dec = dec.cos().abs();
+                let r = vec![resid[0] * RAD_TO_ARCSEC * cos_dec, resid[1] * RAD_TO_ARCSEC];
+                let p = vec![pred[0].to_degrees(), pred[1].to_degrees()];
+                Ok((r, p))
+            }
+            _ => Ok((
+                resid.iter().copied().collect(),
+                pred.iter().copied().collect(),
+            )),
+        }
     }
 
     /// Right ascension in degrees (optical only, None otherwise).
@@ -218,11 +354,15 @@ impl PyObservation {
         }
     }
 
-    /// 1-sigma RA uncertainty in arcseconds (optical only, None otherwise).
+    /// 1-sigma sky-plane RA uncertainty in arcseconds (``sigma_ra * cos(dec)``);
+    /// optical only, None otherwise.  Matches the input convention of
+    /// :py:meth:`Observation.optical`.
     #[getter]
     fn sigma_ra(&self) -> Option<f64> {
         match &self.obs {
-            AstrometricObservation::Optical { sigma_ra, .. } => Some(*sigma_ra * RAD_TO_ARCSEC),
+            AstrometricObservation::Optical { sigma_ra, dec, .. } => {
+                Some(*sigma_ra * RAD_TO_ARCSEC * dec.cos().abs())
+            }
             _ => None,
         }
     }
@@ -232,6 +372,34 @@ impl PyObservation {
     fn sigma_dec(&self) -> Option<f64> {
         match &self.obs {
             AstrometricObservation::Optical { sigma_dec, .. } => Some(*sigma_dec * RAD_TO_ARCSEC),
+            _ => None,
+        }
+    }
+
+    /// 1-sigma timing uncertainty in seconds (optical only, None otherwise).
+    #[getter]
+    fn time_sigma(&self) -> Option<f64> {
+        match &self.obs {
+            AstrometricObservation::Optical { time_sigma, .. } => Some(*time_sigma),
+            _ => None,
+        }
+    }
+
+    /// RA/Dec correlation coefficient (optical only, None otherwise).
+    #[getter]
+    fn sigma_corr(&self) -> Option<f64> {
+        match &self.obs {
+            AstrometricObservation::Optical { sigma_corr, .. } => Some(*sigma_corr),
+            _ => None,
+        }
+    }
+
+    /// True if this optical measurement was derived from a stellar
+    /// occultation (optical only, None for radar).
+    #[getter]
+    fn is_occultation(&self) -> Option<bool> {
+        match &self.obs {
+            AstrometricObservation::Optical { is_occultation, .. } => Some(*is_occultation),
             _ => None,
         }
     }
@@ -277,13 +445,19 @@ impl PyObservation {
     /// Photometric filter name (optical only, empty string for radar).
     #[getter]
     fn band(&self) -> &str {
-        &self.band
+        match &self.obs {
+            AstrometricObservation::Optical { band, .. } => band.name(),
+            _ => "",
+        }
     }
 
     /// Apparent magnitude (NaN when unavailable).
     #[getter]
     fn mag(&self) -> f64 {
-        self.mag
+        match &self.obs {
+            AstrometricObservation::Optical { mag, .. } => *mag,
+            _ => f64::NAN,
+        }
     }
 
     /// String representation.
@@ -295,6 +469,8 @@ impl PyObservation {
                 dec,
                 sigma_ra,
                 sigma_dec,
+                band,
+                mag,
                 ..
             } => {
                 format!(
@@ -303,10 +479,10 @@ impl PyObservation {
                     epoch,
                     ra.to_degrees(),
                     dec.to_degrees(),
-                    sigma_ra * RAD_TO_ARCSEC,
+                    sigma_ra * RAD_TO_ARCSEC * dec.cos().abs(),
                     sigma_dec * RAD_TO_ARCSEC,
-                    self.band,
-                    self.mag,
+                    band.name(),
+                    mag,
                 )
             }
             AstrometricObservation::RadarRange {
@@ -339,14 +515,17 @@ impl PyObservation {
 /// its uncertainty (covariance), and diagnostic information about the fit.
 #[pyclass(frozen, module = "kete.fitting", name = "OrbitFit", from_py_object)]
 #[derive(Debug, Clone)]
-pub struct PyOrbitFit(pub OrbitFit);
+pub struct PyOrbitFit {
+    /// The fitted orbit, covariance, residuals, and diagnostics.
+    pub inner: OrbitFit,
+}
 
 #[pymethods]
 impl PyOrbitFit {
     /// The uncertain orbit state (state + covariance + non-grav model).
     #[getter]
     fn uncertain_state(&self) -> PyUncertainState {
-        PyUncertainState(self.0.uncertain_state.clone())
+        PyUncertainState(self.inner.uncertain_state.clone())
     }
 
     /// Best-fit state at the reference epoch (Sun-centered, Ecliptic).
@@ -354,11 +533,9 @@ impl PyOrbitFit {
     /// Convenience shortcut for ``self.uncertain_state.state``.
     #[getter]
     fn state(&self) -> PyResult<PyState> {
-        let mut st = self.0.uncertain_state.state.clone();
-        if st.center_id != 10 {
-            let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-            spk.try_change_center(&mut st, 10)?;
-        }
+        let st = self.inner.uncertain_state.state.clone();
+        let spk = LOADED_SPK.try_read().map_err(Error::from)?;
+        let st: State<Equatorial> = spk.try_to_sun(st)?.into();
         Ok(st.into())
     }
 
@@ -369,19 +546,18 @@ impl PyOrbitFit {
     /// **arcseconds**.  Radar residuals remain in AU or AU/day.
     #[getter]
     fn residuals(&self) -> Vec<Vec<f64>> {
-        self.0
-            .residuals
+        self.inner
+            .observations
             .iter()
-            .zip(self.0.included.iter())
+            .zip(self.inner.residuals.iter())
+            .zip(self.inner.included.iter())
             .filter(|&(_, &inc)| inc)
-            .map(|(r, _)| {
-                // Optical residuals have 2 elements (RA, Dec) in radians;
-                // radar residuals have 1 element in AU or AU/day.
-                if r.len() == 2 {
-                    r.iter().map(|v| v * RAD_TO_ARCSEC).collect()
-                } else {
-                    r.iter().copied().collect()
+            .map(|((obs, r), _)| match obs {
+                AstrometricObservation::Optical { dec, .. } => {
+                    let cos_dec = dec.cos().abs();
+                    vec![r[0] * RAD_TO_ARCSEC * cos_dec, r[1] * RAD_TO_ARCSEC]
                 }
+                _ => r.iter().copied().collect(),
             })
             .collect()
     }
@@ -389,34 +565,28 @@ impl PyOrbitFit {
     /// Observations included in the final fit (time-sorted).
     ///
     /// Rejected outliers are not present in this list.  To see all
-    /// observations (including rejected ones), use
-    /// ``all_observations``.
+    /// observations (including rejected ones), use ``all_observations``.
+    ///
+    /// Band and magnitude metadata from the original
+    /// :class:`~kete.fitting.Observation` inputs are preserved.
     #[getter]
     fn observations(&self) -> Vec<PyObservation> {
-        self.0
+        self.inner
             .observations
             .iter()
-            .zip(self.0.included.iter())
+            .zip(self.inner.included.iter())
             .filter(|&(_, &inc)| inc)
-            .map(|(o, _)| PyObservation {
-                obs: o.clone(),
-                band: String::new(),
-                mag: f64::NAN,
-            })
+            .map(|(o, _)| PyObservation { obs: o.clone() })
             .collect()
     }
 
     /// All input observations (time-sorted), including rejected outliers.
     #[getter]
     fn all_observations(&self) -> Vec<PyObservation> {
-        self.0
+        self.inner
             .observations
             .iter()
-            .map(|o| PyObservation {
-                obs: o.clone(),
-                band: String::new(),
-                mag: f64::NAN,
-            })
+            .map(|o| PyObservation { obs: o.clone() })
             .collect()
     }
 
@@ -426,13 +596,13 @@ impl PyOrbitFit {
     /// ``False`` means it was rejected as an outlier.
     #[getter]
     fn included(&self) -> Vec<bool> {
-        self.0.included.clone()
+        self.inner.included.clone()
     }
 
     /// Reduced weighted RMS of post-fit residuals.
     #[getter]
     fn rms(&self) -> f64 {
-        self.0.rms
+        self.inner.rms
     }
 
     /// Fitted non-gravitational model, or None if not fitted.
@@ -440,7 +610,11 @@ impl PyOrbitFit {
     /// Convenience shortcut for ``self.uncertain_state.non_grav``.
     #[getter]
     fn non_grav(&self) -> Option<PyNonGravModel> {
-        self.0.uncertain_state.non_grav.clone().map(PyNonGravModel)
+        self.inner
+            .uncertain_state
+            .non_grav
+            .clone()
+            .map(PyNonGravModel)
     }
 
     /// Whether the solver achieved strict convergence.
@@ -449,20 +623,20 @@ impl PyOrbitFit {
     /// limit but the correction norm did not drop below `tol`.
     #[getter]
     fn converged(&self) -> bool {
-        self.0.converged
+        self.inner.converged
     }
 
     /// String representation.
     fn __repr__(&self) -> String {
-        let n_included = self.0.included.iter().filter(|&&v| v).count();
-        let n_total = self.0.observations.len();
+        let n_included = self.inner.included.iter().filter(|&&v| v).count();
+        let n_total = self.inner.observations.len();
         format!(
             "OrbitFit(rms={:.6e}, observations={}/{}, converged={}, epoch={:.6})",
-            self.0.rms,
+            self.inner.rms,
             n_included,
             n_total,
-            self.0.converged,
-            self.0.uncertain_state.state.epoch.jd,
+            self.inner.converged,
+            self.inner.uncertain_state.state.epoch.jd,
         )
     }
 }
@@ -505,7 +679,9 @@ impl PyOrbitFit {
 ///     Carpino, Milani & Chesley (2003). An observation is rejected when
 ///     its weighted chi-squared exceeds this multiple of the leverage-
 ///     corrected expected value, and recovered when it falls below 6/7
-///     of this threshold. Default is 7.0.
+///     of this threshold. For a 2-component optical observation with
+///     calibrated weights, a 3-sigma outlier in one axis gives z = 9/2 = 4.5,
+///     so values of 4-5 match per-component 3-sigma rejection. Default is 4.5.
 /// max_reject_passes : int
 ///     Maximum number of outlier-rejection passes.  Set to 0 to disable
 ///     outlier rejection entirely.  Default is 10.
@@ -523,7 +699,7 @@ impl PyOrbitFit {
         observations,
         non_grav=None,
         include_asteroids=false,
-        chi2_threshold=7.0,
+        chi2_threshold=4.5,
         max_reject_passes=10,
     )
 )]
@@ -535,18 +711,17 @@ pub fn fit_orbit_py(
     chi2_threshold: f64,
     max_reject_passes: usize,
 ) -> PyResult<PyOrbitFit> {
-    let mut raw_state = initial_state.raw;
-
-    if raw_state.center_id != 0 {
+    let raw_state = initial_state.raw;
+    let state_ssb = {
         let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-        spk.try_change_center(&mut raw_state, 0)?;
-    }
+        spk.try_to_ssb(raw_state)?
+    };
 
     let obs: Vec<AstrometricObservation> = observations.into_iter().map(|o| o.obs).collect();
     let ng = non_grav.as_ref().map(|m| &m.0);
 
     let fit = fit_orbit(
-        &raw_state,
+        &state_ssb,
         &obs,
         include_asteroids,
         ng,
@@ -555,7 +730,7 @@ pub fn fit_orbit_py(
         chi2_threshold,
         max_reject_passes,
     )?;
-    Ok(PyOrbitFit(fit))
+    Ok(PyOrbitFit { inner: fit })
 }
 
 /// Compute an initial orbit from observations.
@@ -584,10 +759,8 @@ pub fn initial_orbit_determination_py(
     let spk = LOADED_SPK.try_read().map_err(Error::from)?;
     scored
         .into_iter()
-        .map(|(score, mut st)| {
-            if st.center_id != 10 {
-                spk.try_change_center(&mut st, 10)?;
-            }
+        .map(|(score, st)| {
+            let st: State<Equatorial> = spk.try_to_sun(st)?.into();
             Ok((score, st.into()))
         })
         .collect()
@@ -726,9 +899,12 @@ impl PyOrbitSamples {
     }
 
     /// Seed index (0-based) that generated each draw.
+    ///
+    /// Each seed produces an independent NUTS chain.  This field records
+    /// which seed produced each draw so per-seed diagnostics can be computed.
     #[getter]
-    fn chain_id(&self) -> Vec<usize> {
-        self.0.chain_id.clone()
+    fn seed_id(&self) -> Vec<usize> {
+        self.0.seed_id.clone()
     }
 
     /// Per-draw divergence flag.
@@ -749,16 +925,16 @@ impl PyOrbitSamples {
     /// String representation.
     fn __repr__(&self) -> String {
         let n = self.0.draws.len();
-        let n_chains = self
+        let n_seeds = self
             .0
-            .chain_id
+            .seed_id
             .iter()
             .copied()
             .collect::<std::collections::HashSet<_>>()
             .len();
         let n_div = self.0.divergent.iter().filter(|&&d| d).count();
         format!(
-            "OrbitSamples(desig={}, draws={n}, chains={n_chains}, divergent={n_div}, epoch={:.6})",
+            "OrbitSamples(desig={}, draws={n}, seeds={n_seeds}, divergent={n_div}, epoch={:.6})",
             self.0.desig, self.0.epoch
         )
     }
@@ -794,9 +970,9 @@ impl PyOrbitSamples {
 ///
 /// Sampling is parallelized automatically across available CPU cores.
 /// When there are fewer seeds than cores, each seed spawns multiple
-/// independent sub-chains.  The ``chain_id`` in the returned
-/// :class:`~kete.fitting.OrbitSamples` identifies the seed (orbital
-/// mode), not the sub-chain.
+/// independent sub-chains.  The ``seed_id`` in the returned
+/// :class:`~kete.fitting.OrbitSamples` identifies which seed (orbital
+/// mode) produced each draw.
 ///
 /// ``num_draws`` is the **total** number of orbit samples returned
 /// across all seeds.  Each seed receives roughly
@@ -855,22 +1031,19 @@ pub fn fit_orbit_mcmc_py(
     maxdepth: u64,
     target_accept: f64,
 ) -> PyResult<PyOrbitSamples> {
-    let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-    let raw_seeds: Vec<State<Equatorial>> = seeds
-        .into_iter()
-        .map(|s| {
-            let mut st = s.raw;
-            if st.center_id != 0 {
-                spk.try_change_center(&mut st, 0)?;
-            }
-            Ok(st)
-        })
-        .collect::<KeteResult<Vec<_>>>()?;
+    let ssb_seeds: Vec<State<Equatorial, SSB>> = {
+        let spk = LOADED_SPK.try_read().map_err(Error::from)?;
+        seeds
+            .into_iter()
+            .map(|s| spk.try_to_ssb(s.raw))
+            .collect::<KeteResult<Vec<_>>>()?
+    };
+
     let obs: Vec<AstrometricObservation> = observations.into_iter().map(|o| o.obs).collect();
     let ng: Option<NonGravModel> = non_grav.map(|m| m.0);
 
     let result = fit_orbit_mcmc(
-        &raw_seeds,
+        &ssb_seeds,
         &obs,
         include_asteroids,
         num_draws,
@@ -882,22 +1055,47 @@ pub fn fit_orbit_mcmc_py(
     Ok(PyOrbitSamples(result))
 }
 
-/// Get per-observatory code residuals.
+/// If available, return the MPC observatory uncertainties.
+///
+/// These stds were computed by taking the JPL Horizons ephemeris for each of the
+/// first 20k numbered asteroids, and calculating the residual error for every submitted
+/// observation for each of these objects. These residuals were combined together by
+/// observatory code and basic statistics were computed.
+///
+/// The standard deviations were computed with the catalog debias applied.
+///
+/// This function returns the standard deviation of the RA and Dec
+/// residuals for the specified observatory code, if available.
 #[pyfunction]
 #[pyo3(
-    name = "_get_obs_residuals",
+    name = "_get_observatory_stats",
     signature = (code)
 )]
-pub fn get_obs_residuals_py(code: &str) -> Option<Vec<f32>> {
-    let resid = kete_fitting::get_obs_residuals(code)?;
-    Some(vec![
-        resid.ra_low,
-        resid.ra_med,
-        resid.ra_high,
-        resid.ra_std,
-        resid.dec_low,
-        resid.dec_med,
-        resid.dec_high,
-        resid.dec_std,
-    ])
+pub fn get_observatory_stats_py(code: &str) -> Option<Vec<f32>> {
+    let resid = kete_fitting::get_observatory_stats(code)?;
+    Some(vec![resid.ra_std, resid.dec_std])
+}
+
+/// Return ``(wavelength_nm, zero_mag_jy)`` for a recognized band name, or
+/// ``None`` if the name has no calibration.
+///
+/// Parameters
+/// ----------
+/// name : str
+///     Band name, e.g. ``"V"``, ``"W1"``, ``"g"``.
+///
+/// Returns
+/// -------
+/// tuple[float, float] or None
+///
+/// Examples
+/// --------
+/// .. code-block:: python
+///
+///     known = [o for o in observations if kete.band_calibration(o.band)]
+#[pyfunction]
+#[pyo3(name = "band_calibration", signature = (name))]
+pub fn band_calibration_py(name: &str) -> Option<(f64, f64)> {
+    let info = Band::from_name(name).calibration()?;
+    Some((info.wavelength, info.zero_mag))
 }

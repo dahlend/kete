@@ -1,28 +1,17 @@
 from __future__ import annotations
 
-import gzip
-import hashlib
-import json
 import logging
-import os
-from dataclasses import dataclass
 from functools import lru_cache
 
-import numpy as np
 import pandas as pd
-import requests
 
-from . import constants, conversion, spice
 from ._core import (
     _find_obs_code,
-    _get_obs_residuals,
     pack_designation,
     unpack_designation,
 )
-from .cache import cache_path, download_json
-from .fitting import Observation
+from .cache import download_json
 from .time import Time
-from .vector import Frames, State, Vector
 
 __all__ = [
     "unpack_designation",
@@ -30,7 +19,6 @@ __all__ = [
     "fetch_known_designations",
     "fetch_known_orbit_data",
     "fetch_known_comet_orbit_data",
-    "fetch_mpc_observations",
     "find_obs_code",
 ]
 
@@ -40,9 +28,6 @@ logger = logging.getLogger(__name__)
 @lru_cache
 def find_obs_code(site):
     return _find_obs_code(site)
-
-
-find_obs_code.__doc__ = _find_obs_code.__doc__
 
 
 @lru_cache
@@ -68,17 +53,11 @@ def fetch_known_designations(force_download=False):
 
     Ceres has 4 entries, which all map to '1'.
     """
-    # download the data from the MPC
     known_ids = download_json(
         "https://minorplanetcenter.net/Extended_Files/mpc_ids.json.gz",
         force_download,
     )
 
-    # The data which is in the format {'#####"; ['#####', ...], ...}
-    # where the keys of the dictionary are the MPC default name, and the values are the
-    # other possible names.
-    # Reshape the MPC dictionary to be flat, with every possible name mapping to the
-    # MPC default name.
     desig_map = {}
     for name, others in known_ids.items():
         desig_map[name] = name
@@ -157,8 +136,6 @@ def fetch_known_orbit_data(url=None, force_download=False):
     objs = download_json(url, force_download)
     objects = []
     for obj in objs:
-        # "Principal_design" is always a preliminary designation
-        # Number is defined if it has a permanent designation, so look for that first
         if "Number" in obj:
             desig = int(obj["Number"].replace("(", "").replace(")", ""))
         else:
@@ -223,347 +200,3 @@ def fetch_known_comet_orbit_data(force_download=False):
         )
         objects.append(obj)
     return pd.DataFrame.from_records(objects)
-
-
-@dataclass
-class MPCObservation:
-    """
-    Representation of an observation in the MPC observation files.
-
-    .. testcode::
-        :skipif: True
-
-        import kete
-        import gzip
-
-        # Comet Observations
-        # url = "https://www.minorplanetcenter.net/iau/ECS/MPCAT-OBS/CmtObs.txt.gz"
-
-        # Download the database of unnumbered observations from the MPC
-        url = "https://www.minorplanetcenter.net/iau/ECS/MPCAT-OBS/UnnObs.txt.gz"
-        path = kete.data.download_file(url)
-
-        # Fetch all lines from the file which contain C51 (WISE) observatory code.
-        obs_code = "C51".encode()
-        with gzip.open(path) as f:
-            lines = [line.decode() for line in f if obs_code == line[77:80]]
-
-        # Parse lines into a list of MPCObservations
-        observations = kete.mpc.MPCObservation.from_lines(lines)
-
-    """
-
-    desig: str
-    prov_desig: str
-    discovery: bool
-    note1: str
-    note2: str
-    jd: float
-    ra: float
-    dec: float
-    mag_band: str
-    obs_code: str
-    sun2sc: list[float]
-
-    _UNSUPPORTED = set("WwQqVvRrXxTt")
-
-    def __post_init__(self):
-        if self.sun2sc is None:
-            self.sun2sc = [np.nan, np.nan, np.nan]
-        self.sun2sc = list(self.sun2sc)
-
-    @classmethod
-    def from_lines(cls, lines, load_sc_pos=True):
-        """
-        Create a list of MPCObservations from a list of single 80 char lines.
-        """
-        found = []
-        idx = 0
-        while True:
-            if idx >= len(lines):
-                break
-            line = cls._read_first_line(lines[idx])
-            idx += 1
-            if line is None:
-                continue
-            if line["note2"] == "s":
-                logger.warning("Second line of spacecraft observation found alone")
-                continue
-            elif line["note2"] == "S":
-                if idx >= len(lines):
-                    logger.warning("Missing second line of spacecraft observation.")
-                    break
-                pos_line = lines[idx]
-                idx += 1
-                if load_sc_pos:
-                    line["sun2sc"] = cls._read_second_line(pos_line, line["jd"])
-            found.append(cls(**line))
-        return found
-
-    @staticmethod
-    def _read_first_line(line):
-        if line[14] in MPCObservation._UNSUPPORTED:
-            # unsupported or deprecated observation types
-            return None
-
-        mag_band = line[65:71].strip()
-
-        year, month, day = line[15:32].strip().split()
-        jd = Time.from_ymd(int(year), int(month), float(day)).jd
-        if len(mag_band) > 0:
-            mag_band = mag_band.split(maxsplit=1)[0]
-
-        ra = conversion.ra_hms_to_degrees(line[32:44].strip())
-        dec = conversion.dec_dms_to_degrees(line[44:55].strip())
-
-        try:
-            desig = unpack_designation(line[:5])
-        except ValueError:
-            desig = line[:5].strip()
-        try:
-            prov_desig = unpack_designation(line[5:12].strip())
-        except ValueError:
-            prov_desig = line[5:12].strip()
-
-        contents = dict(
-            desig=desig,
-            prov_desig=prov_desig,
-            discovery=line[12] == "*",
-            note1=line[13].strip(),
-            note2=line[14].strip(),
-            ra=ra,
-            dec=dec,
-            mag_band=mag_band,
-            obs_code=line[77:80],
-            sun2sc=None,
-            jd=jd,
-        )
-        return contents
-
-    @staticmethod
-    def _read_second_line(line, jd):
-        from . import spice
-
-        if line[14] != "s":
-            raise SyntaxError("No second line of spacecraft observation found.")
-
-        x = float(line[34:45].replace(" ", "")) / constants.AU_KM
-        y = float(line[46:57].replace(" ", "")) / constants.AU_KM
-        z = float(line[58:69].replace(" ", "")) / constants.AU_KM
-        earth2sc = Vector([x, y, z], Frames.Equatorial).as_ecliptic
-        sun2earth = spice.get_state("Earth", jd).pos
-        sun2sc = sun2earth + earth2sc
-        return list(sun2sc)
-
-    @property
-    def sc2obj(self):
-        return Vector.from_ra_dec(self.ra, self.dec).as_ecliptic
-
-
-def _build_observer(stn: str, jd: float, rec: dict):
-    """Return an SSB-centered equatorial observer State, or None."""
-    # Ground-station lookup.
-    try:
-        obs = spice.mpc_code_to_ecliptic(stn, jd, center=0).as_equatorial
-        if obs.is_finite:
-            return obs
-    except Exception:
-        pass
-
-    # Fallback: pos1/pos2/pos3 from ADES record (satellite/roving observers).
-    # The record includes 'sys' (coordinate system) and 'ctr' (center body
-    # NAIF ID).  We require ICRF_KM or ICRF_AU; other systems are not yet
-    # supported.
-    pos1, pos2, pos3 = rec.get("pos1"), rec.get("pos2"), rec.get("pos3")
-    if pos1 is None or pos2 is None or pos3 is None:
-        return None
-    try:
-        sys = rec.get("sys", "").upper()
-        ctr = int(float(rec.get("ctr", 399)))
-
-        pos_km = np.array([float(pos1), float(pos2), float(pos3)])
-        if sys == "ICRF_AU":
-            # already AU despite the variable name
-            pos_au = pos_km
-        elif sys == "ICRF_KM":
-            pos_au = pos_km / constants.AU_KM
-        elif sys == "WGS84":
-            # pos1=lon, pos2=lat, pos3=altitude (degrees, degrees, km).
-            lon, lat, alt = float(pos1), float(pos2), float(pos3)
-            return spice.earth_pos_to_ecliptic(
-                jd, lat, lon, alt, name=stn, center=10
-            ).as_equatorial
-        else:
-            logger.warning(
-                "Unsupported ADES coordinate system '%s' for stn %s", sys, stn
-            )
-            return None
-
-        center_state = spice.get_state(ctr, jd, center=10).as_equatorial
-        ssb_pos = center_state.pos + Vector(list(pos_au), Frames.Equatorial)
-        return State(
-            stn,
-            jd,
-            ssb_pos,
-            center_state.vel,
-            Frames.Equatorial,
-            center_id=center_state.center_id,
-        )
-    except Exception:
-        return None
-
-
-@lru_cache
-def _parse_residuals(obs_code: str):
-    """
-    If available, return the MPC observatory residuals and uncertainties.
-    These are used to correct systematic errors in observations submitted to the MPC
-    by these observatories. This is an very crude approximation of what is done at
-    both the MPC and JPL, but it is better than nothing.
-
-    These residuals were computed by taking the JPL Horizons ephemeris for each of the
-    first 10k numbered asteroids, and calculating the residual error for every submitted
-    observation for each of these objects. These residuals were combined together by
-    observatory code and basic statistics were computed.
-
-    This function returns the median and standard deviation of the RA and Dec
-    residuals for the specified observatory code, if available. Otherwise, it returns
-    None.
-    """
-    res = _get_obs_residuals(obs_code)
-    if res is None:
-        return None
-    _ra_low, ra_med, _ra_high, ra_std, _dec_low, dec_med, _dec_high, dec_std = res
-
-    return (ra_med, ra_std, dec_med, dec_std)
-
-
-def fetch_mpc_observations(desig: str, update_cache: bool = False):
-    """
-    Fetch observations from the MPC API and convert to fitting Observations.
-
-    Queries ``https://data.minorplanetcenter.net/api/get-obs`` for the
-    given object designation and returns optical observations ready for
-    orbit fitting.  Only optical records with valid RA/Dec are included;
-    radar and other types are silently skipped.
-
-    Results are cached under ``~/.kete/observations/`` so that repeated
-    queries for the same designation do not hit the network.
-
-    Uncertainties are first taken from a pre-computed table of residual error by
-    observatory code, if available.  If not, the MPC-provided ``rmsra`` and
-    ``rmsdec`` fields are used, defaulting to 1 arcsecond if not provided.
-
-    Parameters
-    ----------
-    desig :
-        Object designation recognized by the MPC (e.g. ``"Apophis"``,
-        ``"101955"``, ``"1999 RQ36"``).
-    update_cache :
-        If ``True``, discard any cached result and re-query the MPC.
-
-    Returns
-    -------
-    list[Observation]
-        One ``Observation.optical`` per valid optical record.
-
-    Raises
-    ------
-    RuntimeError
-        If the MPC API request fails.
-
-    Examples
-    --------
-    .. testcode::
-        :skipif: True
-
-        import kete
-
-        observations = kete.mpc.fetch_mpc_observations("Apophis")
-    """
-    _hash = hashlib.md5(desig.encode()).hexdigest()[:16]
-    obs_dir = os.path.join(cache_path(sub_path="observations"), _hash[:3])
-    os.makedirs(obs_dir, exist_ok=True)
-    cached_path = os.path.join(obs_dir, f"{_hash}.json.gz")
-
-    if os.path.isfile(cached_path) and not update_cache:
-        logger.debug("Loading cached MPC observations for '%s'", desig)
-        with gzip.open(cached_path, "rb") as f:
-            records = json.loads(f.read().decode())
-    else:
-        response = requests.get(
-            "https://data.minorplanetcenter.net/api/get-obs",
-            json={"desigs": [desig], "output_format": ["ADES_DF"]},
-            timeout=120,
-        )
-        response.raise_for_status()
-        records = response.json()
-        if not records:
-            return []
-        # The API returns a list with one element per designation; take the
-        # first (and only) entry which is itself a list of observation dicts.
-        records = records[0]
-        with gzip.open(cached_path, "wb") as f:
-            f.write(json.dumps(records).encode())
-
-    if not records:
-        return []
-
-    observations = []
-    for rec in records["ADES_DF"]:
-        if rec.get("Obstype") != "optical":
-            continue
-        ra_str = rec.get("ra")
-        dec_str = rec.get("dec")
-        if ra_str is None or dec_str is None:
-            continue
-        ra_deg = float(ra_str)
-        dec_deg = float(dec_str)
-
-        obstime = rec.get("obstime")
-        if obstime is None:
-            continue
-        try:
-            jd = Time.from_iso(obstime).jd
-        except ValueError:
-            continue
-
-        stn = rec.get("stn", None)
-        if stn is None:
-            continue
-
-        obs_errors = _parse_residuals(stn)
-        if obs_errors is not None:
-            ra_deg += obs_errors[0] / 3600
-            dec_deg += obs_errors[2] / 3600
-            s_ra = obs_errors[1]
-            s_dec = obs_errors[3]
-        else:
-            s_ra = rec.get("rmsra", 1.0) or 1.0
-            s_dec = rec.get("rmsdec", 1.0) or 1.0
-        if s_ra is None:
-            print(obs_errors, stn, rec)
-
-        observer = _build_observer(stn, jd, rec)
-        if observer is None:
-            continue
-
-        band = rec.get("band") or "V"
-        try:
-            mag = float(rec.get("mag"))
-        except (TypeError, ValueError):
-            mag = float("nan")
-
-        observations.append(
-            Observation.optical(
-                observer=observer,
-                ra=ra_deg,
-                dec=dec_deg,
-                sigma_ra=float(s_ra),
-                sigma_dec=float(s_dec),
-                band=band,
-                mag=mag,
-            )
-        )
-
-    return observations

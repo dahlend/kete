@@ -34,10 +34,11 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use crate::obs::AstrometricObservation;
+use crate::obs::differential_light_deflect;
 use crate::orbit_fitting::OrbitFit;
 use crate::uncertain_state::UncertainState;
 use kete_core::forces::NonGravModel;
-use kete_core::frames::Equatorial;
+use kete_core::frames::{CenterBody, Equatorial, SSB};
 use kete_core::kepler::light_time_correct;
 use kete_core::prelude::{Error, KeteResult, State};
 use kete_spice::prelude::{LOADED_SPK, compute_state_transition};
@@ -63,7 +64,10 @@ fn n_nongrav_params(ng: Option<&NonGravModel>) -> usize {
 }
 
 /// Pack a [`State`] (and optional non-grav params) into a state vector.
-fn state_to_vec(state: &State<Equatorial>, non_grav: Option<&NonGravModel>) -> DVector<f64> {
+fn state_to_vec<C: CenterBody>(
+    state: &State<Equatorial, C>,
+    non_grav: Option<&NonGravModel>,
+) -> DVector<f64> {
     let np = n_nongrav_params(non_grav);
     let dim = 6 + np;
     let mut xv = DVector::zeros(dim);
@@ -83,11 +87,11 @@ fn state_to_vec(state: &State<Equatorial>, non_grav: Option<&NonGravModel>) -> D
 }
 
 /// Unpack a state vector back into a [`State`] (and update non-grav params).
-fn vec_to_state(
+fn vec_to_state<C: CenterBody + Clone>(
     xv: &DVector<f64>,
-    template: &State<Equatorial>,
+    template: &State<Equatorial, C>,
     non_grav: &mut Option<NonGravModel>,
-) -> State<Equatorial> {
+) -> State<Equatorial, C> {
     let mut state = template.clone();
     state.pos = [xv[0], xv[1], xv[2]].into();
     state.vel = [xv[3], xv[4], xv[5]].into();
@@ -144,16 +148,19 @@ fn expand_h(h_local: &DMatrix<f64>, dim: usize) -> DMatrix<f64> {
 ///
 /// Returns the light-time-corrected state in SSB coordinates.
 fn apply_light_time(
-    obj_state: &State<Equatorial>,
-    observer: &State<Equatorial>,
-) -> KeteResult<State<Equatorial>> {
+    obj_state: &State<Equatorial, SSB>,
+    observer: &State<Equatorial, SSB>,
+) -> KeteResult<State<Equatorial, SSB>> {
     let spk = LOADED_SPK.try_read()?;
-    let mut sun_state = obj_state.clone();
-    spk.try_change_center(&mut sun_state, 10)?;
-    let obs_sun = observer.pos - obj_state.pos + sun_state.pos;
-    let mut obj_lt = light_time_correct(&sun_state, &obs_sun)?;
-    spk.try_change_center(&mut obj_lt, 0)?;
-    Ok(obj_lt)
+    let sun_state = spk.try_to_sun(obj_state.clone().into())?;
+    let obs_sun = spk.try_to_sun(observer.clone().into())?.pos;
+    let obj_lt_sun = light_time_correct(&sun_state, &obs_sun)?;
+    let deflected_pos = differential_light_deflect(&obs_sun, obj_lt_sun.pos);
+    let obj_lt_deflected = State {
+        pos: deflected_pos,
+        ..obj_lt_sun
+    };
+    spk.try_to_ssb(obj_lt_deflected.into())
 }
 
 /// Store the predicted state as the filtered state (observation skipped)
@@ -213,7 +220,7 @@ const COVARIANCE_INFLATION: f64 = 4.0;
 /// # Errors
 /// Fails if propagation or SPK queries fail.
 pub fn fit_orbit_filter(
-    initial_state: &State<Equatorial>,
+    initial_state: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
     include_asteroids: bool,
     non_grav: Option<&NonGravModel>,
@@ -248,7 +255,7 @@ pub fn fit_orbit_filter(
     }
 
     let mut ng = non_grav.cloned();
-    let mut iter_state = initial_state.clone();
+    let mut iter_state: State<Equatorial, SSB> = initial_state.clone();
 
     // Outer iteration loop: re-linearize around the smoothed state.
     // After each pass the smoothed covariance (inflated) is used as the
@@ -289,7 +296,7 @@ pub fn fit_orbit_filter(
         let n_accepted = accepted_flags.iter().filter(|&&a| a).count();
         if n_accepted == 0 {
             return Err(Error::ValueError(
-                "Filter could not process any observations — the initial state \
+                "Filter could not process any observations -- the initial state \
                  may be too far from the truth."
                     .into(),
             ));
@@ -317,7 +324,7 @@ pub fn fit_orbit_filter(
         best_cov_smoothed = cov_smoothed;
 
         if change < CONVERGENCE_THRESHOLD && iteration + 1 < MAX_ITERATIONS {
-            // Converged early — do one final pass with the gate enabled.
+            // Converged early -- do one final pass with the gate enabled.
             let (final_epochs, final_accepted, final_xv, final_cov) = forward_pass(
                 &iter_state,
                 &iter_cov,
@@ -341,7 +348,7 @@ pub fn fit_orbit_filter(
         }
     }
 
-    // ── Build result ──────────────────────────────────────────────────
+    // -- Build result ------------------------------------------------
     build_result(
         &sorted,
         initial_state,
@@ -358,7 +365,7 @@ pub fn fit_orbit_filter(
 /// Single forward EKF pass over all observations.
 #[expect(clippy::too_many_arguments, reason = "filter configuration parameters")]
 fn forward_pass(
-    initial_state: &State<Equatorial>,
+    initial_state: &State<Equatorial, SSB>,
     initial_covariance: &DMatrix<f64>,
     sorted: &[AstrometricObservation],
     include_asteroids: bool,
@@ -370,7 +377,7 @@ fn forward_pass(
 ) -> (Vec<FilterEpoch>, Vec<bool>, DVector<f64>, DMatrix<f64>) {
     let mut xv = state_to_vec(initial_state, non_grav);
     let mut cov = initial_covariance.clone();
-    let mut state_cur = initial_state.clone();
+    let mut state_cur: State<Equatorial, SSB> = initial_state.clone();
     let mut epochs: Vec<FilterEpoch> = Vec::with_capacity(sorted.len());
     let mut accepted_flags: Vec<bool> = Vec::with_capacity(sorted.len());
 
@@ -378,22 +385,22 @@ fn forward_pass(
         let obs_epoch = observation.epoch();
         let dt = obs_epoch.jd - state_cur.epoch.jd;
 
-        // ── Prediction ────────────────────────────────────────────
+        // -- Prediction --------------------------------------------
         // EKF: propagate the state nonlinearly; use the STM only for
         // the covariance prediction.
         let (phi_full, xv_pred, cov_pred, new_state) = if dt.abs() > 1e-12 {
-            if let Ok((propagated, phi_6xd)) =
-                compute_state_transition(&state_cur, obs_epoch, include_asteroids, ng.clone())
-            {
+            let ssb_result =
+                compute_state_transition(&state_cur, obs_epoch, include_asteroids, ng.clone()).ok();
+            if let Some((propagated_ssb, phi_6xd)) = ssb_result {
                 let phi = expand_phi(&phi_6xd, dim);
                 let qmat = build_process_noise(dim, process_noise_q, dt);
-                let xv_pred = state_to_vec(&propagated, non_grav);
+                let xv_pred = state_to_vec(&propagated_ssb, non_grav);
                 let mut cov_pred = &phi * &cov * phi.transpose() + qmat;
                 // Enforce symmetry after prediction.
                 cov_pred = (&cov_pred + cov_pred.transpose()) * 0.5;
-                (phi, xv_pred, cov_pred, propagated)
+                (phi, xv_pred, cov_pred, propagated_ssb)
             } else {
-                // Propagation failed — skip this observation.
+                // Propagation failed -- skip this observation.
                 // State remains at the current epoch; the next observation
                 // will attempt a longer propagation from here.
                 let phi = DMatrix::identity(dim, dim);
@@ -405,9 +412,22 @@ fn forward_pass(
             (phi, xv.clone(), cov.clone(), state_cur.clone())
         };
 
-        // ── Measurement update ────────────────────────────────────
-        let Ok(obj_lt) = apply_light_time(&new_state, observation.observer()) else {
-            // Light-time correction failed — skip this observation
+        // -- Measurement update ------------------------------------
+        let Ok(observer_state) = observation.observer() else {
+            push_skipped_epoch(
+                &mut epochs,
+                &mut accepted_flags,
+                &xv_pred,
+                &cov_pred,
+                phi_full,
+            );
+            xv = xv_pred;
+            cov = cov_pred;
+            state_cur = new_state;
+            continue;
+        };
+        let Ok(obj_lt_ssb) = apply_light_time(&new_state, &observer_state) else {
+            // Light-time correction failed -- skip this observation
             // but advance the state to the predicted epoch.
             push_skipped_epoch(
                 &mut epochs,
@@ -421,18 +441,52 @@ fn forward_pass(
             state_cur = new_state;
             continue;
         };
-
-        let residual = observation.residual_from_corrected(&obj_lt);
-        let h_local = observation.partials(&obj_lt);
+        let Ok(residual) = observation.residual_from_corrected(&obj_lt_ssb) else {
+            push_skipped_epoch(
+                &mut epochs,
+                &mut accepted_flags,
+                &xv_pred,
+                &cov_pred,
+                phi_full,
+            );
+            xv = xv_pred;
+            cov = cov_pred;
+            state_cur = new_state;
+            continue;
+        };
+        let Ok(h_local) = observation.partials(&obj_lt_ssb) else {
+            push_skipped_epoch(
+                &mut epochs,
+                &mut accepted_flags,
+                &xv_pred,
+                &cov_pred,
+                phi_full,
+            );
+            xv = xv_pred;
+            cov = cov_pred;
+            state_cur = new_state;
+            continue;
+        };
         let h_full = expand_h(&h_local, dim);
-        let weights = observation.weights();
 
-        // Measurement noise: R = diag(sigma^2) = diag(1/w).
-        let meas_dim = weights.len();
-        let mut r_mat = DMatrix::zeros(meas_dim, meas_dim);
-        for idx in 0..meas_dim {
-            r_mat[(idx, idx)] = 1.0 / weights[idx];
-        }
+        // Measurement noise R is the inverse of the base information
+        // matrix (which carries any RA/Dec correlation).  We invert via
+        // pseudo-inverse for robustness; the matrix is small and
+        // well-conditioned for all realistic sigma combinations.
+        let w_base = observation.base_weight_matrix();
+        let Some(r_mat) = w_base.clone().try_inverse() else {
+            push_skipped_epoch(
+                &mut epochs,
+                &mut accepted_flags,
+                &xv_pred,
+                &cov_pred,
+                phi_full,
+            );
+            xv = xv_pred;
+            cov = cov_pred;
+            state_cur = new_state;
+            continue;
+        };
 
         // Innovation covariance: S = H P_pred H^T + R
         let innov_cov = &h_full * &cov_pred * h_full.transpose() + &r_mat;
@@ -555,7 +609,7 @@ fn backward_pass(
 )]
 fn build_result(
     sorted: &[AstrometricObservation],
-    initial_state: &State<Equatorial>,
+    initial_state: &State<Equatorial, SSB>,
     epochs: &[FilterEpoch],
     accepted_flags: &[bool],
     xv_smoothed: &[DVector<f64>],
@@ -571,19 +625,16 @@ fn build_result(
     let final_x = &xv_smoothed[0];
     let final_p = &cov_smoothed[0];
 
-    let template = sorted.first().map_or(initial_state, |ob| ob.observer());
-    let mut result_state = vec_to_state(final_x, template, ng);
-    result_state.center_id = 0;
-    result_state.desig = initial_state.desig.clone();
+    let mut result_state = vec_to_state(final_x, initial_state, ng);
     result_state.epoch = sorted[0].epoch();
 
     let uncertain = UncertainState {
-        state: result_state,
+        state: result_state.into(),
         cov_matrix: final_p.clone(),
         non_grav: ng.clone(),
     };
 
-    // ── Compute final residuals from smoothed states ──────────────────
+    // -- Compute final residuals from smoothed states --------------
     let mut residuals: Vec<DVector<f64>> = Vec::with_capacity(n_obs);
     let mut chi2_sum = 0.0;
     let mut n_meas = 0_usize;
@@ -596,15 +647,17 @@ fn build_result(
         }
 
         let xs = &xv_smoothed[idx];
-        let recon_state = vec_to_state(xs, observation.observer(), &mut non_grav.cloned());
+        let mut recon_state = vec_to_state(xs, initial_state, &mut non_grav.cloned());
+        recon_state.epoch = observation.epoch();
 
-        let obj_lt = apply_light_time(&recon_state, observation.observer())?;
-
-        let res = observation.residual_from_corrected(&obj_lt);
-        let wt = observation.weights();
-        for jj in 0..res.len() {
-            chi2_sum += res[jj] * res[jj] * wt[jj];
-        }
+        let observer_state = observation.observer()?;
+        let obj_lt_ssb = apply_light_time(&recon_state, &observer_state)?;
+        let res = observation.residual_from_corrected(&obj_lt_ssb)?;
+        // Use the full base weight matrix so correlated-axis observations
+        // contribute correctly to chi^2.
+        let w_base = observation.base_weight_matrix();
+        let wr = &w_base * &res;
+        chi2_sum += res.dot(&wr);
         n_meas += res.len();
         residuals.push(res);
     }
@@ -622,12 +675,13 @@ fn build_result(
     })
 }
 
-/// Sort observations by epoch, filtering out non-finite observer states.
+/// Sort observations by epoch, filtering out observations whose observer
+/// state cannot be resolved or contains non-finite components.
 fn sort_by_epoch(obs: &[AstrometricObservation]) -> Vec<AstrometricObservation> {
     let mut sorted: Vec<AstrometricObservation> = obs
         .iter()
         .filter(|ob| {
-            let st = ob.observer();
+            let Ok(st) = ob.observer() else { return false };
             let pos_ok: bool = st.pos.into_iter().all(|val: f64| val.is_finite());
             let vel_ok: bool = st.vel.into_iter().all(|val: f64| val.is_finite());
             pos_ok && vel_ok
@@ -646,6 +700,7 @@ fn sort_by_epoch(obs: &[AstrometricObservation]) -> Vec<AstrometricObservation> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kete_core::Band;
     use kete_core::constants::GMS;
     use kete_core::desigs::Desig;
     use kete_core::frames::Equatorial;
@@ -657,8 +712,14 @@ mod tests {
     use kete_spice::test_data::ensure_test_spk;
 
     /// Build a simple SSB-centered state.
-    fn make_state(pos: [f64; 3], vel: [f64; 3], jd: f64) -> State<Equatorial> {
-        State::new(Desig::Empty, jd.into(), pos.into(), vel.into(), 0)
+    fn make_state(pos: [f64; 3], vel: [f64; 3], jd: f64) -> State<Equatorial, SSB> {
+        State {
+            desig: Desig::Empty,
+            epoch: jd.into(),
+            pos: pos.into(),
+            vel: vel.into(),
+            center: SSB,
+        }
     }
 
     /// Earth-like observer on a circular orbit at 1 AU with slight inclination.
@@ -682,7 +743,7 @@ mod tests {
 
     /// Generate synthetic optical observations using N-body propagation.
     fn synth_observations(
-        true_state: &State<Equatorial>,
+        true_state: &State<Equatorial, SSB>,
         epochs: &[f64],
         sigma: f64,
     ) -> Vec<AstrometricObservation> {
@@ -696,11 +757,10 @@ mod tests {
                     .unwrap();
 
             let spk = LOADED_SPK.try_read().unwrap();
-            let mut sun_at = obj_at.clone();
-            spk.try_change_center(&mut sun_at, 10).unwrap();
+            let sun_at = spk.try_to_sun(obj_at.clone().into()).unwrap();
             let obs_helio = observer.pos - obj_at.pos + sun_at.pos;
-            let mut obj_lt = light_time_correct(&sun_at, &obs_helio).unwrap();
-            spk.try_change_center(&mut obj_lt, 0).unwrap();
+            let obj_lt_sun = light_time_correct(&sun_at, &obs_helio).unwrap();
+            let obj_lt = spk.try_to_ssb(obj_lt_sun.into()).unwrap();
             let (ra, dec) = (obj_lt.pos - observer.pos).to_ra_dec();
 
             observations.push(AstrometricObservation::Optical {
@@ -709,6 +769,11 @@ mod tests {
                 dec,
                 sigma_ra: sigma,
                 sigma_dec: sigma,
+                sigma_corr: 0.0,
+                time_sigma: 0.0,
+                is_occultation: false,
+                band: Band::Unknown([0; 8]),
+                mag: f64::NAN,
             });
         }
         observations

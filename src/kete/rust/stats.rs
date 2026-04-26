@@ -114,6 +114,13 @@ impl PyData {
         self.0.clone().quantile(q)
     }
 
+    /// Return a new Data object with outliers removed using sigma clipping.
+    #[pyo3(signature = (lower_std=3.0, upper_std=3.0, n_iter=5))]
+    fn sigma_clip(&self, lower_std: f64, upper_std: f64, n_iter: usize) -> Self {
+        let clipped = self.0.clone().sigma_clip(lower_std, upper_std, n_iter);
+        Self(clipped)
+    }
+
     fn __repr__(&self) -> String {
         format!("{self}")
     }

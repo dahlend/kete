@@ -8,7 +8,7 @@ use kete_core::elements::CometElements;
 use kete_core::errors::Error;
 use kete_core::forces::GravParams;
 use kete_core::forces::{AccelVecMeta, NonGravModel, vec_accel};
-use kete_core::frames::{Ecliptic, Equatorial};
+use kete_core::frames::{Ecliptic, Equatorial, SSB, SunCenter};
 use kete_core::integrators::{PC15, RadauIntegrator};
 use kete_core::kepler::analytic_2_body;
 use kete_core::prelude::{Desig, KeteResult, SimultaneousStates};
@@ -148,14 +148,12 @@ pub(crate) fn spk_accel_cached(
 /// Propagation may fail for a number of reasons, including missing SPK data,
 /// integration near singularities, or impacts.
 pub fn propagate_n_body_spk(
-    mut state: State<Equatorial>,
+    state: State<Equatorial, SSB>,
     jd_final: Time<TDB>,
     include_extended: bool,
     non_grav_model: Option<NonGravModel>,
-) -> KeteResult<State<Equatorial>> {
-    let center = state.center_id;
+) -> KeteResult<State<Equatorial, SSB>> {
     let spk = &LOADED_SPK.try_read()?;
-    spk.try_change_center(&mut state, 0)?;
 
     let mass_list = {
         if include_extended {
@@ -183,9 +181,13 @@ pub fn propagate_n_body_spk(
         )?
     };
 
-    let mut new_state = State::new(state.desig.clone(), jd_final, pos.into(), vel.into(), 0);
-    spk.try_change_center(&mut new_state, center)?;
-    Ok(new_state)
+    Ok(State {
+        desig: state.desig,
+        epoch: jd_final,
+        pos: pos.into(),
+        vel: vel.into(),
+        center: SSB,
+    })
 }
 
 /// Propagate the provided [`Vec<State<Equatorial>>`] using N body mechanics to the
@@ -223,7 +225,7 @@ pub fn propagation_n_body_spk_par(
         .into_par_iter()
         .with_min_len(10)
         .map(|(state, model)| {
-            let center = state.center_id;
+            let center = state.center_id();
             let desig = state.desig.clone();
 
             if !state.is_finite() {
@@ -232,8 +234,12 @@ pub fn propagation_n_body_spk_par(
                 }
                 return Ok(State::<Equatorial>::new_nan(desig, jd, center));
             }
-            match propagate_n_body_spk(state, jd, include_asteroids, model) {
-                Ok(state) => Ok(state),
+            let ssb_state = {
+                let spk = LOADED_SPK.try_read()?;
+                spk.try_to_ssb(state)?
+            };
+            match propagate_n_body_spk(ssb_state, jd, include_asteroids, model) {
+                Ok(ssb_result) => Ok(State::<Equatorial>::from(ssb_result)),
                 Err(er) => {
                     if suppress_errors {
                         Ok(State::<Equatorial>::new_nan(desig, jd, center))
@@ -277,14 +283,12 @@ fn picard_two_body_init_second_order<const N: usize>(
 /// Propagation may fail for a number of reasons, including missing SPK data,
 /// integration near singularities, or impacts.
 pub fn propagate_picard_n_body_spk(
-    mut state: State<Equatorial>,
+    state: State<Equatorial, SSB>,
     jd_final: Time<TDB>,
     include_extended: bool,
     non_grav_model: Option<NonGravModel>,
-) -> KeteResult<State<Equatorial>> {
-    let center = state.center_id;
+) -> KeteResult<State<Equatorial, SSB>> {
     let spk = &LOADED_SPK.try_read()?;
-    spk.try_change_center(&mut state, 0)?;
 
     let mass_list = {
         if include_extended {
@@ -313,9 +317,13 @@ pub fn propagate_picard_n_body_spk(
         &mut metadata,
     )?;
 
-    let mut new_state = State::new(state.desig.clone(), jd_final, pos.into(), vel.into(), 0);
-    spk.try_change_center(&mut new_state, center)?;
-    Ok(new_state)
+    Ok(State {
+        desig: state.desig,
+        epoch: jd_final,
+        pos: pos.into(),
+        vel: vel.into(),
+        center: SSB,
+    })
 }
 
 /// Propagate using n-body mechanics but skipping SPK queries.
@@ -328,7 +336,7 @@ pub fn propagate_picard_n_body_spk(
 /// # Panics
 /// Panics if planet states not provided, and cannot find the state in loaded SPKs.
 pub fn propagate_n_body_vec(
-    states: Vec<State<Equatorial>>,
+    states: Vec<State<Equatorial, SunCenter>>,
     jd_final: Time<TDB>,
     planet_states: Option<Vec<State<Equatorial>>>,
     non_gravs: Vec<Option<NonGravModel>>,
@@ -386,11 +394,6 @@ pub fn propagate_n_body_vec(
                 "All input states must have the same JD".into(),
             ))?;
         }
-        if state.center_id != 10 {
-            Err(Error::ValueError(
-                "Center of all states must be 10 (the Sun).".into(),
-            ))?;
-        }
         pos.append(&mut state.pos.into());
         vel.append(&mut state.vel.into());
         desigs.push(state.desig);
@@ -438,7 +441,13 @@ fn state_at_time(
     if let Some(id) = spk_id {
         spk.try_get_state_with_center(id, time, center)
     } else {
-        propagate_n_body_spk(state.clone(), time, include_extended, None)
+        let ssb = spk.try_to_ssb(state.clone())?;
+        let ssb_result = propagate_n_body_spk(ssb, time, include_extended, None)?;
+        let mut result: State<Equatorial> = ssb_result.into();
+        if center != 0 {
+            spk.try_change_center(&mut result, center)?;
+        }
+        Ok(result)
     }
 }
 
@@ -462,12 +471,12 @@ pub fn closest_approach(
     jd_end: Time<TDB>,
     include_extended: bool,
 ) -> KeteResult<(Time<TDB>, f64)> {
-    if state_a.center_id != state_b.center_id {
+    if state_a.center_id() != state_b.center_id() {
         return Err(Error::ValueError(
             "Both states must share the same center_id".into(),
         ));
     }
-    let center = state_a.center_id;
+    let center = state_a.center_id();
 
     let span = jd_end.jd - jd_start.jd;
     if span <= 0.0 {

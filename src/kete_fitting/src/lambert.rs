@@ -356,7 +356,7 @@ fn lambert_core<T: InertialFrame>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kete_core::frames::Equatorial;
+    use kete_core::frames::{Equatorial, SunCenter};
     use kete_core::kepler::propagate_two_body;
     use kete_core::prelude::State;
     use kete_core::time::{TDB, Time};
@@ -367,7 +367,13 @@ mod tests {
 
     fn round_trip(r1: Vector<Equatorial>, v1: Vector<Equatorial>, dt_days: f64, tol: f64) {
         let epoch: Time<TDB> = 2460000.5_f64.into();
-        let s1 = State::new(kete_core::desigs::Desig::Empty, epoch, r1, v1, 0);
+        let s1 = State::<Equatorial, SunCenter> {
+            desig: kete_core::desigs::Desig::Empty,
+            epoch,
+            pos: r1,
+            vel: v1,
+            center: SunCenter,
+        };
 
         let target: Time<TDB> = (epoch.jd + dt_days).into();
         let s2 = propagate_two_body(&s1, target).expect("two-body propagation failed");
@@ -465,7 +471,13 @@ mod tests {
         let v1 = vec_eq(0.0, v * inc.cos(), v * inc.sin());
 
         let epoch: Time<TDB> = 2460000.5_f64.into();
-        let s1 = State::new(kete_core::desigs::Desig::Empty, epoch, r1, v1, 0);
+        let s1 = State::<Equatorial, SunCenter> {
+            desig: kete_core::desigs::Desig::Empty,
+            epoch,
+            pos: r1,
+            vel: v1,
+            center: SunCenter,
+        };
         let target: Time<TDB> = (epoch.jd + 30.0).into();
         let s2 = propagate_two_body(&s1, target).expect("propagation failed");
 
@@ -568,7 +580,13 @@ mod tests {
 
         let epoch: Time<TDB> = 2460000.5_f64.into();
         let v1 = vec_eq(0.0, v * obl.cos(), v * obl.sin());
-        let s1 = State::new(kete_core::desigs::Desig::Empty, epoch, r1, v1, 0);
+        let s1 = State::<Equatorial, SunCenter> {
+            desig: kete_core::desigs::Desig::Empty,
+            epoch,
+            pos: r1,
+            vel: v1,
+            center: SunCenter,
+        };
         // Transfer > 1 full period (~365 days).
         let dt_days = 400.0;
         let target: Time<TDB> = (epoch.jd + dt_days).into();
