@@ -917,6 +917,15 @@ impl PyOrbitSamples {
         self.0.divergent.clone()
     }
 
+    /// Log-posterior density at each draw (nats, relative only).
+    ///
+    /// Values are only meaningful relative to each other within a single
+    /// run.  Useful for weighting draws or diagnosing chain quality.
+    #[getter]
+    fn log_posterior(&self) -> Vec<f64> {
+        self.0.log_posterior.clone()
+    }
+
     /// Number of orbit samples.
     fn __len__(&self) -> usize {
         self.0.draws.len()

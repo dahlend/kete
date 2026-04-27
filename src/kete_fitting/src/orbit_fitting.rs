@@ -32,12 +32,12 @@
 use crate::obs::{AstrometricObservation, differential_light_deflect};
 use crate::uncertain_state::UncertainState;
 use kete_core::forces::NonGravModel;
-use kete_core::frames::{Equatorial, SSB, SunCenter};
-use kete_core::kepler::{analytic_2_body_stm, light_time_correct};
+use kete_core::frames::{Equatorial, SSB};
+use kete_core::kepler::light_time_correct;
 use kete_core::prelude::{Error, KeteResult, State};
 use kete_spice::prelude::{LOADED_SPK, compute_state_transition};
 use kete_spice::propagation::propagate_n_body_spk;
-use nalgebra::{DMatrix, DVector, Vector3};
+use nalgebra::{DMatrix, DVector};
 use rayon::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -1156,6 +1156,10 @@ pub(crate) fn stm_sweep(
         "stm_sweep: observations must be sorted by epoch"
     );
 
+    if obs.is_empty() {
+        return Ok(vec![]);
+    }
+
     let n_threads = rayon::current_num_threads();
     let max_segments = n_threads * SEGMENTS_PER_THREAD;
     // Number of candidate segments, capped by observation density.
@@ -1325,137 +1329,6 @@ pub(crate) fn stm_sweep(
     }
 
     Ok(all_results)
-}
-
-/// Two-body variant of [`stm_sweep`] for MCMC sampling.
-///
-/// Uses analytic Keplerian propagation with the closed-form Lagrange-coefficient
-/// STM instead of the full N-body Radau integrator.  Lower accuracy but much faster.
-///
-/// The trade-off is that N-body perturbations are ignored in both the residuals
-/// and the Jacobian.  For the use case of MCMC this is usually acceptable because
-/// the posterior shape is dominated by observation geometry, not small planetary
-/// perturbations, and the likelihood + gradient remain internally consistent.
-///
-/// Non-gravitational parameter sensitivities are set to zero (two-body dynamics
-/// has no non-grav forces), so this is most useful when `non_grav` is `None`.
-///
-/// The propagation is performed in heliocentric (Sun-centered) coordinates
-/// because [`analytic_2_body_stm`] treats the coordinate origin as the central
-/// mass.  The input `state_epoch` may be in any inertial frame and is
-/// converted internally; the returned STM is identical in either heliocentric
-/// or SSB coordinates because the Sun-SSB offset is independent of the
-/// object's state.  The observation Jacobian (`h_local`) is likewise
-/// frame-invariant because it depends only on the object-observer vector.
-///
-/// # Errors
-/// Returns an error if two-body propagation or light-time correction fails.
-pub(crate) fn stm_sweep_two_body(
-    state_epoch: &State<Equatorial, SSB>,
-    obs: &[AstrometricObservation],
-    included: &[bool],
-    non_grav: Option<&NonGravModel>,
-) -> KeteResult<Vec<StmObs>> {
-    debug_assert!(
-        obs.windows(2).all(|w| w[0].epoch().jd <= w[1].epoch().jd),
-        "stm_sweep_two_body: observations must be sorted by epoch"
-    );
-    let np = non_grav.map_or(0, NonGravModel::n_free_params);
-    let d = 6 + np;
-
-    let mut phi_cum = DMatrix::<f64>::zeros(6, d);
-    for i in 0..6 {
-        phi_cum[(i, i)] = 1.0;
-    }
-
-    // Convert to heliocentric coordinates for propagation.  `analytic_2_body`
-    // assumes the Sun sits at the origin, so feeding it SSB-centered coords
-    // (the usual convention inside the fitter) would bias every step by the
-    // Sun-SSB offset (~0.007 AU), producing residuals dominated by that
-    // systematic error rather than by the orbit fit.
-    let spk = LOADED_SPK.try_read()?;
-    let state_helio = spk.try_to_sun(state_epoch.clone().into())?;
-
-    let mut cur_pos: Vector3<f64> = state_helio.pos.into();
-    let mut cur_vel: Vector3<f64> = state_helio.vel.into();
-    let mut cur_epoch = state_helio.epoch;
-    let mut results = Vec::new();
-
-    for (i, observation) in obs.iter().enumerate() {
-        let obs_epoch = observation.epoch();
-
-        if (obs_epoch.jd - cur_epoch.jd).abs() > 1e-12 {
-            let dt = obs_epoch - cur_epoch;
-            let (new_pos, new_vel, phi_k) = analytic_2_body_stm(dt, &cur_pos, &cur_vel, None)?;
-
-            // Chain the 6x6 state block.
-            let new_state_cols = &phi_k * phi_cum.columns(0, 6);
-            phi_cum.columns_mut(0, 6).copy_from(&new_state_cols);
-
-            // Non-grav parameter columns: phi_state * phi_cum_param + 0
-            // (two-body has no parameter sensitivity, so phi_param = 0).
-            if np > 0 {
-                let new_param_cols = &phi_k * phi_cum.columns(6, np);
-                phi_cum.columns_mut(6, np).copy_from(&new_param_cols);
-            }
-
-            cur_pos = new_pos;
-            cur_vel = new_vel;
-            cur_epoch = obs_epoch;
-        }
-
-        if !included[i] {
-            continue;
-        }
-
-        // Build heliocentric state for light-time correction.
-        // `light_time_correct` requires heliocentric inputs; the observer
-        // is SSB-typed so we also need to convert it to heliocentric.
-        let obj_lt_ssb = {
-            let cur_state_helio = State::<Equatorial, SunCenter> {
-                desig: state_helio.desig.clone(),
-                epoch: cur_epoch,
-                pos: cur_pos.into(),
-                vel: cur_vel.into(),
-                center: SunCenter,
-            };
-            let observer_state = observation.observer()?;
-            let obs_helio = spk.try_to_sun(observer_state.into())?;
-            let obj_lt_helio = light_time_correct(&cur_state_helio, &obs_helio.pos)?;
-            let deflected_pos = differential_light_deflect(&obs_helio.pos, obj_lt_helio.pos);
-            let obj_lt_deflected = State {
-                pos: deflected_pos,
-                ..obj_lt_helio
-            };
-            spk.try_to_ssb(obj_lt_deflected.into())?
-        };
-
-        let residual = observation.residual_from_corrected(&obj_lt_ssb)?;
-        let h_local = observation.partials(&obj_lt_ssb)?;
-
-        // Apparent angular velocity (rad/day) for timing correction.
-        let v_obj: [f64; 3] = obj_lt_ssb.vel.into();
-        let v_obs: [f64; 3] = observation.observer()?.vel.into();
-        let vel_rel = DVector::from_column_slice(&[
-            v_obj[0] - v_obs[0],
-            v_obj[1] - v_obs[1],
-            v_obj[2] - v_obs[2],
-        ]);
-        let motion = h_local.columns(0, 3) * &vel_rel;
-        let weight_matrix = observation.weight_matrix(
-            motion.get(0).copied().unwrap_or(0.0),
-            motion.get(1).copied().unwrap_or(0.0),
-        );
-
-        results.push(StmObs {
-            phi_cum: phi_cum.clone(),
-            residual,
-            h_local,
-            weight_matrix,
-        });
-    }
-
-    Ok(results)
 }
 
 /// Accumulate the weighted normal equations for one linearization pass.
