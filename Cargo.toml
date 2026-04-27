@@ -16,7 +16,7 @@ members = ["src/kete_core", "src/kete_stats", "src/kete_fitting", "src/kete_flux
 default-members = ["src/kete_core", "src/kete_stats", "src/kete_fitting", "src/kete_flux", "src/kete_spice"]
 
 [workspace.package]
-version = "3.1.0"
+version = "3.2.0"
 edition = "2024"
 rust-version = "1.95"
 license = "BSD-3-Clause"
