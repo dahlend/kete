@@ -116,7 +116,7 @@ static U_POW_TABLE: std::sync::LazyLock<[RowSVector<f64, 7>; 7]> = std::sync::La
 
 const MIN_RATIO: f64 = 0.25;
 const EPSILON: f64 = 1e-6;
-const MIN_STEP: f64 = 0.005;
+const MIN_STEP: f64 = 0.0005;
 
 /// Gauss-Radau Spacing Numerical Integrator
 /// This solves a second-order initial value problem.

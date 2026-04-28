@@ -234,14 +234,27 @@ pub fn fit_orbit_filter(
     let np = n_nongrav_params(non_grav);
     let dim = 6 + np;
 
-    // Build a conservative initial covariance: generous enough to cover
-    // the uncertainty from any reasonable IOD seed.
+    // Scale initial covariance to the seed state so it is conservative
+    // but not wildly mismatched (e.g. TNOs at 40 AU need much larger
+    // position uncertainty than NEOs at 1 AU).
+    let r = {
+        let p: [f64; 3] = initial_state.pos.into();
+        (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt().max(0.1)
+    };
+    let v = {
+        let vel: [f64; 3] = initial_state.vel.into();
+        (vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2])
+            .sqrt()
+            .max(1e-4)
+    };
     let mut initial_covariance = DMatrix::zeros(dim, dim);
+    let pos_var = (0.3 * r) * (0.3 * r);
+    let vel_var = (0.1 * v) * (0.1 * v);
     for idx in 0..3 {
-        initial_covariance[(idx, idx)] = 1.0; // 1 AU^2
+        initial_covariance[(idx, idx)] = pos_var;
     }
     for idx in 3..6 {
-        initial_covariance[(idx, idx)] = 0.01; // (0.1 AU/day)^2
+        initial_covariance[(idx, idx)] = vel_var;
     }
     for idx in 6..dim {
         initial_covariance[(idx, idx)] = 1.0;

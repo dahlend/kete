@@ -1417,6 +1417,7 @@ E29 115.955330.845978-0.531426Mardella Observatory
 E41 138.890250.817664-0.573796Strathalbyn
 E42 139.570190.824586-0.563855AUSTRALIA1/SRI, Swan Reach
 E52 147.095970.817401-0.574196The Rock Regional Observatory, The Rock
+E54 149.081470.855509-0.516305TransAstra at Springbrook
 E55 149.064110.85562 -0.51621 GOTO South
 E62 149.081350.855509-0.516305Slooh.com Australia, Coonabarabran
 E81 173.2617 0.75267 -0.65622 Nelson
@@ -2157,13 +2158,14 @@ O54 100.949390.973370+0.228460TSky Observatory, Chonburi
 O55 101.854500.999100+0.042381Telok Kemang Observatory, Port Dickson
 O56 101.454560.967528+0.252097Jaichalad-Pailin Observatory
 O57 102.630940.957811+0.286532ROP KKN Observatory
+O58 101.454130.967528+0.252097SSTAC, Pak Chong
 O68 105.330900.793121+0.607347LW-2, NAOC-Zhongwei
 O72 106.334760.672017+0.738399OWL-Net, Songino
 O75 107.051800.672284+0.738151ISON-Hureltogoot Observatory
 O85 109.213000.826583+0.561181LiShan Observatory, Lintong
 P07 114.089870.928304-0.370597Space Surveillance Telescope, HEH Station
 P13 115.573330.769058+0.637315Baihuashan Observatory, Beijing
-P14 115.811670.848989-0.526638Nedlands Observatory, Perth
+P14 115.811670.848989-0.526638Nedlands
 P18 116.610830.757010+0.651328Birch Forest Observatory, LaBaGouMen
 P21 117.281460.850540-0.5242466R-AUS1, Youndegin
 P22 117.575880.762782+0.644702LW-3, NAOC-Xinglong
@@ -2259,6 +2261,8 @@ R70 359.620360.709877+0.701989WATCH, Beychac Et Caillau
 R71 359.504540.784613+0.617946Erchico, San Vicente Del Raspeig
 R72   2.035280.750193+0.659046RubiObservatory, Rubi
 R73   0.832890.680384+0.730428Observatoire de Tauxigny, Tauxigny
+R74   1.934940.751434+0.657653Observatori Puig d'Agulles, Vallirana
+R75   1.454860.753664+0.655084Rodamir, Roda de Bara
 R76   4.106670.638480+0.767079LEPTINA-ONE, Estinnes-au-val
 R77   3.727440.723117+0.688470Observatoire de l'etoile qui rit
 R78 175.091040.788021-0.613626Crystal Lake Observatory, Ngutunui
@@ -2274,11 +2278,13 @@ R93   9.067190.710955+0.700966Sanse Observatory, San Sebastiano Curone
 R95   9.790450.718941+0.692828Fiammetta Observatory, La Spezia
 R97  10.539530.649091+0.758232Baudenbach
 R99  11.238080.723496+0.688038Giuliano Betti Observatory, Firenze
+S04  12.712850.744787+0.665093Osservatorio Astronomico Narciso Spuntoni
 S16  16.705000.759851+0.648047ASI Matera Flyeye
 S24  19.546830.671902+0.738204Szilard Leo Observatory, Bujak
 S30  21.497440.674553+0.735785Zenit, Hajduboszormeny
+S42  26.028890.716302+0.695479Institute of Space Science Magurele
 S43  26.022500.714576+0.697241StarBlazer Observatory, Bucharest
-S47  27.296610.721431+0.690213AlfaStar Observatory, Alfatar
+S47  27.296610.721431+0.690213Alfastar - Astroclubul Bucuresti
 S61  31.973320.683582+0.727444Mykolaiv, 0.3m f/5 Telescope
 S86  40.325000.918760+0.393856Alamri astronomical observatory
 S89  41.425330.725190+0.687159FASTAU, Astrofarm Astroverts
@@ -2327,6 +2333,7 @@ U81 243.615140.827367+0.560037CS3-Trojan Station, Landers
 U82 243.615190.827368+0.560036CS3-Palmer Divide Station, Landers
 U83 243.573110.841238+0.53938 Mount Laguna Observatory
 U86 244.535560.857900+0.512937BOOTES-5, Bajo California
+U92 251.830000.827059+0.560862Astrottica Network USA2, Pie Town
 U93 246.287610.791740+0.609209Skygems Dreamscope Utah, Beryl Junction
 U94 246.302500.792006+0.608864iTelescope Observatory, Beryl Junction
 U95 251.829670.827058+0.560864USA1/HCRO, Pie Town
@@ -2421,6 +2428,7 @@ W22 275.004470.844595+0.533635WestRock Observatory, Columbus
 W23 275.380190.772786+0.632594Hevonen Farm Observatory, Oxford
 W24 275.238170.722574+0.689025Shamrock Banks Observatory, Clare
 W25 275.635060.776417+0.628165RMS Observatory, Cincinnati
+W26 283.129110.771735+0.633872Starpool Observatory, Hampstead
 W27 286.573830.749769+0.659492RCNS, New Milford
 W28 276.3883 0.83011 +0.55581 Ex Nihilo Observatory, Winder
 W29 276.9939 0.76659 +0.64004 Adena Brook Observatory, Columbus
@@ -2520,6 +2528,8 @@ X22 289.147000.862368-0.505120BTN-1, Deep Sky Chile
 X23 291.820530.921647-0.387710OVTLN2, San Pedro de Atacama
 X24 289.988310.887329-0.460106Observatorio Desierto Cosmico, Atacama
 X25 289.146780.862375-0.505111UBC Southern Observatory
+X26 295.572330.852247-0.521566NAOS, Alta Gracia
+X27 289.200810.865545-0.499828SARA-CT
 X29 299.137610.840299-0.540322Observatorio Astronomico Municipal de Funes
 X31 299.479340.850485-0.524263Galileo Galilei Observatory, Oro Verde
 X33 299.990390.998647-0.051941OARU, Manaus

@@ -38,7 +38,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use crate::obs::AstrometricObservation;
-use crate::orbit_fitting::{StmObs, accumulate_normal_equations, stm_sweep, stm_sweep_two_body};
+use crate::orbit_fitting::{StmObs, accumulate_normal_equations, stm_sweep};
 use kete_core::constants::GMS;
 use kete_core::forces::NonGravModel;
 use kete_core::frames::{Equatorial, SSB};
@@ -47,7 +47,7 @@ use kete_core::prelude::{Error, KeteResult, State};
 use nalgebra::{DMatrix, DVector};
 use nuts_rs::rand::SeedableRng;
 use nuts_rs::{
-    Chain, CpuLogpFunc, CpuMath, CpuMathError, DiagGradNutsSettings, LogpError, Settings,
+    Chain, CpuLogpFunc, CpuMath, CpuMathError, LogpError, LowRankNutsSettings, Settings,
 };
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -86,6 +86,8 @@ pub struct OrbitSamples {
     pub seed_id: Vec<usize>,
     /// True if the draw was a divergent transition.
     pub divergent: Vec<bool>,
+    /// Log-posterior density at each draw (nats, relative only).
+    pub log_posterior: Vec<f64>,
 }
 
 /// Error returned by [`OrbitalPosterior::logp`] when propagation fails.
@@ -398,19 +400,13 @@ impl CpuLogpFunc for OrbitalPosterior {
             });
         }
 
-        // Use cheap two-body STM when there are no non-gravitational
-        // parameters; fall back to full N-body STM otherwise.
-        let sweep = if self.non_grav.is_none() {
-            stm_sweep_two_body(&trial_state, &self.obs, &self.included, None)
-        } else {
-            stm_sweep(
-                &trial_state,
-                &self.obs,
-                &self.included,
-                self.include_asteroids,
-                trial_ng.as_ref(),
-            )
-        }
+        let sweep = stm_sweep(
+            &trial_state,
+            &self.obs,
+            &self.included,
+            self.include_asteroids,
+            trial_ng.as_ref(),
+        )
         .map_err(|e| PropagationError {
             msg: format!("STM sweep failed: {e}"),
             recoverable: true,
@@ -627,7 +623,7 @@ pub fn fit_orbit_mcmc(
     };
 
     // Run all chains in parallel.
-    let chain_results: Vec<(usize, KeteResult<(Vec<Vec<f64>>, Vec<bool>)>)> = tasks
+    let chain_results: Vec<(usize, KeteResult<(Vec<Vec<f64>>, Vec<bool>, Vec<f64>)>)> = tasks
         .par_iter()
         .map(|&(seed_idx, draws, rng_seed)| {
             let result = run_single_chain(
@@ -650,13 +646,15 @@ pub fn fit_orbit_mcmc(
     let mut all_draws = Vec::new();
     let mut all_seed_id = Vec::new();
     let mut all_divergent = Vec::new();
+    let mut all_log_posterior = Vec::new();
 
     for (seed_idx, result) in chain_results {
-        let (draws, divergent) = result?;
+        let (draws, divergent, log_posterior) = result?;
         let n = draws.len();
         all_draws.extend(draws);
         all_seed_id.extend(std::iter::repeat_n(seed_idx, n));
         all_divergent.extend(divergent);
+        all_log_posterior.extend(log_posterior);
     }
 
     Ok(OrbitSamples {
@@ -665,6 +663,7 @@ pub fn fit_orbit_mcmc(
         draws: all_draws,
         seed_id: all_seed_id,
         divergent: all_divergent,
+        log_posterior: all_log_posterior,
     })
 }
 
@@ -680,7 +679,7 @@ fn run_single_chain(
     maxdepth: u64,
     target_accept: f64,
     chain_idx: u64,
-) -> KeteResult<(Vec<Vec<f64>>, Vec<bool>)> {
+) -> KeteResult<(Vec<Vec<f64>>, Vec<bool>, Vec<f64>)> {
     let np = non_grav.map_or(0, NonGravModel::n_free_params);
     let d = 6 + np;
 
@@ -726,13 +725,13 @@ fn run_single_chain(
         non_grav: non_grav.cloned(),
     };
 
-    let mut settings = DiagGradNutsSettings {
+    let mut settings = LowRankNutsSettings {
         num_tune: num_tune as u64,
         num_draws: num_draws as u64,
         maxdepth,
         seed: chain_idx,
         num_chains: 1,
-        ..DiagGradNutsSettings::default()
+        ..LowRankNutsSettings::default()
     };
     settings.adapt_options.step_size_settings.target_accept = target_accept;
 
@@ -773,13 +772,26 @@ fn run_single_chain(
     let total_draws = num_tune as u64 + num_draws as u64;
     let mut draws = Vec::with_capacity(num_draws);
     let mut divergent = Vec::with_capacity(num_draws);
+    let mut log_posterior = Vec::with_capacity(num_draws);
+    let mut tune_steps = 0_usize;
+    let mut tune_divergent = 0_usize;
+    let bail_at = num_tune / 2;
 
     for _ in 0..total_draws {
-        let (position, progress) = sampler
-            .draw()
+        let (position, _expanded, stats, progress) = sampler
+            .expanded_draw()
             .map_err(|e| Error::ValueError(format!("NUTS draw failed: {e}")))?;
 
         if progress.tuning {
+            if progress.diverging {
+                tune_divergent += 1;
+            }
+            tune_steps += 1;
+            // If >90% of warmup steps have diverged by the halfway point,
+            // this chain cannot find the posterior -- drop it silently.
+            if tune_steps == bail_at && tune_divergent * 10 > bail_at * 9 {
+                return Ok((vec![], vec![], vec![]));
+            }
             continue;
         }
 
@@ -788,9 +800,10 @@ fn run_single_chain(
         let cart = &seed_vec + &whiten_l * &xi;
         draws.push(cart.as_slice().to_vec());
         divergent.push(progress.diverging);
+        log_posterior.push(stats.logp);
     }
 
-    Ok((draws, divergent))
+    Ok((draws, divergent, log_posterior))
 }
 
 #[cfg(test)]

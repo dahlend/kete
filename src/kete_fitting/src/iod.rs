@@ -243,7 +243,9 @@ pub fn initial_orbit_determination(
 /// Uses a fixed baseline-target family with deterministic nearest-pair
 /// matching. This keeps behavior predictable while sampling short, medium,
 /// long, and very-long baselines.
-fn select_helio_ranging_pairs(sorted_obs: &[AstrometricObservation]) -> Vec<(usize, usize)> {
+pub(crate) fn select_helio_ranging_pairs(
+    sorted_obs: &[AstrometricObservation],
+) -> Vec<(usize, usize)> {
     let n = sorted_obs.len();
     if n < 2 {
         return vec![];

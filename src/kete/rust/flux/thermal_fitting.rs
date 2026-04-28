@@ -11,7 +11,7 @@ use kete_flux::fitting::{self, FitResult, FluxObs, FluxPriors, Model, ParamPrior
 use kete_stats::prelude::Data;
 use pyo3::prelude::*;
 
-/// Resolve a band argument — either a recognised name or a wavelength in nm.
+/// Resolve a band argument -- either a recognised name or a wavelength in nm.
 ///
 /// Accepted names: ``"W1"``-``"W4"``, ``"NEOS1"``, ``"NEOS2"``, ``"V"``,
 /// ``"IRAC1"``-``"IRAC4"``, ``"MIPS24"``, ``"MIPS70"``, ``"MIPS160"``,
