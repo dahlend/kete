@@ -320,7 +320,7 @@ impl PyObservation {
     ///     - Radar range: 1-element lists in AU.
     ///     - Radar range-rate: 1-element lists in AU/day.
     fn residual(&self, obj_state: PyState) -> PyResult<(Vec<f64>, Vec<f64>)> {
-        let raw: State<Equatorial> = obj_state.raw.into();
+        let raw: State<Equatorial> = obj_state.raw;
         let (resid, pred) = self.obs.residual(raw)?;
 
         match &self.obs {
@@ -1120,7 +1120,7 @@ impl PyRangingSamples {
             .collect()
     }
 
-    /// Raw draws as `[x, y, z, vx, vy, vz]` in AU/AU·day, SSB Equatorial.
+    /// Raw draws as `[x, y, z, vx, vy, vz]` in AU/AU*day, SSB Equatorial.
     #[getter]
     fn raw_draws(&self) -> Vec<Vec<f64>> {
         self.0.draws.clone()
@@ -1163,7 +1163,7 @@ impl PyRangingSamples {
 /// observations.
 ///
 /// Scans a grid over topocentric distances at a selected pair of observations,
-/// scores each cell via Gaussian chi², adaptively refines in high-probability
+/// scores each cell via Gaussian chi^2, adaptively refines in high-probability
 /// regions, and draws samples with within-cell Gaussian perturbation.
 ///
 /// This is the appropriate tool when the arc is short and MCMC cannot explore
@@ -1176,9 +1176,10 @@ impl PyRangingSamples {
 /// num_draws : int
 ///     Number of orbit samples to return. Default 1000.
 /// temperature : float
-///     Likelihood temperature. Default 1.0 gives the true Bayesian posterior.
-///     Higher values broaden the distribution for short arcs where the
-///     posterior is a narrow ridge.
+///     Likelihood temperature. 1.0 gives the true Bayesian posterior.
+///     Higher values produce a softer distribution that is easier to sample but
+///     less statistically rigorous. Default is 10.0, producing results similar to
+///     JPL Scout.
 /// seed : int
 ///     RNG seed for reproducibility. Default 0.
 /// desig : str, optional
@@ -1188,7 +1189,7 @@ impl PyRangingSamples {
 /// -------
 /// RangingSamples
 #[pyfunction]
-#[pyo3(name = "fit_orbit_ranging", signature = (observations, num_draws=1000, temperature=1.0, seed=0, desig=None))]
+#[pyo3(name = "fit_orbit_ranging", signature = (observations, num_draws=1000, temperature=10.0, seed=0, desig=None))]
 pub fn fit_orbit_ranging_py(
     observations: Vec<PyObservation>,
     num_draws: usize,

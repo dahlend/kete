@@ -26,7 +26,7 @@ use rayon::prelude::*;
 // ---------------------------------------------------------------------------
 
 /// log-rho grid: 1e-5 to 1000 AU.
-const LOG_RHO_MIN: f64 = -11.5129;
+const LOG_RHO_MIN: f64 = -14.5129;
 const LOG_RHO_MAX: f64 = 6.9078;
 
 /// Absolute cap on the adaptive `rho_dot` range (AU/day).
@@ -34,20 +34,28 @@ const LOG_RHO_MAX: f64 = 6.9078;
 /// large grids for impactor-range distances.
 const RHO_DOT_ABS_MAX: f64 = 2.0; // ~3460 km/s
 
-/// Energy multiplier controlling both the `rho_dot` scan range and the physical
-/// validity threshold.
-///
-/// The `rho_dot` scan range per rho row is `+/-sqrt(ENERGY_MULT * mu/r)`, and cells are
-/// accepted only when `v^2 < ENERGY_MULT * mu/r`.  Setting both to the same
-/// multiplier ensures the scan covers exactly the admissible cells and no more.
+/// Energy multiplier controlling the `rho_dot` scan range (parabolic boundary).
 ///
 /// `ENERGY_MULT = 2` -> strict bound orbits only (e < 1).
 /// `ENERGY_MULT = 8` -> tangential orbits up to e ~ 7; typical non-radial
 ///   orbits up to e ~ 2--3.  Comfortably covers interstellar-like e ~ 1--2.
-const ENERGY_MULT: f64 = 8.0;
+const ENERGY_MULT: f64 = 5.0;
 
-const N_RHO: usize = 400;
-const N_RHO_DOT: usize = 400;
+/// Energy multiplier for the physical-validity hard ceiling.  Acts as a
+/// runaway guard; the actual posterior shape at the parabolic boundary is
+/// produced by the soft energy prior (see `ENERGY_PRIOR_SIGMA`), not by this
+/// cutoff.  Set well past `ENERGY_PRIOR_SIGMA` so the soft taper kills cells
+/// long before they hit this ceiling.
+const ENERGY_MULT_VALID: f64 = 20.0;
+
+/// Sigma of the Gaussian energy prior past the parabolic boundary, expressed
+/// in units of `v^2 * r / GMS` (= 2 at parabolic).  Cell weights are multiplied
+/// by `exp(-0.5 * ((ratio - 2) / sigma)^2)` for `ratio > 2`.  Smaller sigma
+/// gives a sharper falloff; larger sigma admits more hyperbolic orbits.
+const ENERGY_PRIOR_SIGMA: f64 = 1.0;
+
+const N_RHO: usize = 500;
+const N_RHO_DOT: usize = 500;
 
 const TARGET_ESS: f64 = 50.0;
 const MAX_REFINE: usize = 4;
@@ -101,17 +109,14 @@ struct Attributable {
 
 struct Cell {
     log_w: f64,
-    state: State<Equatorial, SSB>,
     /// 4x4 attributable normal matrix N = H^4^T W H^4.
     attr_info: DMatrix<f64>,
     rho: f64,
     rho_dot: f64,
-    /// 1-sigma spread in `rho_dot` from the local chi^2 curvature along the `rho_dot` axis.
-    /// Used for within-cell `rho_dot` perturbation to spread draws across the LOV ridge.
-    rho_dot_sigma: f64,
-    /// 1-sigma spread in log(rho) from the LOV chi^2 profile curvature along the rho axis.
-    /// Filled after all LOV cells are scored; zero until then.
-    log_rho_sigma: f64,
+    /// Cell extent in log(rho); uniform across the grid for a given patch.
+    log_rho_step: f64,
+    /// Cell extent in `rho_dot`; varies per row in the adaptive scan.
+    rho_dot_step: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -229,19 +234,19 @@ fn state_from_rho(attr: &Attributable, rho: f64, rho_dot: f64) -> State<Equatori
 // Physical validity
 // ---------------------------------------------------------------------------
 
-/// Reject orbits outside [0.001, 1000] AU or with v^2 >= `ENERGY_MULT * GMS / r`.
+/// Reject orbits outside [0.001, 1000] AU or with v^2 >= `ENERGY_MULT_VALID * GMS / r`.
 ///
-/// The threshold is more generous than the strict parabolic bound (v^2 < 2mu/r)
-/// to avoid cutting valid near-parabolic and mildly hyperbolic orbits.  Orbits
-/// beyond this threshold are not physical for any solar-system population and
-/// would corrupt the log-rho prior by allowing cells to survive at arbitrarily
-/// large distances with zero chi^2.
+/// The validity ceiling is wider than the scan's parabolic boundary so cells in
+/// the padded region beyond the admissible curve survive scoring; the chi^2
+/// landscape then produces a soft falloff instead of a hard polygonal edge at
+/// the boundary.  Orbits beyond this ceiling are not physical for any
+/// solar-system population.
 fn is_physically_valid(pos_helio: Vector<Equatorial>, vel_helio: Vector<Equatorial>) -> bool {
     let r = pos_helio.norm();
     if !(0.001..=1000.0).contains(&r) {
         return false;
     }
-    vel_helio.norm_squared() < ENERGY_MULT * GMS / r
+    vel_helio.norm_squared() < ENERGY_MULT_VALID * GMS / r
 }
 
 // ---------------------------------------------------------------------------
@@ -395,21 +400,11 @@ fn scout_score(
 // Grid scoring
 // ---------------------------------------------------------------------------
 
-/// Scan a `(rho, rho_dot)` patch and return one **LOV cell per rho row**.
+/// Scan a `(rho, rho_dot)` patch and return scored cells.
 ///
-/// For each rho value, scans the full `rho_dot` range and retains the cell with the
-/// minimum `chi^2_min` (maximum `log_w`) -- the Line of Variations (LOV) point for
-/// that distance.  Estimating `rho_dot_sigma` from the parabolic curvature of
-/// the chi^2 profile around the minimum gives the `rho_dot` uncertainty for that row.
-///
-/// This replaces the flat 2-D grid, which produces isolated blobs at grid
-/// points when the posterior is a narrow ridge: every draw from an off-ridge
-/// cell has exactly that cell's `rho_dot` (the 4-D attributable perturbation does not
-/// move rho or `rho_dot`).  The LOV approach gives one cell per rho on the ridge, with
-/// `rho_dot_sigma` allowing draws to spread across the ridge width.
-///
-/// `rho_dot_range = None`: adaptive `+/-v_esc(rho)` (coarse scan).
-/// `rho_dot_range = Some((min, max))`: fixed range (refinement centering).
+/// `rho_dot_range = None`: adaptive range centered on the observer's heliocentric
+/// radial velocity (coarse scan).  `rho_dot_range = Some((min, max))`: fixed range
+/// (used by refinement).
 fn score_patch(
     sorted_obs: &[AstrometricObservation],
     attr: &Attributable,
@@ -419,7 +414,7 @@ fn score_patch(
     n_rdot: usize,
     temperature: f64,
 ) -> Vec<Cell> {
-    let (sun_pos_ssb, sun_vel_ssb, obs_helio_pos, los) = {
+    let (sun_pos_ssb, sun_vel_ssb, obs_helio_pos, obs_helio_vel, los, los_dot) = {
         let Ok(spk) = LOADED_SPK.try_read() else {
             return vec![];
         };
@@ -431,25 +426,42 @@ fn score_patch(
         let (sin_a, cos_a) = attr.alpha.sin_cos();
         let (sin_d, cos_d) = attr.delta.sin_cos();
         let los = Vector::<Equatorial>::new([cos_d * cos_a, cos_d * sin_a, sin_d]);
-        (sun_pos, sun_vel, obs_helio.pos, los)
+        let los_da = Vector::<Equatorial>::new([-sin_a * cos_d, cos_a * cos_d, 0.0]);
+        let los_dd = Vector::<Equatorial>::new([-cos_a * sin_d, -sin_a * sin_d, cos_d]);
+        let los_dot = los_da * attr.alpha_dot + los_dd * attr.delta_dot;
+        (sun_pos, sun_vel, obs_helio.pos, obs_helio.vel, los, los_dot)
     };
 
     let (la_min, la_max) = log_rho_range;
+    let log_rho_step = if n_rho > 1 {
+        (la_max - la_min) / (n_rho - 1) as f64
+    } else {
+        1.0
+    };
 
-    // Each rho row is scored independently: scan n_rdot `rho_dot` values and keep the
-    // one with the highest log_w (minimum chi^2).  Parallelise over rho rows.
-    let lov_cells: Vec<Cell> = (0..n_rho)
+    // Each rho row produces multiple cells (every admissible rho_dot).
+    let cells: Vec<Cell> = (0..n_rho)
         .into_par_iter()
-        .filter_map(|ir| {
+        .flat_map_iter(|ir| {
             let frac_r = ir as f64 / (n_rho - 1).max(1) as f64;
             let rho = (la_min + (la_max - la_min) * frac_r).exp();
 
             let (rd_min, rd_max) = rho_dot_range.unwrap_or_else(|| {
+                // Center the scan on the heliocentric radial-velocity zero point and size
+                // it from the parabolic boundary, then pad outward so cells exist past the
+                // admissible region.  Without padding the grid clips at the energy curve and
+                // the sampler produces hard polygonal edges; the chi^2 landscape and
+                // is_physically_valid below give the true soft falloff.
+                const RHO_DOT_PAD: f64 = 1.5;
                 let r_helio = (obs_helio_pos + los * rho).norm().max(1e-6);
-                // Scan up to sqrt(ENERGY_MULT * mu/r) so every cell that passes
-                // is_physically_valid is reachable in the `rho_dot` scan.
-                let v_bound = (ENERGY_MULT * GMS / r_helio).sqrt().min(RHO_DOT_ABS_MAX);
-                (-v_bound, v_bound)
+                let v_perp = obs_helio_vel + los_dot * rho;
+                let v_along = v_perp[0] * los[0] + v_perp[1] * los[1] + v_perp[2] * los[2];
+                let v_trans_sq = (v_perp.norm_squared() - v_along * v_along).max(0.0);
+                let half = (ENERGY_MULT * GMS / r_helio - v_trans_sq)
+                    .max(0.0)
+                    .sqrt();
+                let padded = (RHO_DOT_PAD * half).min(RHO_DOT_ABS_MAX);
+                (-v_along - padded, -v_along + padded)
             });
             let rdot_step = if n_rdot > 1 {
                 (rd_max - rd_min) / (n_rdot - 1) as f64
@@ -457,16 +469,14 @@ fn score_patch(
                 1.0
             };
 
-            // Dense `rho_dot` scan for this rho row.
-            let mut log_ws = vec![f64::NEG_INFINITY; n_rdot];
-            let mut best: Option<(usize, f64, f64, State<Equatorial, SSB>, DMatrix<f64>)> = None;
-
-            for (id, log_w_slot) in log_ws.iter_mut().enumerate() {
+            let mut row_cells: Vec<Cell> = Vec::with_capacity(n_rdot);
+            for id in 0..n_rdot {
                 let frac_d = id as f64 / (n_rdot - 1).max(1) as f64;
                 let rho_dot = rd_min + (rd_max - rd_min) * frac_d;
                 let state = state_from_rho(attr, rho, rho_dot);
                 let pos_helio = state.pos - sun_pos_ssb;
-                if !is_physically_valid(pos_helio, state.vel - sun_vel_ssb) {
+                let vel_helio = state.vel - sun_vel_ssb;
+                if !is_physically_valid(pos_helio, vel_helio) {
                     continue;
                 }
                 let Some((log_w, attr_info)) =
@@ -477,101 +487,32 @@ fn score_patch(
                 if !log_w.is_finite() {
                     continue;
                 }
-                *log_w_slot = log_w;
-                if best.as_ref().is_none_or(|(_, bw, ..)| log_w > *bw) {
-                    best = Some((id, log_w, rho_dot, state, attr_info));
-                }
-            }
-
-            let (best_id, best_log_w, best_rho_dot, best_state, best_attr_info) = best?;
-
-            // Estimate sigma_rho_dot from parabolic curvature of chi^2 around the minimum.
-            // chi^2(`rho_dot`) ~ chi^2_min + 1/2(`rho_dot` - rho_dot_best)^2 / sigma^2_rho_dot  ->  sigma_rho_dot = sqrt(T / d^2chi^2/drho_dot^2).
-            let rho_dot_sigma = if best_id > 0
-                && best_id + 1 < n_rdot
-                && log_ws[best_id - 1].is_finite()
-                && log_ws[best_id + 1].is_finite()
-            {
-                let chi2_m = -2.0 * temperature * log_ws[best_id - 1];
-                let chi2_0 = -2.0 * temperature * best_log_w;
-                let chi2_p = -2.0 * temperature * log_ws[best_id + 1];
-                let d2 = (chi2_m - 2.0 * chi2_0 + chi2_p) / (rdot_step * rdot_step);
-                if d2 > 1e-30 {
-                    (temperature / d2).sqrt()
+                // Soft Gaussian energy prior past the parabolic boundary.  Chi^2 alone
+                // has no gradient in the energy direction over short arcs, so without
+                // this prior the posterior would be flat to the validity ceiling and
+                // produce a hard polygonal edge there.
+                let r_h = pos_helio.norm();
+                let energy_ratio = vel_helio.norm_squared() * r_h / GMS;
+                let log_prior_energy = if energy_ratio > 2.0 {
+                    let excess = (energy_ratio - 2.0) / ENERGY_PRIOR_SIGMA;
+                    -0.5 * excess * excess
                 } else {
-                    rdot_step
-                }
-            } else {
-                rdot_step // edge or isolated minimum: fall back to grid step
-            };
-
-            Some(Cell {
-                log_w: best_log_w,
-                state: best_state,
-                attr_info: best_attr_info,
-                rho,
-                rho_dot: best_rho_dot,
-                rho_dot_sigma,
-                log_rho_sigma: 0.0, // filled by compute_log_rho_sigma
-            })
+                    0.0
+                };
+                row_cells.push(Cell {
+                    log_w: log_w + log_prior_energy,
+                    attr_info,
+                    rho,
+                    rho_dot,
+                    log_rho_step,
+                    rho_dot_step: rdot_step,
+                });
+            }
+            row_cells
         })
         .collect();
 
-    lov_cells
-}
-
-/// Fill `log_rho_sigma` for each LOV cell from the parabolic curvature of the
-/// chi^2 profile along the rho axis.
-///
-/// Cells must be sorted by `log(rho)` (they arrive that way from `score_patch`
-/// since rho rows are scanned in order).  Interior cells get a finite-difference
-/// second derivative; edge cells and cells with missing neighbours fall back to
-/// half the local rho grid step.
-fn compute_log_rho_sigma(cells: &mut [Cell], temperature: f64) {
-    let n = cells.len();
-    if n < 2 {
-        if n == 1 {
-            cells[0].log_rho_sigma = 0.05;
-        } // arbitrary small spread
-        return;
-    }
-
-    // Pre-compute log(rho) and chi^2_min per cell.
-    let log_rhos: Vec<f64> = cells.iter().map(|c| c.rho.ln()).collect();
-    let chi2s: Vec<f64> = cells.iter().map(|c| -2.0 * temperature * c.log_w).collect();
-
-    for i in 0..n {
-        let grid_step = if i > 0 && i + 1 < n {
-            (log_rhos[i + 1] - log_rhos[i - 1]) / 2.0
-        } else if i == 0 && n > 1 {
-            log_rhos[1] - log_rhos[0]
-        } else {
-            log_rhos[n - 1] - log_rhos[n - 2]
-        };
-        let sigma = if i > 0 && i + 1 < n {
-            let dlr_m = log_rhos[i] - log_rhos[i - 1];
-            let dlr_p = log_rhos[i + 1] - log_rhos[i];
-            // Central second-difference on a possibly non-uniform grid.
-            let d2 = 2.0
-                * (chi2s[i + 1] * dlr_m - chi2s[i] * (dlr_m + dlr_p) + chi2s[i - 1] * dlr_p)
-                / (dlr_m * dlr_p * (dlr_m + dlr_p));
-            // Only trust the curvature when it is clearly resolved  -- at least
-            // 1 nat of chi^2 variation per grid step.  Floating-point noise on a
-            // flat landscape produces tiny positive d2 values that would give
-            // astronomically large sigma (sqrt(T / 1e-30) -> inf).
-            let d2_threshold = temperature / (grid_step * grid_step);
-            if d2 > d2_threshold {
-                // Posterior is sharper than one grid cell  -- use curvature.
-                (temperature / d2).sqrt().min(grid_step)
-            } else {
-                // Flat or unresolved  -- spread draws over one grid step.
-                grid_step
-            }
-        } else {
-            grid_step
-        };
-        cells[i].log_rho_sigma = sigma.abs().max(1e-6);
-    }
+    cells
 }
 
 // ---------------------------------------------------------------------------
@@ -602,9 +543,8 @@ fn ess(cells: &[Cell]) -> f64 {
 
 /// Adaptively refine until ESS >= `TARGET_ESS` or `MAX_REFINE` rounds.
 ///
-/// Each hot cell is subdivided with a 5x5 sub-grid.  The `rho_dot` half-step
-/// is set to `v_esc(rho) / (N_RHO_DOT - 1)` so the refinement patch
-/// covers exactly one coarse `rho_dot` cell in the adaptive grid.
+/// Each hot cell is subdivided with a 5x5 sub-grid centered on the cell's
+/// `(log_rho, rho_dot)` with half-widths set to one coarse grid step.
 fn refine(
     mut cells: Vec<Cell>,
     sorted_obs: &[AstrometricObservation],
@@ -621,13 +561,18 @@ fn refine(
             .iter()
             .map(|c| c.log_w)
             .fold(f64::NEG_INFINITY, f64::max);
+        // Precompute LOS unit vector from the (fixed) attributable for r_helio estimates.
+        // attr.observer.pos is SSB; using it as an approximate heliocentric position
+        // introduces ~Sun-SSB offset error (~0.005 AU), acceptable for patch sizing.
+        let (sin_a, cos_a) = attr.alpha.sin_cos();
+        let (sin_d, cos_d) = attr.delta.sin_cos();
+        let los_r = Vector::<Equatorial>::new([cos_d * cos_a, cos_d * sin_a, sin_d]);
         let hot: Vec<(f64, f64, f64)> = cells
             .iter()
             .filter(|c| c.log_w > max_lw - 5.0)
             .map(|c| {
-                // Half local coarse step in `rho_dot` = v_bound(rho) / (N_RHO_DOT-1).
-                // Approximate r_helio ~ rho  -- accurate when the object is far from Earth.
-                let v_bound = (ENERGY_MULT * GMS / c.rho).sqrt().min(RHO_DOT_ABS_MAX);
+                let r_helio = (attr.observer.pos + los_r * c.rho).norm().max(1e-6);
+                let v_bound = (ENERGY_MULT * GMS / r_helio).sqrt().min(RHO_DOT_ABS_MAX);
                 let hd = v_bound / (N_RHO_DOT - 1) as f64;
                 (c.rho.ln(), c.rho_dot, hd)
             })
@@ -669,157 +614,160 @@ fn refine(
 /// sigma = 1e-4 rad (~20 arc-seconds) for both position and rate parameters.
 const ATTR_REG_INV: f64 = 1.0 / (1e-4 * 1e-4);
 
-/// Draw `num_draws` samples from the weighted cell distribution.
+/// Generate orbital samples from the weighted grid by parallel importance sampling.
 ///
-/// **Prior** (Scout section 3 footnote): the log-rho grid has an implicit 1/rho density
-/// in linear rho.  Multiplying by rho (i.e. adding `+ln rho` to log-weight) converts
-/// to a flat (uniform) prior over linear rho, which is the Scout default.
-///
-/// **Within-cell perturbation**: draws (deltaalpha, deltadelta, `deltaalpha_dot`, `deltadelta_dot`) from the 4-D
-/// attributable covariance `Gamma_A = N^-1` (Scout section 5, step f).  This correctly
-/// reflects that rho and `rho_dot` are fixed at the grid-cell values  -- only the
-/// attributable is uncertain.  A diagonal regularizer prevents inversion
-/// failure when the arc is too short to constrain all four parameters.
+/// Selects cells proportional to their posterior weight, applies Gaussian jitter
+/// (sigma = half cell width) within each cell's `(log_rho, rho_dot)` extent, and
+/// perturbs the attributable by `N(0, Gamma_A)` using the stored Fisher information.
+/// Fully parallelized via rayon; no `scout_score` calls at draw time.
 fn draw_samples(
     cells: &[Cell],
     num_draws: usize,
     rng: &mut impl rand::Rng,
     attr: &Attributable,
 ) -> (Vec<Vec<f64>>, Vec<f64>) {
-    // Uniform prior on linear rho: add +ln(rho) Jacobian correction (paper footnote section 3).
+    if cells.is_empty() || num_draws == 0 {
+        return (vec![], vec![]);
+    }
+
+    // Normalize cell weights (log-rho Jacobian for uniform-rho prior).
     let max_lw = cells
         .iter()
         .map(|c| c.log_w + c.rho.ln())
         .fold(f64::NEG_INFINITY, f64::max);
-    let w_raw: Vec<f64> = cells
+    if !max_lw.is_finite() {
+        return (vec![], vec![]);
+    }
+    let weights: Vec<f64> = cells
         .iter()
         .map(|c| (c.log_w + c.rho.ln() - max_lw).exp())
         .collect();
-    let sum_w: f64 = w_raw.iter().sum();
-    let log_norm = max_lw + sum_w.ln();
-    let norm_log_w: Vec<f64> = cells
-        .iter()
-        .map(|c| c.log_w + c.rho.ln() - log_norm)
-        .collect();
+    let sum_w: f64 = weights.iter().sum();
+    if sum_w < 1e-300 {
+        return (vec![], vec![]);
+    }
 
+    // Build CDF for O(log n) weighted cell selection per draw.
     let mut cdf = Vec::with_capacity(cells.len());
     let mut acc = 0.0_f64;
-    for &w in &w_raw {
+    for &w in &weights {
         acc += w / sum_w;
         cdf.push(acc);
     }
 
+    // Generate per-draw seeds from the caller's RNG so output is deterministic
+    // and draws are independent across threads.
+    let seeds: Vec<u64> = (0..num_draws).map(|_| rng.next_u64()).collect();
+
     let uniform = Uniform::new(0.0_f64, 1.0_f64).unwrap();
-    let normal = rand_distr::StandardNormal;
 
-    let mut draws = Vec::with_capacity(num_draws);
-    let mut log_posteriors = Vec::with_capacity(num_draws);
+    let mut results: Vec<(Vec<f64>, f64)> = seeds
+        .into_par_iter()
+        .map(|seed| {
+            let mut local_rng = rand::rngs::SmallRng::seed_from_u64(seed);
 
-    for _ in 0..num_draws {
-        let u: f64 = uniform.sample(rng);
-        let idx = cdf.partition_point(|&c| c < u).min(cells.len() - 1);
-        let cell = &cells[idx];
-        let mut n_reg = cell.attr_info.clone();
-        n_reg[(0, 0)] += ATTR_REG_INV;
-        n_reg[(1, 1)] += ATTR_REG_INV;
-        n_reg[(2, 2)] += ATTR_REG_INV;
-        n_reg[(3, 3)] += ATTR_REG_INV;
+            // Select a cell proportional to its posterior weight.
+            let u = uniform.sample(&mut local_rng);
+            let idx = cdf.partition_point(|&c| c < u).min(cells.len() - 1);
+            let cell = &cells[idx];
 
-        // Perturb rho along the LOV ridge and `rho_dot` across it, then perturb the
-        // attributable.  These three perturbations are independent:
-        //   delta(log rho) ~ N(0, `log_rho_sigma`^2)   -- spreads draws continuously along the ridge
-        //   deltarho_dot      ~ N(0, `rho_dot_sigma`^2)   -- spreads draws across the ridge width
-        //   deltaattr    ~ N(0, Gamma_A)              -- attributable uncertainty at that (rho, `rho_dot`)
-        let z_log_rho: f64 =
-            <rand_distr::StandardNormal as Distribution<f64>>::sample(&normal, rng);
-        let z_rho_dot: f64 =
-            <rand_distr::StandardNormal as Distribution<f64>>::sample(&normal, rng);
-        let p_rho = (cell.rho * (z_log_rho * cell.log_rho_sigma).exp()).clamp(1e-5, 1000.0);
-        let p_rho_dot = cell.rho_dot + z_rho_dot * cell.rho_dot_sigma;
-
-        let sv = if let Some(gamma_a) = n_reg.try_inverse()
-            && let Some(chol) = gamma_a.cholesky()
-        {
-            let z = DVector::from_vec(
-                (0..4)
-                    .map(|_| {
-                        <rand_distr::StandardNormal as Distribution<f64>>::sample(&normal, rng)
-                    })
-                    .collect::<Vec<_>>(),
+            // Jitter within the cell with a Gaussian (sigma = half cell width).
+            // Adjacent cells' Gaussian densities overlap and blend across their shared
+            // boundaries, eliminating the polygonal staircase that uniform jitter
+            // produces at the surviving-cell boundary.
+            let dz_log = <rand_distr::StandardNormal as Distribution<f64>>::sample(
+                &rand_distr::StandardNormal,
+                &mut local_rng,
             );
-            let d_attr = chol.l() * z;
-            let p_attr = Attributable {
-                alpha: attr.alpha + d_attr[0],
-                delta: attr.delta + d_attr[1],
-                alpha_dot: attr.alpha_dot + d_attr[2],
-                delta_dot: attr.delta_dot + d_attr[3],
-                t_ref: attr.t_ref,
-                observer: attr.observer.clone(),
-            };
-            let ps = state_from_rho(&p_attr, p_rho, p_rho_dot);
-            [
-                ps.pos[0], ps.pos[1], ps.pos[2], ps.vel[0], ps.vel[1], ps.vel[2],
-            ]
-        } else {
-            // Fallback: 5% radial/speed perturbation directly on the state.
-            let p = cell.state.pos;
-            let v = cell.state.vel;
-            let r_norm = p.norm().max(0.1);
-            let v_norm = v.norm().max(1e-4);
-            let mut sv = [p[0], p[1], p[2], v[0], v[1], v[2]];
-            for x in &mut sv[0..3] {
-                *x += <rand_distr::StandardNormal as Distribution<f64>>::sample(&normal, rng)
-                    * (0.05 * r_norm);
-            }
-            for x in &mut sv[3..6] {
-                *x += <rand_distr::StandardNormal as Distribution<f64>>::sample(&normal, rng)
-                    * (0.05 * v_norm);
-            }
-            sv
-        };
+            let dz_rd = <rand_distr::StandardNormal as Distribution<f64>>::sample(
+                &rand_distr::StandardNormal,
+                &mut local_rng,
+            );
+            let log_rho_j = cell.rho.ln() + 0.5 * cell.log_rho_step * dz_log;
+            let rho_j = log_rho_j.exp();
+            let rho_dot_j = cell.rho_dot + 0.5 * cell.rho_dot_step * dz_rd;
 
-        draws.push(sv.to_vec());
-        log_posteriors.push(norm_log_w[idx]);
+            // Add N(0, Gamma_A) noise to the attributable using the cell's Fisher info.
+            let mut n_reg = cell.attr_info.clone();
+            n_reg[(0, 0)] += ATTR_REG_INV;
+            n_reg[(1, 1)] += ATTR_REG_INV;
+            n_reg[(2, 2)] += ATTR_REG_INV;
+            n_reg[(3, 3)] += ATTR_REG_INV;
+            let p_attr = if let Some(gamma_a) = n_reg.try_inverse()
+                && let Some(chol) = gamma_a.cholesky()
+            {
+                let z = DVector::from_vec(
+                    (0..4)
+                        .map(|_| {
+                            <rand_distr::StandardNormal as Distribution<f64>>::sample(
+                                &rand_distr::StandardNormal,
+                                &mut local_rng,
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                );
+                let d_attr = chol.l() * z;
+                Attributable {
+                    alpha: attr.alpha + d_attr[0],
+                    delta: attr.delta + d_attr[1],
+                    alpha_dot: attr.alpha_dot + d_attr[2],
+                    delta_dot: attr.delta_dot + d_attr[3],
+                    t_ref: attr.t_ref,
+                    observer: attr.observer.clone(),
+                }
+            } else {
+                attr.clone()
+            };
+
+            let ps = state_from_rho(&p_attr, rho_j, rho_dot_j);
+            (
+                vec![ps.pos[0], ps.pos[1], ps.pos[2], ps.vel[0], ps.vel[1], ps.vel[2]],
+                cell.log_w + rho_j.ln(),
+            )
+        })
+        .collect();
+
+    // Normalize so the maximum log-posterior across draws is 0.
+    let lp_max = results
+        .iter()
+        .map(|(_, lp)| *lp)
+        .fold(f64::NEG_INFINITY, f64::max);
+    if lp_max.is_finite() {
+        for (_, lp) in &mut results {
+            *lp -= lp_max;
+        }
     }
 
-    (draws, log_posteriors)
+    results.into_iter().unzip()
 }
 
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
-/// Generate orbit samples covering the full admissible region from sparse
-/// observations.
+/// Generate orbit samples covering the admissible region from sparse observations.
 ///
-/// Implements JPL Scout (Farnocchia et al. 2015): scans a 2-D grid over
-/// topocentric range `rho` and range-rate `rho_dot`, scores each cell by the
-/// constrained attributable chi^2 (curvature residual after optimizing the
-/// on-sky position and rate), and draws samples from the weighted posterior.
+/// Scans a 2-D grid over topocentric range `rho` and range-rate `rho_dot`, scores
+/// each cell by the constrained attributable chi^2, and draws importance samples
+/// from the weighted posterior.  Designed for short arcs (hours to a few days)
+/// where the posterior is a ridge or multi-modal.  For well-constrained arcs use
+/// [`fit_orbit_mcmc`].
 ///
-/// Designed for **short arcs** (hours to a few days) where the posterior is
-/// a ridge or multi-modal and MCMC cannot explore it efficiently.  For
-/// well-constrained arcs, use [`fit_orbit_mcmc`].
-///
-/// The attributable `(alpha, delta, alpha_dot, delta_dot)` is computed from a sliding 2-day window
-/// swept across the full arc.  Each window position gives an instantaneous
-/// linear motion estimate at its reference epoch; the window where the linear
-/// approximation is most accurate yields the sharpest chi^2 landscape (highest
-/// ESS) and is selected.  All observations are always used for chi^2 scoring
-/// regardless of which window is chosen, so the full arc constrains the orbit.
+/// A short sliding window is swept across the arc to find the attributable epoch
+/// where the linear-motion approximation best fits; all observations are used for
+/// chi^2 scoring regardless of which window is chosen.
 ///
 /// [`fit_orbit_mcmc`]: crate::fit_orbit_mcmc
 ///
 /// # Arguments
-/// * `obs`  -- At least 3 optical observations (any order, sorted internally).
-/// * `num_draws`  -- Number of orbit samples to return.
-/// * `temperature`  -- Likelihood temperature (default 1.0). Higher values give
-///   broader coverage of the admissible region.
-/// * `seed`  -- RNG seed; identical inputs + seed -> identical draws.
+/// * `obs` -- At least 3 optical observations (any order, sorted internally).
+/// * `num_draws` -- Number of orbit samples to return.
+/// * `temperature` -- Likelihood temperature (1.0 = nominal). Higher values broaden coverage.
+/// * `seed` -- RNG seed; identical inputs + seed -> identical draws.
 ///
 /// # Errors
-/// Returns an error if fewer than 3 optical observations are available or
-/// no valid cells survived scoring.
+/// Returns an error if fewer than 3 optical observations are provided or no valid
+/// cells survive scoring.
 pub fn fit_orbit_ranging(
     obs: &[AstrometricObservation],
     num_draws: usize,
@@ -827,15 +775,7 @@ pub fn fit_orbit_ranging(
     seed: u64,
     desig: String,
 ) -> KeteResult<RangingSamples> {
-    // Width of each attributable window (days).  The linear-motion approximation
-    // is valid within this span; beyond it curvature within the window biases
-    // the fitted rate, shifting the chi^2 minimum away from the true orbit.
-    // 0.1 days (~2.4 hours) captures a single tracklet; rates from a ~1-hour
-    // arc are accurate to well below 1% for any solar-system orbit.
     const ATTR_WINDOW_DAYS: f64 = 0.1;
-    // Step between successive window start times.  Using the same value as the
-    // window width (no overlap) keeps the number of windows proportional to the
-    // arc length without redundant computation.
     const WINDOW_STEP_DAYS: f64 = 0.1;
 
     if obs.len() < 3 {
@@ -855,10 +795,7 @@ pub fn fit_orbit_ranging(
     let t0 = sorted[0].epoch().jd;
     let arc = sorted[sorted.len() - 1].epoch().jd - t0;
 
-    // Determine the effective window width: use ATTR_WINDOW_DAYS if it
-    // captures >= 2 observations with sufficient baseline, otherwise widen
-    // to the gap between the first two distinct observation epochs.  This
-    // ensures the attributable can always be computed on sparse datasets.
+    // Widen the window if observations are more spread than ATTR_WINDOW_DAYS.
     let min_obs_gap = sorted
         .windows(2)
         .filter_map(|w| {
@@ -869,7 +806,6 @@ pub fn fit_orbit_ranging(
     let effective_window = ATTR_WINDOW_DAYS.max(min_obs_gap * 1.5);
     let effective_step = WINDOW_STEP_DAYS.max(effective_window / 2.0);
 
-    // Number of windows: at least 1, enough to cover the whole arc.
     let n_windows = if arc <= effective_window {
         1
     } else {
@@ -883,16 +819,9 @@ pub fn fit_orbit_ranging(
         n + 1
     };
 
-    // Score each window and keep the one with the highest peak log-weight
-    // (= lowest minimum chi^2_min across all cells).
-    //
-    // Selecting by max(ESS) is wrong for well-constrained arcs: a biased
-    // attributable produces a wider, shallower posterior (high ESS) while an
-    // accurate attributable produces a narrow, deep posterior (low ESS but the
-    // chi^2 minimum is at the correct orbit).  The window where the attributable
-    // rates are closest to the true instantaneous rates minimises chi^2_min,
-    // giving the highest max(log_w).  That is the window that correctly places
-    // the peak of the posterior at the true orbit.
+    // Select the window with the highest peak log-weight (lowest chi^2_min).
+    // Selecting by ESS is wrong: a biased attributable produces a wider,
+    // shallower posterior with high ESS while the correct one has a sharp peak.
     let mut best_cells: Vec<Cell> = Vec::new();
     let mut best_attr: Option<Attributable> = None;
     let mut best_peak_lw = f64::NEG_INFINITY;
@@ -911,10 +840,8 @@ pub fn fit_orbit_ranging(
         if window_obs.len() < 2 {
             continue;
         }
-        // Require at least 15 minutes of temporal baseline so the rate
-        // estimate is meaningful.
         let w_span = window_obs[window_obs.len() - 1].epoch().jd - window_obs[0].epoch().jd;
-        if w_span < 0.01 {
+        if w_span < 1e-5 {
             continue;
         }
         let Some(attr) = compute_attributable(&window_obs) else {
@@ -954,27 +881,13 @@ pub fn fit_orbit_ranging(
         .fold(f64::NEG_INFINITY, f64::max);
     let mut cells = cells;
     cells.retain(|c| c.log_w > max_lw - LOG_W_FLOOR);
-    // Removing cells changes each cell's neighbours, so recompute sigmas.
-    cells.sort_by(|a, b| {
-        a.rho
-            .partial_cmp(&b.rho)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    compute_log_rho_sigma(&mut cells, temperature);
 
     let initial_ess = ess(&cells);
-    let (mut cells, final_ess) = if initial_ess < TARGET_ESS {
+    let (cells, final_ess) = if initial_ess < TARGET_ESS {
         refine(cells, &sorted, &attr, temperature)
     } else {
         (cells, initial_ess)
     };
-    // Refinement appends new LOV cells; resort and recompute sigmas.
-    cells.sort_by(|a, b| {
-        a.rho
-            .partial_cmp(&b.rho)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    compute_log_rho_sigma(&mut cells, temperature);
 
     let convergence_warning = if final_ess < TARGET_ESS {
         Some(format!(
@@ -986,7 +899,8 @@ pub fn fit_orbit_ranging(
     };
 
     let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
-    let (draws, log_posterior) = draw_samples(&cells, num_draws, &mut rng, &attr);
+    let (draws, log_posterior) =
+        draw_samples(&cells, num_draws, &mut rng, &attr);
 
     Ok(RangingSamples {
         desig,

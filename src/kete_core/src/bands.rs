@@ -2,11 +2,11 @@
 //!
 //! Two types are provided:
 //!
-//! - [`Band`] — a named photometric band, either a known calibrated preset or
+//! - [`Band`] -- a named photometric band, either a known calibrated preset or
 //!   an [`Unknown`](Band::Unknown) label from a data source.  `Copy`, 9 bytes.
 //!   Use this to identify which filter an observation was taken in.
 //!
-//! - [`BandInfo`] — calibration data (wavelength, zero magnitude,
+//! - [`BandInfo`] -- calibration data (wavelength, zero magnitude,
 //!   solar correction, optional color correction).  `Copy`, 32 bytes.
 //!   Use this for flux and magnitude computations.
 //!
@@ -18,7 +18,7 @@ use crate::constants::{
     V_MAG_ZERO, w1_color_correction, w2_color_correction, w3_color_correction, w4_color_correction,
 };
 
-// AB system zero mag in Jy — shared across all AB bands
+// AB system zero mag in Jy -- shared across all AB bands
 const AB_ZERO: f64 = 3631.0;
 // WISE (300 K color-corrected wavelengths and zero mags)
 const WISE_WL: [f64; 4] = [3352.6, 4602.8, 11098.368, 22640.508];
@@ -37,16 +37,16 @@ const WISE_SUN: [f64; 4] = [1.0049, 1.0193, 1.0024, 1.0012];
 pub type ColorCorrFn = fn(f64) -> f64;
 
 // ---------------------------------------------------------------------------
-// BandInfo — anonymous calibration data
+// BandInfo -- anonymous calibration data
 // ---------------------------------------------------------------------------
 
 /// Anonymous photometric band calibration data.
 ///
 /// Carries the physical properties needed for flux and magnitude computations.
-/// Has no name field — use [`Band`] to identify which filter an observation
+/// Has no name field -- use [`Band`] to identify which filter an observation
 /// used, and [`Band::calibration`] to obtain the corresponding `BandInfo`.
 ///
-/// `Copy` — cheap to store in observation vectors.
+/// `Copy` -- cheap to store in observation vectors.
 #[derive(Debug, Clone, Copy)]
 pub struct BandInfo {
     /// Effective central wavelength in nm.
@@ -77,7 +77,7 @@ impl BandInfo {
     }
 
     // -----------------------------------------------------------------------
-    // Preset calibration constants (no names — use Band:: for named access)
+    // Preset calibration constants (no names -- use Band:: for named access)
     // -----------------------------------------------------------------------
 
     /// Johnson V band (551 nm, Vega).
@@ -145,13 +145,13 @@ impl BandInfo {
     /// Gaia DR3 RP band (797 nm).
     pub const GAIA_RP: Self = Self::new(797.0, 1.0, 2554.95, None);
 
-    /// Two NEOS bands (4.7 and 8.0 μm).
+    /// Two NEOS bands (4.7 and 8.0 um).
     pub const NEOS: [Self; 2] = [
         Self::new(4700.0, 1.0, 170.662, None),
         Self::new(8000.0, 1.0, 64.13, None),
     ];
 
-    /// Four WISE bands (W1–W4) with 300 K color corrections.
+    /// Four WISE bands (W1-W4) with 300 K color corrections.
     pub const WISE: [Self; 4] = [
         Self::new(
             WISE_WL[0],
@@ -179,7 +179,7 @@ impl BandInfo {
         ),
     ];
 
-    /// Four Spitzer/IRAC channels (3.6, 4.5, 5.8, 8.0 μm).
+    /// Four Spitzer/IRAC channels (3.6, 4.5, 5.8, 8.0 um).
     pub const IRAC: [Self; 4] = [
         Self::new(3600.0, 1.0, 280.9, None),
         Self::new(4500.0, 1.0, 179.7, None),
@@ -187,14 +187,14 @@ impl BandInfo {
         Self::new(8000.0, 1.0, 64.9, None),
     ];
 
-    /// Three Spitzer/MIPS bands (24, 70, 160 μm).
+    /// Three Spitzer/MIPS bands (24, 70, 160 um).
     pub const MIPS: [Self; 3] = [
         Self::new(23680.0, 1.0, 7.17, None),
         Self::new(71420.0, 1.0, 0.778, None),
         Self::new(155_900.0, 1.0, 0.159, None),
     ];
 
-    /// Two Spitzer/IRS Peak-Up bands (Blue ~15.8 μm, Red ~22.3 μm).
+    /// Two Spitzer/IRS Peak-Up bands (Blue ~15.8 um, Red ~22.3 um).
     pub const IRS_PU: [Self; 2] = [
         Self::new(15800.0, 1.0, 15.6, None),
         Self::new(22300.0, 1.0, 7.80, None),
@@ -211,7 +211,7 @@ impl BandInfo {
 }
 
 // ---------------------------------------------------------------------------
-// Band — named photometric band identifier
+// Band -- named photometric band identifier
 // ---------------------------------------------------------------------------
 
 /// A photometric band identifier.
@@ -224,7 +224,7 @@ impl BandInfo {
 /// canonical label, and [`Band::calibration`] to obtain the physical
 /// calibration data for flux computation.
 ///
-/// `Copy` — fits in a machine word (9 bytes).
+/// `Copy` -- fits in a machine word (9 bytes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Band {
     /// Johnson V band.
@@ -291,35 +291,35 @@ pub enum Band {
     GaiaBP,
     /// Gaia DR3 RP band (797 nm).
     GaiaRP,
-    /// WISE W1 band (3.35 μm).
+    /// WISE W1 band (3.35 um).
     W1,
-    /// WISE W2 band (4.60 μm).
+    /// WISE W2 band (4.60 um).
     W2,
-    /// WISE W3 band (11.56 μm).
+    /// WISE W3 band (11.56 um).
     W3,
-    /// WISE W4 band (22.09 μm).
+    /// WISE W4 band (22.09 um).
     W4,
-    /// NEOS band 1 (4.7 μm).
+    /// NEOS band 1 (4.7 um).
     Neos1,
-    /// NEOS band 2 (8.0 μm).
+    /// NEOS band 2 (8.0 um).
     Neos2,
-    /// Spitzer IRAC channel 1 (3.6 μm).
+    /// Spitzer IRAC channel 1 (3.6 um).
     Irac1,
-    /// Spitzer IRAC channel 2 (4.5 μm).
+    /// Spitzer IRAC channel 2 (4.5 um).
     Irac2,
-    /// Spitzer IRAC channel 3 (5.8 μm).
+    /// Spitzer IRAC channel 3 (5.8 um).
     Irac3,
-    /// Spitzer IRAC channel 4 (8.0 μm).
+    /// Spitzer IRAC channel 4 (8.0 um).
     Irac4,
-    /// Spitzer MIPS 24 μm band.
+    /// Spitzer MIPS 24 um band.
     Mips24,
-    /// Spitzer MIPS 70 μm band.
+    /// Spitzer MIPS 70 um band.
     Mips70,
-    /// Spitzer MIPS 160 μm band.
+    /// Spitzer MIPS 160 um band.
     Mips160,
-    /// Spitzer IRS Peak-Up Blue (~15.8 μm).
+    /// Spitzer IRS Peak-Up Blue (~15.8 um).
     IrsPuBlue,
-    /// Spitzer IRS Peak-Up Red (~22.3 μm).
+    /// Spitzer IRS Peak-Up Red (~22.3 um).
     IrsPuRed,
     /// Band with no standard calibration. Carries the original label as
     /// zero-padded ASCII bytes; use [`Band::name`] to read it back.
@@ -331,7 +331,7 @@ impl Band {
     // Preset group arrays
     // -----------------------------------------------------------------------
 
-    /// Four WISE bands in order W1–W4.
+    /// Four WISE bands in order W1-W4.
     pub const WISE: [Self; 4] = [Self::W1, Self::W2, Self::W3, Self::W4];
     /// Two NEOS bands.
     pub const NEOS: [Self; 2] = [Self::Neos1, Self::Neos2];
@@ -352,13 +352,13 @@ impl Band {
     /// Case distinguishes photometric systems: `"r"` = SDSS r, `"R"` = Cousins R.
     /// Unrecognised names produce `Band::Unknown(...)`.
     ///
-    /// Recognised names — Johnson-Cousins: `V`, `U`, `B`, `R`, `I`;
+    /// Recognised names -- Johnson-Cousins: `V`, `U`, `B`, `R`, `I`;
     /// 2MASS: `J`, `H`, `Ks` (also `K`); Y band: `Y`;
     /// SDSS: `g`, `r`, `i`, `z`;
     /// Pan-STARRS: `w`, `y`; ATLAS: `o`, `c`;
     /// Gaia: `G` (also `Gaia_G`), `Gb` (also `Gaia_BP`), `Gr` (also `Gaia_RP`);
-    /// WISE: `W1`–`W4`; NEOS: `NEOS1`–`NEOS2`;
-    /// Spitzer IRAC: `IRAC1`–`IRAC4`; Spitzer MIPS: `MIPS24`/`MIPS70`/`MIPS160`;
+    /// WISE: `W1`-`W4`; NEOS: `NEOS1`-`NEOS2`;
+    /// Spitzer IRAC: `IRAC1`-`IRAC4`; Spitzer MIPS: `MIPS24`/`MIPS70`/`MIPS160`;
     /// Spitzer IRS Peak-Up: `IRS Peak-Up Blue`, `IRS Peak-Up Red`.
     ///
     /// MPC codes `u`, `C`, `L`, `W` have no calibration and resolve to `Unknown`.
