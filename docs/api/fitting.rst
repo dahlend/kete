@@ -1,6 +1,6 @@
-Fitting
-=======
+Orbit Fitting
+=============
 
-.. automodule:: kete.fitting
+.. automodule:: kete.orbit_fitting
    :members:
    :inherited-members:

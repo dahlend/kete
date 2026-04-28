@@ -72,8 +72,6 @@ const LOG_W_FLOOR: f64 = 50.0;
 /// SSB Equatorial frame, at `epoch`.
 #[derive(Debug, Clone)]
 pub struct RangingSamples {
-    /// Object designator.
-    pub desig: String,
     /// Reference epoch (JD TDB)  -- light-time-corrected epoch of the attributable.
     pub epoch: f64,
     /// Orbit draws: `[num_draws][6]`, SSB Equatorial AU/AU*day.
@@ -773,7 +771,6 @@ pub fn fit_orbit_ranging(
     num_draws: usize,
     temperature: f64,
     seed: u64,
-    desig: String,
 ) -> KeteResult<RangingSamples> {
     const ATTR_WINDOW_DAYS: f64 = 0.1;
     const WINDOW_STEP_DAYS: f64 = 0.1;
@@ -902,7 +899,6 @@ pub fn fit_orbit_ranging(
     let (draws, log_posterior) = draw_samples(&cells, num_draws, &mut rng, &attr);
 
     Ok(RangingSamples {
-        desig,
         epoch: attr.t_ref,
         draws,
         log_posterior,
@@ -1048,7 +1044,7 @@ mod tests {
         let obs = synth_obs(&obj, &epochs, 1.0_f64.to_radians() / 3600.0);
         assert!(obs.len() >= 3);
 
-        let result = fit_orbit_ranging(&obs, 200, 10.0, 42, String::new());
+        let result = fit_orbit_ranging(&obs, 200, 10.0, 42);
         assert!(result.is_ok(), "ranging failed: {:?}", result.err());
         let samples = result.unwrap();
         assert!(!samples.draws.is_empty());
@@ -1090,7 +1086,7 @@ mod tests {
             2_460_000.5 + 0.06,
         ];
         let obs = synth_obs(&obj, &epochs, 1.0_f64.to_radians() / 3600.0);
-        let samples = fit_orbit_ranging(&obs, 50, 10.0, 7, String::new()).unwrap();
+        let samples = fit_orbit_ranging(&obs, 50, 10.0, 7).unwrap();
         for draw in &samples.draws {
             let dr = (draw[0] * draw[0] + draw[1] * draw[1] + draw[2] * draw[2]).sqrt();
             assert!(dr > 0.001 && dr < 1000.0, "draw distance {dr} out of range");
@@ -1115,8 +1111,8 @@ mod tests {
             2_460_000.5 + 0.06,
         ];
         let obs = synth_obs(&obj, &epochs, 1.0_f64.to_radians() / 3600.0);
-        let a = fit_orbit_ranging(&obs, 20, 10.0, 99, String::new()).unwrap();
-        let b = fit_orbit_ranging(&obs, 20, 10.0, 99, String::new()).unwrap();
+        let a = fit_orbit_ranging(&obs, 20, 10.0, 99).unwrap();
+        let b = fit_orbit_ranging(&obs, 20, 10.0, 99).unwrap();
         assert_eq!(a.draws, b.draws);
         assert_eq!(a.log_posterior, b.log_posterior);
     }
@@ -1139,7 +1135,7 @@ mod tests {
             2_460_000.5 + 0.06,
         ];
         let obs = synth_obs(&obj, &epochs, 1.0_f64.to_radians() / 3600.0);
-        let samples = fit_orbit_ranging(&obs, 50, 10.0, 1, String::new()).unwrap();
+        let samples = fit_orbit_ranging(&obs, 50, 10.0, 1).unwrap();
         assert!(
             samples.effective_sample_size > 0.0,
             "ESS = {:.1}",
@@ -1162,7 +1158,7 @@ mod tests {
         let epochs: Vec<f64> = (0..6).map(|i| 2_460_000.5 + f64::from(i) * 0.6).collect();
         let obs = synth_obs(&obj, &epochs, 1.0_f64.to_radians() / 3600.0);
 
-        let samples = fit_orbit_ranging(&obs, 100, 1.0, 42, String::new()).unwrap();
+        let samples = fit_orbit_ranging(&obs, 100, 1.0, 42).unwrap();
         let min_lp = samples
             .log_posterior
             .iter()

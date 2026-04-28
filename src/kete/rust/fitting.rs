@@ -1074,12 +1074,6 @@ pub struct PyRangingSamples(pub RangingSamples);
 
 #[pymethods]
 impl PyRangingSamples {
-    /// Object designator.
-    #[getter]
-    fn desig(&self) -> &str {
-        &self.0.desig
-    }
-
     /// Reference epoch (JD TDB).
     #[getter]
     fn epoch(&self) -> f64 {
@@ -1090,7 +1084,6 @@ impl PyRangingSamples {
     #[getter]
     fn draws(&self) -> PyResult<Vec<PyState>> {
         let epoch_jd = self.0.epoch;
-        let desig = self.0.desig.clone();
         let spk = LOADED_SPK.try_read().map_err(Error::from)?;
         let sun_state: State<Equatorial> =
             spk.try_get_state_with_center(10, Time::new(epoch_jd), 0)?;
@@ -1109,7 +1102,7 @@ impl PyRangingSamples {
                     d[5] - sun_state.vel[2],
                 ];
                 let st: State<Equatorial> = State::new(
-                    Desig::Name(desig.clone()),
+                    Desig::Empty,
                     Time::new(epoch_jd),
                     pos.into(),
                     vel.into(),
@@ -1150,8 +1143,7 @@ impl PyRangingSamples {
 
     fn __repr__(&self) -> String {
         format!(
-            "RangingSamples(desig={}, draws={}, ess={:.1}, epoch={:.6})",
-            self.0.desig,
+            "RangingSamples(draws={}, ess={:.1}, epoch={:.6})",
             self.0.draws.len(),
             self.0.effective_sample_size,
             self.0.epoch,
@@ -1182,29 +1174,20 @@ impl PyRangingSamples {
 ///     JPL Scout.
 /// seed : int
 ///     RNG seed for reproducibility. Default 0.
-/// desig : str, optional
-///     Object designator stored in the result. Default empty string.
 ///
 /// Returns
 /// -------
 /// RangingSamples
 #[pyfunction]
-#[pyo3(name = "fit_orbit_ranging", signature = (observations, num_draws=1000, temperature=10.0, seed=0, desig=None))]
+#[pyo3(name = "fit_orbit_ranging", signature = (observations, num_draws=1000, temperature=10.0, seed=0))]
 pub fn fit_orbit_ranging_py(
     observations: Vec<PyObservation>,
     num_draws: usize,
     temperature: f64,
     seed: u64,
-    desig: Option<String>,
 ) -> PyResult<PyRangingSamples> {
     let obs: Vec<AstrometricObservation> = observations.into_iter().map(|o| o.obs).collect();
-    let result = fit_orbit_ranging(
-        &obs,
-        num_draws,
-        temperature,
-        seed,
-        desig.unwrap_or_default(),
-    )?;
+    let result = fit_orbit_ranging(&obs, num_draws, temperature, seed)?;
     Ok(PyRangingSamples(result))
 }
 
