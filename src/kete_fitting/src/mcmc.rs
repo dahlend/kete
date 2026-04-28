@@ -773,8 +773,8 @@ fn run_single_chain(
     let mut draws = Vec::with_capacity(num_draws);
     let mut divergent = Vec::with_capacity(num_draws);
     let mut log_posterior = Vec::with_capacity(num_draws);
-    let mut tune_steps = 0usize;
-    let mut tune_divergent = 0usize;
+    let mut tune_steps = 0_usize;
+    let mut tune_divergent = 0_usize;
     let bail_at = num_tune / 2;
 
     for _ in 0..total_draws {
