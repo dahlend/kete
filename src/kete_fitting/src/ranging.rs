@@ -457,9 +457,7 @@ fn score_patch(
                 let v_perp = obs_helio_vel + los_dot * rho;
                 let v_along = v_perp[0] * los[0] + v_perp[1] * los[1] + v_perp[2] * los[2];
                 let v_trans_sq = (v_perp.norm_squared() - v_along * v_along).max(0.0);
-                let half = (ENERGY_MULT * GMS / r_helio - v_trans_sq)
-                    .max(0.0)
-                    .sqrt();
+                let half = (ENERGY_MULT * GMS / r_helio - v_trans_sq).max(0.0).sqrt();
                 let padded = (RHO_DOT_PAD * half).min(RHO_DOT_ABS_MAX);
                 (-v_along - padded, -v_along + padded)
             });
@@ -721,7 +719,9 @@ fn draw_samples(
 
             let ps = state_from_rho(&p_attr, rho_j, rho_dot_j);
             (
-                vec![ps.pos[0], ps.pos[1], ps.pos[2], ps.vel[0], ps.vel[1], ps.vel[2]],
+                vec![
+                    ps.pos[0], ps.pos[1], ps.pos[2], ps.vel[0], ps.vel[1], ps.vel[2],
+                ],
                 cell.log_w + rho_j.ln(),
             )
         })
@@ -899,8 +899,7 @@ pub fn fit_orbit_ranging(
     };
 
     let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
-    let (draws, log_posterior) =
-        draw_samples(&cells, num_draws, &mut rng, &attr);
+    let (draws, log_posterior) = draw_samples(&cells, num_draws, &mut rng, &attr);
 
     Ok(RangingSamples {
         desig,

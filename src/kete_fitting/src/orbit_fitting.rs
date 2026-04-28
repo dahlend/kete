@@ -363,11 +363,8 @@ fn fit_orbit_raw(
     }
 
     // Non-grav requested.  Run gravity-only first to establish a stable
-    // starting point and a baseline RMS, then run the NG pass on the
-    // gravity-determined rejection mask.  A regression guard at the end
-    // returns the gravity-only fit if NG fails to improve RMS -- without
-    // this guard, a weakly-constrained NG fit will silently drift away
-    // from the gravity optimum and degrade the reported solution.
+    // starting point and a gravity-determined rejection mask, then run
+    // the NG pass on that mask.
     let Ok(grav_fit) = solve_with_rejection_adaptive(
         state,
         sorted,
@@ -393,12 +390,9 @@ fn fit_orbit_raw(
         );
     };
 
-    let Ok(grav_state) = State::<Equatorial, SSB>::try_from(grav_fit.uncertain_state.state.clone())
-    else {
-        return Ok(grav_fit);
-    };
+    let grav_state = State::<Equatorial, SSB>::try_from(grav_fit.uncertain_state.state.clone())?;
 
-    let Ok(ng_fit) = iterate_to_convergence(
+    iterate_to_convergence(
         &grav_state,
         sorted,
         &grav_fit.included,
@@ -406,33 +400,7 @@ fn fit_orbit_raw(
         ng,
         max_iter,
         tol,
-    ) else {
-        return Ok(grav_fit);
-    };
-
-    // Compare both RMSes with n_params = 6 so the extra NG parameter
-    // count does not artificially inflate the NG RMS through the dof
-    // divisor.  This is the right apples-to-apples comparison of fit
-    // quality.
-    let cmp_n_params = 6;
-    let grav_rms = weighted_rms(
-        &grav_fit.residuals,
-        &grav_fit.observations,
-        &grav_fit.included,
-        cmp_n_params,
-    );
-    let ng_rms = weighted_rms(
-        &ng_fit.residuals,
-        &ng_fit.observations,
-        &ng_fit.included,
-        cmp_n_params,
-    );
-
-    if ng_fit.converged && ng_rms.is_finite() && ng_rms <= grav_rms {
-        Ok(ng_fit)
-    } else {
-        Ok(grav_fit)
-    }
+    )
 }
 
 /// Converge + iteratively reject/recover outliers on a subset.
@@ -1502,11 +1470,9 @@ fn scaled_pseudo_inverse(n_mat: &DMatrix<f64>) -> KeteResult<DMatrix<f64>> {
 ///
 /// Position is limited to 0.5 AU and velocity to 0.005 AU/day per
 /// iteration.  Non-grav parameters are not capped here: LM damping
-/// (which ramps lambda on rejected steps) and the regression guard in
-/// `fit_orbit` (which discards an NG fit that makes RMS worse than the
-/// gravity-only baseline) together keep NG behavior under control
-/// without a per-iteration step cap that would slow convergence in
-/// well-conditioned NG cases.
+/// (which ramps lambda on rejected steps) keeps NG behavior under
+/// control without a per-iteration step cap that would slow convergence
+/// in well-conditioned NG cases.
 fn limit_correction(mut dx: DVector<f64>) -> DVector<f64> {
     // AU
     let pos_norm = (dx[0] * dx[0] + dx[1] * dx[1] + dx[2] * dx[2]).sqrt();
@@ -2224,31 +2190,21 @@ mod tests {
         );
     }
 
-    /// Regression guard: when the truth has no non-grav signal and the
-    /// caller supplies `Some(JplComet{0,0,0})`, the fitter must not return
-    /// an NG solution with higher RMS than the gravity-only fit.  Without
-    /// the guard in `fit_orbit`, the weakly-constrained A terms drift and
-    /// the returned fit is strictly worse than gravity-only.
+    /// When non-grav is requested but the truth has no non-grav signal, the
+    /// NG fit is always returned (``non_grav`` field populated), even if the
+    /// unconstrained A terms drift slightly.
     #[test]
-    fn test_ng_regression_guard_falls_back_when_ng_hurts() {
+    fn test_ng_always_returned_when_requested() {
         ensure_test_spk();
-        // Gravity-only truth (no non-grav signal).
         let r = 1.5;
         let v = (GMS / r).sqrt();
         let true_state = make_state([r, 0.0, 0.0], [0.0, v, 0.0], 2460000.5);
 
-        // Moderate arc, tight observations.
         let epochs: Vec<f64> = (0..15).map(|i| 2460000.5 + f64::from(i) * 6.0).collect();
-        let sigma = 1e-6;
-        let observations = synth_observations(&true_state, &epochs, earth_observer, sigma, None);
+        let observations = synth_observations(&true_state, &epochs, earth_observer, 1e-6, None);
 
-        // Gravity-only fit for a baseline RMS.
-        let fit_grav =
-            fit_orbit(&true_state, &observations, false, None, 30, 1e-10, 9.0, 0).unwrap();
-
-        // Fit with NG requested but initial A terms all zero.
         let init_ng = NonGravModel::new_jpl_comet_default(0.0, 0.0, 0.0);
-        let fit_ng_requested = fit_orbit(
+        let fit = fit_orbit(
             &true_state,
             &observations,
             false,
@@ -2260,36 +2216,15 @@ mod tests {
         )
         .unwrap();
 
-        // The regression guard compares raw weighted RMS with n_params = 6
-        // on both sides.  The returned fit may be either the NG fit (if NG
-        // actually helped) or the gravity-only fit (if it did not).  Either
-        // way, its raw weighted RMS must be <= the gravity-only baseline.
-        let cmp_n_params = 6;
-        let rms_grav = weighted_rms(
-            &fit_grav.residuals,
-            &fit_grav.observations,
-            &fit_grav.included,
-            cmp_n_params,
-        );
-        let rms_ng_requested = weighted_rms(
-            &fit_ng_requested.residuals,
-            &fit_ng_requested.observations,
-            &fit_ng_requested.included,
-            cmp_n_params,
-        );
         assert!(
-            rms_ng_requested <= rms_grav * 1.0 + 1e-12,
-            "Regression guard failed: NG-requested RMS {rms_ng_requested:.6e} > \
-             gravity-only RMS {rms_grav:.6e}"
+            fit.uncertain_state.non_grav.is_some(),
+            "non_grav should always be returned when requested"
         );
     }
 
-    /// When the truth has a real non-grav signal and the arc is long
-    /// enough to constrain it, the guard should still accept the NG fit
-    /// (because NG genuinely improves the fit).  This ensures Phase 1 does
-    /// not regress the happy path for real NG objects.
+    /// When the truth has a real non-grav signal, the fitter should recover it.
     #[test]
-    fn test_ng_regression_guard_keeps_ng_when_it_helps() {
+    fn test_ng_recovers_true_signal() {
         ensure_test_spk();
         // Truth has a tangential non-grav term.
         let r = 1.5;
