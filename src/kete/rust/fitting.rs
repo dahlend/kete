@@ -7,7 +7,8 @@ use kete_core::forces::NonGravModel;
 use kete_core::frames::{Equatorial, Vector};
 use kete_core::prelude::*;
 use kete_fitting::{
-    AstrometricObservation, OrbitFit, OrbitSamples, fit_orbit, fit_orbit_mcmc, lambert,
+    AstrometricObservation, OrbitFit, OrbitSamples, RangingSamples, fit_orbit, fit_orbit_mcmc,
+    fit_orbit_ranging, lambert,
 };
 use kete_spice::prelude::LOADED_SPK;
 use pyo3::{PyResult, pyclass, pyfunction, pymethods};
@@ -1062,6 +1063,148 @@ pub fn fit_orbit_mcmc_py(
         target_accept,
     )?;
     Ok(PyOrbitSamples(result))
+}
+
+/// Orbit samples from the weighted ranging grid.
+///
+/// Returned by :func:`fit_orbit_ranging`.
+#[pyclass(frozen, module = "kete._core", name = "RangingSamples", from_py_object)]
+#[derive(Debug, Clone)]
+pub struct PyRangingSamples(pub RangingSamples);
+
+#[pymethods]
+impl PyRangingSamples {
+    /// Object designator.
+    #[getter]
+    fn desig(&self) -> &str {
+        &self.0.desig
+    }
+
+    /// Reference epoch (JD TDB).
+    #[getter]
+    fn epoch(&self) -> f64 {
+        self.0.epoch
+    }
+
+    /// Sampled orbits as :class:`~kete.State` objects (Sun-centered Ecliptic).
+    #[getter]
+    fn draws(&self) -> PyResult<Vec<PyState>> {
+        let epoch_jd = self.0.epoch;
+        let desig = self.0.desig.clone();
+        let spk = LOADED_SPK.try_read().map_err(Error::from)?;
+        let sun_state: State<Equatorial> =
+            spk.try_get_state_with_center(10, Time::new(epoch_jd), 0)?;
+        self.0
+            .draws
+            .iter()
+            .map(|d| {
+                let pos = [
+                    d[0] - sun_state.pos[0],
+                    d[1] - sun_state.pos[1],
+                    d[2] - sun_state.pos[2],
+                ];
+                let vel = [
+                    d[3] - sun_state.vel[0],
+                    d[4] - sun_state.vel[1],
+                    d[5] - sun_state.vel[2],
+                ];
+                let st: State<Equatorial> = State::new(
+                    Desig::Name(desig.clone()),
+                    Time::new(epoch_jd),
+                    pos.into(),
+                    vel.into(),
+                    10,
+                );
+                Ok(st.into())
+            })
+            .collect()
+    }
+
+    /// Raw draws as `[x, y, z, vx, vy, vz]` in AU/AU·day, SSB Equatorial.
+    #[getter]
+    fn raw_draws(&self) -> Vec<Vec<f64>> {
+        self.0.draws.clone()
+    }
+
+    /// Normalized log-posterior weight per draw.
+    #[getter]
+    fn log_posterior(&self) -> Vec<f64> {
+        self.0.log_posterior.clone()
+    }
+
+    /// Effective sample size of the grid before drawing.
+    #[getter]
+    fn effective_sample_size(&self) -> f64 {
+        self.0.effective_sample_size
+    }
+
+    /// Warning message if ESS < 50, else ``None``.
+    #[getter]
+    fn convergence_warning(&self) -> Option<&str> {
+        self.0.convergence_warning.as_deref()
+    }
+
+    fn __len__(&self) -> usize {
+        self.0.draws.len()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RangingSamples(desig={}, draws={}, ess={:.1}, epoch={:.6})",
+            self.0.desig,
+            self.0.draws.len(),
+            self.0.effective_sample_size,
+            self.0.epoch,
+        )
+    }
+}
+
+/// Generate orbit samples covering the full admissible region from sparse
+/// observations.
+///
+/// Scans a grid over topocentric distances at a selected pair of observations,
+/// scores each cell via Gaussian chi², adaptively refines in high-probability
+/// regions, and draws samples with within-cell Gaussian perturbation.
+///
+/// This is the appropriate tool when the arc is short and MCMC cannot explore
+/// the ridge, or when multiple orbital families may be consistent with the data.
+///
+/// Parameters
+/// ----------
+/// observations : list
+///     At least 2 :class:`~kete.fitting.Observation` objects.
+/// num_draws : int
+///     Number of orbit samples to return. Default 1000.
+/// temperature : float
+///     Likelihood temperature. Default 1.0 gives the true Bayesian posterior.
+///     Higher values broaden the distribution for short arcs where the
+///     posterior is a narrow ridge.
+/// seed : int
+///     RNG seed for reproducibility. Default 0.
+/// desig : str, optional
+///     Object designator stored in the result. Default empty string.
+///
+/// Returns
+/// -------
+/// RangingSamples
+#[pyfunction]
+#[pyo3(name = "fit_orbit_ranging", signature = (observations, num_draws=1000, temperature=1.0, seed=0, desig=None))]
+pub fn fit_orbit_ranging_py(
+    observations: Vec<PyObservation>,
+    num_draws: usize,
+    temperature: f64,
+    seed: u64,
+    desig: Option<String>,
+) -> PyResult<PyRangingSamples> {
+    let obs: Vec<AstrometricObservation> = observations.into_iter().map(|o| o.obs).collect();
+    let result = fit_orbit_ranging(
+        &obs,
+        num_draws,
+        temperature,
+        seed,
+        desig.unwrap_or_default(),
+    )?;
+    Ok(PyRangingSamples(result))
 }
 
 /// If available, return the MPC observatory uncertainties.
