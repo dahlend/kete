@@ -58,9 +58,9 @@ pub fn pck_earth_frame_py(
 
     let frame = pcks.try_get_orientation(3000, jd)?;
 
-    let (pos, vel) = frame.to_equatorial(pos.into(), [0.0, 0.0, 0.0].into())?;
+    let (pos, vel) = frame.to_equatorial(pos, [0.0, 0.0, 0.0])?;
 
-    let mut state: State<Equatorial> = State::new(desig, jd, pos.into(), vel.into(), 399);
+    let mut state: State<Equatorial> = State::new(desig, jd, pos, vel, 399);
 
     spks.try_change_center(&mut state, new_center)?;
 
@@ -92,7 +92,7 @@ pub fn pck_state_to_earth(state: PyState) -> PyResult<(f64, f64, f64)> {
         .raw;
     let frame = pcks.try_get_orientation(3000, state.epoch)?;
 
-    let (pos, _) = frame.from_equatorial(state.pos.into(), state.vel.into())?;
+    let (pos, _) = frame.from_equatorial(state.pos, state.vel)?;
     let [x, y, z] = pos.into();
     let (lat, lon, height) = ecef_to_geodetic_lat_lon(
         x * constants::AU_KM,

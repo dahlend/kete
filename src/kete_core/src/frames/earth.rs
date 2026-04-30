@@ -287,7 +287,7 @@ pub fn approx_earth_pos_to_ecliptic(
 
     let rotation = earth_precession_rotation(time);
 
-    let (pos, vel) = rotation.to_equatorial(pos, [0.0; 3].into())?;
+    let (pos, vel) = rotation.to_equatorial(pos, [0.0; 3])?;
 
     Ok(State::<Equatorial>::new(desig, time.tdb(), pos, vel, 399).into_frame())
 }

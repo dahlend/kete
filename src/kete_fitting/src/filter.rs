@@ -67,7 +67,10 @@ fn n_nongrav_params(ng: Option<&NonGravModel>) -> usize {
 fn state_to_vec<C: CenterBody>(
     state: &State<Equatorial, C>,
     non_grav: Option<&NonGravModel>,
-) -> DVector<f64> {
+) -> DVector<f64>
+where
+    kete_core::frames::DynCenter: From<C>,
+{
     let np = n_nongrav_params(non_grav);
     let dim = 6 + np;
     let mut xv = DVector::zeros(dim);
@@ -91,7 +94,10 @@ fn vec_to_state<C: CenterBody + Clone>(
     xv: &DVector<f64>,
     template: &State<Equatorial, C>,
     non_grav: &mut Option<NonGravModel>,
-) -> State<Equatorial, C> {
+) -> State<Equatorial, C>
+where
+    kete_core::frames::DynCenter: From<C>,
+{
     let mut state = template.clone();
     state.pos = [xv[0], xv[1], xv[2]].into();
     state.vel = [xv[3], xv[4], xv[5]].into();
