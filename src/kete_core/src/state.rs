@@ -67,6 +67,7 @@ pub struct State<T, C = DynCenter>
 where
     T: InertialFrame,
     C: CenterBody,
+    DynCenter: From<C>,
 {
     /// Designation number which corresponds to the object.
     pub desig: Desig,
@@ -84,7 +85,10 @@ where
     pub center: C,
 }
 
-impl<T: InertialFrame, C: CenterBody> State<T, C> {
+impl<T: InertialFrame, C: CenterBody> State<T, C>
+where
+    DynCenter: From<C>,
+{
     /// NAIF id of the center body.
     #[inline(always)]
     pub fn center_id(&self) -> i32 {
@@ -112,15 +116,25 @@ impl<T: InertialFrame, C: CenterBody> State<T, C> {
     }
 }
 
-impl<T: InertialFrame> State<T, DynCenter> {
-    /// Construct a new State object with a runtime-determined center.
+impl<T: InertialFrame, C: CenterBody> State<T, C>
+where
+    DynCenter: From<C>,
+{
+    /// Construct a new State object.
+    ///
+    /// # Arguments
+    /// * `desig` - Designation number which corresponds to the object.
+    /// * `epoch` - Epoch of the object's state in TDB scaled time.
+    /// * `pos` - Position of the object with respect to the center body, units of AU.
+    /// * `vel` - Velocity of the object with respect to the center body, units of AU/Day.
+    /// * `center` - Central body, must implement [`CenterBody`].
     #[inline(always)]
     pub fn new(
         desig: Desig,
         epoch: Time<TDB>,
         pos: Vector<T>,
         vel: Vector<T>,
-        center: impl Into<DynCenter>,
+        center: impl Into<C>,
     ) -> Self {
         Self {
             desig,
@@ -136,10 +150,18 @@ impl<T: InertialFrame> State<T, DynCenter> {
     /// This is primarily useful as a place holder when propagation has failed
     /// and the object needs to be recorded still.
     #[inline(always)]
-    pub fn new_nan(desig: Desig, epoch: Time<TDB>, center: impl Into<DynCenter>) -> Self {
-        Self::new(desig, epoch, Vector::new_nan(), Vector::new_nan(), center)
+    pub fn new_nan(desig: Desig, epoch: Time<TDB>, center: impl Into<C>) -> Self {
+        Self::new(
+            desig,
+            epoch,
+            Vector::new_nan(),
+            Vector::new_nan(),
+            center.into(),
+        )
     }
+}
 
+impl<T: InertialFrame> State<T, DynCenter> {
     /// Trade the center ID and ID values, and flip the direction of the position and
     /// velocity vectors.
     #[inline(always)]
