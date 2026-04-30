@@ -3,6 +3,7 @@
 //! These functions provide SPK-dependent visibility checking for FOV types.
 //! The `FovLike` trait and FOV types remain in `kete_core`.
 
+use kete_core::constants::C_AU_PER_DAY_INV;
 use kete_core::fov::{Contains, FovLike, check_linear, check_two_body};
 use kete_core::frames::{Equatorial, SunCenter};
 use kete_core::kepler::light_time_correct;
@@ -58,11 +59,29 @@ pub fn check_spks<F: FovLike>(fov: &F, obj_ids: &[i32]) -> Vec<Option<Simultaneo
     let states: Vec<_> = obj_ids
         .into_par_iter()
         .filter_map(|&obj_id| {
+            // Load the state at the observation epoch for an initial position estimate.
             let state = spk.try_get_state_with_center(obj_id, obs.epoch, 10).ok()?;
-            let sun_state: State<Equatorial, SunCenter> = state.try_into().ok()?;
-            match check_two_body(fov, &sun_state) {
-                Ok((idx, Contains::Inside, state)) => Some((idx, state.into())),
-                _ => None,
+            let mut corrected: State<Equatorial, SunCenter> = state.try_into().ok()?;
+            // Light-time correct by querying the SPK at the emission epoch directly.
+            // This handles all objects (including the Sun at r0=0) without two-body
+            // propagation, and is more accurate for objects with SPK coverage.
+            let mut tau = 0.0_f64;
+            for _ in 0..3 {
+                let new_tau = (corrected.pos - obs.pos).norm() * C_AU_PER_DAY_INV;
+                if (new_tau - tau).abs() < 1e-12 {
+                    break;
+                }
+                tau = new_tau;
+                let state = spk
+                    .try_get_state_with_center(obj_id, obs.epoch - tau, 10)
+                    .ok()?;
+                corrected = state.try_into().ok()?;
+            }
+            let rel_pos = corrected.pos - obs.pos;
+            let (idx, contains) = fov.contains(&rel_pos);
+            match contains {
+                Contains::Inside => Some((idx, corrected.into())),
+                Contains::Outside(_) => None,
             }
         })
         .collect();
@@ -155,7 +174,7 @@ pub fn check_visible<F: FovLike>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kete_core::constants::{self, GMS_SQRT};
+    use kete_core::constants::GMS_SQRT;
     use kete_core::desigs::Desig;
     use kete_core::fov::{GenericRectangle, OmniDirectional};
     use kete_core::state::State;
@@ -243,10 +262,7 @@ mod tests {
             assert!(two_body.is_ok());
             let (_, _, two_body) = two_body.unwrap();
             let dist = (two_body.pos - observer.pos).norm();
-            assert!(
-                (observer.epoch.jd - two_body.epoch.jd - dist * constants::C_AU_PER_DAY_INV).abs()
-                    < 1e-6
-            );
+            assert!((observer.epoch.jd - two_body.epoch.jd - dist * C_AU_PER_DAY_INV).abs() < 1e-6);
             let exact = spk
                 .try_get_state_with_center(20000042, two_body.epoch, 10)
                 .unwrap();
@@ -257,10 +273,7 @@ mod tests {
             let n_body = check_n_body(&fov, &asteroid, false);
             assert!(n_body.is_ok());
             let (_, _, n_body) = n_body.unwrap();
-            assert!(
-                (observer.epoch.jd - n_body.epoch.jd - dist * constants::C_AU_PER_DAY_INV).abs()
-                    < 1e-6
-            );
+            assert!((observer.epoch.jd - n_body.epoch.jd - dist * C_AU_PER_DAY_INV).abs() < 1e-6);
             let exact = spk
                 .try_get_state_with_center(20000042, n_body.epoch, 10)
                 .unwrap();
@@ -272,8 +285,7 @@ mod tests {
             assert!(spk_check.is_some());
             let spk_check = &spk_check.as_ref().unwrap().states[0];
             assert!(
-                (observer.epoch.jd - spk_check.epoch.jd - dist * constants::C_AU_PER_DAY_INV).abs()
-                    < 1e-6
+                (observer.epoch.jd - spk_check.epoch.jd - dist * C_AU_PER_DAY_INV).abs() < 1e-6
             );
             let exact = spk
                 .try_get_state_with_center(20000042, spk_check.epoch, 10)
@@ -288,5 +300,15 @@ mod tests {
                     .is_some()
             );
         }
+
+        // The Sun (NAIF 10) is at the origin of the sun-centered frame; check_spks
+        // previously silently dropped it because light_time_correct called
+        // propagate_two_body with r0=0, causing beta=inf and a NaN dt.
+        let sun_fov = OmniDirectional::new(observer.clone());
+        let sun_check = &check_spks(&sun_fov, &[10])[0];
+        assert!(sun_check.is_some());
+        let sun_state = &sun_check.as_ref().unwrap().states[0];
+        // The Sun is always at the solar center.
+        assert!(sun_state.pos.norm() < 1e-12);
     }
 }
