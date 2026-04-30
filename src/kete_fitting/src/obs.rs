@@ -133,8 +133,7 @@ fn station_state_at(
     let frame = pcks.try_get_orientation(3000, epoch)?;
     let (pos_eq, vel_eq) = frame.to_equatorial(pos_ecef_au, Vector3::zeros())?;
 
-    let geocentric =
-        State::<Equatorial>::new(Desig::Empty, epoch, pos_eq.into(), vel_eq.into(), 399);
+    let geocentric = State::<Equatorial>::new(Desig::Empty, epoch, pos_eq, vel_eq, 399);
     let spks = LOADED_SPK.try_read()?;
     spks.try_to_ssb(geocentric)
 }

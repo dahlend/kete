@@ -67,6 +67,7 @@ pub struct State<T, C = DynCenter>
 where
     T: InertialFrame,
     C: CenterBody,
+    DynCenter: From<C>,
 {
     /// Designation number which corresponds to the object.
     pub desig: Desig,
@@ -84,7 +85,10 @@ where
     pub center: C,
 }
 
-impl<T: InertialFrame, C: CenterBody> State<T, C> {
+impl<T: InertialFrame, C: CenterBody> State<T, C>
+where
+    DynCenter: From<C>,
+{
     /// NAIF id of the center body.
     #[inline(always)]
     pub fn center_id(&self) -> i32 {
@@ -112,21 +116,31 @@ impl<T: InertialFrame, C: CenterBody> State<T, C> {
     }
 }
 
-impl<T: InertialFrame> State<T, DynCenter> {
-    /// Construct a new State object with a runtime-determined center.
+impl<T: InertialFrame, C: CenterBody> State<T, C>
+where
+    DynCenter: From<C>,
+{
+    /// Construct a new State object.
+    ///
+    /// # Arguments
+    /// * `desig` - Designation number which corresponds to the object.
+    /// * `epoch` - Epoch of the object's state in TDB scaled time.
+    /// * `pos` - Position of the object with respect to the center body, units of AU.
+    /// * `vel` - Velocity of the object with respect to the center body, units of AU/Day.
+    /// * `center` - Central body, must implement [`CenterBody`].
     #[inline(always)]
     pub fn new(
-        desig: Desig,
-        epoch: Time<TDB>,
-        pos: Vector<T>,
-        vel: Vector<T>,
-        center: impl Into<DynCenter>,
+        desig: impl Into<Desig>,
+        epoch: impl Into<Time<TDB>>,
+        pos: impl Into<Vector<T>>,
+        vel: impl Into<Vector<T>>,
+        center: impl Into<C>,
     ) -> Self {
         Self {
-            desig,
-            epoch,
-            pos,
-            vel,
+            desig: desig.into(),
+            epoch: epoch.into(),
+            pos: pos.into(),
+            vel: vel.into(),
             center: center.into(),
         }
     }
@@ -136,10 +150,22 @@ impl<T: InertialFrame> State<T, DynCenter> {
     /// This is primarily useful as a place holder when propagation has failed
     /// and the object needs to be recorded still.
     #[inline(always)]
-    pub fn new_nan(desig: Desig, epoch: Time<TDB>, center: impl Into<DynCenter>) -> Self {
-        Self::new(desig, epoch, Vector::new_nan(), Vector::new_nan(), center)
+    pub fn new_nan(
+        desig: impl Into<Desig>,
+        epoch: impl Into<Time<TDB>>,
+        center: impl Into<C>,
+    ) -> Self {
+        Self::new(
+            desig,
+            epoch,
+            Vector::new_nan(),
+            Vector::new_nan(),
+            center.into(),
+        )
     }
+}
 
+impl<T: InertialFrame> State<T, DynCenter> {
     /// Trade the center ID and ID values, and flip the direction of the position and
     /// velocity vectors.
     #[inline(always)]
@@ -314,13 +340,7 @@ mod tests {
 
     #[test]
     fn flip_center() {
-        let mut a = State::<Equatorial>::new(
-            Desig::Naif(1),
-            0.0.into(),
-            [1.0, 0.0, 0.0].into(),
-            [0.0, 1.0, 0.0].into(),
-            0,
-        );
+        let mut a = State::<Equatorial>::new(1, 0.0, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], 0);
         a.try_flip_center_id().unwrap();
 
         let pos: [f64; 3] = a.pos.into();
@@ -332,28 +352,16 @@ mod tests {
 
     #[test]
     fn nan_finite() {
-        let a = State::<Equatorial>::new(
-            Desig::Naif(1),
-            0.0.into(),
-            [1.0, 0.0, 0.0].into(),
-            [0.0, 1.0, 0.0].into(),
-            0,
-        );
+        let a = State::<Equatorial>::new(None, 0.0, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], 0);
         assert!(a.is_finite());
 
-        let b = State::<Equatorial>::new_nan(Desig::Empty, 0.0.into(), 1000);
+        let b = State::<Equatorial>::new_nan(Desig::Empty, 0.0, 1000);
         assert!(!b.is_finite());
     }
 
     #[test]
     fn ssb_round_trip() {
-        let dyn_state = State::<Equatorial>::new(
-            Desig::Naif(1),
-            0.0.into(),
-            [1.0, 2.0, 3.0].into(),
-            [0.1, 0.2, 0.3].into(),
-            0,
-        );
+        let dyn_state = State::<Equatorial>::new(None, 0.0, [1.0, 2.0, 3.0], [0.1, 0.2, 0.3], 0);
         let ssb: State<Equatorial, SSB> = dyn_state.clone().try_into().unwrap();
         let back: State<Equatorial, DynCenter> = ssb.into();
         assert_eq!(dyn_state, back);
@@ -362,10 +370,10 @@ mod tests {
     #[test]
     fn ssb_try_from_wrong_center() {
         let bad = State::<Equatorial>::new(
-            Desig::Naif(1),
-            0.0.into(),
-            [1.0, 0.0, 0.0].into(),
-            [0.0, 1.0, 0.0].into(),
+            None,
+            0.0,
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
             10, // not SSB
         );
         assert!(State::<Equatorial, SSB>::try_from(bad).is_err());
@@ -373,20 +381,8 @@ mod tests {
 
     #[test]
     fn change_center() {
-        let mut a = State::<Ecliptic>::new(
-            Desig::Naif(1),
-            0.0.into(),
-            [1.0, 0.0, 0.0].into(),
-            [1.0, 0.0, 0.0].into(),
-            0,
-        );
-        let b = State::<Equatorial>::new(
-            Desig::Naif(3),
-            0.0.into(),
-            [0.0, 1.0, 0.0].into(),
-            [0.0, 1.0, 0.0].into(),
-            0,
-        );
+        let mut a = State::<Ecliptic>::new(1, 0.0, [1.0, 0.0, 0.0], [1.0, 0.0, 0.0], 0);
+        let b = State::<Equatorial>::new(3, 0.0, [0.0, 1.0, 0.0], [0.0, 1.0, 0.0], 0);
         a.try_change_center(b.into_frame()).unwrap();
 
         assert!(a.center_id() == 3);
@@ -396,31 +392,14 @@ mod tests {
         assert!(a.vel[0] == 1.0);
 
         // try cases which cause errors
-        let diff_jd = State::<Equatorial>::new(
-            Desig::Naif(3),
-            1.0.into(),
-            [0.0, 1.0, 0.0].into(),
-            [0.0, 1.0, 0.0].into(),
-            0,
-        );
+        let diff_jd = State::<Equatorial>::new(3, 1.0, [0.0, 1.0, 0.0], [0.0, 1.0, 0.0], 0);
         assert!(a.try_change_center(diff_jd.into_frame()).is_err());
 
-        let not_naif_id = State::<Equatorial>::new(
-            Desig::Empty,
-            0.0.into(),
-            [0.0, 1.0, 0.0].into(),
-            [0.0, 1.0, 0.0].into(),
-            0,
-        );
+        let not_naif_id = State::<Equatorial>::new(None, 0.0, [0.0, 1.0, 0.0], [0.0, 1.0, 0.0], 0);
         assert!(a.try_change_center(not_naif_id.into_frame()).is_err());
 
-        let no_matching_id = State::<Equatorial>::new(
-            Desig::Naif(2),
-            0.0.into(),
-            [0.0, 1.0, 0.0].into(),
-            [0.0, 1.0, 0.0].into(),
-            1_000_000_000,
-        );
+        let no_matching_id =
+            State::<Equatorial>::new(2, 0.0, [0.0, 1.0, 0.0], [0.0, 1.0, 0.0], 1_000_000_000);
         assert!(a.try_change_center(no_matching_id.into_frame()).is_err());
     }
 }

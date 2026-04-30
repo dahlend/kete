@@ -881,8 +881,7 @@ impl PyOrbitSamples {
                 // VectorLike::Arr would incorrectly interpret them as
                 // Ecliptic and apply an unwanted rotation.
                 let desig_val = Desig::Name(desig.clone());
-                let st: State<Equatorial> =
-                    State::new(desig_val, Time::new(epoch_jd), pos.into(), vel.into(), 10);
+                let st: State<Equatorial> = State::new(desig_val, epoch_jd, pos, vel, 10);
                 // From<State<Equatorial>> sets Ecliptic display.
                 Ok(st.into())
             })
@@ -1101,13 +1100,7 @@ impl PyRangingSamples {
                     d[4] - sun_state.vel[1],
                     d[5] - sun_state.vel[2],
                 ];
-                let st: State<Equatorial> = State::new(
-                    Desig::Empty,
-                    Time::new(epoch_jd),
-                    pos.into(),
-                    vel.into(),
-                    10,
-                );
+                let st: State<Equatorial> = State::new(Desig::Empty, epoch_jd, pos, vel, 10);
                 Ok(st.into())
             })
             .collect()

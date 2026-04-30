@@ -1239,7 +1239,10 @@ mod tests {
     fn best_candidate<'a, C: kete_core::frames::CenterBody>(
         candidates: &'a [(f64, State<Equatorial>)],
         truth: &State<Equatorial, C>,
-    ) -> &'a State<Equatorial> {
+    ) -> &'a State<Equatorial>
+    where
+        kete_core::frames::DynCenter: From<C>,
+    {
         candidates
             .iter()
             .map(|(_, s)| s)

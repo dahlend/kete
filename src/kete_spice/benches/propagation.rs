@@ -16,27 +16,27 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 static CIRCULAR: std::sync::LazyLock<State<Ecliptic>> = std::sync::LazyLock::new(|| {
     State::new(
         Desig::Name("Circular".into()),
-        2451545.0.into(),
-        [0.0, 1., 0.0].into(),
-        [-constants::GMS_SQRT, 0.0, 0.0].into(),
+        2451545.0,
+        [0.0, 1., 0.0],
+        [-constants::GMS_SQRT, 0.0, 0.0],
         0,
     )
 });
 static ELLIPTICAL: std::sync::LazyLock<State<Ecliptic>> = std::sync::LazyLock::new(|| {
     State::new(
         Desig::Name("Elliptical".into()),
-        2451545.0.into(),
-        [0.0, 1.5, 0.0].into(),
-        [-constants::GMS_SQRT, 0.0, 0.0].into(),
+        2451545.0,
+        [0.0, 1.5, 0.0],
+        [-constants::GMS_SQRT, 0.0, 0.0],
         0,
     )
 });
 static PARABOLIC: std::sync::LazyLock<State<Ecliptic>> = std::sync::LazyLock::new(|| {
     State::new(
         Desig::Name("Parabolic".into()),
-        2451545.0.into(),
-        [0.0, 2., 0.0].into(),
-        [-constants::GMS_SQRT, 0.0, 0.0].into(),
+        2451545.0,
+        [0.0, 2., 0.0],
+        [-constants::GMS_SQRT, 0.0, 0.0],
         0,
     )
 });
@@ -44,9 +44,9 @@ static PARABOLIC: std::sync::LazyLock<State<Ecliptic>> = std::sync::LazyLock::ne
 static HYPERBOLIC: std::sync::LazyLock<State<Ecliptic>> = std::sync::LazyLock::new(|| {
     State::new(
         Desig::Name("Hyperbolic".into()),
-        2451545.0.into(),
-        [0.0, 3., 0.0].into(),
-        [-constants::GMS_SQRT, 0.0, 0.0].into(),
+        2451545.0,
+        [0.0, 3., 0.0],
+        [-constants::GMS_SQRT, 0.0, 0.0],
         0,
     )
 });

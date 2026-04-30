@@ -12,7 +12,10 @@ use std::fmt::Debug;
 /// Trait for center-body types used in [`State`](crate::state::State).
 ///
 /// Implementors provide the NAIF id of the center body at runtime.
-pub trait CenterBody: Sized + Sync + Send + Clone + Copy + Debug + PartialEq {
+pub trait CenterBody: Sized + Sync + Send + Clone + Copy + Debug + PartialEq
+where
+    DynCenter: From<Self>,
+{
     /// NAIF id of the center body.
     fn center_id(&self) -> i32;
 }
@@ -52,6 +55,24 @@ impl CenterBody for DynCenter {
 impl From<i32> for DynCenter {
     fn from(id: i32) -> Self {
         Self(id)
+    }
+}
+
+impl From<SSB> for DynCenter {
+    fn from(_: SSB) -> Self {
+        Self(0)
+    }
+}
+
+impl From<SunCenter> for DynCenter {
+    fn from(_: SunCenter) -> Self {
+        Self(10)
+    }
+}
+
+impl From<EarthCenter> for DynCenter {
+    fn from(_: EarthCenter) -> Self {
+        Self(399)
     }
 }
 

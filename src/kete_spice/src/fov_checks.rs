@@ -186,16 +186,16 @@ mod tests {
         crate::test_data::ensure_test_spk();
         let circular = State::new(
             Desig::Empty,
-            2451545.0.into(),
-            [0.0, 1., 0.0].into(),
-            [-GMS_SQRT, 0.0, 0.0].into(),
+            2451545.0,
+            [0.0, 1., 0.0],
+            [-GMS_SQRT, 0.0, 0.0],
             10,
         );
         let circular_back = State::new(
             Desig::Empty,
-            2451545.0.into(),
-            [1.0, 0.0, 0.0].into(),
-            [0.0, GMS_SQRT, 0.0].into(),
+            2451545.0,
+            [1.0, 0.0, 0.0],
+            [0.0, GMS_SQRT, 0.0],
             10,
         );
 
@@ -243,9 +243,9 @@ mod tests {
         let spk = &LOADED_SPK.read().unwrap();
         let observer = State::new(
             Desig::Empty,
-            2451545.0.into(),
-            [0.0, 1., 0.0].into(),
-            [-GMS_SQRT, 0.0, 0.0].into(),
+            2451545.0,
+            [0.0, 1., 0.0],
+            [-GMS_SQRT, 0.0, 0.0],
             10,
         );
 

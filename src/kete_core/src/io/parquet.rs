@@ -241,9 +241,9 @@ pub fn read_states_parquet(
 
             State::new(
                 crate::desigs::Desig::Name(desig.to_string()),
-                jd.into(),
-                [x, y, z].into(),
-                [vx, vy, vz].into(),
+                jd,
+                [x, y, z],
+                [vx, vy, vz],
                 center_id,
             )
         })

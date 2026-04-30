@@ -60,7 +60,7 @@ pub fn ck_sc_frame_to_equatorial(
     let cks = LOADED_CK.try_read().unwrap();
     let (time, frame) = cks.try_get_frame(time.jd, instrument_id)?;
 
-    let (pos, _) = frame.to_equatorial(vec.into(), [0.0; 3].into())?;
+    let (pos, _) = frame.to_equatorial(vec, [0.0; 3])?;
 
     let vec = PyVector::new(pos.into(), PyFrames::Equatorial);
 
@@ -84,7 +84,7 @@ pub fn ck_sc_equatorial_to_frame(
     let cks = LOADED_CK.try_read().unwrap();
     let (time, frame) = cks.try_get_frame(time.jd, instrument_id)?;
 
-    let (pos, _) = frame.from_equatorial(vec.into(), [0.0; 3].into())?;
+    let (pos, _) = frame.from_equatorial(vec, [0.0; 3])?;
 
     Ok((time.into(), pos.into()))
 }

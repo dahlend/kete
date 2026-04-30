@@ -86,7 +86,7 @@ impl PyState {
         let vel = vel.into_vector(frame);
 
         let center_id = center_id.unwrap_or(10);
-        let state = State::new(desig, jd.into(), pos, vel, center_id);
+        let state = State::new(desig, jd, pos, vel, center_id);
         Self {
             raw: state,
             frame,

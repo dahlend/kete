@@ -33,7 +33,7 @@
 
 use crate::constants::GMS_SQRT;
 use crate::forces::GravParams;
-use crate::frames::{CenterBody, Ecliptic};
+use crate::frames::{CenterBody, DynCenter, Ecliptic};
 use crate::kepler::{PARABOLIC_ECC_LIMIT, compute_eccentric_anomaly, compute_true_anomaly};
 use crate::prelude::{Desig, KeteResult, State};
 use crate::time::{TDB, Time};
@@ -95,7 +95,10 @@ impl CometElements {
 
     /// Create cometary elements from a state.
     #[must_use]
-    pub fn from_state<C: CenterBody>(state: &State<Ecliptic, C>) -> Self {
+    pub fn from_state<C: CenterBody>(state: &State<Ecliptic, C>) -> Self
+    where
+        DynCenter: From<C>,
+    {
         let gm_sqrt = Self::gm_sqrt_for_center(state.center_id());
         Self::from_pos_vel(
             state.desig.clone(),
@@ -232,8 +235,8 @@ impl CometElements {
         Ok(State::new(
             self.desig.clone(),
             self.epoch,
-            pos.into(),
-            vel.into(),
+            pos,
+            vel,
             self.center_id,
         ))
     }

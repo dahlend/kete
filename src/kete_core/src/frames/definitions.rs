@@ -158,7 +158,7 @@ pub struct NonInertialFrame {
 impl NonInertialFrame {
     /// Create a new non-inertial frame from the provided rotation and rotation rate.
     pub fn from_euler<const E1: char, const E2: char, const E3: char>(
-        time: Time<TDB>,
+        time: impl Into<Time<TDB>>,
         angles: [f64; 3],
         rates: [f64; 3],
         reference_frame_id: i32,
@@ -166,7 +166,7 @@ impl NonInertialFrame {
     ) -> Self {
         let (rot_p, rot_dp) = euler_rotation::<E1, E2, E3>(&angles, &rates);
         Self {
-            time,
+            time: time.into(),
             rotation: rot_p,
             rotation_rate: Some(rot_dp),
             reference_frame_id,
@@ -183,14 +183,14 @@ impl NonInertialFrame {
     /// * `reference_frame_id` - The frame that this frame is defined relative to.
     /// * `frame_id` - The frame ID of this frame.
     pub fn from_rotations(
-        time: Time<TDB>,
+        time: impl Into<Time<TDB>>,
         rotation: Rotation3<f64>,
         rotation_rate: Option<Matrix3<f64>>,
         reference_frame_id: i32,
         frame_id: i32,
     ) -> Self {
         Self {
-            time,
+            time: time.into(),
             rotation,
             rotation_rate,
             reference_frame_id,
@@ -241,13 +241,14 @@ impl NonInertialFrame {
     )]
     pub fn from_equatorial(
         &self,
-        pos: Vector3<f64>,
-        vel: Vector3<f64>,
+        pos: impl Into<Vector3<f64>>,
+        vel: impl Into<Vector3<f64>>,
     ) -> KeteResult<(Vector3<f64>, Vector3<f64>)> {
+        let pos = pos.into();
         let (rot_p, rot_dp) = self.rotations_to_equatorial()?;
 
         let new_pos = rot_p.inverse_transform_vector(&pos);
-        let new_vel = rot_dp.transpose() * pos + rot_p.inverse_transform_vector(&vel);
+        let new_vel = rot_dp.transpose() * pos + rot_p.inverse_transform_vector(&vel.into());
 
         Ok((new_pos, new_vel))
     }
@@ -259,13 +260,14 @@ impl NonInertialFrame {
     /// Please raise a github issue if this error occurs.
     pub fn to_equatorial(
         &self,
-        pos: Vector3<f64>,
-        vel: Vector3<f64>,
+        pos: impl Into<Vector3<f64>>,
+        vel: impl Into<Vector3<f64>>,
     ) -> KeteResult<(Vector3<f64>, Vector3<f64>)> {
+        let pos = pos.into();
         let (rot_p, rot_dp) = self.rotations_to_equatorial()?;
 
         let new_pos = rot_p.transform_vector(&pos);
-        let new_vel = rot_dp * pos + rot_p.transform_vector(&vel);
+        let new_vel = rot_dp * pos + rot_p.transform_vector(&vel.into());
         Ok((new_pos, new_vel))
     }
 }
@@ -331,10 +333,9 @@ mod tests {
     fn test_noninertial_rot_roundtrip() {
         let angles = [0.11, 0.21, 0.31];
         let rates = [0.41, 0.51, 0.61];
-        let pos = [1.0, 2.0, 3.0].into();
-        let vel = [0.1, 0.2, 0.3].into();
-        let frame =
-            NonInertialFrame::from_euler::<'Z', 'X', 'Z'>(0_f64.into(), angles, rates, 17, 100);
+        let pos = [1.0, 2.0, 3.0];
+        let vel = [0.1, 0.2, 0.3];
+        let frame = NonInertialFrame::from_euler::<'Z', 'X', 'Z'>(0_f64, angles, rates, 17, 100);
         let (r_pos, r_vel) = frame.to_equatorial(pos, vel).unwrap();
         let (pos_return, vel_return) = frame.from_equatorial(r_pos, r_vel).unwrap();
 
