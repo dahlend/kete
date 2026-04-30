@@ -340,7 +340,7 @@ mod tests {
 
     #[test]
     fn flip_center() {
-        let mut a = State::<Equatorial>::new(None, 0.0, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], 0);
+        let mut a = State::<Equatorial>::new(1, 0.0, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], 0);
         a.try_flip_center_id().unwrap();
 
         let pos: [f64; 3] = a.pos.into();
