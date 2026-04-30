@@ -421,7 +421,7 @@ pub fn propagate_n_body_vec(
     for (idx, desig) in desigs.into_iter().enumerate() {
         let pos = pos.fixed_rows::<3>(idx * 3) - sun_pos;
         let vel = vel.fixed_rows::<3>(idx * 3) - sun_vel;
-        let state = State::new(desig, jd_final, pos.into(), vel.into(), 10);
+        let state = State::new(desig, jd_final, pos, vel, 10);
         all_states.push(state);
     }
     let final_states = all_states.split_off(GravParams::simplified_planets().len());

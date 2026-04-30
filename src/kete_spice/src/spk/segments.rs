@@ -141,32 +141,32 @@ impl SpkSegment {
             1 => Ok(State::<Equatorial>::new(
                 Desig::Naif(arr_ref.object_id),
                 jd,
-                pos.into(),
-                vel.into(),
+                pos,
+                vel,
                 arr_ref.center_id,
             )
             .into_frame()),
             3 => Ok(State::<FK4>::new(
                 Desig::Naif(arr_ref.object_id),
                 jd,
-                pos.into(),
-                vel.into(),
+                pos,
+                vel,
                 arr_ref.center_id,
             )
             .into_frame()),
             13 => Ok(State::<Galactic>::new(
                 Desig::Naif(arr_ref.object_id),
                 jd,
-                pos.into(),
-                vel.into(),
+                pos,
+                vel,
                 arr_ref.center_id,
             )
             .into_frame()),
             17 => Ok(State::<Ecliptic>::new(
                 Desig::Naif(arr_ref.object_id),
                 jd,
-                pos.into(),
-                vel.into(),
+                pos,
+                vel,
                 arr_ref.center_id,
             )
             .into_frame()),

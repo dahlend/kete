@@ -654,6 +654,21 @@ impl Desig {
     }
 }
 
+impl From<Option<i32>> for Desig {
+    fn from(value: Option<i32>) -> Self {
+        match value {
+            Some(id) => Self::Naif(id),
+            None => Self::Empty,
+        }
+    }
+}
+
+impl From<i32> for Desig {
+    fn from(value: i32) -> Self {
+        Self::Naif(value)
+    }
+}
+
 impl Display for Desig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&match self {
