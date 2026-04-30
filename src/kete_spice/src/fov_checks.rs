@@ -301,9 +301,7 @@ mod tests {
             );
         }
 
-        // The Sun (NAIF 10) is at the origin of the sun-centered frame; check_spks
-        // previously silently dropped it because light_time_correct called
-        // propagate_two_body with r0=0, causing beta=inf and a NaN dt.
+        // Sun Fov check was previously failing due to it being co-located at itself
         let sun_fov = OmniDirectional::new(observer.clone());
         let sun_check = &check_spks(&sun_fov, &[10])[0];
         assert!(sun_check.is_some());
