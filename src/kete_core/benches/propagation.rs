@@ -13,50 +13,42 @@ use pprof::criterion::{Output, PProfProfiler};
 static CIRCULAR: std::sync::LazyLock<State<Ecliptic, SunCenter>> = std::sync::LazyLock::new(|| {
     State::new(
         Desig::Name("Circular".into()),
-        2451545.0.into(),
-        [0.0, 1., 0.0].into(),
-        [-constants::GMS_SQRT, 0.0, 0.0].into(),
-        10,
+        2451545.0,
+        [0.0, 1., 0.0],
+        [-constants::GMS_SQRT, 0.0, 0.0],
+        SunCenter,
     )
-    .try_into()
-    .unwrap()
 });
 static ELLIPTICAL: std::sync::LazyLock<State<Ecliptic, SunCenter>> =
     std::sync::LazyLock::new(|| {
         State::new(
             Desig::Name("Elliptical".into()),
-            2451545.0.into(),
-            [0.0, 1.5, 0.0].into(),
-            [-constants::GMS_SQRT, 0.0, 0.0].into(),
-            10,
+            2451545.0,
+            [0.0, 1.5, 0.0],
+            [-constants::GMS_SQRT, 0.0, 0.0],
+            SunCenter,
         )
-        .try_into()
-        .unwrap()
     });
 static PARABOLIC: std::sync::LazyLock<State<Ecliptic, SunCenter>> =
     std::sync::LazyLock::new(|| {
         State::new(
             Desig::Name("Parabolic".into()),
-            2451545.0.into(),
-            [0.0, 2., 0.0].into(),
-            [-constants::GMS_SQRT, 0.0, 0.0].into(),
-            10,
+            2451545.0,
+            [0.0, 2., 0.0],
+            [-constants::GMS_SQRT, 0.0, 0.0],
+            SunCenter,
         )
-        .try_into()
-        .unwrap()
     });
 
 static HYPERBOLIC: std::sync::LazyLock<State<Ecliptic, SunCenter>> =
     std::sync::LazyLock::new(|| {
         State::new(
             Desig::Name("Hyperbolic".into()),
-            2451545.0.into(),
-            [0.0, 3., 0.0].into(),
-            [-constants::GMS_SQRT, 0.0, 0.0].into(),
-            10,
+            2451545.0,
+            [0.0, 3., 0.0],
+            [-constants::GMS_SQRT, 0.0, 0.0],
+            SunCenter,
         )
-        .try_into()
-        .unwrap()
     });
 
 fn prop_2_body_kepler(state: &State<Ecliptic, SunCenter>, dt: f64) {

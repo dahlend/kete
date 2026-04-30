@@ -13,7 +13,6 @@ use kete_core::errors::{Error, KeteResult};
 use kete_core::forces::NonGravModel;
 use kete_core::frames::{Ecliptic, Equatorial};
 use kete_core::state::State;
-use kete_core::time::Time;
 use nalgebra::DMatrix;
 #[cfg(feature = "fetch")]
 use serde::Deserialize;
@@ -569,13 +568,7 @@ fn build_uncertain_state(
             "" => Desig::Empty,
             _ => Desig::Name(desig.to_string()),
         };
-        let state: State<Equatorial> = State::new(
-            desig_val,
-            Time::new(epoch),
-            [x, y, z].into(),
-            [vx, vy, vz].into(),
-            10,
-        );
+        let state: State<Equatorial> = State::new(desig_val, epoch, [x, y, z], [vx, vy, vz], 10);
 
         let mat = DMatrix::from_fn(n, n, |r, c| match (reorder[r], reorder[c]) {
             (Some(sr), Some(sc)) => cov_matrix[sr][sc],

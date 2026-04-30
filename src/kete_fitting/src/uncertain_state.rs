@@ -245,14 +245,12 @@ impl UncertainState {
                     nominal[0] + delta[0],
                     nominal[1] + delta[1],
                     nominal[2] + delta[2],
-                ]
-                .into(),
+                ],
                 [
                     nominal[3] + delta[3],
                     nominal[4] + delta[4],
                     nominal[5] + delta[5],
-                ]
-                .into(),
+                ],
                 self.state.center_id(),
             );
 
@@ -387,10 +385,10 @@ mod tests {
         State::new(
             Desig::Name("Test".into()),
             // J2000.0
-            Time::new(2451545.0),
-            [1.0, 0.0, 0.0].into(),
+            2451545.0,
+            [1.0, 0.0, 0.0],
             // ~1 AU circular
-            [0.0, 0.01720209895, 0.0].into(),
+            [0.0, 0.01720209895, 0.0],
             10,
         )
     }
