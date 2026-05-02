@@ -282,7 +282,7 @@ fn scout_score(
     }
 
     let spk = LOADED_SPK.try_read().ok()?;
-    let sun_state = spk.try_to_sun(state.clone().into()).ok()?;
+    let sun_state = spk.try_to_sun(state.clone()).ok()?;
     let mut entries: Vec<Entry> = Vec::new();
 
     for obs in sorted_obs {
@@ -292,7 +292,7 @@ fn scout_score(
         let Ok(prop) = propagate_two_body(&sun_state, obs.epoch()) else {
             continue;
         };
-        let Ok(obs_sun) = spk.try_to_sun(obs_ssb.clone().into()) else {
+        let Ok(obs_sun) = spk.try_to_sun(obs_ssb.clone()) else {
             continue;
         };
         let Ok(lt_sun) = light_time_correct(&prop, &obs_sun.pos) else {
@@ -300,13 +300,10 @@ fn scout_score(
         };
         let lt_pos = differential_light_deflect(&obs_sun.pos, lt_sun.pos);
         let Some(lt_ssb) = spk
-            .try_to_ssb(
-                State {
-                    pos: lt_pos,
-                    ..lt_sun
-                }
-                .into(),
-            )
+            .try_to_ssb(State {
+                pos: lt_pos,
+                ..lt_sun
+            })
             .ok()
         else {
             continue;
@@ -416,7 +413,7 @@ fn score_patch(
         let Ok(spk) = LOADED_SPK.try_read() else {
             return vec![];
         };
-        let Ok(obs_helio) = spk.try_to_sun(attr.observer.clone().into()) else {
+        let Ok(obs_helio) = spk.try_to_sun(attr.observer.clone()) else {
             return vec![];
         };
         let sun_pos = attr.observer.pos - obs_helio.pos;
@@ -938,7 +935,7 @@ mod tests {
         sigma_rad: f64,
     ) -> Vec<AstrometricObservation> {
         let spk = LOADED_SPK.try_read().unwrap();
-        let obj_sun = spk.try_to_sun(obj.clone().into()).unwrap();
+        let obj_sun = spk.try_to_sun(obj.clone()).unwrap();
         let v_earth = (GMS / 1.0_f64).sqrt();
         let obl = 23.44_f64.to_radians();
         epochs
@@ -957,9 +954,9 @@ mod tests {
                 ];
                 let observer = make_ssb_state(obs_pos, obs_vel, jd);
                 let obj_at = propagate_two_body(&obj_sun, Time::<TDB>::new(jd)).ok()?;
-                let obs_sun_pos = spk.try_to_sun(observer.clone().into()).ok()?.pos;
+                let obs_sun_pos = spk.try_to_sun(observer.clone()).ok()?.pos;
                 let obj_lt_sun = light_time_correct(&obj_at, &obs_sun_pos).ok()?;
-                let obj_lt_ssb = spk.try_to_ssb(obj_lt_sun.into()).ok()?;
+                let obj_lt_ssb = spk.try_to_ssb(obj_lt_sun).ok()?;
                 let (ra, dec) = (obj_lt_ssb.pos - observer.pos).to_ra_dec();
                 Some(AstrometricObservation::Optical {
                     observer,

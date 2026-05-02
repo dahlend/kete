@@ -32,6 +32,7 @@ pub mod type3;
 pub mod type9;
 
 pub use array::SpkArray;
+use kete_core::frames::DynCenter;
 pub use repack::repack_to_type2;
 pub use repack::repack_to_type13;
 pub use type1::SpkSegmentType1;
@@ -202,7 +203,11 @@ impl SpkCollection {
     ///
     /// # Errors
     /// Fails when the required NAIF lookups are not available in the loaded SPKs.
-    pub fn try_to_ssb<T: InertialFrame>(&self, mut state: State<T>) -> KeteResult<State<T, SSB>> {
+    pub fn try_to_ssb<T: InertialFrame>(
+        &self,
+        state: impl Into<State<T, DynCenter>>,
+    ) -> KeteResult<State<T, SSB>> {
+        let mut state: State<T, DynCenter> = state.into();
         if state.center_id() != 0 {
             self.try_change_center(&mut state, 0)?;
         }
@@ -216,8 +221,9 @@ impl SpkCollection {
     /// Fails when the required NAIF lookups are not available in the loaded SPKs.
     pub fn try_to_sun<T: InertialFrame>(
         &self,
-        mut state: State<T>,
+        state: impl Into<State<T, DynCenter>>,
     ) -> KeteResult<State<T, SunCenter>> {
+        let mut state: State<T, DynCenter> = state.into();
         if state.center_id() != 10 {
             self.try_change_center(&mut state, 10)?;
         }
@@ -435,10 +441,26 @@ impl SpkCollection {
     /// files or IO errors.
     pub fn load_file(&mut self, filename: &str) -> KeteResult<()> {
         let file = DafFile::from_file(filename)?;
+        self.load_daf(file, filename)
+    }
 
+    /// Load SPK segments from any `Read + Seek` source (e.g. an in-memory buffer).
+    ///
+    /// # Errors
+    /// Loading files may fail for a number of reasons, likely incorrect formatted
+    /// content.
+    pub fn load_from_reader<R: std::io::Read + std::io::Seek>(
+        &mut self,
+        reader: R,
+    ) -> KeteResult<()> {
+        let file = DafFile::from_buffer(reader)?;
+        self.load_daf(file, "<buffer>")
+    }
+
+    fn load_daf(&mut self, file: DafFile, source: &str) -> KeteResult<()> {
         if !matches!(file.daf_type, DAFType::Spk) {
             Err(Error::IOError(format!(
-                "File {filename:?} is not a SPK formatted file."
+                "File {source:?} is not a SPK formatted file."
             )))?;
         }
         for daf_array in file.arrays {

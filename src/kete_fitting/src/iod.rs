@@ -950,7 +950,7 @@ fn observation_residual(state: &State<Equatorial>, obs: &[AstrometricObservation
         let Ok(predicted) = propagate_two_body(&sun_state, obs_state.epoch) else {
             continue;
         };
-        let Some(obs_helio) = spk.try_to_sun(obs_state.clone().into()).ok() else {
+        let Some(obs_helio) = spk.try_to_sun(obs_state.clone()).ok() else {
             continue;
         };
         let Ok(predicted) = light_time_correct(&predicted, &obs_helio.pos) else {
@@ -1032,7 +1032,7 @@ fn curvature_residual(state: &State<Equatorial>, obs: &[AstrometricObservation])
         let Ok(predicted) = propagate_two_body(&sun_state, obs_state.epoch) else {
             continue;
         };
-        let Some(obs_helio) = spk.try_to_sun(obs_state.clone().into()).ok() else {
+        let Some(obs_helio) = spk.try_to_sun(obs_state.clone()).ok() else {
             continue;
         };
         let Ok(predicted) = light_time_correct(&predicted, &obs_helio.pos) else {
@@ -1569,7 +1569,7 @@ mod tests {
             .iter()
             .map(|&jd| {
                 let obj_at = propagate_n_body_spk(
-                    spk.try_to_ssb(obj.clone().into())
+                    spk.try_to_ssb(obj.clone())
                         .expect("Center conversion failed"),
                     Time::<TDB>::new(jd),
                     false,
@@ -1586,13 +1586,13 @@ mod tests {
                     .expect("Earth state should be SSB-centered (center_id=0)");
 
                 let sun_at = spk
-                    .try_to_sun(obj_at.clone().into())
+                    .try_to_sun(obj_at.clone())
                     .expect("SPK center change failed");
                 let obs_helio = observer.pos - obj_at.pos + sun_at.pos;
                 let obj_lt_sun =
                     light_time_correct(&sun_at, &obs_helio).expect("light-time correction failed");
                 let obj_lt = spk
-                    .try_to_ssb(obj_lt_sun.into())
+                    .try_to_ssb(obj_lt_sun)
                     .expect("SPK center change failed");
 
                 let d = obj_lt.pos - observer.pos;
@@ -1625,7 +1625,7 @@ mod tests {
         assert!(!results.is_empty(), "Should find at least one candidate");
 
         let obj_at = {
-            let obj_ssb = spk.try_to_ssb(obj.clone().into()).unwrap();
+            let obj_ssb = spk.try_to_ssb(obj.clone()).unwrap();
             propagate_n_body_spk(obj_ssb, results[0].1.epoch, false, None).unwrap()
         };
         let best = best_candidate(&results, &obj_at);

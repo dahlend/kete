@@ -158,15 +158,15 @@ fn apply_light_time(
     observer: &State<Equatorial, SSB>,
 ) -> KeteResult<State<Equatorial, SSB>> {
     let spk = LOADED_SPK.try_read()?;
-    let sun_state = spk.try_to_sun(obj_state.clone().into())?;
-    let obs_sun = spk.try_to_sun(observer.clone().into())?.pos;
+    let sun_state = spk.try_to_sun(obj_state.clone())?;
+    let obs_sun = spk.try_to_sun(observer.clone())?.pos;
     let obj_lt_sun = light_time_correct(&sun_state, &obs_sun)?;
     let deflected_pos = differential_light_deflect(&obs_sun, obj_lt_sun.pos);
     let obj_lt_deflected = State {
         pos: deflected_pos,
         ..obj_lt_sun
     };
-    spk.try_to_ssb(obj_lt_deflected.into())
+    spk.try_to_ssb(obj_lt_deflected)
 }
 
 /// Store the predicted state as the filtered state (observation skipped)
@@ -776,10 +776,10 @@ mod tests {
                     .unwrap();
 
             let spk = LOADED_SPK.try_read().unwrap();
-            let sun_at = spk.try_to_sun(obj_at.clone().into()).unwrap();
+            let sun_at = spk.try_to_sun(obj_at.clone()).unwrap();
             let obs_helio = observer.pos - obj_at.pos + sun_at.pos;
             let obj_lt_sun = light_time_correct(&sun_at, &obs_helio).unwrap();
-            let obj_lt = spk.try_to_ssb(obj_lt_sun.into()).unwrap();
+            let obj_lt = spk.try_to_ssb(obj_lt_sun).unwrap();
             let (ra, dec) = (obj_lt.pos - observer.pos).to_ra_dec();
 
             observations.push(AstrometricObservation::Optical {

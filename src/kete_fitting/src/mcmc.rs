@@ -561,13 +561,13 @@ pub fn fit_orbit_mcmc(
     let seeds: Vec<State<Equatorial, SSB>> = seeds
         .iter()
         .map(|s| -> KeteResult<State<Equatorial, SSB>> {
-            let sun_s = spk.try_to_sun(s.clone().into())?;
+            let sun_s = spk.try_to_sun(s.clone())?;
             let propagated = if (sun_s.epoch.jd - epoch.jd).abs() > 1e-12 {
                 propagate_two_body(&sun_s, epoch)?
             } else {
                 sun_s
             };
-            spk.try_to_ssb(propagated.into())
+            spk.try_to_ssb(propagated)
         })
         .collect::<KeteResult<Vec<_>>>()?;
     drop(spk);

@@ -695,7 +695,7 @@ fn light_time_corrected_state(
     let spk = LOADED_SPK.try_read()?;
     // Convert both object and observer to heliocentric for two-body correction.
     let observer_dyn: State<Equatorial> = observer.into();
-    let state_sun = spk.try_to_sun(state_ssb.into())?;
+    let state_sun = spk.try_to_sun(state_ssb)?;
     let observer_sun = spk.try_to_sun(observer_dyn)?;
     let obj_lt_helio = light_time_correct(&state_sun, &observer_sun.pos)?;
     // Apply differential gravitational light deflection (solar bending of the
@@ -705,7 +705,7 @@ fn light_time_corrected_state(
         pos: deflected_pos,
         ..obj_lt_helio
     };
-    spk.try_to_ssb(obj_lt_deflected.into())
+    spk.try_to_ssb(obj_lt_deflected)
 }
 
 /// Run the iterative convergence loop with adaptive Levenberg-Marquardt
@@ -1683,7 +1683,7 @@ mod tests {
             .unwrap();
 
             let spk = LOADED_SPK.try_read().unwrap();
-            let sun_at = spk.try_to_sun(obj_at.clone().into()).unwrap();
+            let sun_at = spk.try_to_sun(obj_at.clone()).unwrap();
             let obs_helio = observer.pos - obj_at.pos + sun_at.pos;
             let obj_lt_sun = light_time_correct(&sun_at, &obs_helio).unwrap();
             // Apply DLD so synthetic observations are consistent with the prediction model.
@@ -1692,7 +1692,7 @@ mod tests {
                 pos: deflected_pos,
                 ..obj_lt_sun
             };
-            let obj_lt = spk.try_to_ssb(obj_lt_deflected.into()).unwrap();
+            let obj_lt = spk.try_to_ssb(obj_lt_deflected).unwrap();
             let (ra, dec) = (obj_lt.pos - observer.pos).to_ra_dec();
 
             observations.push(AstrometricObservation::Optical {
