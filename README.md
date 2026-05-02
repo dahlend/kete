@@ -14,11 +14,10 @@ See the [arXiv paper](http://arxiv.org/abs/2509.04666).
 
 The kete tools are intended to enable the simulation of all-sky surveys of minor
 planets. This includes multi-body physics orbital dynamics, orbit determination and
-fitting (IOD, differential correction, and MCMC posterior sampling), thermal and optical
-modeling of the objects, as well as field of view and light delay corrections. These
-tools in conjunction with the Minor Planet Centers (MPC) database of known asteroids can
-be used to not only plan surveys but can also be used to predict what objects are visible
-for existing or past surveys.
+fitting, thermal and optical modeling of the objects, as well as field of view and light
+delay corrections. These tools in conjunction with the Minor Planet Centers (MPC) and
+JPL's databases of known asteroids can be used to not only plan surveys but can also be
+used to predict what objects are visible for existing or past surveys.
 
 The primary goal for kete is to enable a set of tools that can operate on the entire
 MPC catalog at once, without having to do queries on specific objects. It has been
@@ -42,6 +41,10 @@ to generate the movie.
 
 Kete can be used to answer many questions, for example, identifying all known asteroids
 inside of a [given image](https://dahlend.github.io/kete/tutorials/kona.html).
+
+Kete can also be used as a backend for more fun visualizations, such as:  
+
+[Ketev](https://dahlend.github.io/ketev/) - Solar System Visualizer in your browser
 
 
 ## Installation
@@ -107,10 +110,9 @@ for Cetaceans (Whales).
 ## Licensing:
 
 The original version of this code was developed while the original author (Dar Dahlen)
-was working at Caltech IPAC. I have since left Caltech and moved to Germany for a PhD.
-This is a fork of that repo where the work will continue as a personal project during
-my PhD. Difference between this fork and previous code is licensed as BSD 3-Clause but
-copyright to Dar Dahlen & future collaborators.
+was working at Caltech IPAC. This is a fork of that repo where the work will continue as
+a personal project. Difference between this fork and previous code is licensed as
+BSD 3-Clause but copyright to Dar Dahlen & future collaborators.
 
 ### Units and Reference Frame
 

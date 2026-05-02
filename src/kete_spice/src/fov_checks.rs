@@ -32,7 +32,7 @@ pub fn check_n_body<F: FovLike>(
     };
     let exact_state = propagate_n_body_spk(ssb_state, obs.epoch, include_asteroids, None)?;
     let spk = LOADED_SPK.try_read()?;
-    let sun_state = spk.try_to_sun(exact_state.into())?;
+    let sun_state = spk.try_to_sun(exact_state)?;
 
     let final_state = light_time_correct(&sun_state, &obs.pos)?;
     let rel_pos = final_state.pos - obs.pos;
@@ -191,7 +191,7 @@ mod tests {
             [-GMS_SQRT, 0.0, 0.0],
             10,
         );
-        let circular_back = State::new(
+        let circular_back = State::<Equatorial>::new(
             Desig::Empty,
             2451545.0,
             [1.0, 0.0, 0.0],
@@ -218,7 +218,7 @@ mod tests {
             let fov = GenericRectangle::new(vec, 0.0001, 0.01, 0.01, circular.clone());
             let off_sun = {
                 let spk = LOADED_SPK.try_read().unwrap();
-                spk.try_to_sun(off_state.clone().into()).unwrap()
+                spk.try_to_sun(off_state.clone()).unwrap()
             };
             assert!(check_two_body(&fov, &off_sun).is_ok());
             let off_dyn: State<Equatorial> = off_state.into();

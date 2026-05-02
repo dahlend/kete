@@ -278,7 +278,7 @@ impl PyObservation {
     /// The observation epoch.  For radar this is the receive epoch ``t_rx``.
     #[getter]
     fn epoch(&self) -> PyTime {
-        self.obs.epoch().jd.into()
+        self.obs.epoch().into()
     }
 
     /// The observer state (Sun-centered, Ecliptic).
@@ -289,7 +289,7 @@ impl PyObservation {
     fn observer(&self) -> PyResult<PyState> {
         let observer_ssb = self.obs.observer()?;
         let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-        let st: State<Equatorial> = spk.try_to_sun(observer_ssb.into())?.into();
+        let st: State<Equatorial> = spk.try_to_sun(observer_ssb)?.into();
         Ok(st.into())
     }
 

@@ -546,7 +546,7 @@ impl AstrometricObservation {
         let obj_sun = spk.try_to_sun(obj_state)?;
         // Convert observer to heliocentric so the light-travel offset is
         // computed from the correct observer position.
-        let obs_helio_sun = spk.try_to_sun(obs.into())?;
+        let obs_helio_sun = spk.try_to_sun(obs)?;
         // Apply light-time correction (heliocentric in, heliocentric out).
         let obj_lt_helio = kete_core::kepler::light_time_correct(&obj_sun, &obs_helio_sun.pos)?;
         // Apply differential gravitational light deflection (solar bending relative
@@ -558,7 +558,7 @@ impl AstrometricObservation {
             ..obj_lt_helio
         };
         // Convert back to SSB so residual_predicted_from_corrected sees consistent positions.
-        let obj_lt_ssb = spk.try_to_ssb(obj_lt_deflected.into())?;
+        let obj_lt_ssb = spk.try_to_ssb(obj_lt_deflected)?;
         self.residual_predicted_from_corrected(&obj_lt_ssb)
     }
 
