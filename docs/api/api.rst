@@ -11,6 +11,7 @@ API
 
    cache
    conversion
+   extended_body
    fitting
    flux
    fov

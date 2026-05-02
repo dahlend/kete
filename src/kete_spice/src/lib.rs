@@ -20,6 +20,7 @@ pub mod frame_ext;
 pub mod pck;
 pub mod propagation;
 pub mod sclk;
+pub mod small_body_propagation;
 pub mod spk;
 pub mod state_transition;
 
@@ -38,6 +39,10 @@ pub mod prelude {
     pub use crate::fov_checks::{check_n_body, check_spks, check_visible};
     pub use crate::frame_ext::rotations_to_equatorial_full;
     pub use crate::propagation::propagate_n_body_spk;
+    pub use crate::small_body_propagation::{
+        BodyRelativeState, Perturber, body_relative_to_heliocentric, heliocentric_to_body_relative,
+        is_inside_proximity, propagate_near_body,
+    };
 
     pub use crate::state_transition::compute_state_transition;
 }

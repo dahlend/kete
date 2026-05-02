@@ -214,7 +214,10 @@ where
                     step_failures = 0;
                 }
                 Err(error) => match error {
-                    Error::Bounds(_) | Error::Impact(_, _) | Error::OutOfMemory => {
+                    Error::Bounds(_)
+                    | Error::Impact(_, _)
+                    | Error::SurfaceImpact
+                    | Error::OutOfMemory => {
                         return Err(error);
                     }
                     Error::Convergence(_)

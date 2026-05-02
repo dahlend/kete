@@ -62,6 +62,14 @@ pub enum Error {
     /// Propagator detected an impact.
     Impact(i32, Time<TDB>),
 
+    /// Field point is on or inside the surface of an extended-gravity body.
+    ///
+    /// Emitted by polyhedron evaluation when an evaluation point coincides
+    /// with the body surface.  Propagators that know the body's NAIF ID and
+    /// the current integration time should catch this and re-emit
+    /// [`Error::Impact`].
+    SurfaceImpact,
+
     /// Failed to acquire lock on memory.
     LockFailed,
 
@@ -83,6 +91,12 @@ impl fmt::Display for Error {
             Self::Impact(s, t) => {
                 let t = t.jd;
                 write!(f, "Propagation detected an impact with {s} at time {t}")
+            }
+            Self::SurfaceImpact => {
+                write!(
+                    f,
+                    "Field point coincides with the surface of an extended-gravity body"
+                )
             }
             Self::LockFailed => {
                 write!(f, "Failed to acquire lock on memory.")
@@ -136,6 +150,9 @@ impl From<Error> for PyErr {
                 let t = t.jd;
                 format!("Propagation detected an impact with {s} at time {t}")
             }),
+            Error::SurfaceImpact => Self::new::<exceptions::PyValueError, _>(
+                "Field point coincides with the surface of an extended-gravity body",
+            ),
             Error::OutOfMemory => {
                 Self::new::<exceptions::PyMemoryError, _>("The system ran out of memory.")
             }

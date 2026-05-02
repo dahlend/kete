@@ -39,6 +39,7 @@ pub mod analysis;
 pub mod debias;
 pub mod desigs;
 pub mod elements;
+pub mod extended_body;
 pub mod fitting;
 pub mod flux;
 pub mod fovs;
@@ -106,6 +107,13 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<uncertain_state::PyUncertainState>()?;
 
     m.add_class::<debias::PyDebiasTable>()?;
+
+    m.add_class::<extended_body::PyPolyhedron>()?;
+    m.add_class::<extended_body::PyRotationModel>()?;
+    m.add_class::<extended_body::PyExtendedBody>()?;
+    m.add_function(wrap_pyfunction!(extended_body::propagate_near_body_py, m)?)?;
+    m.add_function(wrap_pyfunction!(extended_body::is_inside_proximity_py, m)?)?;
+    m.add_function(wrap_pyfunction!(extended_body::body_acceleration_py, m)?)?;
 
     m.add_function(wrap_pyfunction!(known_masses, m)?)?;
     m.add_function(wrap_pyfunction!(register_mass, m)?)?;
