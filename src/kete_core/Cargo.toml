@@ -29,6 +29,8 @@ nom = "8.0.0"
 polars = {version = "0.53.0", optional=true, features=["parquet", "polars-io"]}
 pathfinding = "^4.10.0"
 pyo3 = { version =  "^0.28.2", features = ["abi3-py39"], optional=true}
+rand = "^0.10.0"
+rand_distr = "^0.6.0"
 rayon = "^1.11.0"
 
 [dev-dependencies]

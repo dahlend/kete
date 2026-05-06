@@ -3,7 +3,6 @@ use std::fmt::Debug;
 #[cfg(feature = "fetch")]
 use std::fs;
 
-use crate::UncertainState;
 #[cfg(feature = "fetch")]
 use kete_core::cache::cache_dir;
 use kete_core::constants::GMS_SQRT;
@@ -13,6 +12,7 @@ use kete_core::errors::{Error, KeteResult};
 use kete_core::forces::NonGravModel;
 use kete_core::frames::{Ecliptic, Equatorial};
 use kete_core::state::State;
+use kete_core::uncertain_state::UncertainState;
 use nalgebra::DMatrix;
 #[cfg(feature = "fetch")]
 use serde::Deserialize;

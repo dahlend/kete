@@ -36,11 +36,10 @@
 use crate::obs::AstrometricObservation;
 use crate::obs::differential_light_deflect;
 use crate::orbit_fitting::OrbitFit;
-use crate::uncertain_state::UncertainState;
 use kete_core::forces::NonGravModel;
 use kete_core::frames::{CenterBody, Equatorial, SSB};
 use kete_core::kepler::light_time_correct;
-use kete_core::prelude::{Error, KeteResult, State};
+use kete_core::prelude::{Error, KeteResult, State, UncertainState};
 use kete_spice::prelude::{LOADED_SPK, compute_state_transition};
 use nalgebra::{DMatrix, DVector};
 
