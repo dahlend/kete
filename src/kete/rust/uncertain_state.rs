@@ -1,4 +1,4 @@
-//! Python wrapper for [`kete_fitting::UncertainState`].
+//! Python wrapper for [`kete_core::uncertain_state::UncertainState`].
 //!
 //! Exposes the Rust-side `UncertainState` to Python as a frozen pyclass
 //! with getters for the state, covariance matrix, non-grav model, and
@@ -9,7 +9,6 @@ use crate::nongrav::PyNonGravModel;
 use crate::state::PyState;
 use crate::time::PyTime;
 use kete_core::prelude::*;
-use kete_fitting::UncertainState;
 use kete_spice::spk::LOADED_SPK;
 use nalgebra::DMatrix;
 use pyo3::prelude::*;

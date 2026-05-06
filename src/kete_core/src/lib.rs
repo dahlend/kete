@@ -86,6 +86,7 @@ pub mod kepler;
 pub mod simult_states;
 pub mod state;
 pub mod time;
+pub mod uncertain_state;
 pub mod util;
 
 /// Common useful imports
@@ -104,4 +105,5 @@ pub mod prelude {
     pub use crate::simult_states::SimultaneousStates;
     pub use crate::state::State;
     pub use crate::time::{TDB, Time, UTC};
+    pub use crate::uncertain_state::UncertainState;
 }

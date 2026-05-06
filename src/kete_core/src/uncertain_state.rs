@@ -31,10 +31,10 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use kete_core::elements::CometElements;
-use kete_core::forces::NonGravModel;
-use kete_core::frames::Equatorial;
-use kete_core::prelude::{Error, KeteResult, State};
+use crate::elements::CometElements;
+use crate::forces::NonGravModel;
+use crate::frames::Equatorial;
+use crate::prelude::{Error, KeteResult, State};
 use nalgebra::DMatrix;
 use rand::SeedableRng;
 use rand_distr::{Distribution, StandardNormal};
@@ -376,9 +376,10 @@ fn perturb_element(elements: &CometElements, col: usize, delta: f64) -> CometEle
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kete_core::constants::GMS_SQRT;
-    use kete_core::prelude::Desig;
-    use kete_core::time::Time;
+    use crate::constants::GMS_SQRT;
+    use crate::frames::Ecliptic;
+    use crate::prelude::Desig;
+    use crate::time::Time;
 
     /// Helper: build a simple Earth-like state for testing.
     fn test_state() -> State<Equatorial> {
@@ -521,8 +522,6 @@ mod tests {
 
     #[test]
     fn test_from_cometary_round_trip() {
-        use kete_core::frames::Ecliptic;
-
         // Build a state, convert to cometary elements, then round-trip
         // through from_cometary with an identity-like covariance.
         let state_eq = test_state();
@@ -552,8 +551,6 @@ mod tests {
 
     #[test]
     fn test_from_cometary_with_nongrav() {
-        use kete_core::frames::Ecliptic;
-
         let state_eq = test_state();
         let state_ecl: State<Ecliptic> = state_eq.into_frame();
         let elements = CometElements::from_state(&state_ecl);
