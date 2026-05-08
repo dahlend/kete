@@ -116,7 +116,7 @@ static U_POW_TABLE: std::sync::LazyLock<[RowSVector<f64, 7>; 7]> = std::sync::La
 
 const MIN_RATIO: f64 = 0.25;
 const EPSILON: f64 = 1e-6;
-const MIN_STEP: f64 = 0.0005;
+const MIN_STEP: f64 = 0.00005;
 
 /// Gauss-Radau Spacing Numerical Integrator
 /// This solves a second-order initial value problem.
@@ -135,6 +135,9 @@ const MIN_STEP: f64 = 0.0005;
 /// to match the original Fortran implementation. After some experimentation it was
 /// found that the correction and prediction steps turned out to help to such a small
 /// degree in general that they were not worth the added complexity.
+///
+/// Compensated (Kahan) summation is used for the state update to reduce
+/// roundoff accumulation from O(N) to approximately O(sqrt(N)).
 #[allow(missing_debug_implementations, reason = "No debug impl needed")]
 pub struct RadauIntegrator<'a, MType, D: Dim>
 where
@@ -163,6 +166,11 @@ where
     /// propagation set this to 3 (physical accelerations only) so that the
     /// large STM elements do not artificially shrink step-size.
     control_dim: usize,
+
+    // Kahan compensated summation error accumulators.
+    comp_state: OVector<f64, D>,
+    comp_state_der: OVector<f64, D>,
+    comp_time: f64,
 }
 
 impl<'a, MType, D: Dim> RadauIntegrator<'a, MType, D>
@@ -199,6 +207,9 @@ where
             state_der_scratch: Matrix::zeros_generic(dim, U1),
             eval_scratch: Matrix::zeros_generic(dim, U1),
             control_dim: full_dim,
+            comp_state: Matrix::zeros_generic(dim, U1),
+            comp_state_der: Matrix::zeros_generic(dim, U1),
+            comp_time: 0.0,
         };
 
         res.cur_state_der_der = (res.func)(
@@ -405,15 +416,27 @@ where
                 let ss = step_size * step_size;
                 for idx in 0..self.cur_state.len() {
                     unsafe {
-                        self.cur_state[idx] += self.cur_state_der.get_unchecked(idx) * step_size
+                        let delta_state = self.cur_state_der.get_unchecked(idx) * step_size
                             + ss * (self.cur_state_der_der.get_unchecked(idx) * 0.5
                                 + self.cur_b.row(idx).dot(&W_VEC));
-                        self.cur_state_der[idx] += step_size
+                        let y_pos = delta_state - self.comp_state[idx];
+                        let t_pos = self.cur_state[idx] + y_pos;
+                        self.comp_state[idx] = (t_pos - self.cur_state[idx]) - y_pos;
+                        self.cur_state[idx] = t_pos;
+
+                        let delta_der = step_size
                             * (self.cur_state_der_der.get_unchecked(idx)
                                 + self.cur_b.row(idx).dot(&U_VEC));
+                        let y_vel = delta_der - self.comp_state_der[idx];
+                        let t_vel = self.cur_state_der[idx] + y_vel;
+                        self.comp_state_der[idx] = (t_vel - self.cur_state_der[idx]) - y_vel;
+                        self.cur_state_der[idx] = t_vel;
                     }
                 }
-                self.cur_time.jd += step_size;
+                let y_t = step_size - self.comp_time;
+                let t_t = self.cur_time.jd + y_t;
+                self.comp_time = (t_t - self.cur_time.jd) - y_t;
+                self.cur_time.jd = t_t;
                 self.cur_state_der_der = (self.func)(
                     self.cur_time,
                     &self.cur_state,
