@@ -51,6 +51,15 @@ const EPS_FLOOR: f64 = f64::EPSILON * f64::EPSILON;
 // Maximum number of extrapolation columns (effective order = 2 * K_MAX).
 const K_MAX: usize = 8;
 
+// Minimum extrapolation column index allowed for step acceptance. With j-indexing
+// from 0, effective order at column j is 2*(j+1), so MIN_J=3 forces order >= 8
+// and MIN_J=4 forces order >= 10. The default acceptance criterion (column-to-
+// column change below tolerance) tends to accept too eagerly at low columns on
+// smooth orbits, leaving a global error floor set by truncation at order 4-8.
+// Forcing a higher floor pushes BS toward Radau-like accuracy on smooth problems
+// at the cost of a few extra force evaluations per step.
+const MIN_J: usize = 4;
+
 // Safety factor applied when estimating the next step size.
 const SAFETY: f64 = 0.9;
 
@@ -110,6 +119,7 @@ where
     // Kahan compensated summation error accumulators.
     comp_state: OVector<f64, D>,
     comp_state_der: OVector<f64, D>,
+    comp_time: f64,
 }
 
 impl<'a, MType, D: Dim> BulirschStoerIntegrator<'a, MType, D>
@@ -142,6 +152,7 @@ where
             control_dim: full_dim,
             comp_state: Matrix::zeros_generic(dim, U1),
             comp_state_der: Matrix::zeros_generic(dim, U1),
+            comp_time: 0.0,
         };
         res.cur_state_der_der = (res.func)(
             time_init,
@@ -241,11 +252,19 @@ where
     /// Perform one modified midpoint integration with `n_sub` sub-steps
     /// (Stoermer form for 2nd-order ODEs).
     ///
-    /// Uses the increment formulation: track `delta = y_k - y_{k-1}` directly
-    /// to avoid the `2*y_k - y_{k-1}` computation that amplifies roundoff.
-    /// Gragg smoothing is applied algebraically without the extra leapfrog
-    /// allocation: `y_smooth = y_n + f_n * h^2/4`, and the velocity is
-    /// computed as `(y_n - y_{n-1})/h + f_n * h/2`.
+    /// Returns the macro-step increments `(D_pos, D_vel)` rather than absolute
+    /// states, where `D_pos = y_smooth - cur_state` and
+    /// `D_vel = ydot_smooth - cur_state_der`. Working in increment form
+    /// throughout (both the per-substep `delta = y_k - y_{k-1}` and the
+    /// running macro-step quantities) keeps every accumulator on numbers of
+    /// order `h * v_0` or smaller, which is the key to making the downstream
+    /// extrapolation tableau roundoff-clean.
+    ///
+    /// The velocity increment is built from a cancellation-free recurrence
+    /// `dvel_{k+1} = dvel_k + h * f_k` starting from `dvel_1 = h/2 * a_0`,
+    /// which is algebraically equivalent to the standard reconstruction
+    /// `(y_n - y_{n-1})/h - v_0` but avoids subtracting two numbers of
+    /// magnitude `~v_0`.
     fn modified_midpoint(
         &mut self,
         h_total: f64,
@@ -253,73 +272,98 @@ where
     ) -> KeteResult<(OVector<f64, D>, OVector<f64, D>)> {
         let h = h_total / n_sub as f64;
         let h2 = h * h;
+        let (dim, _) = self.cur_state.shape_generic();
 
-        // First step: y_1 = y_0 + h * v_0 + (h^2/2) * a_0
+        // Per-substep position increment delta = y_k - y_{k-1}.
+        //   delta_1 = h * v_0 + h^2/2 * a_0
         let mut delta = &self.cur_state_der * h + &self.cur_state_der_der * (h2 * 0.5);
-        let mut y_prev = self.cur_state.clone();
-        let mut y_cur = &self.cur_state + &delta;
 
-        // Velocity estimate at sub-step 1 (used for velocity-dependent forces).
-        let mut vel_est = &delta / h;
+        // Running macro-step increments tracked relative to (cur_state, cur_state_der):
+        //   d_cur  = y_cur  - cur_state                 (starts as delta_1)
+        //   d_prev = y_prev - cur_state                 (starts at 0)
+        //   dvel   = (y_cur - y_prev)/h - cur_state_der (starts as h/2 * a_0)
+        let mut d_cur = delta.clone();
+        let mut d_prev: OVector<f64, D> = Matrix::zeros_generic(dim, U1);
+        let mut dvel = &self.cur_state_der_der * (h * 0.5);
+
+        // Absolute y_cur is still required for the force evaluation.
+        let mut y_cur = &self.cur_state + &d_cur;
+
+        // Velocity passed to the force at sub-step 1 (= delta_1 / h, the
+        // standard half-step estimate). For pure gravity this is unused.
+        let mut vel_est = &self.cur_state_der + &dvel;
 
         for k in 1..n_sub {
             let t_k = (self.cur_time.jd + k as f64 * h).into();
             let f_k = (self.func)(t_k, &y_cur, &vel_est, &mut self.metadata, false)?;
 
             // delta_{k+1} = delta_k + h^2 * f_k
-            // y_{k+1} = y_k + delta_{k+1}
             delta += &f_k * h2;
-            let y_next = &y_cur + &delta;
 
-            // Central difference velocity for next sub-step.
-            vel_est = (&y_next - &y_prev) / (2.0 * h);
+            // dvel_{k+1} = dvel_k + h * f_k (cancellation-free)
+            dvel += &f_k * h;
 
-            y_prev = y_cur;
-            y_cur = y_next;
+            // Advance position increments: d_next = d_cur + delta_{k+1}.
+            let d_next = &d_cur + &delta;
+
+            // Central-difference velocity at y_k for the next sub-step's force
+            // evaluation. Algebraically (y_{k+1} - y_{k-1})/(2h), assembled
+            // from increments to keep cancellation contained.
+            vel_est = &self.cur_state_der + (&d_next - &d_prev) / (2.0 * h);
+
+            d_prev = d_cur;
+            d_cur = d_next;
+            y_cur = &self.cur_state + &d_cur;
         }
 
         // Final function evaluation at y_n for Gragg smoothing.
         let t_n = (self.cur_time.jd + h_total).into();
         let f_n = (self.func)(t_n, &y_cur, &vel_est, &mut self.metadata, false)?;
 
-        // Gragg smoothing for position:
-        //   S = (y_{n-1} + 2*y_n + y_{n+1}) / 4 = y_n + f_n * h^2 / 4
-        let y_smooth = &y_cur + &f_n * (h2 * 0.25);
+        // Gragg-smoothed increments:
+        //   y_smooth      = y_n + f_n * h^2/4         => D_pos = d_cur + f_n * h^2/4
+        //   ydot_smooth   = (y_n - y_{n-1})/h + f_n*h/2
+        //                                              => D_vel = dvel + f_n * h/2
+        let d_smooth = &d_cur + &f_n * (h2 * 0.25);
+        let ddot_smooth = &dvel + &f_n * (h * 0.5);
 
-        // Smoothed velocity:
-        //   (y_{n+1} - y_{n-1}) / (2h) = (y_n - y_{n-1})/h + f_n*h/2
-        let ydot_smooth = (&y_cur - &y_prev) / h + &f_n * (h * 0.5);
-
-        Ok((y_smooth, ydot_smooth))
+        Ok((d_smooth, ddot_smooth))
     }
 
     /// Attempt one macro-step of size `step_size`.
     ///
     /// Builds the extrapolation tableau column by column, checking the error
-    /// estimate after each column. On acceptance, the state is updated using
-    /// compensated summation and the suggested next step size is returned.
+    /// estimate after each column. The tableau stores macro-step
+    /// **increments** rather than absolute states, which puts the
+    /// Aitken-Neville recurrence on numbers of order `h * v` and keeps the
+    /// `prev - prev_prev` cancellation off the position-scale floor. On
+    /// acceptance, the state is updated using compensated summation and the
+    /// suggested next step size is returned.
     fn step(&mut self, step_size: f64) -> KeteResult<f64> {
         let cd = self.control_dim;
 
-        // Extrapolation tableau. Row j stores the most recently computed
-        // extrapolation for sub-step count N_SEQ[j]. We only need two
-        // "active" rows at a time for the Aitken-Neville recurrence, but
-        // keeping the full triangle makes the indexing straightforward and
-        // K_MAX is small (8).
+        // Extrapolation tableau (increments, not absolute states). Row j stores
+        // the most recently computed extrapolation for sub-step count N_SEQ[j].
+        // We only need two "active" rows at a time for the Aitken-Neville
+        // recurrence, but keeping the full triangle makes the indexing
+        // straightforward and K_MAX is small (8).
         let mut tab_pos: Vec<Vec<OVector<f64, D>>> = Vec::with_capacity(K_MAX);
         let mut tab_vel: Vec<Vec<OVector<f64, D>>> = Vec::with_capacity(K_MAX);
 
         for j in 0..K_MAX {
             let n_sub = N_SEQ[j];
-            let (pos_j, vel_j) = self.modified_midpoint(step_size, n_sub)?;
+            let (dpos_j, dvel_j) = self.modified_midpoint(step_size, n_sub)?;
 
-            // Start this row of the tableau with the raw midpoint result.
+            // Start this row of the tableau with the raw midpoint increment.
             let mut row_pos = Vec::with_capacity(j + 1);
             let mut row_vel = Vec::with_capacity(j + 1);
-            row_pos.push(pos_j);
-            row_vel.push(vel_j);
+            row_pos.push(dpos_j);
+            row_vel.push(dvel_j);
 
-            // Aitken-Neville extrapolation across previous rows.
+            // Aitken-Neville extrapolation across previous rows. Linear in the
+            // inputs, so extrapolating increments yields the increment of the
+            // extrapolation - same answer, but the `prev - prev_prev`
+            // subtraction now happens on small numbers.
             for k in 1..=j {
                 let ratio_sq = (N_SEQ[j] as f64 / N_SEQ[j - k] as f64).powi(2);
                 let denom = ratio_sq - 1.0;
@@ -338,19 +382,25 @@ where
                 row_vel.push(extrap_vel);
             }
 
-            // Check error estimate (need at least 2 columns).
+            // Check error estimate (need at least 2 columns, and at least
+            // MIN_J columns to enforce the order floor for acceptance).
             // Position error controls step acceptance. Velocity error
             // influences step-size growth: large velocity extrapolation
             // error (indicating under-resolved energy) prevents aggressive
             // step growth without forcing rejections on short arcs.
-            if j >= 1 {
-                let cur_pos = &row_pos[j];
-                let prev_pos = &row_pos[j - 1];
+            if j >= MIN_J {
+                let cur_dpos = &row_pos[j];
+                let prev_dpos = &row_pos[j - 1];
 
                 let mut err_max: f64 = 0.0;
                 for i in 0..cd {
-                    let scale = RTOL * cur_pos[i].abs() + EPS_FLOOR;
-                    let err_i = (cur_pos[i] - prev_pos[i]).abs() / scale;
+                    // Scale uses the absolute position |cur_state + cur_dpos|;
+                    // the error is |cur_dpos - prev_dpos| (a difference of
+                    // small numbers, so cancellation here is bounded by the
+                    // truncation error itself).
+                    let abs_pos_i = self.cur_state[i] + cur_dpos[i];
+                    let scale = RTOL * abs_pos_i.abs() + EPS_FLOOR;
+                    let err_i = (cur_dpos[i] - prev_dpos[i]).abs() / scale;
                     if err_i > err_max {
                         err_max = err_i;
                     }
@@ -359,13 +409,14 @@ where
                 if err_max < 1.0 {
                     // Step accepted on position accuracy.
                     // Compute velocity error for step-size control.
-                    let cur_vel = &row_vel[j];
-                    let prev_vel = &row_vel[j - 1];
+                    let cur_dvel = &row_vel[j];
+                    let prev_dvel = &row_vel[j - 1];
                     let h_abs = step_size.abs();
                     let mut vel_err: f64 = 0.0;
                     for i in 0..cd {
-                        let vel_scale = RTOL * cur_pos[i].abs() / h_abs + EPS_FLOOR;
-                        let err_v = (cur_vel[i] - prev_vel[i]).abs() / vel_scale;
+                        let abs_pos_i = self.cur_state[i] + cur_dpos[i];
+                        let vel_scale = RTOL * abs_pos_i.abs() / h_abs + EPS_FLOOR;
+                        let err_v = (cur_dvel[i] - prev_dvel[i]).abs() / vel_scale;
                         if err_v > vel_err {
                             vel_err = err_v;
                         }
@@ -373,17 +424,15 @@ where
                     // Use the larger of position and velocity error for
                     // step-size prediction.
                     let sizing_err = err_max.max(vel_err);
-                    // Step accepted. Compute the state change and apply with
-                    // compensated (Kahan) summation.
-                    let accepted_pos = &row_pos[j];
-                    let accepted_vel = &row_vel[j];
-
-                    let delta_pos = accepted_pos - &self.cur_state;
-                    let delta_vel = accepted_vel - &self.cur_state_der;
+                    // Step accepted. The accepted row entries ARE the
+                    // increments - apply directly via compensated (Kahan)
+                    // summation, no second subtraction needed.
+                    let accepted_dpos = &row_pos[j];
+                    let accepted_dvel = &row_vel[j];
 
                     // Kahan summation for position.
                     for i in 0..self.cur_state.len() {
-                        let y_pos = delta_pos[i] - self.comp_state[i];
+                        let y_pos = accepted_dpos[i] - self.comp_state[i];
                         let t_pos = self.cur_state[i] + y_pos;
                         self.comp_state[i] = (t_pos - self.cur_state[i]) - y_pos;
                         self.cur_state[i] = t_pos;
@@ -391,13 +440,16 @@ where
 
                     // Kahan summation for velocity.
                     for i in 0..self.cur_state_der.len() {
-                        let y_vel = delta_vel[i] - self.comp_state_der[i];
+                        let y_vel = accepted_dvel[i] - self.comp_state_der[i];
                         let t_vel = self.cur_state_der[i] + y_vel;
                         self.comp_state_der[i] = (t_vel - self.cur_state_der[i]) - y_vel;
                         self.cur_state_der[i] = t_vel;
                     }
 
-                    self.cur_time.jd += step_size;
+                    let y_t = step_size - self.comp_time;
+                    let t_t = self.cur_time.jd + y_t;
+                    self.comp_time = (t_t - self.cur_time.jd) - y_t;
+                    self.cur_time.jd = t_t;
 
                     // Re-evaluate acceleration at the accepted state.
                     self.cur_state_der_der = (self.func)(
