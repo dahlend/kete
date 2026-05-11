@@ -1,5 +1,6 @@
 //! MaybeVec
-//! This allows Py03 functions to have polymorphic support for a single value or a vector of values.
+//! This allows Py03 functions to have polymorphic support for a single value or a
+//! vector of values.
 //!
 
 use std::fmt::Debug;

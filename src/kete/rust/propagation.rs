@@ -4,10 +4,11 @@ use kete_core::kepler::moid;
 use kete_core::{
     desigs::try_name_from_id,
     errors::Error,
-    forces::NonGravModel,
+    forces::{FrozenNonGrav, GravParams},
     frames::{Ecliptic, Equatorial, SunCenter},
-    state::State,
+    state::{State, StateLike},
 };
+use kete_spice::propagation::{SpkNBody, helio_with_frozen_nongrav};
 use pyo3::{IntoPyObjectExt, Py, PyAny, PyResult, Python, pyfunction};
 use rayon::prelude::*;
 
@@ -147,7 +148,7 @@ pub fn propagation_n_body_spk_py(
                 .into_par_iter()
                 .with_min_len(5)
                 .map(|(state, model)| {
-                    let model = model.map(|x| x.0);
+                    let model: Option<FrozenNonGrav> = model.map(|x| x.to_frozen());
                     let center = state.center_id();
                     let frame = state.frame;
                     let state = state.raw;
@@ -164,27 +165,33 @@ pub fn propagation_n_body_spk_py(
                         ))
                         .change_frame(frame));
                     }
-                    let ssb_state = {
-                        let spk = kete_spice::prelude::LOADED_SPK
-                            .try_read()
-                            .map_err(|_| Error::ValueError("SPK lock unavailable".into()))?;
-                        spk.try_to_ssb(state)?
+                    let spk = kete_spice::prelude::LOADED_SPK
+                        .try_read()
+                        .map_err(|_| Error::ValueError("SPK lock unavailable".into()))?;
+                    let ssb_state = spk.try_to_ssb(state)?;
+                    let result: kete_core::errors::KeteResult<_> = if include_asteroids {
+                        let planets = GravParams::selected_masses();
+                        match model.as_ref() {
+                            None => ssb_state.propagate_with(&SpkNBody::new(&spk, &planets), jd),
+                            Some(frozen) => {
+                                let force = helio_with_frozen_nongrav(&spk, &planets, frozen)?;
+                                ssb_state.propagate_with(&force, jd)
+                            }
+                        }
+                    } else {
+                        let planets = GravParams::planets();
+                        match model.as_ref() {
+                            None => ssb_state.propagate_with(&SpkNBody::new(&spk, &planets), jd),
+                            Some(frozen) => {
+                                let force = helio_with_frozen_nongrav(&spk, &planets, frozen)?;
+                                ssb_state.propagate_with(&force, jd)
+                            }
+                        }
                     };
-                    match kete_spice::prelude::propagate_n_body_spk(
-                        ssb_state,
-                        jd,
-                        include_asteroids,
-                        model,
-                    ) {
+                    match result {
                         Ok(ssb_result) => {
                             let mut dyn_result = State::<Equatorial>::from(ssb_result);
-                            {
-                                let spk =
-                                    kete_spice::prelude::LOADED_SPK.try_read().map_err(|_| {
-                                        Error::ValueError("SPK lock unavailable".into())
-                                    })?;
-                                spk.try_change_center(&mut dyn_result, center)?;
-                            }
+                            spk.try_change_center(&mut dyn_result, center)?;
                             Ok(Into::<PyState>::into(dyn_result).change_frame(frame))
                         }
                         Err(er) => {
@@ -292,8 +299,10 @@ pub fn propagation_n_body_py(
         planet_states.map(|s| s.into_iter().map(|x| x.raw).collect());
 
     let non_gravs = non_gravs.unwrap_or(vec![None; states.len()]);
-    let non_gravs: Vec<Option<NonGravModel>> =
-        non_gravs.into_iter().map(|y| y.map(|z| z.0)).collect();
+    let non_gravs: Vec<Option<FrozenNonGrav>> = non_gravs
+        .into_iter()
+        .map(|y| y.map(|z| z.to_frozen()))
+        .collect();
 
     let jd = jd_final.into();
     let res: Result<Vec<_>, _> = py.detach(|| {
@@ -303,7 +312,7 @@ pub fn propagation_n_body_py(
             .collect_vec()
             .par_chunks(batch_size)
             .map(|chunk| {
-                let (chunk_state, chunk_nongrav): (Vec<_>, Vec<Option<NonGravModel>>) =
+                let (chunk_state, chunk_nongrav): (Vec<_>, Vec<Option<FrozenNonGrav>>) =
                     chunk.iter().cloned().unzip();
 
                 let spk = kete_spice::prelude::LOADED_SPK

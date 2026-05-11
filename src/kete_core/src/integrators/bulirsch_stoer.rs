@@ -500,7 +500,7 @@ mod tests {
     use nalgebra::Vector3;
 
     use super::*;
-    use crate::forces::{CentralAccelMeta, central_accel};
+    use crate::integrators::stress_tests::{CentralAccelMeta, central_accel};
     use crate::kepler::analytic_2_body;
 
     /// Two-body orbit validated against the analytic Kepler solution.

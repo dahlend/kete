@@ -1,7 +1,9 @@
 use super::*;
+use kete_core::forces::GravParams;
 use kete_core::fov::{FOV, FovLike, check_statics};
+use kete_core::state::StateLike;
 use kete_spice::fov_checks;
-use kete_spice::propagation::propagate_n_body_spk;
+use kete_spice::propagation::SpkNBody;
 use kete_spice::spk::LOADED_SPK;
 use pyo3::prelude::*;
 use rayon::prelude::*;
@@ -59,7 +61,7 @@ pub fn fov_checks_py(
     if !chunk.is_empty() {
         fov_chunks.push(chunk);
     }
-    let mut jd = pop.epoch.jd;
+    let mut jd = pop.epoch().jd;
     let mut big_jd = jd;
     let mut states = pop.states;
     let mut big_step_states = states.clone();
@@ -77,10 +79,14 @@ pub fn fov_checks_py(
                 .filter_map(|state| {
                     let spk = LOADED_SPK.try_read().ok()?;
                     let ssb = spk.try_to_ssb(state).ok()?;
-                    drop(spk);
-                    propagate_n_body_spk(ssb, jd.into(), include_asteroids, None)
-                        .ok()
-                        .map(Into::into)
+                    let result = if include_asteroids {
+                        let planets = GravParams::selected_masses();
+                        ssb.propagate_with(&SpkNBody::new(&spk, &planets), jd.into())
+                    } else {
+                        let planets = GravParams::planets();
+                        ssb.propagate_with(&SpkNBody::new(&spk, &planets), jd.into())
+                    };
+                    result.ok().map(Into::into)
                 })
                 .collect();
         };
@@ -95,10 +101,14 @@ pub fn fov_checks_py(
                 .filter_map(|state| {
                     let spk = LOADED_SPK.try_read().ok()?;
                     let ssb = spk.try_to_ssb(state).ok()?;
-                    drop(spk);
-                    propagate_n_body_spk(ssb, jd.into(), include_asteroids, None)
-                        .ok()
-                        .map(Into::into)
+                    let result = if include_asteroids {
+                        let planets = GravParams::selected_masses();
+                        ssb.propagate_with(&SpkNBody::new(&spk, &planets), jd.into())
+                    } else {
+                        let planets = GravParams::planets();
+                        ssb.propagate_with(&SpkNBody::new(&spk, &planets), jd.into())
+                    };
+                    result.ok().map(Into::into)
                 })
                 .collect();
         };

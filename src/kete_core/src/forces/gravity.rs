@@ -31,7 +31,7 @@
 use std::str::FromStr;
 
 use crossbeam::sync::ShardedLock;
-use nalgebra::Vector3;
+use nalgebra::{Matrix3, Vector3};
 
 use crate::{
     constants::{C_AU_PER_DAY_INV_SQUARED, EARTH_J2, GMS, JUPITER_J2, SUN_J2},
@@ -64,21 +64,15 @@ impl FromStr for GravParams {
     /// Load a [`GravParams`] from a single string.
     fn from_str(row: &str) -> KeteResult<Self> {
         let mut iter = row.split_whitespace();
-        let naif_id = iter.next();
-        let mass = iter.next();
-        // default to 100m if not present
-        let radius = iter.next().unwrap_or("6.684587122268446e-10");
-        if naif_id.is_none() || mass.is_none() {
-            return Err(Error::IOError(format!(
-                "GravParams row incorrectly formatted. {row}",
-            )));
-        }
-        let mass: f64 = mass.unwrap().parse()?;
-
+        let err = || Error::IOError(format!("GravParams row incorrectly formatted. {row}"));
+        let naif_id: i32 = iter.next().ok_or_else(err)?.parse()?;
+        let mass: f64 = iter.next().ok_or_else(err)?.parse()?;
+        // default radius: 100 m expressed in AU.
+        let radius: f32 = iter.next().unwrap_or("6.684587122268446e-10").parse()?;
         Ok(Self {
-            naif_id: naif_id.unwrap().parse()?,
+            naif_id,
             mass: mass * GMS,
-            radius: radius.parse()?,
+            radius,
         })
     }
 }
@@ -88,10 +82,11 @@ pub static MASSES_KNOWN: std::sync::LazyLock<ShardedLock<Vec<GravParams>>> =
     std::sync::LazyLock::new(|| {
         let mut singleton = Vec::new();
         let text = std::str::from_utf8(include_bytes!("../../data/masses.tsv"))
-            .unwrap()
+            .expect("masses.tsv is not valid UTF-8")
             .split('\n');
         for row in text.filter(|x| !x.starts_with('#') & (!x.trim().is_empty())) {
-            let code = GravParams::from_str(row).unwrap();
+            let code = GravParams::from_str(row)
+                .unwrap_or_else(|e| panic!("failed to parse masses.tsv row {row:?}: {e}"));
             singleton.push(code);
         }
         singleton.sort_by(|a, b| a.mass.total_cmp(&b.mass));
@@ -101,20 +96,43 @@ pub static MASSES_KNOWN: std::sync::LazyLock<ShardedLock<Vec<GravParams>>> =
 /// Gravity parameter Singleton
 pub static MASSES_SELECTED: std::sync::LazyLock<ShardedLock<Vec<GravParams>>> =
     std::sync::LazyLock::new(|| {
-        let mut singleton = Vec::new();
         // pre-add the planets and the 5 most massive asteroids from the masses_known list
         // 20000001, 20000002, 20000004, 20000010, 20000704
         // Ceres, Vesta, Pallas, Hygiea, and Interamnia
-        let known_masses = MASSES_KNOWN.read().unwrap();
-        for id in [
-            10, 1, 2, 399, 301, 4, 5, 6, 7, 8, 20000001, 20000002, 20000004, 20000010, 20000704,
-        ] {
-            if let Some(param) = known_masses.iter().find(|p| p.naif_id == id) {
-                singleton.push(*param);
-            }
-        }
+        let known = MASSES_KNOWN.read().unwrap();
+        let mut singleton = select_by_naif_id(
+            &known,
+            &[
+                10, 1, 2, 399, 301, 4, 5, 6, 7, 8, 20000001, 20000002, 20000004, 20000010, 20000704,
+            ],
+        );
         singleton.sort_by(|a, b| a.mass.total_cmp(&b.mass));
         ShardedLock::new(singleton)
+    });
+
+/// Planets and Moon, in the order `[Sun, Mercury, Venus, Earth, Moon, Mars, Jupiter,
+/// Saturn, Uranus, Neptune]`. Initialized once from [`MASSES_KNOWN`].
+///
+/// Wrapped in [`ShardedLock`] purely so it returns the same guard type as
+/// [`MASSES_SELECTED`] -- the data is read-only after init and the lock is
+/// uncontended in practice.
+static PLANETS: std::sync::LazyLock<ShardedLock<Vec<GravParams>>> =
+    std::sync::LazyLock::new(|| {
+        ShardedLock::new(select_by_naif_id(
+            &MASSES_KNOWN.read().unwrap(),
+            &[10, 1, 2, 399, 301, 4, 5, 6, 7, 8],
+        ))
+    });
+
+/// Planets only (Earth and Moon merged into Earth-Moon barycenter id 3).
+///
+/// Wrapped in [`ShardedLock`] for the same reason as [`PLANETS`].
+static SIMPLIFIED_PLANETS: std::sync::LazyLock<ShardedLock<Vec<GravParams>>> =
+    std::sync::LazyLock::new(|| {
+        ShardedLock::new(select_by_naif_id(
+            &MASSES_KNOWN.read().unwrap(),
+            &[10, 1, 2, 3, 4, 5, 6, 7, 8],
+        ))
     });
 
 /// Register a new massive object to be used in the extended list of objects.
@@ -125,26 +143,32 @@ pub static MASSES_SELECTED: std::sync::LazyLock<ShardedLock<Vec<GravParams>>> =
 /// again.
 #[cfg_attr(feature = "pyo3", pyfunction, pyo3(signature=(naif_id, mass, radius=0.0)))]
 pub fn register_custom_mass(naif_id: i32, mass: f64, radius: f32) {
-    let params = GravParams::new(naif_id, mass * GMS, radius);
-    params.register();
+    GravParams {
+        naif_id,
+        mass: mass * GMS,
+        radius,
+    }
+    .register();
 }
 
-/// Register a new massive object to be used in the extended list of objects.
+/// Register a massive object from the known-masses table by its NAIF ID.
 ///
-/// This looks up the mass and radius of the object by its NAIF ID of the known
-/// masses.
+/// Use [`register_custom_mass`] to add a body that is not in the table.
 ///
-/// # Panics
-/// Panic if a write lock cannot be put on [`MASSES_SELECTED`] or the object's mass is
-/// not known.
+/// # Errors
+///
+/// Returns an error if the NAIF ID is not present in the built-in mass table.
 #[cfg_attr(feature = "pyo3", pyfunction)]
-pub fn register_mass(naif_id: i32) {
+pub fn register_mass(naif_id: i32) -> KeteResult<()> {
     let known_masses = GravParams::known_masses();
     if let Some(params) = known_masses.iter().find(|p| p.naif_id == naif_id) {
         params.register();
-        return;
+        return Ok(());
     }
-    panic!("Failed to find mass for NAIF ID {naif_id}");
+    Err(Error::ValueError(format!(
+        "NAIF ID {naif_id} is not in the built-in mass table; \
+         use register_custom_mass to add it manually"
+    )))
 }
 
 /// List the massive objects in the extended list of objects to be used during orbit
@@ -158,8 +182,7 @@ pub fn register_mass(naif_id: i32) {
 #[cfg_attr(feature = "pyo3", pyfunction)]
 #[must_use]
 pub fn registered_masses() -> Vec<(String, i32, f64, f32)> {
-    let params = GravParams::selected_masses();
-    params
+    GravParams::selected_masses()
         .iter()
         .map(|p| {
             (
@@ -182,8 +205,7 @@ pub fn registered_masses() -> Vec<(String, i32, f64, f32)> {
 #[cfg_attr(feature = "pyo3", pyfunction)]
 #[must_use]
 pub fn known_masses() -> Vec<(String, i32, f64, f32)> {
-    let params = GravParams::known_masses();
-    params
+    GravParams::known_masses()
         .iter()
         .map(|p| {
             (
@@ -196,17 +218,15 @@ pub fn known_masses() -> Vec<(String, i32, f64, f32)> {
         .collect()
 }
 
-impl GravParams {
-    /// Create a new [`GravParams`] object.
-    #[must_use]
-    pub fn new(naif_id: i32, mass: f64, radius: f32) -> Self {
-        Self {
-            naif_id,
-            mass,
-            radius,
-        }
-    }
+/// Pick out the [`GravParams`] entries with NAIF ids matching `ids`,
+/// preserving the order of `ids` and skipping any not present in `known`.
+fn select_by_naif_id(known: &[GravParams], ids: &[i32]) -> Vec<GravParams> {
+    ids.iter()
+        .filter_map(|id| known.iter().find(|p| p.naif_id == *id).copied())
+        .collect()
+}
 
+impl GravParams {
     /// Add acceleration to the provided accel vector.
     #[inline(always)]
     pub fn add_acceleration(
@@ -219,33 +239,20 @@ impl GravParams {
 
         // Special cases for different objects
         match self.naif_id {
-            5 => {
-                let radius = self.radius;
-
-                // GR correction
-                apply_gr_correction(accel, rel_pos, rel_vel, &mass);
-
-                // J2 correction
-                let rel_pos_eclip = Ecliptic::from_equatorial(*rel_pos);
-                *accel += Ecliptic::to_equatorial(j2_correction(
-                    &rel_pos_eclip,
-                    radius,
-                    &JUPITER_J2,
-                    &mass,
-                ));
-            }
-            10 => {
-                let radius = self.radius;
-
-                // GR correction
-                apply_gr_correction(accel, rel_pos, rel_vel, &mass);
-
-                // J2 correction
+            // Sun and Jupiter share an identical correction shape (GR plus
+            // ecliptic-frame J2); only the J2 coefficient differs.
+            5 | 10 => {
+                let j2 = if self.naif_id == 10 {
+                    SUN_J2
+                } else {
+                    JUPITER_J2
+                };
+                apply_gr_correction(accel, rel_pos, rel_vel, mass);
                 let rel_pos_eclip = Ecliptic::from_equatorial(*rel_pos);
                 *accel +=
-                    Ecliptic::to_equatorial(j2_correction(&rel_pos_eclip, radius, &SUN_J2, &mass));
+                    Ecliptic::to_equatorial(j2_correction(&rel_pos_eclip, self.radius, j2, mass));
             }
-            399 => *accel += j2_correction(rel_pos, self.radius, &EARTH_J2, &mass),
+            399 => *accel += j2_correction(rel_pos, self.radius, EARTH_J2, mass),
             _ => (),
         }
 
@@ -283,29 +290,19 @@ impl GravParams {
     }
 
     /// List of all known massive planets and the Moon.
-    #[must_use]
-    pub fn planets() -> Vec<Self> {
-        let known = Self::known_masses();
-        let mut planets = Vec::new();
-        for id in [10, 1, 2, 399, 301, 4, 5, 6, 7, 8] {
-            if let Some(param) = known.iter().find(|p| p.naif_id == id) {
-                planets.push(*param);
-            }
-        }
-        planets
+    ///
+    /// # Panics
+    /// Panic if a read lock cannot be put on [`PLANETS`].
+    pub fn planets() -> crossbeam::sync::ShardedLockReadGuard<'static, Vec<Self>> {
+        PLANETS.read().unwrap()
     }
 
     /// List of Massive planets, but merge the moon and earth together.
-    #[must_use]
-    pub fn simplified_planets() -> Vec<Self> {
-        let known = Self::known_masses();
-        let mut planets = Vec::new();
-        for id in [10, 1, 2, 3, 4, 5, 6, 7, 8] {
-            if let Some(param) = known.iter().find(|p| p.naif_id == id) {
-                planets.push(*param);
-            }
-        }
-        planets
+    ///
+    /// # Panics
+    /// Panic if a read lock cannot be put on [`SIMPLIFIED_PLANETS`].
+    pub fn simplified_planets() -> crossbeam::sync::ShardedLockReadGuard<'static, Vec<Self>> {
+        SIMPLIFIED_PLANETS.read().unwrap()
     }
 }
 
@@ -313,7 +310,7 @@ impl GravParams {
 ///
 /// Z is the z component of the unit vector.
 #[inline(always)]
-fn j2_correction(rel_pos: &Vector3<f64>, radius: f32, j2: &f64, mass: &f64) -> Vector3<f64> {
+fn j2_correction(rel_pos: &Vector3<f64>, radius: f32, j2: f64, mass: f64) -> Vector3<f64> {
     let r = rel_pos.norm();
     let z_squared = 5.0 * (rel_pos.z / r).powi(2);
 
@@ -327,13 +324,112 @@ fn j2_correction(rel_pos: &Vector3<f64>, radius: f32, j2: &f64, mass: &f64) -> V
     )
 }
 
+/// Analytical Jacobian of the J2 oblateness acceleration `da_J2/dd` in
+/// the body's pole-aligned frame.
+///
+/// - `d`: relative position in the pole-aligned frame (AU)
+/// - `radius`: equatorial radius of the body (AU)
+/// - `j2`: J2 coefficient
+/// - `mass`: GM of the body (AU^3/day^2)
+fn j2_jacobian(d: &Vector3<f64>, radius: f64, j2: f64, mass: f64) -> Matrix3<f64> {
+    let d = *d;
+    let r = d.norm();
+    let r2 = r * r;
+    let z = d.z;
+
+    let lambda = 1.5 * j2 * mass * (radius / r).powi(2) / (r2 * r);
+    let big_z = 5.0 * z * z / r2;
+
+    let a_norm = Vector3::new(
+        d.x * (big_z - 1.0),
+        d.y * (big_z - 1.0),
+        d.z * (big_z - 3.0),
+    );
+    let f_diag = Matrix3::from_diagonal(&Vector3::new(big_z - 1.0, big_z - 1.0, big_z - 3.0));
+    let dz_dd = (10.0 * z / r2) * (Vector3::new(0.0, 0.0, 1.0) - (z / r2) * d);
+
+    lambda * (-5.0 / r2 * a_norm * d.transpose() + f_diag + d * dz_dd.transpose())
+}
+
+/// Analytical `da/dr` and `da/dv` for the N-body gravity force model.
+///
+/// Includes contributions from:
+/// - Newtonian point-mass gravity (all bodies)
+/// - General relativity correction (Sun, Jupiter: NAIF IDs 10 and 5)
+/// - J2 oblateness (Sun and Jupiter in ecliptic frame, Earth in equatorial)
+///
+/// `cached_states` must be the SSB-relative `(pos, vel)` of each body in
+/// `massive_obj`, in the same order. Non-gravitational contributions are not
+/// included; they are handled by the relevant [`Force`] implementation and
+/// summed at the [`ForceSet`] composition layer.
+#[must_use]
+pub fn analytical_jacobians(
+    pos: &Vector3<f64>,
+    vel: &Vector3<f64>,
+    cached_states: &[(Vector3<f64>, Vector3<f64>)],
+    massive_obj: &[GravParams],
+) -> (Matrix3<f64>, Matrix3<f64>) {
+    let pos = *pos;
+    let vel = *vel;
+    let mut da_dr = Matrix3::<f64>::zeros();
+    let mut da_dv = Matrix3::<f64>::zeros();
+    let ident = Matrix3::<f64>::identity();
+
+    for (grav_params, (body_pos, body_vel)) in massive_obj.iter().zip(cached_states) {
+        let d = pos - body_pos;
+        let v = vel - body_vel;
+        let r = d.norm();
+        let r2 = r * r;
+        let r3 = r2 * r;
+        let r5 = r2 * r3;
+        let mass = grav_params.mass;
+
+        da_dr -= (mass / r5) * (r2 * ident - 3.0 * d * d.transpose());
+
+        match grav_params.naif_id {
+            5 | 10 => {
+                let cinv2 = C_AU_PER_DAY_INV_SQUARED;
+                let kappa = mass * cinv2 / r3;
+                let v2 = v.norm_squared();
+                let big_c = 4.0 * mass / r - v2;
+                let big_r = 4.0 * d.dot(&v);
+                let a_gr = big_c * d + big_r * v;
+
+                da_dr += (-3.0 * kappa / r2) * a_gr * d.transpose()
+                    + kappa
+                        * ((-4.0 * mass / r3) * d * d.transpose()
+                            + big_c * ident
+                            + 4.0 * v * v.transpose());
+                da_dv +=
+                    kappa * (-2.0 * d * v.transpose() + 4.0 * v * d.transpose() + big_r * ident);
+
+                let j2_val = if grav_params.naif_id == 10 {
+                    SUN_J2
+                } else {
+                    JUPITER_J2
+                };
+                let d_ec = Ecliptic::from_equatorial(d);
+                let j2_jac = j2_jacobian(&d_ec, f64::from(grav_params.radius), j2_val, mass);
+                let rot = *Ecliptic::rotation_to_equatorial().matrix();
+                da_dr += rot * j2_jac * rot.transpose();
+            }
+            399 => {
+                da_dr += j2_jacobian(&d, f64::from(grav_params.radius), EARTH_J2, mass);
+            }
+            _ => {}
+        }
+    }
+
+    (da_dr, da_dv)
+}
+
 /// Add the effects of general relativistic motion to an acceleration vector
 #[inline(always)]
 fn apply_gr_correction(
     accel: &mut Vector3<f64>,
     rel_pos: &Vector3<f64>,
     rel_vel: &Vector3<f64>,
-    mass: &f64,
+    mass: f64,
 ) {
     let r_v = 4.0 * rel_pos.dot(rel_vel);
 

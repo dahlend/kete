@@ -36,11 +36,11 @@ pub fn compute_stm_py(
         spk.try_to_ssb(raw_state)?
     };
 
-    let non_grav_model = non_grav.map(|ng| ng.0);
+    let non_grav_frozen = non_grav.map(|ng| ng.to_frozen());
     let jd = jd_end.into();
 
     let (final_state_ssb, sens) =
-        compute_state_transition(&ssb_state, jd, include_asteroids, non_grav_model)?;
+        compute_state_transition(&ssb_state, jd, include_asteroids, non_grav_frozen.as_ref())?;
 
     // Re-center back to original center
     let mut final_state: State<Equatorial> = final_state_ssb.into();

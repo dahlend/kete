@@ -28,16 +28,16 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use kete_core::forces::{GravParams, NonGravModel};
+use kete_core::forces::{ForceSet, FrozenNonGrav, GravParams, ParameterMask};
 use kete_core::frames::{Equatorial, SSB};
-use kete_core::integrators::RadauIntegrator;
 use kete_core::prelude::{KeteResult, State};
+use kete_core::state::propagate_with_stm;
 use kete_core::time::{TDB, Time};
 
-use crate::jacobian::{n_params, stm_augmented_accel};
-use crate::propagation::AccelSPKMeta;
+use super::recenter::Recenter;
+use super::spk_n_body::SpkNBody;
 use crate::spk::LOADED_SPK;
-use nalgebra::{DMatrix, Matrix3, SVector, Vector3};
+use nalgebra::DMatrix;
 
 /// Compute the state transition matrix and optional parameter sensitivities using the
 /// Radau 15th-order integrator with full N-body physics.
@@ -65,88 +65,56 @@ pub fn compute_state_transition(
     state: &State<Equatorial, SSB>,
     jd: Time<TDB>,
     include_asteroids: bool,
-    non_grav_model: Option<NonGravModel>,
+    non_grav: Option<&FrozenNonGrav>,
 ) -> KeteResult<(State<Equatorial, SSB>, DMatrix<f64>)> {
-    let np = n_params(non_grav_model.as_ref());
+    let spk = LOADED_SPK.try_read()?;
 
-    // Build initial augmented state (30-dim, unused elements stay zero)
-    let mut pos_aug = SVector::<f64, 30>::zeros();
-    let mut vel_aug = SVector::<f64, 30>::zeros();
-
-    // Physical position and velocity (SSB-centered)
-    pos_aug
-        .fixed_rows_mut::<3>(0)
-        .copy_from(&Vector3::from(state.pos));
-    vel_aug
-        .fixed_rows_mut::<3>(0)
-        .copy_from(&Vector3::from(state.vel));
-
-    // Phi_rr(0) = I3 (elements 3..12, column-major)
-    pos_aug[3] = 1.0;
-    pos_aug[7] = 1.0;
-    pos_aug[11] = 1.0;
-
-    // Phi_rv'(0) = I3 (elements 12..21 of vel_aug, column-major)
-    vel_aug[12] = 1.0;
-    vel_aug[16] = 1.0;
-    vel_aug[20] = 1.0;
-
-    let mass_list = if include_asteroids {
-        GravParams::selected_masses().to_vec()
+    let planets = if include_asteroids {
+        GravParams::selected_masses()
     } else {
         GravParams::planets()
     };
 
-    let spk = &LOADED_SPK.try_read()?;
-    let metadata = AccelSPKMeta {
-        non_grav_model,
-        massive_obj: &mass_list,
-        spk,
+    // Non-grav (when present) composes via `ForceSet` with `Recenter<SSB, _>`
+    // wrapping an all-None variational mask. Values are extracted from the
+    // frozen input mask and passed as `free_params` to `propagate_with_stm`
+    // so the STM gains parameter-sensitivity columns.
+    //
+    // Gravity-only path stays bare (`SpkNBody` directly) -- the pure n-body
+    // hot path, bit-identical to trajectory-only propagation.
+    let (pos_f, vel_f, sens) = match non_grav {
+        None => propagate_with_stm(
+            &SpkNBody::new(&spk, &planets),
+            state.pos.into(),
+            state.vel.into(),
+            &[],
+            state.epoch,
+            jd,
+        )?,
+        Some(frozen) => {
+            let values = frozen.values();
+            let variational = ParameterMask::new(frozen.inner.clone(), vec![None; values.len()])?;
+            let force_set: ForceSet<'_, Equatorial, SSB> = ForceSet::new()
+                .with(Box::new(SpkNBody::new(&spk, &planets)))
+                .with(Box::new(Recenter::<SSB, _>::new(&spk, variational)));
+            propagate_with_stm(
+                &force_set,
+                state.pos.into(),
+                state.vel.into(),
+                values,
+                state.epoch,
+                jd,
+            )?
+        }
     };
-
-    let (pos_f, vel_f, _meta) = RadauIntegrator::integrate(
-        &stm_augmented_accel,
-        pos_aug,
-        vel_aug,
-        state.epoch,
-        jd,
-        metadata,
-        Some(3),
-    )?;
 
     let final_state = State {
         desig: state.desig.clone(),
         epoch: jd,
-        pos: [pos_f[0], pos_f[1], pos_f[2]].into(),
-        vel: [vel_f[0], vel_f[1], vel_f[2]].into(),
+        pos: pos_f.into(),
+        vel: vel_f.into(),
         center: SSB,
     };
-
-    // Build the 6x(6+N) sensitivity matrix
-    let ncols = 6 + np;
-    let mut sens = DMatrix::<f64>::zeros(6, ncols);
-
-    // 6x6 STM from the four 3x3 blocks
-    let phi_rr = Matrix3::from_column_slice(&pos_f.as_slice()[3..12]);
-    let phi_rv = Matrix3::from_column_slice(&pos_f.as_slice()[12..21]);
-    let phi_vr = Matrix3::from_column_slice(&vel_f.as_slice()[3..12]);
-    let phi_vv = Matrix3::from_column_slice(&vel_f.as_slice()[12..21]);
-
-    sens.fixed_view_mut::<3, 3>(0, 0).copy_from(&phi_rr);
-    sens.fixed_view_mut::<3, 3>(0, 3).copy_from(&phi_rv);
-    sens.fixed_view_mut::<3, 3>(3, 0).copy_from(&phi_vr);
-    sens.fixed_view_mut::<3, 3>(3, 3).copy_from(&phi_vv);
-
-    // Parameter sensitivity columns (if any)
-    for k in 0..np {
-        let base = 21 + k * 3;
-        for i in 0..3 {
-            // dr_f/dp_k
-            sens[(i, 6 + k)] = pos_f[base + i];
-            // dv_f/dp_k
-            sens[(3 + i, 6 + k)] = vel_f[base + i];
-        }
-    }
 
     Ok((final_state, sens))
 }

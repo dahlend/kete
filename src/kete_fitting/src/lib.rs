@@ -51,5 +51,5 @@ pub use lambert::lambert;
 pub use mcmc::{OrbitSamples, fit_orbit_mcmc};
 pub use mpc::{ObservatoryStats, get_observatory_stats};
 pub use obs::AstrometricObservation;
-pub use orbit_fitting::{OrbitFit, fit_orbit};
+pub use orbit_fitting::{NonGravFit, OrbitFit, fit_orbit};
 pub use ranging::{RangingSamples, fit_orbit_ranging};

@@ -21,10 +21,8 @@ pub mod pck;
 pub mod propagation;
 pub mod sclk;
 pub mod spk;
-pub mod state_transition;
 
 mod interpolation;
-mod jacobian;
 
 /// Common useful imports.
 pub mod prelude {
@@ -37,9 +35,11 @@ pub mod prelude {
 
     pub use crate::fov_checks::{check_n_body, check_spks, check_visible};
     pub use crate::frame_ext::rotations_to_equatorial_full;
-    pub use crate::propagation::propagate_n_body_spk;
-
-    pub use crate::state_transition::compute_state_transition;
+    pub use crate::propagation::{
+        LinearityDiagnosis, Recenter, SpkNBody, SplitConfig, compute_state_transition,
+        helio_with_frozen_nongrav, mixture_sigma_point_divergence,
+        propagate_diffuse_state_adaptive, propagate_with_diagnosis, sigma_point_divergence,
+    };
 }
 
 use kete_core::time::{TDB, Time};

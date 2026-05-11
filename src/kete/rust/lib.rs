@@ -38,6 +38,7 @@ use state::PyState;
 pub mod analysis;
 pub mod debias;
 pub mod desigs;
+pub mod diffuse_state;
 pub mod elements;
 pub mod fitting;
 pub mod flux;
@@ -104,6 +105,7 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<horizons::PyHorizonsProperties>()?;
 
     m.add_class::<uncertain_state::PyUncertainState>()?;
+    m.add_class::<diffuse_state::PyDiffuseState>()?;
 
     m.add_class::<debias::PyDebiasTable>()?;
 

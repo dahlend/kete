@@ -468,7 +468,7 @@ mod tests {
     use nalgebra::Vector3;
 
     use super::*;
-    use crate::forces::{CentralAccelMeta, central_accel};
+    use crate::integrators::stress_tests::{CentralAccelMeta, central_accel};
 
     #[test]
     fn basic_two_body() {

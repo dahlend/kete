@@ -4,12 +4,14 @@
 //! The `FovLike` trait and FOV types remain in `kete_core`.
 
 use kete_core::constants::C_AU_PER_DAY_INV;
+use kete_core::forces::GravParams;
 use kete_core::fov::{Contains, FovLike, check_linear, check_two_body};
-use kete_core::frames::{Equatorial, SunCenter};
+use kete_core::frames::{Equatorial, SSB, SunCenter};
 use kete_core::kepler::light_time_correct;
 use kete_core::prelude::{KeteResult, SimultaneousStates, State};
+use kete_core::state::StateLike;
 
-use crate::propagation::propagate_n_body_spk;
+use crate::propagation::SpkNBody;
 use crate::spk::LOADED_SPK;
 
 use rayon::prelude::*;
@@ -21,17 +23,18 @@ use rayon::prelude::*;
 /// Errors can occur for numerous reasons, typically from numerical integration failing.
 pub fn check_n_body<F: FovLike>(
     fov: &F,
-    state: &State<Equatorial>,
+    state: State<Equatorial, SSB>,
     include_asteroids: bool,
 ) -> KeteResult<(usize, Contains, State<Equatorial>)> {
     let obs = fov.observer();
 
-    let ssb_state = {
-        let spk = LOADED_SPK.try_read()?;
-        spk.try_to_ssb(state.clone())?
-    };
-    let exact_state = propagate_n_body_spk(ssb_state, obs.epoch, include_asteroids, None)?;
     let spk = LOADED_SPK.try_read()?;
+    let planets = if include_asteroids {
+        GravParams::selected_masses()
+    } else {
+        GravParams::planets()
+    };
+    let exact_state = state.propagate_with(&SpkNBody::new(&spk, &planets), obs.epoch)?;
     let sun_state = spk.try_to_sun(exact_state)?;
 
     let final_state = light_time_correct(&sun_state, &obs.pos)?;
@@ -148,7 +151,9 @@ pub fn check_visible<F: FovLike>(
                 {
                     return None;
                 }
-                let (idx, contains, state) = check_n_body(fov, state, include_asteroids).ok()?;
+                let ssb_state = spk.try_to_ssb(state.clone()).ok()?;
+                let (idx, contains, state) =
+                    check_n_body(fov, ssb_state, include_asteroids).ok()?;
                 match contains {
                     Contains::Inside => Some((idx, state)),
                     Contains::Outside(_) => None,
@@ -179,7 +184,8 @@ mod tests {
     use kete_core::fov::{GenericRectangle, OmniDirectional};
     use kete_core::state::State;
 
-    use crate::propagation::propagate_n_body_spk;
+    use crate::propagation::SpkNBody;
+    use kete_core::state::StateLike;
 
     #[test]
     fn test_check_rectangle_visible() {
@@ -204,14 +210,15 @@ mod tests {
             spk.try_to_ssb(circular_back.clone()).unwrap()
         };
 
+        let planets = GravParams::planets();
         for offset in [-10.0_f64, -5.0, 0.0, 5.0, 10.0] {
-            let off_state = propagate_n_body_spk(
-                circular_back_ssb.clone(),
-                circular_back_ssb.epoch - offset,
-                false,
-                None,
-            )
-            .unwrap();
+            let spk = LOADED_SPK.try_read().unwrap();
+            let force = SpkNBody::new(&spk, &planets);
+            let off_state = circular_back_ssb
+                .clone()
+                .propagate_with(&force, circular_back_ssb.epoch - offset)
+                .unwrap();
+            drop(spk);
 
             let vec = circular_back.pos - circular.pos;
 
@@ -221,9 +228,9 @@ mod tests {
                 spk.try_to_sun(off_state.clone()).unwrap()
             };
             assert!(check_two_body(&fov, &off_sun).is_ok());
-            let off_dyn: State<Equatorial> = off_state.into();
-            assert!(check_n_body(&fov, &off_dyn, false).is_ok());
+            assert!(check_n_body(&fov, off_state.clone(), false).is_ok());
 
+            let off_dyn: State<Equatorial> = off_state.into();
             assert!(
                 check_visible(&fov, &[off_dyn], 6.0, false)
                     .first()
@@ -270,7 +277,8 @@ mod tests {
             assert!((two_body.pos - exact.pos).norm() < 1e-6);
 
             // Check n body approximation calculation
-            let n_body = check_n_body(&fov, &asteroid, false);
+            let asteroid_ssb = spk.try_to_ssb(asteroid.clone()).unwrap();
+            let n_body = check_n_body(&fov, asteroid_ssb, false);
             assert!(n_body.is_ok());
             let (_, _, n_body) = n_body.unwrap();
             assert!((observer.epoch.jd - n_body.epoch.jd - dist * C_AU_PER_DAY_INV).abs() < 1e-6);

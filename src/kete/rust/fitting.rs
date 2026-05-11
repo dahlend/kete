@@ -3,12 +3,12 @@
 //! Wraps `kete_fitting` types and functions for use from Python.
 
 use kete_core::Band;
-use kete_core::forces::NonGravModel;
+use kete_core::forces::{ParameterMask, ParameterizedForce};
 use kete_core::frames::{Equatorial, Vector};
 use kete_core::prelude::*;
 use kete_fitting::{
-    AstrometricObservation, OrbitFit, OrbitSamples, RangingSamples, fit_orbit, fit_orbit_mcmc,
-    fit_orbit_ranging, lambert,
+    AstrometricObservation, NonGravFit, OrbitFit, OrbitSamples, RangingSamples, fit_orbit,
+    fit_orbit_mcmc, fit_orbit_ranging, lambert,
 };
 use kete_spice::prelude::LOADED_SPK;
 use pyo3::{PyResult, pyclass, pyfunction, pymethods};
@@ -18,6 +18,17 @@ use crate::state::PyState;
 use crate::time::PyTime;
 use crate::uncertain_state::PyUncertainState;
 use crate::vector::PyVector;
+
+/// Build a fitter [`NonGravFit`] (template + values + lower bounds) from
+/// a Python-side [`PyNonGravModel`]. Bounds default to unbounded
+/// (`-inf`); callers that want to clamp parameters can patch the
+/// returned tuple before passing it on.
+fn py_to_fit(m: &PyNonGravModel) -> NonGravFit {
+    let template = m.to_force();
+    let values = m.initial_values();
+    let n = values.len();
+    (template, values, vec![f64::NEG_INFINITY; n])
+}
 
 /// Radians to arcseconds conversion factor.
 const RAD_TO_ARCSEC: f64 = 180.0 * 3600.0 / std::f64::consts::PI;
@@ -526,7 +537,14 @@ impl PyOrbitFit {
     /// The uncertain orbit state (state + covariance + non-grav model).
     #[getter]
     fn uncertain_state(&self) -> PyUncertainState {
-        PyUncertainState(self.inner.uncertain_state.clone())
+        PyUncertainState {
+            state: self.inner.uncertain_state.clone(),
+            non_grav: self.inner.non_grav.as_ref().map(|fit| {
+                let n = fit.0.n_free_params();
+                ParameterMask::new(fit.0.clone(), vec![None; n])
+                    .expect("n_free_params matches mask length")
+            }),
+        }
     }
 
     /// Best-fit state at the reference epoch (Sun-centered, Ecliptic).
@@ -607,15 +625,12 @@ impl PyOrbitFit {
     }
 
     /// Fitted non-gravitational model, or None if not fitted.
-    ///
-    /// Convenience shortcut for ``self.uncertain_state.non_grav``.
     #[getter]
     fn non_grav(&self) -> Option<PyNonGravModel> {
         self.inner
-            .uncertain_state
             .non_grav
-            .clone()
-            .map(PyNonGravModel)
+            .as_ref()
+            .and_then(|fit| PyNonGravModel::from_force(&fit.0, &fit.1))
     }
 
     /// Whether the solver achieved strict convergence.
@@ -719,13 +734,13 @@ pub fn fit_orbit_py(
     };
 
     let obs: Vec<AstrometricObservation> = observations.into_iter().map(|o| o.obs).collect();
-    let ng = non_grav.as_ref().map(|m| &m.0);
+    let ng_fit = non_grav.as_ref().map(py_to_fit);
 
     let fit = fit_orbit(
         &state_ssb,
         &obs,
         include_asteroids,
-        ng,
+        ng_fit.as_ref(),
         50,   // max_iter
         1e-8, // tol
         chi2_threshold,
@@ -1049,7 +1064,7 @@ pub fn fit_orbit_mcmc_py(
     };
 
     let obs: Vec<AstrometricObservation> = observations.into_iter().map(|o| o.obs).collect();
-    let ng: Option<NonGravModel> = non_grav.map(|m| m.0);
+    let ng: Option<NonGravFit> = non_grav.as_ref().map(py_to_fit);
 
     let result = fit_orbit_mcmc(
         &ssb_seeds,

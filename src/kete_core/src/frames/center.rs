@@ -20,6 +20,34 @@ where
     fn center_id(&self) -> i32;
 }
 
+/// Marker trait for center-body types that know their NAIF id at compile
+/// time.
+///
+/// Distinct from [`CenterBody`] because it has no `DynCenter: From<Self>`
+/// requirement, which keeps it dyn-compatible -- the [`Force`] trait's
+/// `Center` associated type can require `NaifBody` without breaking
+/// `Box<dyn Force<...>>`. Used by the `Recenter` adapter
+/// (in `kete_spice`) to look up reference-body shifts from SPK at the
+/// type level rather than via runtime IDs.
+///
+/// [`Force`]: crate::forces::Force
+pub trait NaifBody: Send + Sync + Copy + 'static {
+    /// NAIF id of this center body, known at compile time.
+    const NAIF_ID: i32;
+}
+
+impl NaifBody for SSB {
+    const NAIF_ID: i32 = 0;
+}
+
+impl NaifBody for SunCenter {
+    const NAIF_ID: i32 = 10;
+}
+
+impl NaifBody for EarthCenter {
+    const NAIF_ID: i32 = 399;
+}
+
 /// Runtime-determined center body -- the default.
 ///
 /// Carries the NAIF center id at runtime; states may be re-centered via
