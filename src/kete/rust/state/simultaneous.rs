@@ -1,8 +1,9 @@
 //! Python support for simultaneous States.
+use super::PyState;
+use crate::fovs::AllowedFOV;
 use crate::maybe_vec::MaybeVec;
 use crate::time::PyTime;
 use crate::vector::PyVector;
-use crate::{fovs::AllowedFOV, state::PyState};
 use kete_core::errors::Error;
 use kete_core::fov::FovLike;
 use kete_core::state::SimultaneousStates;

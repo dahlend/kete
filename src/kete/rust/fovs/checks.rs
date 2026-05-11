@@ -8,7 +8,7 @@ use kete_spice::spk::LOADED_SPK;
 use pyo3::prelude::*;
 use rayon::prelude::*;
 
-use crate::{simult_states::PySimultaneousStates, vector::VectorLike};
+use crate::{state::PySimultaneousStates, vector::VectorLike};
 
 /// Given states and field of view, return only the objects which are visible to the
 /// observer, adding a correction for optical light delay.
@@ -66,6 +66,17 @@ pub fn fov_checks_py(
     let mut states = pop.states;
     let mut big_step_states = states.clone();
     let mut visible = Vec::new();
+    let planets = if include_asteroids {
+        GravParams::selected_masses()
+    } else {
+        GravParams::planets()
+    };
+
+    let spk = LOADED_SPK
+        .read()
+        .expect("Failed to read the loaded spice kernels.");
+    let forces = SpkNBody::new(&spk, &planets);
+
     for fovs in fov_chunks {
         let jd_mean = (fovs.last().unwrap().observer().epoch.jd
             + fovs.first().unwrap().observer().epoch.jd)
@@ -77,16 +88,8 @@ pub fn fov_checks_py(
             big_step_states = big_step_states
                 .into_par_iter()
                 .filter_map(|state| {
-                    let spk = LOADED_SPK.try_read().ok()?;
                     let ssb = spk.try_to_ssb(state).ok()?;
-                    let result = if include_asteroids {
-                        let planets = GravParams::selected_masses();
-                        ssb.propagate_with(&SpkNBody::new(&spk, &planets), jd.into())
-                    } else {
-                        let planets = GravParams::planets();
-                        ssb.propagate_with(&SpkNBody::new(&spk, &planets), jd.into())
-                    };
-                    result.ok().map(Into::into)
+                    ssb.propagate_with(&forces, jd.into()).ok().map(Into::into)
                 })
                 .collect();
         };
@@ -99,16 +102,8 @@ pub fn fov_checks_py(
             states = states
                 .into_par_iter()
                 .filter_map(|state| {
-                    let spk = LOADED_SPK.try_read().ok()?;
                     let ssb = spk.try_to_ssb(state).ok()?;
-                    let result = if include_asteroids {
-                        let planets = GravParams::selected_masses();
-                        ssb.propagate_with(&SpkNBody::new(&spk, &planets), jd.into())
-                    } else {
-                        let planets = GravParams::planets();
-                        ssb.propagate_with(&SpkNBody::new(&spk, &planets), jd.into())
-                    };
-                    result.ok().map(Into::into)
+                    ssb.propagate_with(&forces, jd.into()).ok().map(Into::into)
                 })
                 .collect();
         };

@@ -33,12 +33,10 @@
 
 use kete_core::forces::{known_masses, register_custom_mass, register_mass, registered_masses};
 use pyo3::prelude::*;
-use state::PyState;
 
 pub mod analysis;
 pub mod debias;
 pub mod desigs;
-pub mod diffuse_state;
 pub mod elements;
 pub mod fitting;
 pub mod flux;
@@ -49,13 +47,10 @@ pub mod kepler;
 pub mod maybe_vec;
 pub mod nongrav;
 pub mod propagation;
-pub mod simult_states;
 pub mod spice;
 pub mod state;
-pub mod state_transition;
 pub mod stats;
 pub mod time;
-pub mod uncertain_state;
 pub mod utils;
 pub mod vector;
 
@@ -73,12 +68,16 @@ pub mod vector;
 #[pymodule]
 fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<frame::PyFrames>()?;
-    m.add_class::<PyState>()?;
     m.add_class::<vector::PyVector>()?;
     m.add_class::<elements::PyCometElements>()?;
-    m.add_class::<simult_states::PySimultaneousStates>()?;
-    m.add_class::<nongrav::PyNonGravModel>()?;
     m.add_class::<time::PyTime>()?;
+    m.add_class::<nongrav::PyNonGravModel>()?;
+    m.add_class::<kete_core::analysis::BPlane>()?;
+
+    m.add_class::<state::PyState>()?;
+    m.add_class::<state::PySimultaneousStates>()?;
+    m.add_class::<state::PyUncertainState>()?;
+    m.add_class::<state::PyDiffuseState>()?;
 
     m.add_class::<fovs::PyNeosCmos>()?;
     m.add_class::<fovs::PyNeosVisit>()?;
@@ -93,21 +92,27 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<fovs::PyGenericRectangle>()?;
     m.add_class::<fovs::PyGenericCone>()?;
     m.add_class::<fovs::PyOmniDirectional>()?;
+    m.add_class::<spice::PySpkBuilder>()?;
 
     m.add_class::<flux::PyModelResults>()?;
     m.add_class::<flux::PyTriangleShape>()?;
     m.add_class::<flux::PyFluxObs>()?;
     m.add_class::<flux::PyParamPrior>()?;
     m.add_class::<flux::PyFluxPriors>()?;
-    m.add_class::<stats::PyData>()?;
     m.add_class::<flux::PyFitResult>()?;
+
+    m.add_class::<stats::PyData>()?;
+
+    m.add_class::<fitting::PyObservation>()?;
+    m.add_class::<fitting::PyOrbitFit>()?;
+    m.add_class::<fitting::PyOrbitSamples>()?;
+    m.add_class::<fitting::PyRangingSamples>()?;
 
     m.add_class::<horizons::PyHorizonsProperties>()?;
 
-    m.add_class::<uncertain_state::PyUncertainState>()?;
-    m.add_class::<diffuse_state::PyDiffuseState>()?;
-
     m.add_class::<debias::PyDebiasTable>()?;
+
+    m.add_function(wrap_pyfunction!(state::compute_stm_py, m)?)?;
 
     m.add_function(wrap_pyfunction!(known_masses, m)?)?;
     m.add_function(wrap_pyfunction!(register_mass, m)?)?;
@@ -132,7 +137,6 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(analysis::sphere_of_influence_py, m)?)?;
     m.add_function(wrap_pyfunction!(analysis::specific_energy_py, m)?)?;
     m.add_function(wrap_pyfunction!(analysis::compute_b_plane_py, m)?)?;
-    m.add_class::<kete_core::analysis::BPlane>()?;
 
     m.add_function(wrap_pyfunction!(propagation::propagation_n_body_spk_py, m)?)?;
     m.add_function(wrap_pyfunction!(propagation::propagation_n_body_py, m)?)?;
@@ -185,7 +189,6 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(spice::spk_available_info_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::spk_load_cache_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::spk_load_core_py, m)?)?;
-    m.add_class::<spice::PySpkBuilder>()?;
     m.add_function(wrap_pyfunction!(spice::repack_spk_py, m)?)?;
 
     m.add_function(wrap_pyfunction!(spice::pck_reset_py, m)?)?;
@@ -214,12 +217,6 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(spice::obs_codes, m)?)?;
     m.add_function(wrap_pyfunction!(spice::find_obs_code_py, m)?)?;
 
-    m.add_function(wrap_pyfunction!(state_transition::compute_stm_py, m)?)?;
-
-    m.add_class::<fitting::PyObservation>()?;
-    m.add_class::<fitting::PyOrbitFit>()?;
-    m.add_class::<fitting::PyOrbitSamples>()?;
-    m.add_class::<fitting::PyRangingSamples>()?;
     m.add_function(wrap_pyfunction!(fitting::fit_orbit_py, m)?)?;
     m.add_function(wrap_pyfunction!(
         fitting::initial_orbit_determination_py,

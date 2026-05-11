@@ -12,7 +12,7 @@ use kete_spice::propagation::{SpkNBody, helio_with_frozen_nongrav};
 use pyo3::{IntoPyObjectExt, Py, PyAny, PyResult, Python, pyfunction};
 use rayon::prelude::*;
 
-use crate::simult_states::PySimultaneousStates;
+use crate::state::PySimultaneousStates;
 use crate::{
     maybe_vec::{MaybeVec, maybe_vec_to_pyobj},
     nongrav::PyNonGravModel,
@@ -304,6 +304,10 @@ pub fn propagation_n_body_py(
         .map(|y| y.map(|z| z.to_frozen()))
         .collect();
 
+    let spk = kete_spice::prelude::LOADED_SPK
+        .try_read()
+        .map_err(Error::from)?;
+
     let jd = jd_final.into();
     let res: Result<Vec<_>, _> = py.detach(|| {
         states
@@ -315,9 +319,6 @@ pub fn propagation_n_body_py(
                 let (chunk_state, chunk_nongrav): (Vec<_>, Vec<Option<FrozenNonGrav>>) =
                     chunk.iter().cloned().unzip();
 
-                let spk = kete_spice::prelude::LOADED_SPK
-                    .try_read()
-                    .map_err(Error::from)?;
                 let chunk_state: Vec<_> = chunk_state
                     .into_iter()
                     .map(|s| spk.try_to_sun(s))
