@@ -4,7 +4,7 @@ use std::fmt::Debug;
 use crate::elements::PyCometElements;
 use crate::nongrav::PyNonGravModel;
 use crate::state::PyState;
-use crate::uncertain_state::PyUncertainState;
+use crate::state::PyUncertainState;
 use kete_core::errors::Error;
 use kete_core::forces::ParameterizedForce;
 use pyo3::prelude::*;

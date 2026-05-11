@@ -6,10 +6,9 @@
 //! component, with per-sample parameters preserved through sampling
 //! and propagation).
 
+use super::{PyState, PyUncertainState};
 use crate::nongrav::PyNonGravModel;
-use crate::state::PyState;
 use crate::time::PyTime;
-use crate::uncertain_state::PyUncertainState;
 use kete_core::forces::{ForceSet, GravParams, NonGravMask, ParameterizedForce};
 use kete_core::frames::{Equatorial, SSB};
 use kete_core::prelude::*;

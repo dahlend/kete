@@ -8,9 +8,9 @@
 //! - `non_grav`: the optional model template (variant + fixed
 //!   coefficients) needed to build a `ParameterizedForce` for propagation.
 
+use super::PyState;
 use crate::elements::PyCometElements;
 use crate::nongrav::PyNonGravModel;
-use crate::state::PyState;
 use crate::time::PyTime;
 use kete_core::forces::{ForceSet, GravParams, NonGravMask, ParameterizedForce};
 use kete_core::frames::{Equatorial, SSB};

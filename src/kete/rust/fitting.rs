@@ -15,8 +15,8 @@ use pyo3::{PyResult, pyclass, pyfunction, pymethods};
 
 use crate::nongrav::PyNonGravModel;
 use crate::state::PyState;
+use crate::state::PyUncertainState;
 use crate::time::PyTime;
-use crate::uncertain_state::PyUncertainState;
 use crate::vector::PyVector;
 
 /// Build a fitter [`NonGravFit`] (template + values + lower bounds) from

@@ -397,6 +397,75 @@ impl CometElements {
     pub fn true_anomaly(&self) -> KeteResult<f64> {
         compute_true_anomaly(self.eccentricity, self.mean_anomaly(), self.peri_dist)
     }
+
+    /// Drummond D-criterion between two sets of cometary elements.
+    ///
+    /// Dimensionless measure of orbital similarity using ratios of perihelion
+    /// distance and eccentricity, plus angular separation of the orbital planes
+    /// and perihelion directions.
+    ///
+    /// Returns 0 for identical orbits; larger values indicate greater
+    /// dissimilarity.
+    ///
+    /// Reference: Drummond (1981), Icarus 45, 545-553.
+    #[must_use]
+    pub fn d_drummond(&self, other: &Self) -> f64 {
+        let e_a = self.eccentricity;
+        let e_b = other.eccentricity;
+        let q_a = self.peri_dist;
+        let q_b = other.peri_dist;
+
+        // Eccentricity term: relative difference.
+        let e_sum = e_a + e_b;
+        let t_e = if e_sum > 0.0 {
+            (e_b - e_a) / e_sum
+        } else {
+            0.0
+        };
+
+        // Perihelion distance term: relative difference.
+        let q_sum = q_a + q_b;
+        let t_q = if q_sum > 0.0 {
+            (q_b - q_a) / q_sum
+        } else {
+            0.0
+        };
+
+        // I_AB: angle between the two orbital planes.
+        let cos_i_ab = self.inclination.cos() * other.inclination.cos()
+            + self.inclination.sin()
+                * other.inclination.sin()
+                * (other.lon_of_ascending - self.lon_of_ascending).cos();
+        let i_ab = cos_i_ab.clamp(-1.0, 1.0).acos();
+
+        // Theta_AB: angle between perihelion directions.
+        // Ecliptic latitude and longitude of perihelion for each orbit.
+        let beta_a = (self.inclination.sin() * self.peri_arg.sin()).asin();
+        let lambda_a = self.lon_of_ascending
+            + f64::atan2(
+                self.peri_arg.sin() * self.inclination.cos(),
+                self.peri_arg.cos(),
+            );
+
+        let beta_b = (other.inclination.sin() * other.peri_arg.sin()).asin();
+        let lambda_b = other.lon_of_ascending
+            + f64::atan2(
+                other.peri_arg.sin() * other.inclination.cos(),
+                other.peri_arg.cos(),
+            );
+
+        let cos_theta =
+            beta_a.sin() * beta_b.sin() + beta_a.cos() * beta_b.cos() * (lambda_b - lambda_a).cos();
+        let theta_ab = cos_theta.clamp(-1.0, 1.0).acos();
+
+        let e_mean = e_sum / 2.0;
+
+        (t_e.powi(2)
+            + t_q.powi(2)
+            + (i_ab / std::f64::consts::PI).powi(2)
+            + (e_mean * theta_ab / std::f64::consts::PI).powi(2))
+        .sqrt()
+    }
 }
 
 #[cfg(test)]
@@ -619,5 +688,86 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_d_drummond_identical() {
+        let elem = CometElements {
+            desig: Desig::Empty,
+            epoch: 2460000.0.into(),
+            eccentricity: 0.5,
+            inclination: 0.3,
+            lon_of_ascending: 1.0,
+            peri_time: 2459900.0.into(),
+            peri_arg: 0.8,
+            peri_dist: 1.2,
+            center_id: 10,
+            gm_sqrt: GMS_SQRT,
+        };
+        assert!(elem.d_drummond(&elem) < 1e-15);
+    }
+
+    #[test]
+    fn test_d_drummond_symmetric() {
+        let elem_a = CometElements {
+            desig: Desig::Empty,
+            epoch: 2460000.0.into(),
+            eccentricity: 0.5,
+            inclination: 0.3,
+            lon_of_ascending: 1.0,
+            peri_time: 2459900.0.into(),
+            peri_arg: 0.8,
+            peri_dist: 1.2,
+            center_id: 10,
+            gm_sqrt: GMS_SQRT,
+        };
+        let elem_b = CometElements {
+            desig: Desig::Empty,
+            epoch: 2460000.0.into(),
+            eccentricity: 0.6,
+            inclination: 0.35,
+            lon_of_ascending: 1.1,
+            peri_time: 2459900.0.into(),
+            peri_arg: 0.9,
+            peri_dist: 1.3,
+            center_id: 10,
+            gm_sqrt: GMS_SQRT,
+        };
+        let d = elem_a.d_drummond(&elem_b);
+        assert!(d > 0.0);
+        assert!((d - elem_b.d_drummond(&elem_a)).abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_d_drummond_circular() {
+        // Both circular: eccentricity 0/0 handled gracefully, theta term
+        // vanishes because e_mean == 0.
+        let elem_a = CometElements {
+            desig: Desig::Empty,
+            epoch: 2460000.0.into(),
+            eccentricity: 0.0,
+            inclination: 0.1,
+            lon_of_ascending: 0.5,
+            peri_time: 2459900.0.into(),
+            peri_arg: 0.0,
+            peri_dist: 1.0,
+            center_id: 10,
+            gm_sqrt: GMS_SQRT,
+        };
+        let elem_b = CometElements {
+            desig: Desig::Empty,
+            epoch: 2460000.0.into(),
+            eccentricity: 0.0,
+            inclination: 0.1,
+            lon_of_ascending: 0.5,
+            peri_time: 2459900.0.into(),
+            peri_arg: 0.0,
+            peri_dist: 1.5,
+            center_id: 10,
+            gm_sqrt: GMS_SQRT,
+        };
+        let d = elem_a.d_drummond(&elem_b);
+        assert!(d.is_finite());
+        assert!(d > 0.0);
     }
 }
