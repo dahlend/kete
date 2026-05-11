@@ -11,9 +11,39 @@ use nalgebra::{SMatrix, Vector3};
 
 use super::{BulirschStoerIntegrator, GaussJacksonIntegrator, PC15, RadauIntegrator};
 use crate::constants::GMS;
-use crate::forces::{CentralAccelMeta, central_accel};
 use crate::kepler::analytic_2_body;
 use crate::time::{TDB, Time};
+
+/// Records exact-evaluation timestamps and positions during integration.
+/// Used as the metadata type for [`central_accel`].
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CentralAccelMeta {
+    pub times: Vec<Time<TDB>>,
+    pub pos: Vec<Vector3<f64>>,
+    pub vel: Vec<Vector3<f64>>,
+    pub eval_count: usize,
+}
+
+/// Sun-only two-body acceleration; used by integrator unit tests.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "must match SecondOrderODE signature"
+)]
+pub(crate) fn central_accel(
+    time: Time<TDB>,
+    pos: &Vector3<f64>,
+    vel: &Vector3<f64>,
+    meta: &mut CentralAccelMeta,
+    exact_eval: bool,
+) -> crate::errors::KeteResult<Vector3<f64>> {
+    meta.eval_count += 1;
+    if exact_eval {
+        meta.times.push(time);
+        meta.pos.push(*pos);
+        meta.vel.push(*vel);
+    }
+    Ok(-pos * pos.norm().powi(-3) * GMS)
+}
 
 /// Two-body analytic init for the second-order Picard integrator.
 fn picard_2body_init<const N: usize>(

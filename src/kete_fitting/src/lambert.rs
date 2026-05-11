@@ -361,10 +361,6 @@ mod tests {
     use kete_core::prelude::State;
     use kete_core::time::{TDB, Time};
 
-    fn vec_eq(x: f64, y: f64, z: f64) -> Vector<Equatorial> {
-        Vector::new([x, y, z])
-    }
-
     fn round_trip(r1: Vector<Equatorial>, v1: Vector<Equatorial>, dt_days: f64, tol: f64) {
         let epoch: Time<TDB> = 2460000.5_f64.into();
         let s1 = State::<Equatorial, SunCenter> {
@@ -403,8 +399,8 @@ mod tests {
         let v = (GMS / r).sqrt();
         let obl = 23.44_f64.to_radians();
 
-        let r1 = vec_eq(r, 0.0, 0.0);
-        let v1 = vec_eq(0.0, v * obl.cos(), v * obl.sin());
+        let r1 = Vector::<Equatorial>::new([r, 0.0, 0.0]);
+        let v1 = Vector::<Equatorial>::new([0.0, v * obl.cos(), v * obl.sin()]);
         round_trip(r1, v1, 30.0, 1e-10);
     }
 
@@ -418,8 +414,8 @@ mod tests {
         let inc = 10.0_f64.to_radians();
         let tilt = obl + inc;
 
-        let r1 = vec_eq(r_peri, 0.0, 0.0);
-        let v1 = vec_eq(0.0, v_peri * tilt.cos(), v_peri * tilt.sin());
+        let r1 = Vector::<Equatorial>::new([r_peri, 0.0, 0.0]);
+        let v1 = Vector::<Equatorial>::new([0.0, v_peri * tilt.cos(), v_peri * tilt.sin()]);
         round_trip(r1, v1, 50.0, 1e-10);
     }
 
@@ -431,8 +427,8 @@ mod tests {
         let v_peri = (GMS * (2.0 / r_peri - 1.0 / a)).sqrt();
         let obl = 23.44_f64.to_radians();
 
-        let r1 = vec_eq(r_peri, 0.0, 0.0);
-        let v1 = vec_eq(0.0, v_peri * obl.cos(), v_peri * obl.sin());
+        let r1 = Vector::<Equatorial>::new([r_peri, 0.0, 0.0]);
+        let v1 = Vector::<Equatorial>::new([0.0, v_peri * obl.cos(), v_peri * obl.sin()]);
         round_trip(r1, v1, 20.0, 1e-9);
     }
 
@@ -444,8 +440,8 @@ mod tests {
         let v_peri = (GMS * (2.0 / r_peri - 1.0 / a)).sqrt();
         let obl = 23.44_f64.to_radians();
 
-        let r1 = vec_eq(r_peri, 0.0, 0.0);
-        let v1 = vec_eq(0.0, v_peri * obl.cos(), v_peri * obl.sin());
+        let r1 = Vector::<Equatorial>::new([r_peri, 0.0, 0.0]);
+        let v1 = Vector::<Equatorial>::new([0.0, v_peri * obl.cos(), v_peri * obl.sin()]);
         round_trip(r1, v1, 10.0, 1e-9);
     }
 
@@ -456,8 +452,8 @@ mod tests {
         let v = (GMS * (2.0 / r - 1.0 / a)).sqrt();
         let obl = 23.44_f64.to_radians();
 
-        let r1 = vec_eq(r, 0.0, 0.0);
-        let v1 = vec_eq(0.0, v * obl.cos(), v * obl.sin());
+        let r1 = Vector::<Equatorial>::new([r, 0.0, 0.0]);
+        let v1 = Vector::<Equatorial>::new([0.0, v * obl.cos(), v * obl.sin()]);
         round_trip(r1, v1, 2.0, 1e-10);
     }
 
@@ -467,8 +463,8 @@ mod tests {
         let v = (GMS / r).sqrt();
         let inc = 150.0_f64.to_radians();
 
-        let r1 = vec_eq(r, 0.0, 0.0);
-        let v1 = vec_eq(0.0, v * inc.cos(), v * inc.sin());
+        let r1 = Vector::<Equatorial>::new([r, 0.0, 0.0]);
+        let v1 = Vector::<Equatorial>::new([0.0, v * inc.cos(), v * inc.sin()]);
 
         let epoch: Time<TDB> = 2460000.5_f64.into();
         let s1 = State::<Equatorial, SunCenter> {
@@ -497,8 +493,8 @@ mod tests {
         let a_transfer: f64 = f64::midpoint(r1_mag, r2_mag);
         let dt = std::f64::consts::PI * (a_transfer.powi(3) / GMS).sqrt();
 
-        let r1 = vec_eq(r1_mag, 0.0, 0.0);
-        let r2 = vec_eq(-r2_mag, 1e-4, 0.0);
+        let r1 = Vector::<Equatorial>::new([r1_mag, 0.0, 0.0]);
+        let r2 = Vector::<Equatorial>::new([-r2_mag, 1e-4, 0.0]);
 
         let (v1, _v2) = lambert(&r1, &r2, dt, true, 0).expect("Hohmann failed")[0];
 
@@ -514,23 +510,23 @@ mod tests {
 
     #[test]
     fn test_negative_dt_error() {
-        let r1 = vec_eq(1.0, 0.0, 0.0);
-        let r2 = vec_eq(0.0, 1.5, 0.0);
+        let r1 = Vector::<Equatorial>::new([1.0, 0.0, 0.0]);
+        let r2 = Vector::<Equatorial>::new([0.0, 1.5, 0.0]);
         assert!(lambert(&r1, &r2, -10.0, true, 0).is_err());
     }
 
     #[test]
     fn test_zero_dt_error() {
-        let r1 = vec_eq(1.0, 0.0, 0.0);
-        let r2 = vec_eq(0.0, 1.5, 0.0);
+        let r1 = Vector::<Equatorial>::new([1.0, 0.0, 0.0]);
+        let r2 = Vector::<Equatorial>::new([0.0, 1.5, 0.0]);
         assert!(lambert(&r1, &r2, 0.0, true, 0).is_err());
     }
 
     #[test]
     fn test_collinear_same_direction() {
         // r1 and r2 aligned along the same direction (dnu ~ 0).
-        let r1 = vec_eq(1.0, 0.0, 0.0);
-        let r2 = vec_eq(2.0, 0.0, 0.0);
+        let r1 = Vector::<Equatorial>::new([1.0, 0.0, 0.0]);
+        let r2 = Vector::<Equatorial>::new([2.0, 0.0, 0.0]);
         assert!(lambert(&r1, &r2, 30.0, true, 0).is_err());
     }
 
@@ -538,8 +534,8 @@ mod tests {
     fn test_collinear_pi_transfer() {
         // Pi-transfer: r2 = -r1 direction.  Should succeed (orbit plane
         // is arbitrary).
-        let r1 = vec_eq(1.0, 0.0, 0.0);
-        let r2 = vec_eq(-1.5, 0.0, 0.0);
+        let r1 = Vector::<Equatorial>::new([1.0, 0.0, 0.0]);
+        let r2 = Vector::<Equatorial>::new([-1.5, 0.0, 0.0]);
         let result = lambert(&r1, &r2, 200.0, true, 0);
         assert!(result.is_ok(), "pi-transfer should succeed: {result:?}");
     }
@@ -554,8 +550,8 @@ mod tests {
         let inc = 20.0_f64.to_radians();
         let tilt = obl + inc;
 
-        let r1 = vec_eq(r_peri, 0.0, 0.0);
-        let v1 = vec_eq(0.0, v_peri * tilt.cos(), v_peri * tilt.sin());
+        let r1 = Vector::<Equatorial>::new([r_peri, 0.0, 0.0]);
+        let v1 = Vector::<Equatorial>::new([0.0, v_peri * tilt.cos(), v_peri * tilt.sin()]);
         round_trip(r1, v1, 200.0, 1e-9);
     }
 
@@ -564,8 +560,8 @@ mod tests {
         let r = 1.0;
         let v = (GMS / r).sqrt();
         let obl = 23.44_f64.to_radians();
-        let r1 = vec_eq(r, 0.0, 0.0);
-        let v1 = vec_eq(0.0, v * obl.cos(), v * obl.sin());
+        let r1 = Vector::<Equatorial>::new([r, 0.0, 0.0]);
+        let v1 = Vector::<Equatorial>::new([0.0, v * obl.cos(), v * obl.sin()]);
         round_trip(r1, v1, 1.0, 1e-10);
     }
 
@@ -576,10 +572,10 @@ mod tests {
         let r = 1.0;
         let v = (GMS / r).sqrt();
         let obl = 23.44_f64.to_radians();
-        let r1 = vec_eq(r, 0.0, 0.0);
+        let r1 = Vector::<Equatorial>::new([r, 0.0, 0.0]);
 
         let epoch: Time<TDB> = 2460000.5_f64.into();
-        let v1 = vec_eq(0.0, v * obl.cos(), v * obl.sin());
+        let v1 = Vector::<Equatorial>::new([0.0, v * obl.cos(), v * obl.sin()]);
         let s1 = State::<Equatorial, SunCenter> {
             desig: kete_core::desigs::Desig::Empty,
             epoch,

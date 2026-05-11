@@ -5,7 +5,7 @@ use crate::vector::PyVector;
 use crate::{fovs::AllowedFOV, state::PyState};
 use kete_core::errors::Error;
 use kete_core::fov::FovLike;
-use kete_core::simult_states::SimultaneousStates;
+use kete_core::state::SimultaneousStates;
 use kete_core::time::TDB;
 use kete_core::time::Time;
 use kete_spice::prelude::LOADED_SPK;
@@ -96,13 +96,13 @@ impl PySimultaneousStates {
     /// The time of the simultaneous states.
     #[getter]
     pub fn jd(&self) -> PyTime {
-        self.0.epoch.into()
+        self.0.epoch().into()
     }
 
     /// The reference center NAIF ID for this state.
     #[getter]
     pub fn center_id(&self) -> i32 {
-        self.0.center_id
+        self.0.center_id()
     }
 
     /// Load a single SimultaneousStates from a file.

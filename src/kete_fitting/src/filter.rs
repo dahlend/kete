@@ -35,8 +35,9 @@
 
 use crate::obs::AstrometricObservation;
 use crate::obs::differential_light_deflect;
+use crate::orbit_fitting::NonGravFit;
 use crate::orbit_fitting::OrbitFit;
-use kete_core::forces::NonGravModel;
+use kete_core::forces::FrozenForce;
 use kete_core::frames::{CenterBody, Equatorial, SSB};
 use kete_core::kepler::light_time_correct;
 use kete_core::prelude::{Error, KeteResult, State, UncertainState};
@@ -57,20 +58,15 @@ struct FilterEpoch {
     phi: DMatrix<f64>,
 }
 
-/// Number of free non-grav parameters (0 when `None`).
-fn n_nongrav_params(ng: Option<&NonGravModel>) -> usize {
-    ng.map_or(0, NonGravModel::n_free_params)
-}
-
 /// Pack a [`State`] (and optional non-grav params) into a state vector.
 fn state_to_vec<C: CenterBody>(
     state: &State<Equatorial, C>,
-    non_grav: Option<&NonGravModel>,
+    non_grav: Option<&NonGravFit>,
 ) -> DVector<f64>
 where
     kete_core::frames::DynCenter: From<C>,
 {
-    let np = n_nongrav_params(non_grav);
+    let np = non_grav.map_or(0, |m| m.1.len());
     let dim = 6 + np;
     let mut xv = DVector::zeros(dim);
     xv[0] = state.pos[0];
@@ -80,8 +76,7 @@ where
     xv[4] = state.vel[1];
     xv[5] = state.vel[2];
     if let Some(ng) = non_grav {
-        let fp = ng.get_free_params();
-        for (idx, &val) in fp.iter().enumerate() {
+        for (idx, &val) in ng.1.iter().enumerate() {
             xv[6 + idx] = val;
         }
     }
@@ -92,7 +87,7 @@ where
 fn vec_to_state<C: CenterBody + Clone>(
     xv: &DVector<f64>,
     template: &State<Equatorial, C>,
-    non_grav: &mut Option<NonGravModel>,
+    non_grav: &mut Option<NonGravFit>,
 ) -> State<Equatorial, C>
 where
     kete_core::frames::DynCenter: From<C>,
@@ -101,9 +96,8 @@ where
     state.pos = [xv[0], xv[1], xv[2]].into();
     state.vel = [xv[3], xv[4], xv[5]].into();
     if let Some(ng) = non_grav.as_mut() {
-        let np = ng.n_free_params();
-        let params: Vec<f64> = xv.rows(6, np).iter().copied().collect();
-        ng.set_free_params(&params);
+        let np = ng.1.len();
+        ng.1 = xv.rows(6, np).iter().copied().collect();
     }
     state
 }
@@ -228,7 +222,7 @@ pub fn fit_orbit_filter(
     initial_state: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
     include_asteroids: bool,
-    non_grav: Option<&NonGravModel>,
+    non_grav: Option<&NonGravFit>,
     chi2_gate: f64,
     process_noise_q: f64,
 ) -> KeteResult<OrbitFit> {
@@ -236,7 +230,7 @@ pub fn fit_orbit_filter(
         return Err(Error::ValueError("No observations provided".into()));
     }
 
-    let np = n_nongrav_params(non_grav);
+    let np = non_grav.map_or(0, |m| m.1.len());
     let dim = 6 + np;
 
     // Scale initial covariance to the seed state so it is conservative
@@ -387,8 +381,8 @@ fn forward_pass(
     initial_covariance: &DMatrix<f64>,
     sorted: &[AstrometricObservation],
     include_asteroids: bool,
-    ng: &mut Option<NonGravModel>,
-    non_grav: Option<&NonGravModel>,
+    ng: &mut Option<NonGravFit>,
+    non_grav: Option<&NonGravFit>,
     chi2_gate: f64,
     process_noise_q: f64,
     dim: usize,
@@ -407,8 +401,19 @@ fn forward_pass(
         // EKF: propagate the state nonlinearly; use the STM only for
         // the covariance prediction.
         let (phi_full, xv_pred, cov_pred, new_state) = if dt.abs() > 1e-12 {
-            let ssb_result =
-                compute_state_transition(&state_cur, obs_epoch, include_asteroids, ng.clone()).ok();
+            let ng_frozen = ng
+                .as_ref()
+                .map(|f| FrozenForce::new(f.0.clone(), f.1.clone()))
+                .transpose()
+                .ok()
+                .flatten();
+            let ssb_result = compute_state_transition(
+                &state_cur,
+                obs_epoch,
+                include_asteroids,
+                ng_frozen.as_ref(),
+            )
+            .ok();
             if let Some((propagated_ssb, phi_6xd)) = ssb_result {
                 let phi = expand_phi(&phi_6xd, dim);
                 let qmat = build_process_noise(dim, process_noise_q, dt);
@@ -632,8 +637,8 @@ fn build_result(
     accepted_flags: &[bool],
     xv_smoothed: &[DVector<f64>],
     cov_smoothed: &[DMatrix<f64>],
-    ng: &mut Option<NonGravModel>,
-    non_grav: Option<&NonGravModel>,
+    ng: &mut Option<NonGravFit>,
+    non_grav: Option<&NonGravFit>,
     dim: usize,
 ) -> KeteResult<OrbitFit> {
     let n_obs = epochs.len();
@@ -646,10 +651,11 @@ fn build_result(
     let mut result_state = vec_to_state(final_x, initial_state, ng);
     result_state.epoch = sorted[0].epoch();
 
+    let free_params = ng.as_ref().map_or_else(Vec::new, |m| m.1.clone());
     let uncertain = UncertainState {
         state: result_state.into(),
         cov_matrix: final_p.clone(),
-        non_grav: ng.clone(),
+        free_params,
     };
 
     // -- Compute final residuals from smoothed states --------------
@@ -685,6 +691,7 @@ fn build_result(
 
     Ok(OrbitFit {
         uncertain_state: uncertain,
+        non_grav: ng.clone(),
         residuals,
         observations: sorted.to_vec(),
         included: accepted_flags.to_vec(),
@@ -721,12 +728,14 @@ mod tests {
     use kete_core::Band;
     use kete_core::constants::GMS;
     use kete_core::desigs::Desig;
+    use kete_core::forces::GravParams;
     use kete_core::frames::Equatorial;
     use kete_core::kepler::light_time_correct;
     use kete_core::prelude::State;
+    use kete_core::state::StateLike;
     use kete_core::time::{TDB, Time};
     use kete_spice::prelude::LOADED_SPK;
-    use kete_spice::propagation::propagate_n_body_spk;
+    use kete_spice::propagation::SpkNBody;
     use kete_spice::test_data::ensure_test_spk;
 
     /// Build a simple SSB-centered state.
@@ -770,11 +779,12 @@ mod tests {
             let (obs_pos, obs_vel) = earth_observer(jd);
             let observer = make_state(obs_pos, obs_vel, jd);
 
-            let obj_at =
-                propagate_n_body_spk(true_state.clone(), Time::<TDB>::new(jd), false, None)
-                    .unwrap();
-
             let spk = LOADED_SPK.try_read().unwrap();
+            let planets = GravParams::planets();
+            let obj_at = true_state
+                .clone()
+                .propagate_with(&SpkNBody::new(&spk, &planets), Time::<TDB>::new(jd))
+                .unwrap();
             let sun_at = spk.try_to_sun(obj_at.clone()).unwrap();
             let obs_helio = observer.pos - obj_at.pos + sun_at.pos;
             let obj_lt_sun = light_time_correct(&sun_at, &obs_helio).unwrap();

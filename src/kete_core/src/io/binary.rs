@@ -41,8 +41,7 @@ use crate::fov::{
     SpitzerFrame, WiseCmos, ZtfCcdQuad, ZtfField,
 };
 use crate::frames::{Equatorial, Vector};
-use crate::simult_states::SimultaneousStates;
-use crate::state::State;
+use crate::state::{SimultaneousStates, State};
 use crate::time::{TDB, Time};
 use std::io::{self, Cursor, Read, Write};
 
@@ -857,8 +856,8 @@ impl KeteRead for FOV {
 impl KeteWrite for SimultaneousStates {
     fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let mut payload = Vec::new();
-        self.epoch.write_to(&mut payload)?;
-        self.center_id.write_to(&mut payload)?;
+        self.epoch().write_to(&mut payload)?;
+        self.center_id().write_to(&mut payload)?;
         self.fov.write_to(&mut payload)?;
         self.states.write_to(&mut payload)?;
         (payload.len() as u32).write_to(w)?;
@@ -873,16 +872,20 @@ impl KeteRead for SimultaneousStates {
         r.read_exact(&mut payload)?;
         let mut cursor = Cursor::new(&payload);
 
-        let epoch = Time::read_from(&mut cursor)?;
-        let center_id = i32::read_from(&mut cursor)?;
+        // Read header fields first (format compatibility: these bytes must
+        // stay in this position). Then validate them against what new_exact
+        // derives from the state data, catching corrupt files.
+        let epoch_file = Time::read_from(&mut cursor)?;
+        let center_id_file = i32::read_from(&mut cursor)?;
         let fov = Option::<FOV>::read_from(&mut cursor)?;
         let states = Vec::read_from(&mut cursor)?;
-        Ok(Self {
-            states,
-            epoch,
-            center_id,
-            fov,
-        })
+        let result = Self::new_exact(states, fov)?;
+        if result.epoch() != epoch_file || result.center_id() != center_id_file {
+            return Err(Error::IOError(
+                "SimultaneousStates header fields do not match state data".into(),
+            ));
+        }
+        Ok(result)
     }
 }
 
@@ -1403,66 +1406,47 @@ mod tests {
 
     #[test]
     fn test_simult_states_no_fov() {
-        let ss = SimultaneousStates {
-            states: vec![sample_state()],
-            epoch: sample_time(),
-            center_id: 10,
-            fov: None,
-        };
+        let ss = SimultaneousStates::new_exact(vec![sample_state()], None).unwrap();
         round_trip_debug(&ss);
     }
 
     #[test]
     fn test_simult_states_with_fov() {
-        let ss = SimultaneousStates {
-            states: vec![sample_state()],
-            epoch: sample_time(),
-            center_id: 10,
-            fov: Some(FOV::OmniDirectional(OmniDirectional {
-                observer: sample_state(),
-            })),
-        };
+        let fov = Some(FOV::OmniDirectional(OmniDirectional {
+            observer: sample_state(),
+        }));
+        let ss = SimultaneousStates::new_exact(vec![sample_state()], fov).unwrap();
         let mut buf = Vec::new();
         ss.write_to(&mut buf).unwrap();
         let mut cursor = Cursor::new(&buf);
         let recovered = SimultaneousStates::read_from(&mut cursor).unwrap();
-        assert_eq!(ss.epoch.jd, recovered.epoch.jd);
-        assert_eq!(ss.center_id, recovered.center_id);
+        assert_eq!(ss.epoch().jd, recovered.epoch().jd);
+        assert_eq!(ss.center_id(), recovered.center_id());
         assert_eq!(ss.states.len(), recovered.states.len());
         assert!(recovered.fov.is_some());
     }
 
     #[test]
     fn test_simult_states_empty() {
-        let ss = SimultaneousStates {
-            states: vec![],
-            epoch: sample_time(),
-            center_id: 0,
-            fov: None,
-        };
-        round_trip_debug(&ss);
+        assert!(SimultaneousStates::new_exact(vec![], None).is_err());
     }
 
     // -- File-level round-trip (single) --
 
     #[test]
     fn test_single_file_round_trip() {
-        let entry = SimultaneousStates {
-            states: vec![sample_state()],
-            epoch: sample_time(),
-            center_id: 10,
-            fov: Some(FOV::OmniDirectional(OmniDirectional {
-                observer: sample_state(),
-            })),
-        };
+        let fov = Some(FOV::OmniDirectional(OmniDirectional {
+            observer: sample_state(),
+        }));
+        let entry = SimultaneousStates::new_exact(vec![sample_state()], fov).unwrap();
         let mut buf = Vec::new();
         write_single_kete_file(&entry, &mut buf).unwrap();
         let mut cursor = Cursor::new(&buf);
         let data = read_kete_file(&mut cursor).unwrap();
         match data {
             KeteFileType::Single(recovered) => {
-                assert_eq!(entry.epoch.jd, recovered.epoch.jd);
-                assert_eq!(entry.center_id, recovered.center_id);
+                assert_eq!(entry.epoch().jd, recovered.epoch().jd);
+                assert_eq!(entry.center_id(), recovered.center_id());
                 assert_eq!(entry.states.len(), recovered.states.len());
                 assert!(recovered.fov.is_some());
             }
@@ -1474,22 +1458,30 @@ mod tests {
 
     #[test]
     fn test_vec_file_round_trip() {
+        let state2 = State::new(
+            Desig::Naif(399),
+            Time::new(2460000.0),
+            Vector::new([2.0, 0.0, 0.0]),
+            Vector::new([0.0, 1.0, 0.0]),
+            10,
+        );
+        let obs2 = State::new(
+            Desig::Naif(399),
+            Time::new(2460000.0),
+            Vector::new([1.0, 0.0, 0.0]),
+            Vector::new([0.0, 0.5, 0.0]),
+            10,
+        );
         let entries = vec![
-            SimultaneousStates {
-                states: vec![sample_state()],
-                epoch: sample_time(),
-                center_id: 10,
-                fov: None,
-            },
-            SimultaneousStates {
-                states: vec![],
-                epoch: Time::new(2460000.0),
-                center_id: 0,
-                fov: Some(FOV::GenericCone(GenericCone {
-                    observer: sample_state(),
+            SimultaneousStates::new_exact(vec![sample_state()], None).unwrap(),
+            SimultaneousStates::new_exact(
+                vec![state2],
+                Some(FOV::GenericCone(GenericCone {
+                    observer: obs2,
                     patch: sample_cone(),
                 })),
-            },
+            )
+            .unwrap(),
         ];
         let mut buf = Vec::new();
         write_vec_kete_file(&entries, &mut buf).unwrap();
@@ -1499,8 +1491,8 @@ mod tests {
             KeteFileType::Vec(recovered) => {
                 assert_eq!(entries.len(), recovered.len());
                 for (orig, rec) in entries.iter().zip(recovered.iter()) {
-                    assert_eq!(orig.epoch.jd, rec.epoch.jd);
-                    assert_eq!(orig.center_id, rec.center_id);
+                    assert_eq!(orig.epoch().jd, rec.epoch().jd);
+                    assert_eq!(orig.center_id(), rec.center_id());
                     assert_eq!(orig.states.len(), rec.states.len());
                 }
             }

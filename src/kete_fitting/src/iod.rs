@@ -1141,10 +1141,12 @@ mod tests {
     use kete_core::Band;
     use kete_core::constants::GMS;
     use kete_core::desigs::Desig;
+    use kete_core::forces::GravParams;
     use kete_core::frames::{SSB, SunCenter};
     use kete_core::kepler::{light_time_correct, propagate_two_body};
+    use kete_core::state::StateLike;
     use kete_core::time::{TDB, Time};
-    use kete_spice::prelude::{LOADED_SPK, propagate_n_body_spk};
+    use kete_spice::prelude::{LOADED_SPK, SpkNBody};
 
     use kete_spice::test_data::ensure_test_spk;
 
@@ -1254,11 +1256,6 @@ mod tests {
             .unwrap()
     }
 
-    /// Extract just the states from scored IOD results.
-    fn states(scored: &[(f64, State<Equatorial>)]) -> Vec<&State<Equatorial>> {
-        scored.iter().map(|(_, s)| s).collect()
-    }
-
     // -- Scanning IOD tests ---------------------------------------------------
 
     #[test]
@@ -1294,7 +1291,7 @@ mod tests {
         assert!(!results.is_empty(), "Should find at least one candidate");
 
         let true_r = 2.0;
-        let has_reasonable = states(&results).iter().any(|c| {
+        let has_reasonable = results.iter().map(|(_, s)| s).any(|c| {
             let r = c.pos.norm();
             r > true_r / 3.0 && r < true_r * 3.0
         });
@@ -1302,9 +1299,9 @@ mod tests {
             has_reasonable,
             "At least one candidate should be within 3x of true distance {true_r} AU, \
              got distances: {:?}",
-            states(&results)
+            results
                 .iter()
-                .map(|c| c.pos.norm())
+                .map(|(_, s)| s.pos.norm())
                 .collect::<Vec<_>>()
         );
     }
@@ -1473,7 +1470,7 @@ mod tests {
         assert!(!results.is_empty(), "Should find at least one candidate");
 
         let true_r = 2.0;
-        let has_reasonable = states(&results).iter().any(|c| {
+        let has_reasonable = results.iter().map(|(_, s)| s).any(|c| {
             let cr = c.pos.norm();
             cr > true_r / 3.0 && cr < true_r * 3.0
         });
@@ -1481,9 +1478,9 @@ mod tests {
             has_reasonable,
             "At least one candidate should be within 3x of true distance {true_r} AU, \
              got distances: {:?}",
-            states(&results)
+            results
                 .iter()
-                .map(|c| c.pos.norm())
+                .map(|(_, s)| s.pos.norm())
                 .collect::<Vec<_>>()
         );
     }
@@ -1568,14 +1565,13 @@ mod tests {
         let observations: Vec<AstrometricObservation> = epochs
             .iter()
             .map(|&jd| {
-                let obj_at = propagate_n_body_spk(
-                    spk.try_to_ssb(obj.clone())
-                        .expect("Center conversion failed"),
-                    Time::<TDB>::new(jd),
-                    false,
-                    None,
-                )
-                .expect("N-body propagation failed");
+                let planets = GravParams::planets();
+                let force = SpkNBody::new(&spk, &planets);
+                let obj_at = spk
+                    .try_to_ssb(obj.clone())
+                    .expect("Center conversion failed")
+                    .propagate_with(&force, Time::<TDB>::new(jd))
+                    .expect("N-body propagation failed");
 
                 let observer: State<Equatorial> = spk
                     .try_get_state_with_center(399, Time::<TDB>::new(jd), 0)
@@ -1626,7 +1622,10 @@ mod tests {
 
         let obj_at = {
             let obj_ssb = spk.try_to_ssb(obj.clone()).unwrap();
-            propagate_n_body_spk(obj_ssb, results[0].1.epoch, false, None).unwrap()
+            let planets = GravParams::planets();
+            obj_ssb
+                .propagate_with(&SpkNBody::new(&spk, &planets), results[0].1.epoch)
+                .unwrap()
         };
         let best = best_candidate(&results, &obj_at);
         let pos_err = (best.pos - obj_at.pos).norm();
@@ -1688,7 +1687,7 @@ mod tests {
         // in the right ballpark (within 3x of true).
         let obj_at = propagate_two_body(&obj, Time::<TDB>::new(epochs[0])).unwrap();
         let true_r = obj_at.pos.norm();
-        let has_reasonable = states(&results).iter().any(|c| {
+        let has_reasonable = results.iter().map(|(_, s)| s).any(|c| {
             let cr = c.pos.norm();
             cr > true_r / 3.0 && cr < true_r * 3.0
         });
@@ -1696,9 +1695,9 @@ mod tests {
             has_reasonable,
             "Close-encounter NEO: at least one candidate within 3x of true r={true_r:.3}, \
              got distances: {:?}",
-            states(&results)
+            results
                 .iter()
-                .map(|c| c.pos.norm())
+                .map(|(_, s)| s.pos.norm())
                 .collect::<Vec<_>>()
         );
     }

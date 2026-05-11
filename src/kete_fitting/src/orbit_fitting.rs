@@ -30,14 +30,75 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use crate::obs::{AstrometricObservation, differential_light_deflect};
-use kete_core::forces::NonGravModel;
+use kete_core::forces::{FrozenForce, FrozenNonGrav, GravParams, ParameterizedForce};
+use kete_core::frames::SunCenter;
+use std::sync::Arc;
+
+/// Internal owned bundle the fitter carries through trial/accept/reject
+/// loops: typed [`ParameterizedForce`] template, current parameter values, and lower
+/// bounds. A tuple alias rather than a struct -- no methods, no OOP
+/// coupling. Bounds are carried alongside values for cheap mutation
+/// without touching the template or re-passing bounds at every call.
+pub type NonGravFit = (
+    Arc<dyn ParameterizedForce<Frame = Equatorial, Center = SunCenter>>,
+    Vec<f64>,
+    Vec<f64>,
+);
+
+#[cfg(test)]
+fn jpl_comet_default_fit(a1: f64, a2: f64, a3: f64) -> NonGravFit {
+    use kete_core::forces::JplCometNonGrav;
+    (
+        Arc::new(JplCometNonGrav::standard_comet()),
+        vec![a1, a2, a3],
+        vec![f64::NEG_INFINITY; 3],
+    )
+}
+
+#[cfg(test)]
+fn dust_fit(beta: f64) -> NonGravFit {
+    use kete_core::forces::DustNonGrav;
+    (Arc::new(DustNonGrav), vec![beta], vec![f64::NEG_INFINITY])
+}
 use kete_core::frames::{Equatorial, SSB};
 use kete_core::kepler::light_time_correct;
 use kete_core::prelude::{Error, KeteResult, State, UncertainState};
+use kete_core::state::StateLike;
+use kete_core::time::{TDB, Time};
 use kete_spice::prelude::{LOADED_SPK, compute_state_transition};
-use kete_spice::propagation::propagate_n_body_spk;
+use kete_spice::propagation::{SpkNBody, helio_with_frozen_nongrav};
 use nalgebra::{DMatrix, DVector};
 use rayon::prelude::*;
+
+/// Helper: propagate an SSB-centered state under heliocentric N-body
+/// gravity plus optional frozen non-grav values.
+fn propagate_helio(
+    state: State<Equatorial, SSB>,
+    jd_final: Time<TDB>,
+    include_extended: bool,
+    non_grav: Option<&FrozenNonGrav>,
+) -> KeteResult<State<Equatorial, SSB>> {
+    let spk = LOADED_SPK.try_read()?;
+    if include_extended {
+        let planets = GravParams::selected_masses();
+        match non_grav {
+            None => state.propagate_with(&SpkNBody::new(&spk, &planets), jd_final),
+            Some(frozen) => {
+                let force = helio_with_frozen_nongrav(&spk, &planets, frozen)?;
+                state.propagate_with(&force, jd_final)
+            }
+        }
+    } else {
+        let planets = GravParams::planets();
+        match non_grav {
+            None => state.propagate_with(&SpkNBody::new(&spk, &planets), jd_final),
+            Some(frozen) => {
+                let force = helio_with_frozen_nongrav(&spk, &planets, frozen)?;
+                state.propagate_with(&force, jd_final)
+            }
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Tuning constants
@@ -103,10 +164,18 @@ const LM_LAMBDA_RESET_THRESHOLD: f64 = 1e-6;
 /// understate the true noise by a factor k, the post-fit RMS is ~k and
 /// the covariance is inflated by k^2, so reported uncertainties stay
 /// well-calibrated regardless.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OrbitFit {
-    /// Core uncertain orbit (state + covariance + `non_grav` template).
+    /// Core uncertain orbit (state + covariance + free parameters).
     pub uncertain_state: UncertainState,
+
+    /// Non-gravitational fit data: `(template, values, lower_bounds)`.
+    /// Free parameter values live on `uncertain_state.free_params`;
+    /// this field carries the typed [`ParameterizedForce`] template (variant + fixed
+    /// coefficients) plus the fitter's view of the values and bounds
+    /// for round-trip reconstruction. `None` when fitting gravity-only
+    /// orbits.
+    pub non_grav: Option<NonGravFit>,
 
     /// Post-fit residuals for every observation (time-sorted).
     /// Each entry has as many elements as the measurement dimension
@@ -130,6 +199,20 @@ pub struct OrbitFit {
     /// dropped below `tol`). When `false` the fit is the best found
     /// within the iteration limit but may not be fully converged.
     pub converged: bool,
+}
+
+impl std::fmt::Debug for OrbitFit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OrbitFit")
+            .field("uncertain_state", &self.uncertain_state)
+            .field("non_grav_present", &self.non_grav.is_some())
+            .field("residuals", &self.residuals)
+            .field("observations", &self.observations)
+            .field("included", &self.included)
+            .field("rms", &self.rms)
+            .field("converged", &self.converged)
+            .finish()
+    }
 }
 
 /// Fit an orbit to observations using iterative least squares.
@@ -182,7 +265,7 @@ pub fn fit_orbit(
     initial_state: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
     include_asteroids: bool,
-    non_grav: Option<&NonGravModel>,
+    non_grav: Option<&NonGravFit>,
     max_iter: usize,
     tol: f64,
     chi2_threshold: f64,
@@ -340,7 +423,7 @@ fn fit_orbit_raw(
     sorted: &[AstrometricObservation],
     included: &[bool],
     include_asteroids: bool,
-    ng: Option<NonGravModel>,
+    ng: Option<NonGravFit>,
     max_iter: usize,
     tol: f64,
     chi2_threshold: f64,
@@ -428,7 +511,7 @@ fn solve_with_rejection(
     sorted_obs: &[AstrometricObservation],
     included: &[bool],
     include_asteroids: bool,
-    non_grav: Option<NonGravModel>,
+    non_grav: Option<NonGravFit>,
     max_iter: usize,
     tol: f64,
     chi2_threshold: f64,
@@ -445,11 +528,7 @@ fn solve_with_rejection(
         tol,
     )?;
 
-    let np = fit
-        .uncertain_state
-        .non_grav
-        .as_ref()
-        .map_or(0, NonGravModel::n_free_params);
+    let np = fit.uncertain_state.free_params.len();
     let min_included = (6 + np).max(4);
 
     // Rejection and recovery thresholds with 7/6 hysteresis ratio
@@ -469,7 +548,7 @@ fn solve_with_rejection(
             sorted_obs,
             included,
             include_asteroids,
-            fit.uncertain_state.non_grav.as_ref(),
+            fit.non_grav.as_ref(),
         )?;
         // CMC leverage uses the Fisher inverse C_0 = (H^T W H)^+, which is
         // stored directly in cov_matrix (no chi-square scaling applied).
@@ -553,7 +632,7 @@ fn solve_with_rejection(
             sorted_obs,
             &current_included,
             include_asteroids,
-            fit.uncertain_state.non_grav.clone(),
+            fit.non_grav.clone(),
             max_iter,
             tol,
         )?;
@@ -585,7 +664,7 @@ fn solve_with_rejection_adaptive(
     sorted_obs: &[AstrometricObservation],
     included: &[bool],
     include_asteroids: bool,
-    non_grav: Option<NonGravModel>,
+    non_grav: Option<NonGravFit>,
     max_iter: usize,
     tol: f64,
     chi2_threshold: f64,
@@ -737,7 +816,7 @@ fn iterate_to_convergence(
     obs: &[AstrometricObservation],
     included: &[bool],
     include_asteroids: bool,
-    mut non_grav: Option<NonGravModel>,
+    mut non_grav: Option<NonGravFit>,
     max_iter: usize,
     tol: f64,
 ) -> KeteResult<OrbitFit> {
@@ -746,7 +825,7 @@ fn iterate_to_convergence(
     // Their information-matrix entries are often orders of magnitude
     // smaller than the orbital entries, so an undamped first step can
     // produce enormous non-grav corrections that poison the fit.
-    let np = non_grav.as_ref().map_or(0, NonGravModel::n_free_params);
+    let np = non_grav.as_ref().map_or(0, |m: &NonGravFit| m.1.len());
     let mut lambda = if np > 0 { LM_NG_INITIAL_LAMBDA } else { 0.0 };
 
     // Linearize at the initial state.
@@ -850,7 +929,7 @@ fn iterate_to_convergence(
                         }
                     }
 
-                    let n_params = 6 + non_grav.as_ref().map_or(0, NonGravModel::n_free_params);
+                    let n_params = 6 + non_grav.as_ref().map_or(0, |m: &NonGravFit| m.1.len());
                     let rms = weighted_rms(&residuals, obs, included, n_params);
                     // Internal covariance stays as the raw Fisher inverse
                     // (H^T W H)^{-1}.  `solve_with_rejection` requires the
@@ -861,10 +940,12 @@ fn iterate_to_convergence(
                     // (covariance *= rms^2) is applied once at the
                     // `fit_orbit` boundary; see `rescale_covariance_danby`.
                     let covariance = raw_cov;
+                    let free_params = non_grav.as_ref().map_or_else(Vec::new, |m| m.1.clone());
                     let uncertain_state =
-                        UncertainState::new(state_epoch.into(), covariance, non_grav)?;
+                        UncertainState::new(state_epoch.into(), covariance, free_params)?;
                     return Ok(OrbitFit {
                         uncertain_state,
+                        non_grav,
                         residuals,
                         observations: obs.to_vec(),
                         included: included.to_vec(),
@@ -918,9 +999,9 @@ fn make_non_converged_result(
     obs: &[AstrometricObservation],
     included: &[bool],
     include_asteroids: bool,
-    non_grav: Option<NonGravModel>,
+    non_grav: Option<NonGravFit>,
 ) -> OrbitFit {
-    let n_params = 6 + non_grav.as_ref().map_or(0, NonGravModel::n_free_params);
+    let n_params = 6 + non_grav.as_ref().map_or(0, |m: &NonGravFit| m.1.len());
 
     // Try to compute covariance and residuals together; fall back to
     // placeholders if any propagation step fails.  Covariance here is the
@@ -944,11 +1025,13 @@ fn make_non_converged_result(
             });
 
     // Dimensions are correct by construction -- `new` cannot fail.
-    let uncertain_state = UncertainState::new(state.clone().into(), covariance, non_grav)
+    let free_params = non_grav.as_ref().map_or_else(Vec::new, |m| m.1.clone());
+    let uncertain_state = UncertainState::new(state.clone().into(), covariance, free_params)
         .expect("dimension mismatch");
 
     OrbitFit {
         uncertain_state,
+        non_grav,
         residuals,
         observations: obs.to_vec(),
         included: included.to_vec(),
@@ -1008,9 +1091,9 @@ fn stm_sweep_inner(
     obs: &[AstrometricObservation],
     included: &[bool],
     include_asteroids: bool,
-    non_grav: Option<&NonGravModel>,
+    non_grav: Option<&NonGravFit>,
 ) -> KeteResult<(Vec<StmObs>, DMatrix<f64>)> {
-    let np = non_grav.map_or(0, NonGravModel::n_free_params);
+    let np = non_grav.map_or(0, |m: &NonGravFit| m.1.len());
     let d = 6 + np;
 
     // Local phi_cum initialized to identity relative to the checkpoint.
@@ -1026,11 +1109,14 @@ fn stm_sweep_inner(
         let obs_epoch = observation.epoch();
 
         if (obs_epoch.jd - state_cur.epoch.jd).abs() > 1e-12 {
+            let ng_frozen = non_grav
+                .map(|f| FrozenForce::new(f.0.clone(), f.1.clone()))
+                .transpose()?;
             let (new_state, phi_k) = compute_state_transition(
                 &state_cur,
                 obs_epoch,
                 include_asteroids,
-                non_grav.cloned(),
+                ng_frozen.as_ref(),
             )?;
 
             let phi_state: DMatrix<f64> = phi_k.columns(0, 6).clone_owned();
@@ -1095,7 +1181,7 @@ fn stm_sweep_inner(
 ///
 /// When observations are numerous, the arc is split into segments that
 /// are processed in parallel.  A cheap sequential pre-pass with
-/// `propagate_n_body_spk` (6-dim) computes checkpoint states at segment
+/// `propagate_helio` (6-dim) computes checkpoint states at segment
 /// boundaries; each segment then runs its own STM sub-sweep (30-dim)
 /// independently.  A brief sequential composition step chains the
 /// per-segment STMs into the full cumulative `phi_cum` values.
@@ -1110,7 +1196,7 @@ pub(crate) fn stm_sweep(
     obs: &[AstrometricObservation],
     included: &[bool],
     include_asteroids: bool,
-    non_grav: Option<&NonGravModel>,
+    non_grav: Option<&NonGravFit>,
 ) -> KeteResult<Vec<StmObs>> {
     // Minimum observations per segment to keep per-segment overhead small.
     const MIN_OBS_PER_SEGMENT: usize = 8;
@@ -1179,12 +1265,12 @@ pub(crate) fn stm_sweep(
             .map(|(results, _)| results);
     }
 
-    let np = non_grav.map_or(0, NonGravModel::n_free_params);
+    let np = non_grav.map_or(0, |m: &NonGravFit| m.1.len());
     let d = 6 + np;
 
     // Step 1 -- sequential cheap pre-pass.
     // Propagate the 6-dim state to checkpoint epochs so that every
-    // segment has an exact starting state.  Using `propagate_n_body_spk`
+    // segment has an exact starting state.  Using the 6-dim helper
     // (6-dim) rather than `compute_state_transition` (30-dim) keeps this
     // pre-pass ~5x cheaper than a full STM integration.
     //
@@ -1207,11 +1293,14 @@ pub(crate) fn stm_sweep(
     for &(_, end) in &segment_ranges[..n_segments - 1] {
         let target_epoch = obs[end - 1].epoch();
         if (target_epoch.jd - cur.epoch.jd).abs() > 1e-12 {
-            cur = propagate_n_body_spk(
+            let ng_frozen = non_grav
+                .map(|f| FrozenForce::new(f.0.clone(), f.1.clone()))
+                .transpose()?;
+            cur = propagate_helio(
                 cur.clone(),
                 target_epoch,
                 include_asteroids,
-                non_grav.cloned(),
+                ng_frozen.as_ref(),
             )?;
         }
         checkpoint_states.push(cur.clone());
@@ -1312,7 +1401,7 @@ pub(crate) fn accumulate_normal_equations(
     obs: &[AstrometricObservation],
     included: &[bool],
     include_asteroids: bool,
-    non_grav: Option<&NonGravModel>,
+    non_grav: Option<&NonGravFit>,
 ) -> KeteResult<(DMatrix<f64>, DVector<f64>, f64)> {
     let sweep = stm_sweep(state_epoch, obs, included, include_asteroids, non_grav)?;
     let (n_mat, b_vec, loss, _) = accumulate_from_sweep(&sweep, non_grav);
@@ -1332,9 +1421,9 @@ pub(crate) fn accumulate_normal_equations(
 /// `residuals` contains one entry per included observation (matching the sweep).
 fn accumulate_from_sweep(
     sweep: &[StmObs],
-    non_grav: Option<&NonGravModel>,
+    non_grav: Option<&NonGravFit>,
 ) -> (DMatrix<f64>, DVector<f64>, f64, Vec<DVector<f64>>) {
-    let np = non_grav.map_or(0, NonGravModel::n_free_params);
+    let np = non_grav.map_or(0, |m: &NonGravFit| m.1.len());
     let d = 6 + np;
 
     let mut n_mat = DMatrix::<f64>::zeros(d, d);
@@ -1503,16 +1592,14 @@ fn limit_correction(mut dx: DVector<f64>) -> DVector<f64> {
 /// out-of-bounds non-grav step inflates Marquardt damping and shrinks
 /// the position step (which was correctly sized) to nothing -- the
 /// orbital fit then stalls completely.
-fn backtrack_to_ng_bounds(mut dx: DVector<f64>, non_grav: Option<&NonGravModel>) -> DVector<f64> {
+fn backtrack_to_ng_bounds(mut dx: DVector<f64>, non_grav: Option<&NonGravFit>) -> DVector<f64> {
     let Some(ng) = non_grav else {
         return dx;
     };
-    let np = ng.n_free_params();
-    let params = ng.get_free_params();
-    let bounds = ng.param_lower_bounds();
+    let np = ng.1.len();
     for k in 0..np {
-        let cur = params[k];
-        let lo = bounds[k];
+        let cur = ng.1[k];
+        let lo = ng.2[k];
         if !lo.is_finite() {
             continue;
         }
@@ -1522,8 +1609,7 @@ fn backtrack_to_ng_bounds(mut dx: DVector<f64>, non_grav: Option<&NonGravModel>)
         }
         // Shrink to land halfway between the current value and the
         // bound so we make progress toward the bound without snapping
-        // onto it (which would silently re-trigger the clamp inside
-        // `set_free_params`).
+        // onto it (which would re-trigger the clamp).
         let safe_step = 0.5 * (lo - cur);
         dx[6 + k] = safe_step;
     }
@@ -1535,15 +1621,13 @@ fn backtrack_to_ng_bounds(mut dx: DVector<f64>, non_grav: Option<&NonGravModel>)
 fn apply_correction(
     state: &mut State<Equatorial, SSB>,
     dx: &DVector<f64>,
-    non_grav: &mut Option<NonGravModel>,
+    non_grav: &mut Option<NonGravFit>,
 ) -> bool {
     if let Some(ng) = non_grav.as_ref() {
-        let np = ng.n_free_params();
-        let params = ng.get_free_params();
-        let bounds = ng.param_lower_bounds();
+        let np = ng.1.len();
         for k in 0..np {
-            let new_val = params[k] + dx[6 + k];
-            if new_val <= bounds[k] || !new_val.is_finite() {
+            let new_val = ng.1[k] + dx[6 + k];
+            if new_val <= ng.2[k] || !new_val.is_finite() {
                 return false;
             }
         }
@@ -1556,25 +1640,23 @@ fn apply_correction(
     state.vel = [vel[0] + dx[3], vel[1] + dx[4], vel[2] + dx[5]].into();
 
     if let Some(ng) = non_grav.as_mut() {
-        let np = ng.n_free_params();
-        let mut params = ng.get_free_params();
+        let np = ng.1.len();
         for k in 0..np {
-            params[k] += dx[6 + k];
+            ng.1[k] += dx[6 + k];
         }
-        ng.set_free_params(&params);
     }
     true
 }
 
 /// Compute post-fit residuals for all observations (time-sorted order).
 ///
-/// Uses the 6-dim `propagate_n_body_spk` (not the 60-dim STM
+/// Uses the 6-dim `propagate_helio` (not the 60-dim STM
 /// integrator) so this is ~5x cheaper than an STM sweep.
 fn compute_residuals(
     state_epoch: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
     include_asteroids: bool,
-    non_grav: Option<&NonGravModel>,
+    non_grav: Option<&NonGravFit>,
 ) -> KeteResult<Vec<DVector<f64>>> {
     let mut residuals = Vec::with_capacity(obs.len());
     let mut state_cur: State<Equatorial, SSB> = state_epoch.clone();
@@ -1584,11 +1666,14 @@ fn compute_residuals(
 
         // Propagate to observation epoch (6-dim, no STM).
         if (obs_epoch.jd - state_cur.epoch.jd).abs() > 1e-12 {
-            state_cur = propagate_n_body_spk(
+            let ng_frozen = non_grav
+                .map(|f| FrozenForce::new(f.0.clone(), f.1.clone()))
+                .transpose()?;
+            state_cur = propagate_helio(
                 state_cur.clone(),
                 obs_epoch,
                 include_asteroids,
-                non_grav.cloned(),
+                ng_frozen.as_ref(),
             )?;
         }
 
@@ -1643,7 +1728,6 @@ mod tests {
     use kete_core::constants::GMS;
     use kete_core::desigs::Desig;
     use kete_core::time::{TDB, Time};
-    use kete_spice::propagation::propagate_n_body_spk;
     use kete_spice::test_data::ensure_test_spk;
 
     /// Helper: build a simple state.
@@ -1666,18 +1750,22 @@ mod tests {
         epochs: &[f64],
         observer_pos_fn: impl Fn(f64) -> ([f64; 3], [f64; 3]),
         sigma: f64,
-        non_grav: Option<&NonGravModel>,
+        non_grav: Option<&NonGravFit>,
     ) -> Vec<AstrometricObservation> {
         let mut observations = Vec::new();
         for &jd in epochs {
             let (obs_pos, obs_vel) = observer_pos_fn(jd);
             let observer = make_state(obs_pos, obs_vel, jd);
 
-            let obj_at = propagate_n_body_spk(
+            let ng_frozen = non_grav
+                .map(|f| FrozenForce::new(f.0.clone(), f.1.clone()))
+                .transpose()
+                .expect("NonGravFit values match n_free_params");
+            let obj_at = propagate_helio(
                 true_state.clone(),
                 Time::<TDB>::new(jd),
                 false,
-                non_grav.cloned(),
+                ng_frozen.as_ref(),
             )
             .unwrap();
 
@@ -1847,7 +1935,7 @@ mod tests {
         let true_state = make_state([r, 0.0, 0.0], [0.0, v, 0.0], 2460000.5);
         // AU/day^2, large enough to be detectable
         let true_a2 = 1e-8;
-        let true_ng = NonGravModel::new_jpl_comet_default(0.0, true_a2, 0.0);
+        let true_ng = jpl_comet_default_fit(0.0, true_a2, 0.0);
 
         // Generate 15 observations over 90 days with the non-grav model.
         let epochs: Vec<f64> = (0..15).map(|i| 2460000.5 + f64::from(i) * 6.0).collect();
@@ -1857,7 +1945,7 @@ mod tests {
             synth_observations(&true_state, &epochs, earth_observer, sigma, Some(&true_ng));
 
         // Start from true state + non-grav model with a2=0 and fit.
-        let init_ng = NonGravModel::new_jpl_comet_default(0.0, 0.0, 0.0);
+        let init_ng = jpl_comet_default_fit(0.0, 0.0, 0.0);
 
         let fit = fit_orbit(
             &true_state,
@@ -1872,12 +1960,7 @@ mod tests {
         .unwrap();
 
         // The fitted non-grav model should exist and have a2 close to true_a2.
-        let fitted_ng = fit
-            .uncertain_state
-            .non_grav
-            .as_ref()
-            .expect("non_grav should be present");
-        let fitted_params = fitted_ng.get_free_params();
+        let fitted_params = fit.uncertain_state.free_params.clone();
         let a2_err = (fitted_params[1] - true_a2).abs();
         assert!(
             a2_err < true_a2 * 0.1,
@@ -1909,7 +1992,7 @@ mod tests {
         let v = (GMS / r).sqrt();
         let true_state = make_state([r, 0.0, 0.0], [0.0, v, 0.0], 2460000.5);
         let true_beta = 0.001;
-        let true_ng = NonGravModel::new_dust(true_beta);
+        let true_ng = dust_fit(true_beta);
 
         // 15 observations over 90 days.
         let epochs: Vec<f64> = (0..15).map(|i| 2460000.5 + f64::from(i) * 6.0).collect();
@@ -1918,7 +2001,7 @@ mod tests {
             synth_observations(&true_state, &epochs, earth_observer, sigma, Some(&true_ng));
 
         // Start from true state with beta=0.
-        let init_ng = NonGravModel::new_dust(0.0);
+        let init_ng = dust_fit(0.0);
 
         let fit = fit_orbit(
             &true_state,
@@ -1932,12 +2015,7 @@ mod tests {
         )
         .unwrap();
 
-        let fitted_ng = fit
-            .uncertain_state
-            .non_grav
-            .as_ref()
-            .expect("non_grav should be present");
-        let fitted_params = fitted_ng.get_free_params();
+        let fitted_params = fit.uncertain_state.free_params.clone();
         let beta_err = (fitted_params[0] - true_beta).abs();
         assert!(
             beta_err < true_beta * 0.1,
@@ -2055,7 +2133,7 @@ mod tests {
         let observations = synth_observations(&state, &epochs, earth_observer, sigma, None);
         let included = vec![true; observations.len()];
 
-        // Force the parallel path: temporarily request a pool with at least
+        // ParameterizedForce the parallel path: temporarily request a pool with at least
         // 4 threads so n_segments > 1.  Fall back to evaluating both paths
         // with the real pool size if rayon has few threads.
         let n_threads = rayon::current_num_threads();
@@ -2202,7 +2280,7 @@ mod tests {
         let epochs: Vec<f64> = (0..15).map(|i| 2460000.5 + f64::from(i) * 6.0).collect();
         let observations = synth_observations(&true_state, &epochs, earth_observer, 1e-6, None);
 
-        let init_ng = NonGravModel::new_jpl_comet_default(0.0, 0.0, 0.0);
+        let init_ng = jpl_comet_default_fit(0.0, 0.0, 0.0);
         let fit = fit_orbit(
             &true_state,
             &observations,
@@ -2216,7 +2294,7 @@ mod tests {
         .unwrap();
 
         assert!(
-            fit.uncertain_state.non_grav.is_some(),
+            fit.non_grav.is_some(),
             "non_grav should always be returned when requested"
         );
     }
@@ -2230,14 +2308,14 @@ mod tests {
         let v = (GMS / r).sqrt();
         let true_state = make_state([r, 0.0, 0.0], [0.0, v, 0.0], 2460000.5);
         let true_a2 = 1e-8;
-        let true_ng = NonGravModel::new_jpl_comet_default(0.0, true_a2, 0.0);
+        let true_ng = jpl_comet_default_fit(0.0, true_a2, 0.0);
 
         let epochs: Vec<f64> = (0..15).map(|i| 2460000.5 + f64::from(i) * 6.0).collect();
         let sigma = 1e-7;
         let observations =
             synth_observations(&true_state, &epochs, earth_observer, sigma, Some(&true_ng));
 
-        let init_ng = NonGravModel::new_jpl_comet_default(0.0, 0.0, 0.0);
+        let init_ng = jpl_comet_default_fit(0.0, 0.0, 0.0);
         let fit = fit_orbit(
             &true_state,
             &observations,
@@ -2252,12 +2330,11 @@ mod tests {
 
         // NG fit should be the one returned (non_grav populated) and should
         // recover a2 near the truth.
-        let fitted_ng = fit
-            .uncertain_state
-            .non_grav
-            .as_ref()
-            .expect("non_grav should be kept when it helps");
-        let fitted_params = fitted_ng.get_free_params();
+        assert!(
+            fit.non_grav.is_some(),
+            "non_grav should be kept when it helps"
+        );
+        let fitted_params = fit.uncertain_state.free_params.clone();
         let a2_err = (fitted_params[1] - true_a2).abs();
         assert!(
             a2_err < true_a2 * 0.1,

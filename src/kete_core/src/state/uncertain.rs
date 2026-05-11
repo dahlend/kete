@@ -1,6 +1,6 @@
 //! Uncertain state representation: a best-fit Cartesian state plus a
 //! covariance matrix that may span both the 6-element state and any
-//! fitted non-gravitational parameters.
+//! fitted force parameters.
 //!
 // BSD 3-Clause License
 //
@@ -32,53 +32,59 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use crate::elements::CometElements;
-use crate::forces::NonGravModel;
-use crate::frames::Equatorial;
+use crate::frames::{CenterBody, DynCenter, Equatorial, InertialFrame};
 use crate::prelude::{Error, KeteResult, State};
 use nalgebra::DMatrix;
 use rand::SeedableRng;
 use rand_distr::{Distribution, StandardNormal};
 
-/// A best-fit state together with a covariance matrix.
+/// A best-fit state together with a covariance matrix and zero or more
+/// fitted free parameters.
 ///
-/// The covariance is always expressed in the Cartesian frame
-/// (x, y, z, vx, vy, vz) followed by any non-grav free parameters
-/// in the order given by [`NonGravModel::param_names`].
+/// The covariance is `(6 + Np) x (6 + Np)` where `Np = free_params.len()`.
+/// Rows/cols 0-5 correspond to `[x, y, z, vx, vy, vz]`; rows/cols 6.. are
+/// the free parameters in the same order as `free_params`. The semantic
+/// labels of the free parameters live with the [`Force`] impls that
+/// produce them; the state itself stores values only.
 ///
-/// The total matrix size is `(6 + Np) x (6 + Np)` where `Np` is the
-/// number of free non-grav parameters (0, 1, or 3).
 #[derive(Debug, Clone)]
-pub struct UncertainState {
-    /// Best-fit state (Sun-centered Equatorial Cartesian).
-    /// Provides desig, epoch, and the 6 position/velocity values.
-    pub state: State<Equatorial>,
+pub struct UncertainState<F = Equatorial, C = DynCenter>
+where
+    F: InertialFrame,
+    C: CenterBody,
+    DynCenter: From<C>,
+{
+    /// Best-fit Cartesian state. Provides desig, epoch, and the 6
+    /// position/velocity values.
+    pub state: State<F, C>,
 
-    /// Covariance matrix, (6 + Np) x (6 + Np).
-    /// Rows/cols 0-5 correspond to [x, y, z, vx, vy, vz].
-    /// Rows/cols 6.. correspond to `non_grav.param_names()` order.
+    /// Covariance matrix, `(6 + Np) x (6 + Np)`.
     pub cov_matrix: DMatrix<f64>,
 
-    /// [`NonGravModel`] with both fitted and fixed parameter values.
-    /// When sampling, this is cloned and the free params are
-    /// overwritten with sampled values via `set_free_params()`.
-    /// Also defines the covariance column layout beyond col 5.
-    pub non_grav: Option<NonGravModel>,
+    /// Current best estimates of the fitted parameters, length `Np`.
+    /// `Np` may be zero (no fitted parameters), the typical case for a
+    /// pure orbit-determination state.
+    pub free_params: Vec<f64>,
 }
 
-impl UncertainState {
-    /// Construct an `UncertainState` directly from a Cartesian state and
-    /// covariance matrix.
+impl<F, C> UncertainState<F, C>
+where
+    F: InertialFrame,
+    C: CenterBody,
+    DynCenter: From<C>,
+{
+    /// Construct an `UncertainState` from a Cartesian state, covariance,
+    /// and free-parameter vector.
     ///
     /// # Errors
-    /// Returns an error if `cov_matrix` dimensions do not match the
-    /// expected `(6 + n_free_params) x (6 + n_free_params)`.
+    /// Returns an error if `cov_matrix` is not
+    /// `(6 + free_params.len()) x (6 + free_params.len())`.
     pub fn new(
-        state: State<Equatorial>,
+        state: State<F, C>,
         cov_matrix: DMatrix<f64>,
-        non_grav: Option<NonGravModel>,
+        free_params: Vec<f64>,
     ) -> KeteResult<Self> {
-        let np = non_grav.as_ref().map_or(0, NonGravModel::n_free_params);
-        let expected = 6 + np;
+        let expected = 6 + free_params.len();
         if cov_matrix.nrows() != expected || cov_matrix.ncols() != expected {
             return Err(Error::ValueError(format!(
                 "Covariance matrix must be {expected}x{expected}, \
@@ -90,10 +96,15 @@ impl UncertainState {
         Ok(Self {
             state,
             cov_matrix,
-            non_grav,
+            free_params,
         })
     }
+}
 
+// `from_cometary` is constrained to the default `<Equatorial, DynCenter>`
+// shape because it converts from `Ecliptic` and uses i32-based `State::new`.
+// `sample` is generic and lives below.
+impl UncertainState<Equatorial, DynCenter> {
     /// Construct an `UncertainState` from cometary orbital elements and
     /// a covariance expressed in element space.
     ///
@@ -101,9 +112,9 @@ impl UncertainState {
     /// covariance via the numerically evaluated Jacobian
     /// `J = d(x,y,z,vx,vy,vz) / d(e,q,tp,node,w,i)`.
     ///
-    /// When the covariance is larger than 6x6 (i.e. includes non-grav
+    /// When the covariance is larger than 6x6 (i.e. includes free
     /// parameters), the off-diagonal cross-terms are transformed by `J`
-    /// and the non-grav block is left unchanged.
+    /// and the parameter block is left unchanged.
     ///
     /// # Arguments
     /// * `elements` -- Cometary orbital elements with desig and epoch.
@@ -115,13 +126,14 @@ impl UncertainState {
     ///   3. `lon_of_ascending` (**radians**)
     ///   4. `peri_arg` (**radians**)
     ///   5. inclination (**radians**)
-    ///   6. non-grav free parameters (if any)
+    ///   6. free parameters (if any)
     ///
     ///   Angular elements must be in radians, matching the units stored
     ///   in [`CometElements`].  If your source covariance is in degrees
     ///   (e.g. JPL Horizons), scale angular rows/columns by `pi/180`
     ///   before calling this function.
-    /// * `non_grav` -- Optional non-gravitational model.
+    /// * `free_params` -- Initial free-parameter values, length `Np`.
+    ///   `Np = 0` is the no-parameter case.
     ///
     /// # Errors
     /// Returns an error if element-to-state conversion fails or if the
@@ -129,9 +141,9 @@ impl UncertainState {
     pub fn from_cometary(
         elements: &CometElements,
         cov_elem: &DMatrix<f64>,
-        non_grav: Option<NonGravModel>,
+        free_params: Vec<f64>,
     ) -> KeteResult<Self> {
-        let np = non_grav.as_ref().map_or(0, NonGravModel::n_free_params);
+        let np = free_params.len();
         let expected = 6 + np;
         if cov_elem.nrows() != expected || cov_elem.ncols() != expected {
             return Err(Error::ValueError(format!(
@@ -154,7 +166,7 @@ impl UncertainState {
         let c_cart = &jac * c_elem_6x6 * jac.transpose();
 
         if np == 0 {
-            return Self::new(state, c_cart, non_grav);
+            return Self::new(state, c_cart, free_params);
         }
 
         // Full (6+Np)x(6+Np) covariance with transformed blocks.
@@ -171,35 +183,49 @@ impl UncertainState {
             .view_mut((6, 0), (np, 6))
             .copy_from(&cross_cart.transpose());
 
-        // Lower-right: non-grav block unchanged.
+        // Lower-right: parameter block unchanged.
         cov_cart
             .view_mut((6, 6), (np, np))
             .copy_from(&cov_elem.view((6, 6), (np, np)));
 
-        Self::new(state, cov_cart, non_grav)
+        Self::new(state, cov_cart, free_params)
+    }
+}
+
+impl<F, C> UncertainState<F, C>
+where
+    F: InertialFrame,
+    C: CenterBody,
+    DynCenter: From<C>,
+{
+    /// Number of fitted free parameters (`free_params.len()`).
+    #[must_use]
+    pub fn n_free_params(&self) -> usize {
+        self.free_params.len()
     }
 
     /// Draw random samples from the covariance distribution.
     ///
-    /// Returns a vector of `(State, Option<NonGravModel>)` pairs.
-    /// Perturbations to the state position and velocity are drawn from
-    /// the multivariate normal defined by `cov_matrix`.
+    /// Returns a vector of `(State, Vec<f64>)` pairs, where the second
+    /// element is a perturbed copy of `free_params` with the same
+    /// length. Perturbations are drawn from the multivariate normal
+    /// defined by `cov_matrix`.
     ///
     /// # Arguments
     /// * `n_samples` -- Number of samples to draw.
     /// * `seed` -- Optional RNG seed for reproducibility.
     ///
     /// # Errors
-    /// Returns an error if the covariance is not positive-definite.
+    /// Returns an error if the covariance is not positive-semidefinite.
     pub fn sample(
         &self,
         n_samples: usize,
         seed: Option<u64>,
-    ) -> KeteResult<Vec<(State<Equatorial>, Option<NonGravModel>)>> {
+    ) -> KeteResult<Vec<(State<F, C>, Vec<f64>)>> {
         let n = self.cov_matrix.nrows();
 
         // Decompose using eigenvalues to handle positive semi-definite
-        // matrices (e.g. when some non-grav params have zero variance).
+        // matrices (e.g. when some parameters have zero variance).
         // C = V * diag(d) * V^T  ->  L = V * diag(sqrt(max(d,0)))
         // so that L * z produces samples in the non-null subspace.
         let sym = nalgebra::SymmetricEigen::new(self.cov_matrix.clone());
@@ -217,7 +243,8 @@ impl UncertainState {
             None => rand::rngs::StdRng::from_seed(rand::random()),
         };
 
-        // Nominal values: [x, y, z, vx, vy, vz, <nongrav params...>]
+        // Nominal values: [x, y, z, vx, vy, vz, <free params...>]
+        let np = self.free_params.len();
         let mut nominal = vec![
             self.state.pos[0],
             self.state.pos[1],
@@ -226,9 +253,7 @@ impl UncertainState {
             self.state.vel[1],
             self.state.vel[2],
         ];
-        if let Some(ref ng) = self.non_grav {
-            nominal.extend(ng.get_free_params());
-        }
+        nominal.extend(self.free_params.iter().copied());
 
         let mut results = Vec::with_capacity(n_samples);
 
@@ -238,49 +263,29 @@ impl UncertainState {
             let delta = &l * z;
 
             // Perturbed state.
-            let sampled_state = State::new(
-                self.state.desig.clone(),
-                self.state.epoch,
-                [
+            let sampled_state = State {
+                desig: self.state.desig.clone(),
+                epoch: self.state.epoch,
+                pos: crate::frames::Vector::<F>::new([
                     nominal[0] + delta[0],
                     nominal[1] + delta[1],
                     nominal[2] + delta[2],
-                ],
-                [
+                ]),
+                vel: crate::frames::Vector::<F>::new([
                     nominal[3] + delta[3],
                     nominal[4] + delta[4],
                     nominal[5] + delta[5],
-                ],
-                self.state.center_id(),
-            );
+                ]),
+                center: self.state.center,
+            };
 
-            // Perturbed non-grav (if any).
-            let sampled_ng = self.non_grav.as_ref().map(|ng| {
-                let mut ng_clone = ng.clone();
-                let np = ng.n_free_params();
-                let params: Vec<f64> = (0..np).map(|i| nominal[6 + i] + delta[6 + i]).collect();
-                ng_clone.set_free_params(&params);
-                ng_clone
-            });
+            // Perturbed free params.
+            let sampled_params: Vec<f64> = (0..np).map(|i| nominal[6 + i] + delta[6 + i]).collect();
 
-            results.push((sampled_state, sampled_ng));
+            results.push((sampled_state, sampled_params));
         }
 
         Ok(results)
-    }
-
-    /// Names of all parameters represented in the covariance matrix,
-    /// in row/column order.
-    ///
-    /// Always starts with `["x", "y", "z", "vx", "vy", "vz"]`, followed
-    /// by the non-grav parameter names if present.
-    #[must_use]
-    pub fn param_names(&self) -> Vec<&str> {
-        let mut names = vec!["x", "y", "z", "vx", "vy", "vz"];
-        if let Some(ref ng) = self.non_grav {
-            names.extend(ng.param_names());
-        }
-        names
     }
 }
 
@@ -398,107 +403,67 @@ mod tests {
     fn test_new_validates_dimensions() {
         let state = test_state();
         let cov_6x6 = DMatrix::identity(6, 6) * 1e-8;
-        let result = UncertainState::new(state.clone(), cov_6x6, None);
+        let result = UncertainState::new(state.clone(), cov_6x6, vec![]);
         assert!(result.is_ok());
 
         // Wrong size should fail.
         let cov_7x7 = DMatrix::identity(7, 7) * 1e-8;
-        let result = UncertainState::new(state, cov_7x7, None);
+        let result = UncertainState::new(state, cov_7x7, vec![]);
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_new_with_nongrav_validates_dimensions() {
+    fn test_new_with_free_params_validates_dimensions() {
         let state = test_state();
-        let ng = NonGravModel::new_jpl_comet_default(1e-8, 2e-8, 3e-8);
-        // JplComet has 3 free params, so need 9x9.
+        // 3 free params -> need 9x9.
         let cov_9x9 = DMatrix::identity(9, 9) * 1e-8;
-        let result = UncertainState::new(state.clone(), cov_9x9, Some(ng.clone()));
+        let result = UncertainState::new(state.clone(), cov_9x9, vec![1e-8, 2e-8, 3e-8]);
         assert!(result.is_ok());
 
-        // 6x6 should fail with JplComet.
+        // 6x6 with 3 free params should fail.
         let cov_6x6 = DMatrix::identity(6, 6) * 1e-8;
-        let result = UncertainState::new(state, cov_6x6, Some(ng));
+        let result = UncertainState::new(state, cov_6x6, vec![1e-8, 2e-8, 3e-8]);
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_param_names_no_nongrav() {
+    fn test_n_free_params() {
         let state = test_state();
         let cov = DMatrix::identity(6, 6) * 1e-8;
-        let us = UncertainState::new(state, cov, None).unwrap();
-        assert_eq!(us.param_names(), vec!["x", "y", "z", "vx", "vy", "vz"]);
-    }
+        let us = UncertainState::new(state.clone(), cov, vec![]).unwrap();
+        assert_eq!(us.n_free_params(), 0);
 
-    #[test]
-    fn test_param_names_jpl_comet() {
-        let state = test_state();
-        let ng = NonGravModel::new_jpl_comet_default(0.0, 0.0, 0.0);
         let cov = DMatrix::identity(9, 9) * 1e-8;
-        let us = UncertainState::new(state, cov, Some(ng)).unwrap();
-        assert_eq!(
-            us.param_names(),
-            vec!["x", "y", "z", "vx", "vy", "vz", "a1", "a2", "a3"]
-        );
+        let us = UncertainState::new(state, cov, vec![1.0, 2.0, 3.0]).unwrap();
+        assert_eq!(us.n_free_params(), 3);
     }
 
     #[test]
-    fn test_param_names_dust() {
-        let state = test_state();
-        let ng = NonGravModel::new_dust(0.01);
-        let cov = DMatrix::identity(7, 7) * 1e-8;
-        let us = UncertainState::new(state, cov, Some(ng)).unwrap();
-        assert_eq!(
-            us.param_names(),
-            vec!["x", "y", "z", "vx", "vy", "vz", "beta"]
-        );
-    }
-
-    #[test]
-    fn test_sample_no_nongrav() {
+    fn test_sample_no_free_params() {
         let state = test_state();
         let cov = DMatrix::identity(6, 6) * 1e-12;
-        let us = UncertainState::new(state.clone(), cov, None).unwrap();
+        let us = UncertainState::new(state.clone(), cov, vec![]).unwrap();
         let samples = us.sample(100, Some(42)).unwrap();
         assert_eq!(samples.len(), 100);
-        for (s, ng) in &samples {
-            assert!(ng.is_none());
+        for (s, params) in &samples {
+            assert!(params.is_empty());
             // Samples should be close to nominal with tiny covariance.
             assert!((s.pos[0] - state.pos[0]).abs() < 1e-3);
         }
     }
 
     #[test]
-    fn test_sample_with_nongrav_preserves_fixed_params() {
+    fn test_sample_with_free_params() {
         let state = test_state();
-        let custom_alpha = 0.5;
-        let ng = NonGravModel::new_jpl(
-            1e-8,
-            2e-8,
-            3e-8,
-            custom_alpha,
-            2.808,
-            2.15,
-            5.093,
-            4.6142,
-            0.0,
-        );
+        let nominal_params = vec![1e-8, 2e-8, 3e-8];
         let cov = DMatrix::identity(9, 9) * 1e-16;
-        let us = UncertainState::new(state, cov, Some(ng)).unwrap();
+        let us = UncertainState::new(state, cov, nominal_params.clone()).unwrap();
         let samples = us.sample(10, Some(42)).unwrap();
-        for (_, ng_opt) in &samples {
-            let ng = ng_opt.as_ref().unwrap();
-            // The fixed alpha should be preserved through sampling.
-            match ng {
-                NonGravModel::JplComet { alpha, .. } => {
-                    assert!(
-                        (*alpha - custom_alpha).abs() < f64::EPSILON,
-                        "alpha was {alpha}, expected {custom_alpha}"
-                    );
-                }
-                NonGravModel::Dust { .. } | NonGravModel::FarnocchiaModel { .. } => {
-                    panic!("Expected JplComet variant")
-                }
+        for (_, params) in &samples {
+            assert_eq!(params.len(), 3);
+            // Tiny covariance -> sampled params close to nominal.
+            for (sampled, nominal) in params.iter().zip(nominal_params.iter()) {
+                assert!((sampled - nominal).abs() < 1e-6);
             }
         }
     }
@@ -508,7 +473,7 @@ mod tests {
         let state = test_state();
         // Zero covariance (positive semi-definite, all eigenvalues zero).
         let cov = DMatrix::zeros(6, 6);
-        let us = UncertainState::new(state.clone(), cov, None).unwrap();
+        let us = UncertainState::new(state.clone(), cov, vec![]).unwrap();
         let samples = us.sample(5, Some(42)).unwrap();
         assert_eq!(samples.len(), 5);
         // Every sample should equal the nominal state exactly.
@@ -530,7 +495,7 @@ mod tests {
 
         // Tiny diagonal covariance in element space.
         let cov_elem = DMatrix::identity(6, 6) * 1e-20;
-        let us = UncertainState::from_cometary(&elements, &cov_elem, None).unwrap();
+        let us = UncertainState::from_cometary(&elements, &cov_elem, vec![]).unwrap();
 
         // The recovered state should match the original.
         for i in 0..3 {
@@ -550,18 +515,18 @@ mod tests {
     }
 
     #[test]
-    fn test_from_cometary_with_nongrav() {
+    fn test_from_cometary_with_free_params() {
         let state_eq = test_state();
         let state_ecl: State<Ecliptic> = state_eq.into_frame();
         let elements = CometElements::from_state(&state_ecl);
 
-        let ng = NonGravModel::new_jpl_comet_default(1e-8, 2e-8, 3e-8);
         let cov_elem = DMatrix::identity(9, 9) * 1e-20;
-        let us = UncertainState::from_cometary(&elements, &cov_elem, Some(ng)).unwrap();
+        let us =
+            UncertainState::from_cometary(&elements, &cov_elem, vec![1e-8, 2e-8, 3e-8]).unwrap();
 
         assert_eq!(us.cov_matrix.nrows(), 9);
         assert_eq!(us.cov_matrix.ncols(), 9);
-        assert!(us.non_grav.is_some());
+        assert_eq!(us.free_params.len(), 3);
     }
 
     /// Validate the Jacobian by comparing `J * delta_elem` against the

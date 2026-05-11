@@ -83,10 +83,8 @@ pub mod frames;
 pub mod integrators;
 pub mod io;
 pub mod kepler;
-pub mod simult_states;
 pub mod state;
 pub mod time;
-pub mod uncertain_state;
 pub mod util;
 
 /// Common useful imports
@@ -96,14 +94,11 @@ pub mod prelude {
     pub use crate::desigs::{OBS_CODES, ObsCode, try_obs_code_from_name};
     pub use crate::elements::CometElements;
     pub use crate::errors::{Error, KeteResult};
-    pub use crate::forces::NonGravModel;
     pub use crate::frames::{
         CenterBody, DynCenter, EarthCenter, Ecliptic, Equatorial, FK4, Galactic, InertialFrame,
         NonInertialFrame, SSB, SunCenter,
     };
     pub use crate::kepler::propagate_two_body;
-    pub use crate::simult_states::SimultaneousStates;
-    pub use crate::state::State;
+    pub use crate::state::{DiffuseState, SimultaneousStates, State, StateLike, UncertainState};
     pub use crate::time::{TDB, Time, UTC};
-    pub use crate::uncertain_state::UncertainState;
 }

@@ -43,14 +43,30 @@ pub struct SimultaneousStates {
     /// Collection of states
     pub states: Vec<State<Equatorial>>,
 
-    /// Common JD time of all states
-    pub epoch: Time<TDB>,
-
-    /// Center ID of all states.
-    pub center_id: i32,
-
     /// An optional field of view.
     pub fov: Option<FOV>,
+}
+
+impl SimultaneousStates {
+    /// The epoch of this collection.
+    ///
+    /// When a field of view is present this is the observer epoch; otherwise
+    /// it is the epoch of the first state (all states share the same epoch).
+    pub fn epoch(&self) -> Time<TDB> {
+        if let Some(f) = &self.fov {
+            f.observer().epoch
+        } else {
+            // safe: new_exact guarantees at least one state
+            self.states[0].epoch
+        }
+    }
+
+    /// The center NAIF ID shared by all states.
+    #[must_use]
+    pub fn center_id(&self) -> i32 {
+        // safe: new_exact guarantees at least one state and uniform center_id
+        self.states[0].center_id()
+    }
 }
 
 impl SimultaneousStates {
@@ -76,23 +92,18 @@ impl SimultaneousStates {
             jd = f.observer().epoch;
         }
 
-        if states.iter().any(|state| state.center_id() != center_id) {
+        if states.iter().any(|s| s.center_id() != center_id) {
             return Err(Error::ValueError("Center IDs do not match expected".into()));
         }
 
-        if fov.is_none() && states.iter().any(|state| state.epoch != jd) {
+        if fov.is_none() && states.iter().any(|s| s.epoch != jd) {
             return Err(Error::ValueError(
                 "Epoch JDs do not match expected, this is only allowed if there is an associated FOV."
                     .into(),
             ));
         }
 
-        Ok(Self {
-            states,
-            epoch: jd,
-            center_id,
-            fov,
-        })
+        Ok(Self { states, fov })
     }
 
     /// Compute RA/Dec along with linearized rates.
@@ -116,7 +127,7 @@ impl SimultaneousStates {
 
         let obs = fov.observer();
 
-        if obs.center_id() != self.center_id {
+        if obs.center_id() != self.center_id() {
             return Err(Error::ValueError(
                 "Field of view center ID does not match the states center ID.".into(),
             ));
