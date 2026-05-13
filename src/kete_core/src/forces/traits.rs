@@ -10,7 +10,7 @@
 //!   `DustNonGrav`, `JplCometNonGrav`).
 //!
 //! - [`Force`]: a marker subtrait of [`ParameterizedForce`] asserting that
-//!   `n_free_params() == 0`. Implementors are *exactly defined* — accel/jacobian
+//!   `n_free_params() == 0`. Implementors are *exactly defined* -- accel/jacobian
 //!   queries need no extra parameters. Used wherever a single concrete force is
 //!   required: plain `State` propagation, batch propagation, and any function
 //!   that accepts only fully-bound forces.
@@ -100,6 +100,17 @@ pub trait ParameterizedForce: Send + Sync {
     /// arguments. Length must equal `n_free_params()`.
     fn free_param_names(&self) -> Vec<&'static str> {
         Vec::new()
+    }
+
+    /// Physical lower bounds for the free parameters, in the same order as
+    /// `free_param_names`. Length must equal `n_free_params()`.
+    ///
+    /// `None` means unbounded below; `Some(v)` means the parameter is
+    /// constrained to `p >= v`. Forces declare bounds that reflect physical
+    /// reality (e.g. radiation pressure coefficients cannot be negative).
+    /// Fitters use these to prevent unphysical steps.
+    fn lower_bounds(&self) -> Vec<Option<f64>> {
+        vec![None; self.n_free_params()]
     }
 
     /// Acceleration in AU/day^2.
@@ -216,7 +227,7 @@ fn fd_step(value: f64) -> f64 {
 /// paths require, and the trait [`FrozenForce`](super::FrozenForce) lifts a
 /// parameterized template into.
 ///
-/// `Force` adds no methods — it is purely a type-level promise. Implementors
+/// `Force` adds no methods -- it is purely a type-level promise. Implementors
 /// add `impl Force for X {}` alongside their `ParameterizedForce` impl when
 /// their `n_free_params()` is structurally zero.
 pub trait Force: ParameterizedForce {}
@@ -243,6 +254,10 @@ where
 
     fn free_param_names(&self) -> Vec<&'static str> {
         (**self).free_param_names()
+    }
+
+    fn lower_bounds(&self) -> Vec<Option<f64>> {
+        (**self).lower_bounds()
     }
 
     fn accel(

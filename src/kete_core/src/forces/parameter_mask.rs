@@ -141,6 +141,15 @@ impl<F: ParameterizedForce + 'static> ParameterizedForce for ParameterMask<F> {
             .collect()
     }
 
+    fn lower_bounds(&self) -> Vec<Option<f64>> {
+        self.inner
+            .lower_bounds()
+            .into_iter()
+            .zip(&self.mask)
+            .filter_map(|(bound, slot)| slot.is_none().then_some(bound))
+            .collect()
+    }
+
     fn accel(
         &self,
         time: Time<TDB>,

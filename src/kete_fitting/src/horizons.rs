@@ -3,13 +3,13 @@ use std::fmt::Debug;
 #[cfg(feature = "fetch")]
 use std::fs;
 
-use crate::orbit_fitting::NonGravFit;
 #[cfg(feature = "fetch")]
 use kete_core::cache::cache_dir;
 use kete_core::constants::GMS_SQRT;
 use kete_core::desigs::Desig;
 use kete_core::elements::CometElements;
 use kete_core::errors::{Error, KeteResult};
+use kete_core::forces::{FrozenForce, FrozenNonGrav};
 
 use kete_core::frames::{Ecliptic, Equatorial};
 use kete_core::state::State;
@@ -75,7 +75,7 @@ pub struct HorizonsProperties {
     pub uncertain_state: Option<UncertainState>,
 
     /// Non-gravitational model from Horizons model parameters.
-    pub non_grav: Option<NonGravFit>,
+    pub non_grav: Option<FrozenNonGrav>,
 
     /// Alternate designations for this object.
     pub alternate_desigs: Vec<String>,
@@ -175,7 +175,7 @@ impl HorizonsProperties {
         &self,
         n_samples: usize,
         seed: Option<u64>,
-    ) -> KeteResult<Vec<(State<Equatorial>, Option<NonGravFit>)>> {
+    ) -> KeteResult<Vec<(State<Equatorial>, Option<FrozenNonGrav>)>> {
         let us = self.uncertain_state.as_ref().ok_or(Error::ValueError(
             "This object does not have a covariance matrix, cannot sample from it.".into(),
         ))?;
@@ -189,7 +189,7 @@ impl HorizonsProperties {
                 let ng = template.map(|tmpl| {
                     let mut clone = tmpl.clone();
                     if !sampled_params.is_empty() {
-                        clone.1 = sampled_params;
+                        clone.values = sampled_params;
                     }
                     clone
                 });
@@ -535,11 +535,16 @@ fn build_uncertain_state(
         build_nongrav_from_hash(&ng_hash)
     };
 
-    let np = non_grav.as_ref().map_or(0, |m: &NonGravFit| m.1.len());
+    let np = non_grav
+        .as_ref()
+        .map_or(0, |ng: &FrozenNonGrav| ng.values.len());
     let n = 6 + np;
 
     let ng_param_names: Vec<&str> = match &non_grav {
-        Some(ng) => ng.0.free_param_names(),
+        Some(ng) => {
+            use kete_core::forces::ParameterizedForce;
+            ng.inner.free_param_names()
+        }
         None => Vec::new(),
     };
     let reorder: Vec<Option<usize>> = (0..n)
@@ -580,7 +585,9 @@ fn build_uncertain_state(
             _ => 0.0,
         });
 
-        let free_params = non_grav.as_ref().map_or_else(Vec::new, |m| m.1.clone());
+        let free_params = non_grav
+            .as_ref()
+            .map_or_else(Vec::new, |m| m.values.clone());
         UncertainState::from_cometary(&elements, &mat, free_params)
     } else {
         let x = get("x")?;
@@ -601,7 +608,9 @@ fn build_uncertain_state(
             _ => 0.0,
         });
 
-        let free_params = non_grav.as_ref().map_or_else(Vec::new, |m| m.1.clone());
+        let free_params = non_grav
+            .as_ref()
+            .map_or_else(Vec::new, |m| m.values.clone());
         UncertainState::new(state, mat, free_params)
     }
 }
@@ -615,27 +624,28 @@ fn build_uncertain_state(
 ///
 /// Unrecognized parameter sets (e.g. `rho`, `amrat`) yield `None`;
 /// the caller should then fall back to a pure orbital covariance.
-fn build_nongrav_from_hash(hash: &std::collections::HashMap<&str, f64>) -> Option<NonGravFit> {
+fn build_nongrav_from_hash(hash: &std::collections::HashMap<&str, f64>) -> Option<FrozenNonGrav> {
     let get = |key: &str, default: f64| -> f64 { hash.get(key).copied().unwrap_or(default) };
 
     let has_jpl = hash.contains_key("a1") || hash.contains_key("a2") || hash.contains_key("a3");
     let has_dust = hash.contains_key("beta");
 
     if has_jpl {
-        let template = std::sync::Arc::new(kete_core::forces::JplCometNonGrav::new(
-            get("alpha", 0.111_262_042_6),
-            get("r_0", 2.808),
-            get("m", 2.15),
-            get("n", 5.093),
-            get("k", 4.6142),
-            get("dt", 0.0),
-        ));
+        let template: kete_core::forces::NonGravForce =
+            std::sync::Arc::new(kete_core::forces::JplCometNonGrav::new(
+                get("alpha", 0.111_262_042_6),
+                get("r_0", 2.808),
+                get("m", 2.15),
+                get("n", 5.093),
+                get("k", 4.6142),
+                get("dt", 0.0),
+            ));
         let values = vec![get("a1", 0.0), get("a2", 0.0), get("a3", 0.0)];
-        let bounds = vec![f64::NEG_INFINITY; 3];
-        Some((template, values, bounds))
+        Some(FrozenForce::new(template, values).ok()?)
     } else if has_dust {
-        let template = std::sync::Arc::new(kete_core::forces::DustNonGrav);
-        Some((template, vec![get("beta", 0.0)], vec![f64::NEG_INFINITY]))
+        let template: kete_core::forces::NonGravForce =
+            std::sync::Arc::new(kete_core::forces::DustNonGrav);
+        Some(FrozenForce::new(template, vec![get("beta", 0.0)]).ok()?)
     } else {
         let unknown: Vec<&str> = hash.keys().copied().collect();
         eprintln!(
@@ -648,7 +658,7 @@ fn build_nongrav_from_hash(hash: &std::collections::HashMap<&str, f64>) -> Optio
 
 /// Build a [`NonGravFit`] from the `model_pars` section of a Horizons response.
 #[cfg(feature = "fetch")]
-fn build_nongrav_from_model_pars(pars: &[NameValue]) -> Option<NonGravFit> {
+fn build_nongrav_from_model_pars(pars: &[NameValue]) -> Option<FrozenNonGrav> {
     let mut a1 = 0.0;
     let mut a2 = 0.0;
     let mut a3 = 0.0;
@@ -685,10 +695,10 @@ fn build_nongrav_from_model_pars(pars: &[NameValue]) -> Option<NonGravFit> {
     }
 
     if found_any {
-        let template = std::sync::Arc::new(kete_core::forces::JplCometNonGrav::new(
-            alpha, r_0, m, n, k, dt,
-        ));
-        Some((template, vec![a1, a2, a3], vec![f64::NEG_INFINITY; 3]))
+        let template: kete_core::forces::NonGravForce = std::sync::Arc::new(
+            kete_core::forces::JplCometNonGrav::new(alpha, r_0, m, n, k, dt),
+        );
+        FrozenForce::new(template, vec![a1, a2, a3]).ok()
     } else {
         None
     }

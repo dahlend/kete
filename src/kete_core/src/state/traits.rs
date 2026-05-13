@@ -93,8 +93,14 @@ where
     where
         Forces: ParameterizedForce<Frame = F, Center = C>,
     {
-        // Plain State has no fitted parameters; an empty slice.
-        const FREE_PARAMS: &[f64] = &[];
+        if forces.n_free_params() != 0 {
+            return Err(crate::errors::Error::ValueError(format!(
+                "State::propagate_with requires a force with zero free parameters \
+                 (got {}); freeze any non-grav template first via FrozenForce::new \
+                 or helio_with_frozen_nongrav.",
+                forces.n_free_params()
+            )));
+        }
 
         let pos_init: Vector3<f64> = self.pos.into();
         let vel_init: Vector3<f64> = self.vel.into();
@@ -110,12 +116,12 @@ where
          -> KeteResult<Vector3<f64>> {
             let pos_typed = Vector::<F>::new([pos[0], pos[1], pos[2]]);
             let vel_typed = Vector::<F>::new([vel[0], vel[1], vel[2]]);
-            let accel = forces.accel(time, &pos_typed, &vel_typed, FREE_PARAMS)?;
+            let accel = forces.accel(time, &pos_typed, &vel_typed, &[])?;
             Ok(accel.into())
         };
 
         let (final_pos, final_vel, ()) =
-            RadauIntegrator::integrate(&ode, pos_init, vel_init, self.epoch, to, (), None)?;
+            RadauIntegrator::integrate(&ode, pos_init, vel_init, self.epoch, to, (), Some(3))?;
 
         Ok(Self {
             desig: self.desig,

@@ -28,7 +28,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use kete_core::forces::{ForceSet, FrozenNonGrav, GravParams, ParameterMask};
+use kete_core::forces::{ForceSet, FrozenNonGrav, GravParams, ParameterMask, ParameterizedForce};
 use kete_core::frames::{Equatorial, SSB};
 use kete_core::prelude::{KeteResult, State};
 use kete_core::state::propagate_with_stm;
@@ -49,6 +49,11 @@ use nalgebra::DMatrix;
 /// When `include_asteroids` is `true`, the force model includes asteroid
 /// masses from [`GravParams::selected_masses()`]; otherwise only the
 /// planets and Moon from [`GravParams::planets()`] are used.
+///
+/// When `non_grav` is `Some`, the STM gains parameter-sensitivity columns
+/// for the frozen force's parameters.  The frozen values serve as the
+/// nominal trajectory; the all-`None` variational mask is constructed
+/// internally so the integrator computes `d(r_f, v_f) / d p_k`.
 ///
 /// Returns the propagated [`State`] and a 6x(6+N) sensitivity matrix where N is
 /// the number of free non-gravitational parameters (0 for none, 1 for `Dust`, 3 for
@@ -75,13 +80,11 @@ pub fn compute_state_transition(
         GravParams::planets()
     };
 
-    // Non-grav (when present) composes via `ForceSet` with `Recenter<SSB, _>`
-    // wrapping an all-None variational mask. Values are extracted from the
-    // frozen input mask and passed as `free_params` to `propagate_with_stm`
-    // so the STM gains parameter-sensitivity columns.
+    // Gravity-only path stays bare (`SpkNBody` directly).
     //
-    // Gravity-only path stays bare (`SpkNBody` directly) -- the pure n-body
-    // hot path, bit-identical to trajectory-only propagation.
+    // Non-grav path: build an all-`None` variational mask from the frozen
+    // template so `propagate_with_stm` gains parameter-sensitivity columns,
+    // then pass the frozen values as the nominal `free_params` slice.
     let (pos_f, vel_f, sens) = match non_grav {
         None => propagate_with_stm(
             &SpkNBody::new(&spk, &planets),
@@ -92,8 +95,8 @@ pub fn compute_state_transition(
             jd,
         )?,
         Some(frozen) => {
-            let values = frozen.values();
-            let variational = ParameterMask::new(frozen.inner.clone(), vec![None; values.len()])?;
+            let n = frozen.inner.n_free_params();
+            let variational = ParameterMask::new(frozen.inner.clone(), vec![None; n])?;
             let force_set: ForceSet<'_, Equatorial, SSB> = ForceSet::new()
                 .with(Box::new(SpkNBody::new(&spk, &planets)))
                 .with(Box::new(Recenter::<SSB, _>::new(&spk, variational)));
@@ -101,7 +104,7 @@ pub fn compute_state_transition(
                 &force_set,
                 state.pos.into(),
                 state.vel.into(),
-                values,
+                &frozen.values,
                 state.epoch,
                 jd,
             )?

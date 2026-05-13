@@ -12,7 +12,7 @@ use std::sync::Arc;
 use kete_core::{
     errors::Error,
     forces::{
-        ArcForce, DustNonGrav, FarnocchiaNonGrav, FrozenForce, FrozenNonGrav, JplCometNonGrav,
+        DustNonGrav, FarnocchiaNonGrav, FrozenForce, FrozenNonGrav, JplCometNonGrav, NonGravForce,
         ParameterMask, ParameterizedForce, a_over_m_from_physical, density_from_a_over_m,
         lambda_0_from_physical, thermal_inertia_from_lambda_0,
     },
@@ -53,9 +53,9 @@ enum NonGravData {
 /// Non-gravitational force models for n-body propagation.
 ///
 /// The closed-set hierarchy exposed to Python is unchanged from prior
-/// releases. Internally the wrapper holds typed ParameterizedForce impls and emits
-/// a `kete_core` `NonGravEntry` (typed ParameterizedForce template plus free-parameter
-/// values) on demand for the propagation machinery.
+/// releases. Internally the wrapper holds a typed ParameterizedForce impl
+/// and produces a FrozenForce or ParameterMask on demand for the
+/// propagation machinery.
 #[pyclass(
     frozen,
     module = "kete.propagation",
@@ -67,7 +67,7 @@ pub struct PyNonGravModel(NonGravData);
 
 impl PyNonGravModel {
     /// Return the typed ParameterizedForce template for this model.
-    pub fn to_force(&self) -> ArcForce {
+    pub fn to_force(&self) -> NonGravForce {
         match self.0 {
             NonGravData::Dust { .. } => Arc::new(DustNonGrav),
             NonGravData::JplComet {
@@ -106,7 +106,7 @@ impl PyNonGravModel {
     /// Return a [`FrozenNonGrav`] with the initial parameter values baked in.
     ///
     /// Suitable for plain [`State`](kete_core::state::State) propagation,
-    /// batch propagation, and covariance sampling — anywhere a single concrete
+    /// batch propagation, and covariance sampling -- anywhere a single concrete
     /// parameter estimate drives the trajectory.
     pub fn to_frozen(&self) -> FrozenNonGrav {
         let force = self.to_force();
@@ -120,7 +120,7 @@ impl PyNonGravModel {
     /// are supplied at integration time from the carrying state's `free_params`.
     /// This is the representation stored on [`PyUncertainState`] and
     /// [`PyDiffuseState`].
-    pub fn to_mask(&self) -> ParameterMask<ArcForce> {
+    pub fn to_mask(&self) -> ParameterMask<NonGravForce> {
         let force = self.to_force();
         let n = force.n_free_params();
         ParameterMask::new(force, vec![None; n]).expect("n matches n_free_params")
@@ -131,7 +131,7 @@ impl PyNonGravModel {
     ///
     /// Returns `None` if the template is not one of the canonical
     /// `DustNonGrav` / `JplCometNonGrav` / `FarnocchiaNonGrav`.
-    pub fn from_force(template: &ArcForce, values: &[f64]) -> Option<Self> {
+    pub fn from_force(template: &NonGravForce, values: &[f64]) -> Option<Self> {
         let any = template.as_any()?;
 
         if any.downcast_ref::<DustNonGrav>().is_some() {
@@ -312,14 +312,6 @@ impl PyNonGravModel {
     /// This includes an optional time delay, which the non-gravitational forces are
     /// time delayed.
     ///
-    /// Setting an A term to ``float('nan')`` excludes it from fitting and treats it
-    /// as zero in the force model. This allows fitting any subset of A1, A2, A3.
-    /// For example, to fit only A2:
-    ///
-    /// .. code-block:: python
-    ///
-    ///     NonGravModel.new_comet(a1=float('nan'), a2=0.0, a3=float('nan'))
-    ///
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (a1=0.0, a2=0.0, a3=0.0, alpha=0.1112620426, r_0=2.808, m=2.15, n=5.093, k=4.6142, dt=0.0))]
     #[staticmethod]
@@ -351,9 +343,6 @@ impl PyNonGravModel {
     /// set so that :math:`g(r) = 1/r^2`.
     ///
     /// See :py:meth:`NonGravModel.new_comet` for more details.
-    ///
-    /// Setting an A term to ``float('nan')`` excludes it from fitting and treats it
-    /// as zero in the force model.
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (a1, a2, a3, alpha=1.0, r_0=1.0, m= 2.0, n=1.0, k=0.0, dt=0.0))]
     #[staticmethod]
