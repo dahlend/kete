@@ -20,7 +20,7 @@
 //! dominant covariance eigenvectors; large divergence flags components
 //! that benefit from a Gaussian-mixture split before propagation.
 //!
-//! All entry points take a generic `ParameterizedForce<Frame = Equatorial, Center = SSB>`
+//! All entry points take a generic [`ParameterizedForce<Frame = Equatorial, Center = SSB>`]
 //! and an SSB-centered state. Callers compose their own gravity +
 //! perturbation `ForceSet` and convert any `DynCenter` states to SSB
 //! before calling.
@@ -339,8 +339,8 @@ impl Default for SplitConfig {
     fn default() -> Self {
         Self {
             split_threshold: 0.05,
-            max_components: 64,
-            max_split_depth: 4,
+            max_components: 1024,
+            max_split_depth: 10,
             n_axes: 3,
             sigma_factor: 1.0,
             prune_threshold: 0.0,
