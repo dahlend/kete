@@ -771,7 +771,7 @@ mod tests {
             let spk = LOADED_SPK.try_read().unwrap();
             let obj_at = true_state
                 .clone()
-                .propagate_with(&SpkNBody::new(false), Time::<TDB>::new(jd))
+                .propagate_with(&SpkNBody::new(&spk, false), Time::<TDB>::new(jd))
                 .unwrap();
             let sun_at = spk.try_to_sun(obj_at.clone()).unwrap();
             let obs_helio = observer.pos - obj_at.pos + sun_at.pos;

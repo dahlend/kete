@@ -148,7 +148,7 @@ fn state_at_time(
         return Ok(st);
     }
     let ssb = spk.try_to_ssb(state.clone())?;
-    let ssb_result = ssb.propagate_with(&SpkNBody::new(include_extended), time)?;
+    let ssb_result = ssb.propagate_with(&SpkNBody::new(spk, include_extended), time)?;
     let mut result: State<Equatorial> = ssb_result.into();
     if center != 0 {
         spk.try_change_center(&mut result, center)?;

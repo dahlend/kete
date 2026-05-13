@@ -56,11 +56,15 @@ impl PyUncertainState {
     /// `Sum<SpkNBody, Recenter<SSB, _>>` wrapping the non-grav force
     /// template otherwise. Captures the `LOADED_SPK` read guard so the
     /// borrow lifetime is well-defined.
-    fn build_forces(&self, include_extended: bool) -> SpkNonGravs {
+    fn build_forces<'a>(
+        &self,
+        spk: &'a kete_spice::spk::SpkCollection,
+        include_extended: bool,
+    ) -> SpkNonGravs<'a> {
         if let Some(ref ng) = self.non_grav {
-            SpkNonGravs::with_non_grav_mask(include_extended, ng.clone())
+            SpkNonGravs::with_non_grav_mask(spk, include_extended, ng.clone())
         } else {
-            SpkNonGravs::gravity(include_extended)
+            SpkNonGravs::gravity(spk, include_extended)
         }
     }
 }
@@ -302,7 +306,7 @@ impl PyUncertainState {
             self.state.cov_matrix.clone(),
             self.state.free_params.clone(),
         )?;
-        let forces = self.build_forces(include_asteroids);
+        let forces = self.build_forces(&spk, include_asteroids);
         let result = ssb_us.propagate_with(&forces, jd.into())?;
 
         // Convert back to DynCenter for storage on the Python wrapper
@@ -333,7 +337,7 @@ impl PyUncertainState {
             self.state.cov_matrix.clone(),
             self.state.free_params.clone(),
         )?;
-        let forces = self.build_forces(include_asteroids);
+        let forces = self.build_forces(&spk, include_asteroids);
         let diag = propagate_with_diagnosis(&ssb_us, &forces, jd.into(), n_axes, sigma_factor)?;
         let dyn_state: UncertainState = UncertainState::new(
             diag.propagated.state.into(),
@@ -367,7 +371,7 @@ impl PyUncertainState {
             self.state.cov_matrix.clone(),
             self.state.free_params.clone(),
         )?;
-        let forces = self.build_forces(include_asteroids);
+        let forces = self.build_forces(&spk, include_asteroids);
         Ok(sigma_point_divergence(
             &ssb_us,
             &forces,

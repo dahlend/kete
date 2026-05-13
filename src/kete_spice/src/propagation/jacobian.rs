@@ -99,12 +99,13 @@ mod tests {
         jd_final: Time<TDB>,
         non_grav: Option<&FrozenNonGrav>,
     ) -> KeteResult<State<Equatorial, SSB>> {
+        let spk = LOADED_SPK.try_read()?;
         match non_grav {
-            None => state.propagate_with(&SpkNBody::new(false), jd_final),
+            None => state.propagate_with(&SpkNBody::new(&spk, false), jd_final),
             Some(frozen) => {
                 let force = Sum::new(
-                    SpkNBody::new(false),
-                    Recenter::<SSB, _>::new(frozen.clone()),
+                    SpkNBody::new(&spk, false),
+                    Recenter::<SSB, _>::new(&spk, frozen.clone()),
                 );
                 state.propagate_with(&force, jd_final)
             }

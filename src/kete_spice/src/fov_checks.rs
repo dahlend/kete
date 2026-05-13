@@ -28,7 +28,7 @@ pub fn check_n_body<F: FovLike>(
     let obs = fov.observer();
 
     let spk = LOADED_SPK.try_read()?;
-    let exact_state = state.propagate_with(&SpkNBody::new(include_extended), obs.epoch)?;
+    let exact_state = state.propagate_with(&SpkNBody::new(&spk, include_extended), obs.epoch)?;
     let sun_state = spk.try_to_sun(exact_state)?;
 
     let final_state = light_time_correct(&sun_state, &obs.pos)?;
@@ -206,7 +206,7 @@ mod tests {
 
         for offset in [-10.0_f64, -5.0, 0.0, 5.0, 10.0] {
             let spk = LOADED_SPK.try_read().unwrap();
-            let force = SpkNBody::new(false);
+            let force = SpkNBody::new(&spk, false);
             let off_state = circular_back_ssb
                 .clone()
                 .propagate_with(&force, circular_back_ssb.epoch - offset)

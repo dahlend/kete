@@ -55,9 +55,12 @@ static HYPERBOLIC: std::sync::LazyLock<State<Ecliptic>> = std::sync::LazyLock::n
 });
 
 fn prop_n_body_radau(state: State<Ecliptic>, dt: f64) {
+    let spk = LOADED_SPK.read().unwrap();
     let jd = state.epoch + dt;
     let eq_state: State<Equatorial, SSB> = state.into_frame().try_into().unwrap();
-    let _ = eq_state.propagate_with(&SpkNBody::new(false), jd).unwrap();
+    let _ = eq_state
+        .propagate_with(&SpkNBody::new(&spk, false), jd)
+        .unwrap();
 }
 
 fn prop_n_body_vec_radau(state: State<Ecliptic>, dt: f64) {
@@ -71,36 +74,36 @@ fn prop_n_body_vec_radau(state: State<Ecliptic>, dt: f64) {
 }
 
 fn prop_n_body_radau_par(state: &State<Ecliptic>, dt: f64) {
+    let spk = LOADED_SPK.read().unwrap();
     let states: Vec<State<_>> = (0..100).map(|_| state.clone()).collect();
     let _tmp: Vec<_> = states
         .into_par_iter()
         .map(|s| {
             let jd = s.epoch + dt;
             let eq: State<Equatorial, SSB> = s.into_frame().try_into().unwrap();
-            eq.propagate_with(&SpkNBody::new(false), jd).unwrap()
+            eq.propagate_with(&SpkNBody::new(&spk, false), jd).unwrap()
         })
         .collect();
 }
 
-// New path: state.propagate_with(&SpkNBody, jd). Builds a fresh SpkNBody
-// per call so the per-step cache state matches the legacy path's
-// AccelSPKMeta lifetime (rebuilt per propagation in the legacy code too).
 fn prop_n_body_force(state: State<Ecliptic>, dt: f64) {
+    let spk = LOADED_SPK.read().unwrap();
     let jd = state.epoch + dt;
     let eq_state: State<Equatorial, SSB> = state.into_frame().try_into().unwrap();
-    let force = SpkNBody::new(false);
+    let force = SpkNBody::new(&spk, false);
     let _ = eq_state.propagate_with(&force, jd).unwrap();
 }
 
-// Dust non-grav benchmark: composed `ForceSet { SpkNBody,
-// Recenter<SSB, DustNonGrav> }` exercising the variational integrator
-// path with a single free parameter (beta).
 const DUST_BETA: f64 = 1e-3;
 
 fn prop_n_body_force_dust(state: State<Ecliptic>, dt: f64) {
+    let spk = LOADED_SPK.read().unwrap();
     let jd = state.epoch + dt;
     let eq_state: State<Equatorial, SSB> = state.into_frame().try_into().unwrap();
-    let force = Sum::new(SpkNBody::new(false), Recenter::<SSB, _>::new(DustNonGrav));
+    let force = Sum::new(
+        SpkNBody::new(&spk, false),
+        Recenter::<SSB, _>::new(&spk, DustNonGrav),
+    );
     let _ = propagate_with_stm(
         &force,
         eq_state.pos.into(),
@@ -113,15 +116,14 @@ fn prop_n_body_force_dust(state: State<Ecliptic>, dt: f64) {
 }
 
 fn prop_n_body_force_par(state: &State<Ecliptic>, dt: f64) {
+    let spk = LOADED_SPK.read().unwrap();
     let states: Vec<State<_>> = (0..100).map(|_| state.clone()).collect();
-    // Cache the planet list once across all tasks; SpkNBody borrows it,
-    // SpkNBody borrows the slice for the duration of integration.
     let _tmp: Vec<_> = states
         .into_par_iter()
         .map(|s| {
             let jd = s.epoch + dt;
             let eq: State<Equatorial, SSB> = s.into_frame().try_into().unwrap();
-            let force = SpkNBody::new(false);
+            let force = SpkNBody::new(&spk, false);
             eq.propagate_with(&force, jd).unwrap()
         })
         .collect();

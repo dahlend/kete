@@ -361,11 +361,11 @@ fn propagate_helio(
     include_extended: bool,
     non_grav: Option<&FrozenNonGrav>,
 ) -> KeteResult<State<Equatorial, SSB>> {
+    let spk = LOADED_SPK.try_read()?;
     let force = match non_grav {
-        None => SpkNonGravs::gravity(include_extended),
-        Some(frozen) => SpkNonGravs::with_frozen_non_grav(include_extended, frozen.clone()),
+        None => SpkNonGravs::gravity(&spk, include_extended),
+        Some(frozen) => SpkNonGravs::with_frozen_non_grav(&spk, include_extended, frozen.clone()),
     };
-
     state.propagate_with(&force, jd_final)
 }
 

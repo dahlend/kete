@@ -69,7 +69,7 @@ pub fn fov_checks_py(
     let spk = LOADED_SPK
         .read()
         .expect("Failed to read the loaded spice kernels.");
-    let forces = SpkNBody::new(include_asteroids);
+    let forces = SpkNBody::new(&spk, include_asteroids);
 
     for fovs in fov_chunks {
         let jd_mean = (fovs.last().unwrap().observer().epoch.jd

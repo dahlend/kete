@@ -42,11 +42,15 @@ impl std::fmt::Debug for PyDiffuseState {
 }
 
 impl PyDiffuseState {
-    fn build_forces(&self, include_extended: bool) -> SpkNonGravs {
+    fn build_forces<'a>(
+        &self,
+        spk: &'a kete_spice::spk::SpkCollection,
+        include_extended: bool,
+    ) -> SpkNonGravs<'a> {
         if let Some(ref ng) = self.non_grav {
-            SpkNonGravs::with_non_grav_mask(include_extended, ng.clone())
+            SpkNonGravs::with_non_grav_mask(spk, include_extended, ng.clone())
         } else {
-            SpkNonGravs::gravity(include_extended)
+            SpkNonGravs::gravity(spk, include_extended)
         }
     }
 
@@ -280,7 +284,7 @@ impl PyDiffuseState {
         let mixture_ssb =
             DiffuseState::<Equatorial, SSB>::new(self.mixture.weights.clone(), components_ssb)?;
 
-        let forces = self.build_forces(include_asteroids);
+        let forces = self.build_forces(&spk, include_asteroids);
         let propagated = propagate_diffuse_state_adaptive(&mixture_ssb, &forces, target, &cfg)?;
         let propagated_dyn: Vec<UncertainState> = propagated
             .components
@@ -313,7 +317,7 @@ impl PyDiffuseState {
         let mixture_ssb =
             DiffuseState::<Equatorial, SSB>::new(self.mixture.weights.clone(), components_ssb)?;
 
-        let forces = self.build_forces(include_asteroids);
+        let forces = self.build_forces(&spk, include_asteroids);
         Ok(mixture_sigma_point_divergence(
             &mixture_ssb,
             &forces,

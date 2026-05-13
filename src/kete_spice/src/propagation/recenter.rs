@@ -70,7 +70,7 @@ use kete_core::frames::{CenterBody, Vector};
 use kete_core::time::{TDB, Time};
 use nalgebra::{Matrix3, Matrix3xX, Vector3};
 
-use crate::spk::LOADED_SPK;
+use crate::spk::SpkCollection;
 
 // Per-thread cache for the most recent Recenter shift lookup.
 // Keyed by (from_naif_id, to_naif_id, time.jd) so different Recenter
@@ -95,18 +95,20 @@ thread_local! {
 /// because all four methods are called at the same `time` -- but the
 /// query is repeated per quartet, since `ParameterizedForce` doesn't expose a
 /// per-step context.
-pub struct Recenter<FromC, F>
+pub struct Recenter<'a, FromC, F>
 where
     F: ParameterizedForce,
     F::Center: CenterBody,
     FromC: CenterBody,
 {
+    /// Borrowed reference to the loaded SPK collection.
+    pub spk: &'a SpkCollection,
     /// The inner force, written for `Center = F::Center`.
     pub inner: F,
     _phantom: PhantomData<FromC>,
 }
 
-impl<FromC, F> Recenter<FromC, F>
+impl<'a, FromC, F> Recenter<'a, FromC, F>
 where
     F: ParameterizedForce,
     F::Center: CenterBody,
@@ -115,15 +117,16 @@ where
     /// Wrap `inner` so it accepts pos/vel relative to `FromC`. The
     /// inner force's `Center` is determined by its impl.
     #[must_use]
-    pub fn new(inner: F) -> Self {
+    pub fn new(spk: &'a SpkCollection, inner: F) -> Self {
         Self {
+            spk,
             inner,
             _phantom: PhantomData,
         }
     }
 }
 
-impl<FromC, F> std::fmt::Debug for Recenter<FromC, F>
+impl<FromC, F> std::fmt::Debug for Recenter<'_, FromC, F>
 where
     F: ParameterizedForce + std::fmt::Debug,
     F::Center: CenterBody,
@@ -138,7 +141,7 @@ where
     }
 }
 
-impl<FromC, F> ParameterizedForce for Recenter<FromC, F>
+impl<FromC, F> ParameterizedForce for Recenter<'_, FromC, F>
 where
     F: ParameterizedForce,
     F::Center: CenterBody,
@@ -162,7 +165,7 @@ where
         vel: &Vector<F::Frame>,
         free_params: &[f64],
     ) -> KeteResult<Vector<F::Frame>> {
-        let (shifted_pos, shifted_vel) = Self::shift(time, pos, vel)?;
+        let (shifted_pos, shifted_vel) = self.shift(time, pos, vel)?;
         self.inner
             .accel(time, &shifted_pos, &shifted_vel, free_params)
     }
@@ -176,7 +179,7 @@ where
     ) -> KeteResult<(Matrix3<f64>, Matrix3<f64>)> {
         // The shift is purely a function of time, so d(shifted)/d(input) = I.
         // The jacobians pass through unchanged.
-        let (shifted_pos, shifted_vel) = Self::shift(time, pos, vel)?;
+        let (shifted_pos, shifted_vel) = self.shift(time, pos, vel)?;
         self.inner
             .jacobians(time, &shifted_pos, &shifted_vel, free_params)
     }
@@ -190,7 +193,7 @@ where
     ) -> KeteResult<Matrix3xX<f64>> {
         // The shift does not depend on parameters, so parameter
         // jacobians pass through unchanged.
-        let (shifted_pos, shifted_vel) = Self::shift(time, pos, vel)?;
+        let (shifted_pos, shifted_vel) = self.shift(time, pos, vel)?;
         self.inner
             .parameter_jacobian(time, &shifted_pos, &shifted_vel, free_params)
     }
@@ -198,7 +201,7 @@ where
 
 /// Marker: `Recenter` is a [`Force`] iff its inner force is. Recenter never
 /// introduces free parameters; it only shifts the coordinate frame.
-impl<FromC, F> Force for Recenter<FromC, F>
+impl<FromC, F> Force for Recenter<'_, FromC, F>
 where
     F: Force,
     F::Center: CenterBody,
@@ -206,14 +209,14 @@ where
 {
 }
 
-impl<FromC, F> Recenter<FromC, F>
+impl<FromC, F> Recenter<'_, FromC, F>
 where
     F: ParameterizedForce,
     F::Center: CenterBody,
     FromC: CenterBody,
 {
-    /// Look up the `(F::Center - FromC)` offset at `time` from SPK and
-    /// subtract it from the input `(pos, vel)`. Returns the
+    /// Look up the `(F::Center - FromC)` offset at `time` from the borrowed SPK
+    /// and subtract it from the input `(pos, vel)`. Returns the
     /// `F::Center`-relative coordinates the inner force expects.
     ///
     /// The shift is cached per-thread by `(from_naif_id, to_naif_id, time.jd)`.
@@ -222,6 +225,7 @@ where
     /// without any lock. Each rayon thread has its own slot, so parallel
     /// sigma-point evaluation incurs no cross-thread contention.
     fn shift(
+        &self,
         time: Time<TDB>,
         pos: &Vector<F::Frame>,
         vel: &Vector<F::Frame>,
@@ -245,9 +249,11 @@ where
         let (shift_pos, shift_vel) = if let Some(hit) = cached {
             hit
         } else {
-            let shift = LOADED_SPK
-                .try_read()?
-                .try_get_state_with_center::<F::Frame>(F::Center::NAIF_ID, time, FromC::NAIF_ID)?;
+            let shift = self.spk.try_get_state_with_center::<F::Frame>(
+                F::Center::NAIF_ID,
+                time,
+                FromC::NAIF_ID,
+            )?;
             let sp: Vector3<f64> = shift.pos.into();
             let sv: Vector3<f64> = shift.vel.into();
             SHIFT_CACHE.with_borrow_mut(|c| {
@@ -288,7 +294,7 @@ mod tests {
             center: SSB,
         };
         let beta = 0.001;
-        let dust_force = Recenter::<SSB, _>::new(DustNonGrav);
+        let dust_force = Recenter::<SSB, _>::new(&spk_guard, DustNonGrav);
 
         let pos_ssb: Vector3<f64> = start.pos.into();
         let vel_ssb: Vector3<f64> = start.vel.into();
@@ -322,7 +328,8 @@ mod tests {
     #[test]
     fn recenter_free_params_passthrough() {
         crate::test_data::ensure_test_spk();
-        let force = Recenter::<SSB, _>::new(DustNonGrav);
+        let spk_guard = LOADED_SPK.try_read().unwrap();
+        let force = Recenter::<SSB, _>::new(&spk_guard, DustNonGrav);
         assert_eq!(force.n_free_params(), 1);
         assert_eq!(force.free_param_names(), vec!["beta"]);
     }
@@ -339,6 +346,7 @@ mod tests {
         use crate::propagation::SpkNBody;
 
         crate::test_data::ensure_test_spk();
+        let spk_guard = LOADED_SPK.try_read().unwrap();
 
         let pos_init = Vector3::new(0.5, 1.0, 0.1);
         let vel_init = Vector3::new(-0.012, 0.008, 0.001);
@@ -350,15 +358,12 @@ mod tests {
         let a3 = -3.0e-10;
 
         let force = Sum::new(
-            SpkNBody::new(false),
-            Recenter::<SSB, _>::new(JplCometNonGrav::standard_comet()),
+            SpkNBody::new(&spk_guard, false),
+            Recenter::<SSB, _>::new(&spk_guard, JplCometNonGrav::standard_comet()),
         );
         let (pos_f, vel_f, sens_f) =
             propagate_with_stm(&force, pos_init, vel_init, &[a1, a2, a3], epoch, target).unwrap();
 
-        // Sanity: the propagator produced finite outputs and the augmented
-        // sensitivity matrix has the expected shape (6 state rows by 6 + 3
-        // parameter columns).
         assert!(pos_f.iter().all(|v| v.is_finite()));
         assert!(vel_f.iter().all(|v| v.is_finite()));
         assert_eq!(sens_f.nrows(), 6);
@@ -381,13 +386,11 @@ mod tests {
         let vel_ssb = Vector::<Equatorial>::new([-0.012, 0.008, 0.001]);
         let beta = 0.001;
 
-        // Through wrapper: feed SSB-relative pos/vel.
-        let wrapped = Recenter::<SSB, _>::new(DustNonGrav);
+        let wrapped = Recenter::<SSB, _>::new(&spk_guard, DustNonGrav);
         let (j_pos_wrapped, j_vel_wrapped) = wrapped
             .jacobians(time, &pos_ssb, &vel_ssb, &[beta])
             .unwrap();
 
-        // Direct: shift to Sun-relative manually, call inner.
         let sun = spk_guard
             .try_get_state_with_center::<Equatorial>(10, time, 0)
             .unwrap();
