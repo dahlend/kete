@@ -36,6 +36,7 @@ use kete_core::time::{TDB, Time};
 
 use super::recenter::Recenter;
 use super::spk_n_body::SpkNBody;
+use crate::spk::LOADED_SPK;
 use nalgebra::DMatrix;
 
 /// Compute the state transition matrix and optional parameter sensitivities using the
@@ -79,9 +80,10 @@ where
     // Non-grav path: build an all-`None` variational mask from the frozen
     // template so `propagate_with_stm` gains parameter-sensitivity columns,
     // then pass the frozen values as the nominal `free_params` slice.
+    let spk = LOADED_SPK.try_read()?;
     let (pos_f, vel_f, sens) = match non_grav {
         None => propagate_with_stm(
-            &SpkNBody::new(include_extended),
+            &SpkNBody::new(&spk, include_extended),
             state.pos.into(),
             state.vel.into(),
             &[],
@@ -92,8 +94,8 @@ where
             let n = frozen.inner.n_free_params();
             let variational = ParameterMask::new(frozen.inner.clone(), vec![None; n])?;
             let force = Sum::new(
-                SpkNBody::new(include_extended),
-                Recenter::<SSB, _>::new(variational),
+                SpkNBody::new(&spk, include_extended),
+                Recenter::<SSB, _>::new(&spk, variational),
             );
             propagate_with_stm(
                 &force,

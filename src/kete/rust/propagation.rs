@@ -174,11 +174,13 @@ pub fn propagation_n_body_spk_py(
                     }
                     let ssb_state = spk.try_to_ssb(state)?;
                     let result: kete_core::errors::KeteResult<_> = match model.as_ref() {
-                        None => ssb_state.propagate_with(&SpkNBody::new(include_asteroids), jd),
+                        None => {
+                            ssb_state.propagate_with(&SpkNBody::new(&spk, include_asteroids), jd)
+                        }
                         Some(frozen) => {
                             let force = Sum::new(
-                                SpkNBody::new(include_asteroids),
-                                Recenter::<SSB, _>::new(frozen.clone()),
+                                SpkNBody::new(&spk, include_asteroids),
+                                Recenter::<SSB, _>::new(&spk, frozen.clone()),
                             );
                             ssb_state.propagate_with(&force, jd)
                         }

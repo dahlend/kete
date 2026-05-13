@@ -1564,7 +1564,7 @@ mod tests {
         let observations: Vec<AstrometricObservation> = epochs
             .iter()
             .map(|&jd| {
-                let force = SpkNBody::new(false);
+                let force = SpkNBody::new(&spk, false);
                 let obj_at = spk
                     .try_to_ssb(obj.clone())
                     .expect("Center conversion failed")
@@ -1621,7 +1621,7 @@ mod tests {
         let obj_at = {
             let obj_ssb = spk.try_to_ssb(obj.clone()).unwrap();
             obj_ssb
-                .propagate_with(&SpkNBody::new(false), results[0].1.epoch)
+                .propagate_with(&SpkNBody::new(&spk, false), results[0].1.epoch)
                 .unwrap()
         };
         let best = best_candidate(&results, &obj_at);

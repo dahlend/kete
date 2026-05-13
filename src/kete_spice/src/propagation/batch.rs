@@ -261,7 +261,7 @@ mod tests {
         .skip(planets.len() * 3)
         .collect_vec();
 
-        let accel2 = SpkNBody::new(false)
+        let accel2 = SpkNBody::new(spk, false)
             .accel(
                 jd,
                 &Vector::<Equatorial>::new([0.0, 0.0, 0.5]),
