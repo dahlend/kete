@@ -144,6 +144,17 @@ pub fn propagation_n_body_spk_py(
         // Errors are collected as KeteResult (Rust) rather than PyResult to avoid
         // creating PyErr objects inside rayon threads (which would require the GIL).
         let proc_chunk: PyResult<Vec<_>> = py.detach(|| {
+            // Acquire the SPK read guard and planet slice once per chunk so the
+            // per-object parallel closure does not re-acquire them on every task.
+            let spk = kete_spice::prelude::LOADED_SPK
+                .try_read()
+                .map_err(|_| Error::ValueError("SPK lock unavailable".into()))?;
+            let planets = if include_asteroids {
+                GravParams::selected_masses()
+            } else {
+                GravParams::planets()
+            };
+
             chunk_owned
                 .into_par_iter()
                 .with_min_len(5)
@@ -165,27 +176,12 @@ pub fn propagation_n_body_spk_py(
                         ))
                         .change_frame(frame));
                     }
-                    let spk = kete_spice::prelude::LOADED_SPK
-                        .try_read()
-                        .map_err(|_| Error::ValueError("SPK lock unavailable".into()))?;
                     let ssb_state = spk.try_to_ssb(state)?;
-                    let result: kete_core::errors::KeteResult<_> = if include_asteroids {
-                        let planets = GravParams::selected_masses();
-                        match model.as_ref() {
-                            None => ssb_state.propagate_with(&SpkNBody::new(&spk, &planets), jd),
-                            Some(frozen) => {
-                                let force = helio_with_frozen_nongrav(&spk, &planets, frozen)?;
-                                ssb_state.propagate_with(&force, jd)
-                            }
-                        }
-                    } else {
-                        let planets = GravParams::planets();
-                        match model.as_ref() {
-                            None => ssb_state.propagate_with(&SpkNBody::new(&spk, &planets), jd),
-                            Some(frozen) => {
-                                let force = helio_with_frozen_nongrav(&spk, &planets, frozen)?;
-                                ssb_state.propagate_with(&force, jd)
-                            }
+                    let result: kete_core::errors::KeteResult<_> = match model.as_ref() {
+                        None => ssb_state.propagate_with(&SpkNBody::new(&spk, &planets), jd),
+                        Some(frozen) => {
+                            let force = helio_with_frozen_nongrav(&spk, &planets, frozen)?;
+                            ssb_state.propagate_with(&force, jd)
                         }
                     };
                     match result {

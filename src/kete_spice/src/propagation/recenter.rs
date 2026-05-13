@@ -60,8 +60,8 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+use std::cell::RefCell;
 use std::marker::PhantomData;
-use std::sync::Mutex;
 
 use kete_core::errors::KeteResult;
 use kete_core::forces::{Force, ParameterizedForce};
@@ -70,6 +70,16 @@ use kete_core::time::{TDB, Time};
 use nalgebra::{Matrix3, Matrix3xX, Vector3};
 
 use crate::spk::SpkCollection;
+
+// Per-thread cache for the most recent Recenter shift lookup.
+// Keyed by (from_naif_id, to_naif_id, time.jd) so different Recenter
+// instances on the same thread do not collide. Each rayon thread gets its
+// own slot, eliminating the cross-thread mutex contention that hurt
+// parallel sigma-point evaluation.
+thread_local! {
+    static SHIFT_CACHE: RefCell<Option<(i32, i32, f64, Vector3<f64>, Vector3<f64>)>> =
+        const { RefCell::new(None) };
+}
 
 /// `ParameterizedForce` adapter that recenters input pos/vel from `FromC` to
 /// `F::Center` via SPK lookup before delegating to the inner force.
@@ -97,17 +107,6 @@ where
     pub spk: &'a SpkCollection,
     /// The inner force, written for `Center = F::Center`.
     pub inner: F,
-    /// Per-step shift cache. Holds `(time.jd, shift_pos, shift_vel)` for
-    /// the most recent SPK lookup. The variational integrator calls
-    /// `accel + jacobian_pos + jacobian_vel + parameter_jacobian` at the
-    /// same `time` within a substage (FD jacobians multiply this by 4-7
-    /// accel calls); caching the shift turns those repeated SPK lookups
-    /// into a single lookup per substage. Without this, a Recenter
-    /// wrapping an FD-jacobian force pays an SPK query on every call.
-    /// Same `Mutex`-only-for-Send+Sync pattern as [`SpkNBody`].
-    ///
-    /// [`SpkNBody`]: super::spk_n_body::SpkNBody
-    cache: Mutex<Option<(f64, Vector3<f64>, Vector3<f64>)>>,
     _phantom: PhantomData<FromC>,
 }
 
@@ -124,7 +123,6 @@ where
         Self {
             spk,
             inner,
-            cache: Mutex::new(None),
             _phantom: PhantomData,
         }
     }
@@ -223,11 +221,11 @@ where
     /// subtract it from the input `(pos, vel)`. Returns the
     /// `F::Center`-relative coordinates the inner force expects.
     ///
-    /// The SPK lookup is cached by `time.jd` -- repeated calls within a
-    /// single integrator substage (typical FD-jacobian fan-out: accel +
-    /// 3 perturbed accels for `jacobian_pos`, plus more for
-    /// `parameter_jacobian`) reuse the cached shift instead of hitting
-    /// SPK each time.
+    /// The shift is cached per-thread by `(from_naif_id, to_naif_id, time.jd)`.
+    /// Repeated calls within a single integrator substage (FD-jacobian fan-out:
+    /// accel + 3 perturbed accels for `jacobian_pos`, etc.) hit the cache
+    /// without any lock. Each rayon thread has its own slot, so parallel
+    /// sigma-point evaluation incurs no cross-thread contention.
     fn shift(
         &self,
         time: Time<TDB>,
@@ -236,11 +234,22 @@ where
     ) -> KeteResult<(Vector<F::Frame>, Vector<F::Frame>)> {
         let pos_v: Vector3<f64> = (*pos).into();
         let vel_v: Vector3<f64> = (*vel).into();
-        let mut guard = self.cache.lock().expect("Recenter cache lock poisoned");
-        let (shift_pos, shift_vel) = if let Some((cached_jd, cp, cv)) = guard.as_ref()
-            && *cached_jd == time.jd
-        {
-            (*cp, *cv)
+        let from_id = FromC::NAIF_ID;
+        let to_id = F::Center::NAIF_ID;
+
+        let cached = SHIFT_CACHE.with_borrow(|c| {
+            if let Some((cf, ct, cjd, cp, cv)) = c.as_ref()
+                && *cf == from_id
+                && *ct == to_id
+                && *cjd == time.jd
+            {
+                return Some((*cp, *cv));
+            }
+            None
+        });
+
+        let (shift_pos, shift_vel) = if let Some(hit) = cached {
+            hit
         } else {
             let shift = self.spk.try_get_state_with_center::<F::Frame>(
                 F::Center::NAIF_ID,
@@ -249,9 +258,12 @@ where
             )?;
             let sp: Vector3<f64> = shift.pos.into();
             let sv: Vector3<f64> = shift.vel.into();
-            *guard = Some((time.jd, sp, sv));
+            SHIFT_CACHE.with_borrow_mut(|c| {
+                *c = Some((from_id, to_id, time.jd, sp, sv));
+            });
             (sp, sv)
         };
+
         Ok((
             Vector::<F::Frame>::new((pos_v - shift_pos).into()),
             Vector::<F::Frame>::new((vel_v - shift_vel).into()),

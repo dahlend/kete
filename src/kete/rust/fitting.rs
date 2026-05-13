@@ -3,12 +3,13 @@
 //! Wraps `kete_fitting` types and functions for use from Python.
 
 use kete_core::Band;
-use kete_core::forces::{ParameterMask, ParameterizedForce};
+
+use kete_core::forces::{FrozenForce, FrozenNonGrav};
 use kete_core::frames::{Equatorial, Vector};
 use kete_core::prelude::*;
 use kete_fitting::{
-    AstrometricObservation, NonGravFit, OrbitFit, OrbitSamples, RangingSamples, fit_orbit,
-    fit_orbit_mcmc, fit_orbit_ranging, lambert,
+    AstrometricObservation, OrbitFit, OrbitSamples, RangingSamples, fit_orbit, fit_orbit_mcmc,
+    fit_orbit_ranging, lambert,
 };
 use kete_spice::prelude::LOADED_SPK;
 use pyo3::{PyResult, pyclass, pyfunction, pymethods};
@@ -19,15 +20,11 @@ use crate::state::PyUncertainState;
 use crate::time::PyTime;
 use crate::vector::PyVector;
 
-/// Build a fitter [`NonGravFit`] (template + values + lower bounds) from
-/// a Python-side [`PyNonGravModel`]. Bounds default to unbounded
-/// (`-inf`); callers that want to clamp parameters can patch the
-/// returned tuple before passing it on.
-fn py_to_fit(m: &PyNonGravModel) -> NonGravFit {
+/// Build a [`FrozenNonGrav`] from a Python-side [`PyNonGravModel`].
+fn py_to_fit(m: &PyNonGravModel) -> FrozenNonGrav {
     let template = m.to_force();
     let values = m.initial_values();
-    let n = values.len();
-    (template, values, vec![f64::NEG_INFINITY; n])
+    FrozenForce::new(template, values).expect("template n_free_params matches values len")
 }
 
 /// Radians to arcseconds conversion factor.
@@ -537,13 +534,15 @@ impl PyOrbitFit {
     /// The uncertain orbit state (state + covariance + non-grav model).
     #[getter]
     fn uncertain_state(&self) -> PyUncertainState {
+        use kete_core::forces::{NonGravForce, ParameterMask, ParameterizedForce};
+        let mask = self.inner.non_grav.as_ref().map(|f| {
+            let template: NonGravForce = f.inner.clone();
+            let n = template.n_free_params();
+            ParameterMask::new(template, vec![None; n]).expect("n matches n_free_params")
+        });
         PyUncertainState {
             state: self.inner.uncertain_state.clone(),
-            non_grav: self.inner.non_grav.as_ref().map(|fit| {
-                let n = fit.0.n_free_params();
-                ParameterMask::new(fit.0.clone(), vec![None; n])
-                    .expect("n_free_params matches mask length")
-            }),
+            non_grav: mask,
         }
     }
 
@@ -627,10 +626,8 @@ impl PyOrbitFit {
     /// Fitted non-gravitational model, or None if not fitted.
     #[getter]
     fn non_grav(&self) -> Option<PyNonGravModel> {
-        self.inner
-            .non_grav
-            .as_ref()
-            .and_then(|fit| PyNonGravModel::from_force(&fit.0, &fit.1))
+        let f = self.inner.non_grav.as_ref()?;
+        PyNonGravModel::from_force(&f.inner, &f.values)
     }
 
     /// Whether the solver achieved strict convergence.
@@ -1064,7 +1061,7 @@ pub fn fit_orbit_mcmc_py(
     };
 
     let obs: Vec<AstrometricObservation> = observations.into_iter().map(|o| o.obs).collect();
-    let ng: Option<NonGravFit> = non_grav.as_ref().map(py_to_fit);
+    let ng: Option<FrozenNonGrav> = non_grav.as_ref().map(py_to_fit);
 
     let result = fit_orbit_mcmc(
         &ssb_seeds,

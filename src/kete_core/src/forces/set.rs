@@ -188,21 +188,23 @@ impl<F: InertialFrame, C: Send + Sync + Copy + 'static> ParameterizedForce for F
 
 /// Validate that `free_params` has the correct length for this `ForceSet`.
 ///
-/// Two valid call shapes are accepted:
-/// - Empty slice: valid only when all forces have `n_free_params() == 0`
-///   (pure gravity path). Each inner force receives `&[]`.
+/// Valid call shapes:
+/// - Empty slice when `expected == 0`: pure gravity path, each inner
+///   force receives `&[]`.
 /// - Slice of length `expected`: sliced per-force in push order.
 ///
-/// Any other length is a caller bug that would produce wrong physics
-/// (silent wrong offset) or an opaque index panic. Return an error early.
+/// Any mismatch is a caller bug that would produce wrong physics or a
+/// panic inside an inner force. Return an error early.
 #[inline]
 fn check_params(free_params: &[f64], expected: usize) -> KeteResult<()> {
+    if free_params.is_empty() && expected != 0 {
+        return Err(Error::ValueError(format!(
+            "ForceSet expects {expected} free parameters but received an empty slice",
+        )));
+    }
     if !free_params.is_empty() && free_params.len() != expected {
         return Err(Error::ValueError(format!(
-            "ForceSet expects {} free parameters, got {}; \
-             pass an empty slice to use stored values, or a slice of \
-             exactly the right length for variational propagation",
-            expected,
+            "ForceSet expects {expected} free parameters, got {}",
             free_params.len()
         )));
     }
@@ -211,8 +213,8 @@ fn check_params(free_params: &[f64], expected: usize) -> KeteResult<()> {
 
 /// Slice of `free_params` to forward to a single inner force.
 ///
-/// Precondition: `free_params` is empty or has exactly `self.n_free_params()`
-/// elements (enforced by `check_params` at the top of each public method).
+/// Precondition: `free_params` is empty iff `expected == 0`, or has exactly
+/// `self.n_free_params()` elements (enforced by `check_params`).
 #[inline(always)]
 fn inner_slice(free_params: &[f64], offset: usize, n: usize) -> &[f64] {
     if free_params.is_empty() {

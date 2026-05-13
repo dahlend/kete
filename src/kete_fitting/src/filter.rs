@@ -35,9 +35,9 @@
 
 use crate::obs::AstrometricObservation;
 use crate::obs::differential_light_deflect;
-use crate::orbit_fitting::NonGravFit;
+
 use crate::orbit_fitting::OrbitFit;
-use kete_core::forces::FrozenForce;
+use kete_core::forces::FrozenNonGrav;
 use kete_core::frames::{CenterBody, Equatorial, SSB};
 use kete_core::kepler::light_time_correct;
 use kete_core::prelude::{Error, KeteResult, State, UncertainState};
@@ -61,12 +61,12 @@ struct FilterEpoch {
 /// Pack a [`State`] (and optional non-grav params) into a state vector.
 fn state_to_vec<C: CenterBody>(
     state: &State<Equatorial, C>,
-    non_grav: Option<&NonGravFit>,
+    non_grav: Option<&FrozenNonGrav>,
 ) -> DVector<f64>
 where
     kete_core::frames::DynCenter: From<C>,
 {
-    let np = non_grav.map_or(0, |m| m.1.len());
+    let np = non_grav.map_or(0, |ng: &FrozenNonGrav| ng.values.len());
     let dim = 6 + np;
     let mut xv = DVector::zeros(dim);
     xv[0] = state.pos[0];
@@ -76,7 +76,7 @@ where
     xv[4] = state.vel[1];
     xv[5] = state.vel[2];
     if let Some(ng) = non_grav {
-        for (idx, &val) in ng.1.iter().enumerate() {
+        for (idx, &val) in ng.values.iter().enumerate() {
             xv[6 + idx] = val;
         }
     }
@@ -87,7 +87,7 @@ where
 fn vec_to_state<C: CenterBody + Clone>(
     xv: &DVector<f64>,
     template: &State<Equatorial, C>,
-    non_grav: &mut Option<NonGravFit>,
+    non_grav: &mut Option<FrozenNonGrav>,
 ) -> State<Equatorial, C>
 where
     kete_core::frames::DynCenter: From<C>,
@@ -96,8 +96,8 @@ where
     state.pos = [xv[0], xv[1], xv[2]].into();
     state.vel = [xv[3], xv[4], xv[5]].into();
     if let Some(ng) = non_grav.as_mut() {
-        let np = ng.1.len();
-        ng.1 = xv.rows(6, np).iter().copied().collect();
+        let np = ng.values.len();
+        ng.values = xv.rows(6, np).iter().copied().collect();
     }
     state
 }
@@ -222,7 +222,7 @@ pub fn fit_orbit_filter(
     initial_state: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
     include_asteroids: bool,
-    non_grav: Option<&NonGravFit>,
+    non_grav: Option<&FrozenNonGrav>,
     chi2_gate: f64,
     process_noise_q: f64,
 ) -> KeteResult<OrbitFit> {
@@ -230,7 +230,7 @@ pub fn fit_orbit_filter(
         return Err(Error::ValueError("No observations provided".into()));
     }
 
-    let np = non_grav.map_or(0, |m| m.1.len());
+    let np = non_grav.map_or(0, |ng: &FrozenNonGrav| ng.values.len());
     let dim = 6 + np;
 
     // Scale initial covariance to the seed state so it is conservative
@@ -381,8 +381,8 @@ fn forward_pass(
     initial_covariance: &DMatrix<f64>,
     sorted: &[AstrometricObservation],
     include_asteroids: bool,
-    ng: &mut Option<NonGravFit>,
-    non_grav: Option<&NonGravFit>,
+    ng: &mut Option<FrozenNonGrav>,
+    non_grav: Option<&FrozenNonGrav>,
     chi2_gate: f64,
     process_noise_q: f64,
     dim: usize,
@@ -401,19 +401,9 @@ fn forward_pass(
         // EKF: propagate the state nonlinearly; use the STM only for
         // the covariance prediction.
         let (phi_full, xv_pred, cov_pred, new_state) = if dt.abs() > 1e-12 {
-            let ng_frozen = ng
-                .as_ref()
-                .map(|f| FrozenForce::new(f.0.clone(), f.1.clone()))
-                .transpose()
-                .ok()
-                .flatten();
-            let ssb_result = compute_state_transition(
-                &state_cur,
-                obs_epoch,
-                include_asteroids,
-                ng_frozen.as_ref(),
-            )
-            .ok();
+            let ssb_result =
+                compute_state_transition(&state_cur, obs_epoch, include_asteroids, ng.as_ref())
+                    .ok();
             if let Some((propagated_ssb, phi_6xd)) = ssb_result {
                 let phi = expand_phi(&phi_6xd, dim);
                 let qmat = build_process_noise(dim, process_noise_q, dt);
@@ -637,8 +627,8 @@ fn build_result(
     accepted_flags: &[bool],
     xv_smoothed: &[DVector<f64>],
     cov_smoothed: &[DMatrix<f64>],
-    ng: &mut Option<NonGravFit>,
-    non_grav: Option<&NonGravFit>,
+    ng: &mut Option<FrozenNonGrav>,
+    non_grav: Option<&FrozenNonGrav>,
     dim: usize,
 ) -> KeteResult<OrbitFit> {
     let n_obs = epochs.len();
@@ -651,7 +641,7 @@ fn build_result(
     let mut result_state = vec_to_state(final_x, initial_state, ng);
     result_state.epoch = sorted[0].epoch();
 
-    let free_params = ng.as_ref().map_or_else(Vec::new, |m| m.1.clone());
+    let free_params = ng.as_ref().map_or_else(Vec::new, |m| m.values.clone());
     let uncertain = UncertainState {
         state: result_state.into(),
         cov_matrix: final_p.clone(),

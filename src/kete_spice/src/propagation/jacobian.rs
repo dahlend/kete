@@ -34,8 +34,8 @@ mod tests {
     use crate::spk::LOADED_SPK;
     use kete_core::errors::Error;
     use kete_core::forces::{
-        ArcForce, DustNonGrav, FarnocchiaNonGrav, FrozenForce, FrozenNonGrav, GravParams,
-        JplCometNonGrav, ParameterizedForce, a_over_m_from_physical, analytical_jacobians,
+        DustNonGrav, FarnocchiaNonGrav, FrozenForce, FrozenNonGrav, GravParams, JplCometNonGrav,
+        NonGravForce, ParameterizedForce, a_over_m_from_physical, analytical_jacobians,
         lambda_0_from_physical,
     };
     use kete_core::frames::{Equatorial, SSB, Vector};
@@ -113,13 +113,13 @@ mod tests {
 
     /// Helper: build a frozen JPL-comet non-grav model.
     fn jpl_comet_entry(a1: f64, a2: f64, a3: f64) -> FrozenNonGrav {
-        let force: ArcForce = Arc::new(JplCometNonGrav::standard_comet());
+        let force: NonGravForce = Arc::new(JplCometNonGrav::standard_comet());
         FrozenForce::new(force, vec![a1, a2, a3]).unwrap()
     }
 
     /// Helper: build a frozen Dust non-grav model.
     fn dust_entry(beta: f64) -> FrozenNonGrav {
-        let force: ArcForce = Arc::new(DustNonGrav);
+        let force: NonGravForce = Arc::new(DustNonGrav);
         FrozenForce::new(force, vec![beta]).unwrap()
     }
 
@@ -518,7 +518,7 @@ mod tests {
         let flattening = 0.71_f64;
         let a_over_m = a_over_m_from_physical(2000.0, 0.030, flattening);
         let lambda_0 = lambda_0_from_physical(200.0, 0.9, 0.71, flattening, 5.351 / 60.0);
-        let force: ArcForce =
+        let force: NonGravForce =
             Arc::new(FarnocchiaNonGrav::new(0.52, 0.71, flattening, pole).unwrap());
         FrozenForce::new(force, vec![a_over_m, lambda_0]).unwrap()
     }

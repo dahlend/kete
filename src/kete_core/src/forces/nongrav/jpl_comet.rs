@@ -96,24 +96,8 @@ impl ParameterizedForce for JplCometNonGrav {
         let rr0 = pos.norm() / self.r_0;
         let scale = self.alpha * rr0.powf(-self.m) * (1.0 + rr0.powf(self.n)).powf(-self.k);
 
-        let a1_eff = if free_params[0].is_finite() {
-            free_params[0]
-        } else {
-            0.0
-        };
-        let a2_eff = if free_params[1].is_finite() {
-            free_params[1]
-        } else {
-            0.0
-        };
-        let a3_eff = if free_params[2].is_finite() {
-            free_params[2]
-        } else {
-            0.0
-        };
-
-        let result =
-            pos_norm * (scale * a1_eff) + t_vec * (scale * a2_eff) + n_vec * (scale * a3_eff);
+        let [a1, a2, a3] = [free_params[0], free_params[1], free_params[2]];
+        let result = pos_norm * (scale * a1) + t_vec * (scale * a2) + n_vec * (scale * a3);
         Ok(Vector::<Equatorial>::new(result.into()))
     }
 }

@@ -7,7 +7,7 @@
 //! Each force is a plain struct. You call its `accel` method with the body's
 //! current position, velocity, and time, and it returns an acceleration
 //! (AU/day^2). Some forces also need one or more numbers that are not known
-//! in advance and must be fitted from observations — for example, a dust
+//! in advance and must be fitted from observations -- for example, a dust
 //! grain's radiation pressure coefficient `beta`. Those numbers are passed as
 //! a separate `free_params: &[f64]` slice so the same force struct can be
 //! used with different parameter values during fitting.
@@ -19,7 +19,7 @@
 //! fitted quantities).
 //!
 //! [`Force`] is a narrower trait that additionally promises the force needs
-//! *no* free parameters — the slice is always empty and can be omitted.
+//! *no* free parameters -- the slice is always empty and can be omitted.
 //! Gravity (`SpkNBody`) and a non-grav model with its parameters already
 //! fixed ([`FrozenForce`]) are examples. Actually propagating the orbit
 //! of an object cannot have any free parameters - meaning that to propagate
@@ -41,7 +41,7 @@
 //!
 //! [`ParameterMask`] also wraps a [`ParameterizedForce`] but leaves some or
 //! all parameters free so they are passed through from the caller. The common
-//! case is an all-`None` mask — every parameter remains free — which is what
+//! case is an all-`None` mask -- every parameter remains free -- which is what
 //! gets stored on an [`UncertainState`](crate::state::UncertainState) for
 //! uncertainty propagation. You can also partially freeze parameters (e.g.
 //! hold `a2` and `a3` fixed while fitting only `a1`).
@@ -84,15 +84,15 @@ pub use traits::{Force, ParameterizedForce};
 /// Type-erased heliocentric non-gravitational force template.
 ///
 /// `Arc` gives cheap `Clone` for shared ownership across propagation tasks.
-pub type ArcForce = Arc<dyn ParameterizedForce<Frame = Equatorial, Center = SunCenter>>;
+pub type NonGravForce = Arc<dyn ParameterizedForce<Frame = Equatorial, Center = SunCenter>>;
 
-/// An all-`None` [`ParameterMask`] over an [`ArcForce`]: the variational
-/// non-grav template stored on [`UncertainState`](crate::state::UncertainState)
-/// wrappers. Free-parameter values come from `state.free_params` at integration
-/// time; the mask itself holds no concrete values.
-pub type NonGravMask = ParameterMask<ArcForce>;
+/// A [`ParameterMask`] over a [`NonGravForce`]: selectively exposes some
+/// or all of the force's parameters as free while freezing the rest.
+/// The common case is an all-`None` mask (every parameter free) used for
+/// variational propagation; partial freezes are also valid.
+pub type NonGravMask = ParameterMask<NonGravForce>;
 
-/// An [`ArcForce`] with parameter values baked in, used wherever a single
+/// A [`NonGravForce`] with parameter values baked in, used wherever a single
 /// concrete parameter estimate drives a plain-`State` propagation: batch
 /// propagation, covariance samples, orbit-fitter inner loop.
-pub type FrozenNonGrav = FrozenForce<ArcForce>;
+pub type FrozenNonGrav = FrozenForce<NonGravForce>;

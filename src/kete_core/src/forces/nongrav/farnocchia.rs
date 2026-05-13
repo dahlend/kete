@@ -152,6 +152,10 @@ impl ParameterizedForce for FarnocchiaNonGrav {
         vec!["a_over_m", "lambda_0"]
     }
 
+    fn lower_bounds(&self) -> Vec<Option<f64>> {
+        vec![Some(0.0), Some(0.0)]
+    }
+
     fn accel(
         &self,
         _time: Time<TDB>,

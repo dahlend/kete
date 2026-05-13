@@ -32,6 +32,10 @@ impl ParameterizedForce for DustNonGrav {
         vec!["beta"]
     }
 
+    fn lower_bounds(&self) -> Vec<Option<f64>> {
+        vec![Some(0.0)]
+    }
+
     fn accel(
         &self,
         _time: Time<TDB>,
