@@ -214,25 +214,6 @@ impl PyCometElements {
         Ok(self.0.try_to_state()?.into_frame::<Ecliptic>().into())
     }
 
-    /// Drummond D-criterion between this and another set of orbital elements.
-    ///
-    /// Dimensionless measure of orbital similarity where 0 means identical
-    /// orbits and larger values indicate greater dissimilarity.
-    ///
-    /// Reference: Drummond (1981), Icarus 45, 545-553.
-    ///
-    /// Parameters
-    /// ----------
-    /// other : CometElements
-    ///     The other set of orbital elements to compare against.
-    ///
-    /// Returns
-    /// -------
-    /// float
-    pub fn d_drummond(&self, other: &PyCometElements) -> f64 {
-        self.0.d_drummond(&other.0)
-    }
-
     fn __repr__(&self) -> String {
         format!(
             "CometElements(desig={:?}, epoch={}, eccentricity={}, inclination={}, lon_of_ascending={}, peri_time={}, peri_arg={}, peri_dist={}, center_id={})",
