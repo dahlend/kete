@@ -56,7 +56,7 @@ impl<F: ParameterizedForce> FrozenForce<F> {
     }
 }
 
-impl<F: ParameterizedForce + 'static> ParameterizedForce for FrozenForce<F> {
+impl<F: ParameterizedForce> ParameterizedForce for FrozenForce<F> {
     type Frame = F::Frame;
     type Center = F::Center;
 
@@ -88,4 +88,4 @@ impl<F: ParameterizedForce + 'static> ParameterizedForce for FrozenForce<F> {
 
 /// Marker: a [`FrozenForce`] has its parameters baked in, so it is structurally
 /// a [`Force`] (no free parameters).
-impl<F: ParameterizedForce + 'static> Force for FrozenForce<F> {}
+impl<F: ParameterizedForce> Force for FrozenForce<F> {}

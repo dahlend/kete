@@ -8,7 +8,7 @@
 //! states at `jd_final`.
 
 use kete_core::errors::Error;
-use kete_core::forces::{FrozenNonGrav, GravParams, ParameterizedForce};
+use kete_core::forces::{FrozenForce, GravParams, ParameterizedForce};
 use kete_core::frames::{Equatorial, SunCenter};
 use kete_core::integrators::RadauIntegrator;
 use kete_core::prelude::{Desig, KeteResult};
@@ -19,15 +19,21 @@ use nalgebra::DVector;
 use crate::spk::LOADED_SPK;
 
 /// Metadata for [`vec_accel`]: the SPK-free bulk N-body ODE function.
-pub struct AccelVecMeta<'a> {
+///
+/// Generic over the inner non-gravitational force `F`. Callers commit to
+/// one concrete force type per batch.
+pub struct AccelVecMeta<'a, F: ParameterizedForce<Frame = Equatorial, Center = SunCenter>> {
     /// Per-object frozen non-gravitational force (values baked in), or `None`.
-    pub non_gravs: Vec<Option<FrozenNonGrav>>,
+    pub non_gravs: Vec<Option<FrozenForce<F>>>,
     /// Massive bodies providing gravity, same order as the leading slots
     /// in the pos/vel vectors.
     pub massive_obj: &'a [GravParams],
 }
 
-impl std::fmt::Debug for AccelVecMeta<'_> {
+impl<F> std::fmt::Debug for AccelVecMeta<'_, F>
+where
+    F: ParameterizedForce<Frame = Equatorial, Center = SunCenter>,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AccelVecMeta")
             .field("n_objects", &self.non_gravs.len())
@@ -45,14 +51,16 @@ impl std::fmt::Debug for AccelVecMeta<'_> {
 ///
 /// # Errors
 /// Fails on an impact.
-pub fn vec_accel<D: nalgebra::Dim>(
+pub fn vec_accel<D, F>(
     time: Time<TDB>,
     pos: &nalgebra::OVector<f64, D>,
     vel: &nalgebra::OVector<f64, D>,
-    meta: &mut AccelVecMeta<'_>,
+    meta: &mut AccelVecMeta<'_, F>,
     exact_eval: bool,
 ) -> KeteResult<nalgebra::OVector<f64, D>>
 where
+    D: nalgebra::Dim,
+    F: ParameterizedForce<Frame = Equatorial, Center = SunCenter>,
     nalgebra::DefaultAllocator:
         nalgebra::allocator::Allocator<D> + nalgebra::allocator::Allocator<D, nalgebra::U2>,
 {
@@ -112,12 +120,15 @@ where
 /// Cannot panic in practice: the `.unwrap()` calls on `states.first()` and
 /// `planet_states.first()` are gated by earlier length checks; `planet_states`
 /// is matched to `simplified_planets()` which is non-empty by construction.
-pub fn propagate_n_body_vec(
+pub fn propagate_n_body_vec<F>(
     states: Vec<State<Equatorial, SunCenter>>,
     jd_final: Time<TDB>,
     planet_states: Option<Vec<State<Equatorial>>>,
-    non_gravs: Vec<Option<FrozenNonGrav>>,
-) -> KeteResult<(Vec<State<Equatorial>>, Vec<State<Equatorial>>)> {
+    non_gravs: Vec<Option<FrozenForce<F>>>,
+) -> KeteResult<(Vec<State<Equatorial>>, Vec<State<Equatorial>>)>
+where
+    F: ParameterizedForce<Frame = Equatorial, Center = SunCenter>,
+{
     if states.is_empty() {
         Err(Error::ValueError(
             "State vector is empty, propagation cannot continue".into(),
@@ -238,7 +249,7 @@ mod tests {
             jd,
             &pos.into(),
             &vel.into(),
-            &mut AccelVecMeta {
+            &mut AccelVecMeta::<kete_core::forces::JplCometNonGrav> {
                 non_gravs: vec![None],
                 massive_obj: &planets,
             },
@@ -250,7 +261,7 @@ mod tests {
         .skip(planets.len() * 3)
         .collect_vec();
 
-        let accel2 = SpkNBody::new(spk, &planets)
+        let accel2 = SpkNBody::new(false)
             .accel(
                 jd,
                 &Vector::<Equatorial>::new([0.0, 0.0, 0.5]),

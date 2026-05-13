@@ -718,7 +718,6 @@ mod tests {
     use kete_core::Band;
     use kete_core::constants::GMS;
     use kete_core::desigs::Desig;
-    use kete_core::forces::GravParams;
     use kete_core::frames::Equatorial;
     use kete_core::kepler::light_time_correct;
     use kete_core::prelude::State;
@@ -770,10 +769,9 @@ mod tests {
             let observer = make_state(obs_pos, obs_vel, jd);
 
             let spk = LOADED_SPK.try_read().unwrap();
-            let planets = GravParams::planets();
             let obj_at = true_state
                 .clone()
-                .propagate_with(&SpkNBody::new(&spk, &planets), Time::<TDB>::new(jd))
+                .propagate_with(&SpkNBody::new(false), Time::<TDB>::new(jd))
                 .unwrap();
             let sun_at = spk.try_to_sun(obj_at.clone()).unwrap();
             let obs_helio = observer.pos - obj_at.pos + sun_at.pos;

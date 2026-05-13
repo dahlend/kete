@@ -46,9 +46,9 @@
 //! uncertainty propagation. You can also partially freeze parameters (e.g.
 //! hold `a2` and `a3` fixed while fitting only `a1`).
 //!
-//! [`ForceSet`] composes multiple forces that share the same coordinate frame
-//! and center body. Accelerations are summed; free parameters from each
-//! member are concatenated in the order they were added.
+//! [`Sum`] composes two forces that share frame and center. Accelerations are
+//! summed; free parameters from the two members are concatenated in order.
+//! A complete force model is typically `Sum<gravity, non_grav_adapter>`.
 //!
 //! With these definitions it is possible to define all kinds of forces on
 //! physical objects, and the numerical integrator will happily propagate
@@ -61,12 +61,8 @@ mod frozen;
 mod gravity;
 mod nongrav;
 mod parameter_mask;
-mod set;
+mod sum;
 mod traits;
-
-use std::sync::Arc;
-
-use crate::frames::{Equatorial, SunCenter};
 
 pub use frozen::FrozenForce;
 pub use gravity::{
@@ -74,25 +70,19 @@ pub use gravity::{
     register_custom_mass, register_mass, registered_masses,
 };
 pub use nongrav::{
-    DustNonGrav, FarnocchiaNonGrav, JplCometNonGrav, a_over_m_from_physical, density_from_a_over_m,
-    lambda_0_from_physical, thermal_inertia_from_lambda_0,
+    DustNonGrav, FarnocchiaNonGrav, JplCometNonGrav, NonGravKind, a_over_m_from_physical,
+    density_from_a_over_m, lambda_0_from_physical, thermal_inertia_from_lambda_0,
 };
 pub use parameter_mask::ParameterMask;
-pub use set::ForceSet;
+pub use sum::Sum;
 pub use traits::{Force, ParameterizedForce};
 
-/// Type-erased heliocentric non-gravitational force template.
-///
-/// `Arc` gives cheap `Clone` for shared ownership across propagation tasks.
-pub type NonGravForce = Arc<dyn ParameterizedForce<Frame = Equatorial, Center = SunCenter>>;
+/// A [`ParameterMask`] over a [`NonGravKind`]: the variational template
+/// used wherever a non-grav model rides along with an uncertain state
+/// and its parameters need to be exposed for variational integration.
+pub type NonGravMask = ParameterMask<NonGravKind>;
 
-/// A [`ParameterMask`] over a [`NonGravForce`]: selectively exposes some
-/// or all of the force's parameters as free while freezing the rest.
-/// The common case is an all-`None` mask (every parameter free) used for
-/// variational propagation; partial freezes are also valid.
-pub type NonGravMask = ParameterMask<NonGravForce>;
-
-/// A [`NonGravForce`] with parameter values baked in, used wherever a single
-/// concrete parameter estimate drives a plain-`State` propagation: batch
-/// propagation, covariance samples, orbit-fitter inner loop.
-pub type FrozenNonGrav = FrozenForce<NonGravForce>;
+/// A [`NonGravKind`] with parameter values baked in. Used wherever a
+/// single concrete parameter estimate drives a plain-`State` propagation
+/// (batch propagation, covariance samples, orbit-fitter inner loop).
+pub type FrozenNonGrav = FrozenForce<NonGravKind>;

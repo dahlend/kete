@@ -38,7 +38,7 @@ mod earth;
 mod rotation;
 mod vector;
 
-pub use center::{CenterBody, DynCenter, EarthCenter, NaifBody, SSB, SunCenter};
+pub use center::{CenterBody, DynCenter, EarthCenter, SSB, SunCenter};
 pub use definitions::{Ecliptic, Equatorial, FK4, Galactic, InertialFrame, NonInertialFrame};
 pub use earth::{
     EARTH_A, approx_earth_pos_to_ecliptic, approx_solar_noon, approx_sun_dec, earth_obliquity,

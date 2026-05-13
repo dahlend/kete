@@ -12,12 +12,12 @@ use super::PyState;
 use crate::elements::PyCometElements;
 use crate::nongrav::PyNonGravModel;
 use crate::time::PyTime;
-use kete_core::forces::{ForceSet, GravParams, NonGravMask, ParameterizedForce};
+use kete_core::forces::NonGravMask;
+use kete_core::forces::ParameterizedForce;
 use kete_core::frames::{Equatorial, SSB};
 use kete_core::prelude::*;
 use kete_core::state::StateLike;
-use kete_spice::propagation::Recenter;
-use kete_spice::propagation::SpkNBody;
+use kete_spice::propagation::SpkNonGravs;
 use kete_spice::propagation::{propagate_with_diagnosis, sigma_point_divergence};
 use kete_spice::spk::LOADED_SPK;
 use nalgebra::DMatrix;
@@ -50,22 +50,18 @@ impl std::fmt::Debug for PyUncertainState {
 }
 
 impl PyUncertainState {
-    /// Build the SSB-centered ParameterizedForce used by all propagation paths:
-    /// gravity-only `SpkNBody` when `non_grav` is `None`, or
-    /// `ForceSet { SpkNBody, Recenter<SSB, _> }` wrapping the typed
-    /// non-grav force template otherwise. Captures the `LOADED_SPK`
-    /// read guard so the borrow lifetime is well-defined.
-    fn build_forces<'a>(
-        &self,
-        spk: &'a kete_spice::spk::SpkCollection,
-        planets: &'a [GravParams],
-    ) -> ForceSet<'a, Equatorial, SSB> {
-        let mut force_set: ForceSet<'_, Equatorial, SSB> =
-            ForceSet::new().with(Box::new(SpkNBody::new(spk, planets)));
+    /// Build the SSB-centered force model used by all propagation paths.
+    ///
+    /// Gravity-only `SpkNBody` when `non_grav` is `None`, or
+    /// `Sum<SpkNBody, Recenter<SSB, _>>` wrapping the non-grav force
+    /// template otherwise. Captures the `LOADED_SPK` read guard so the
+    /// borrow lifetime is well-defined.
+    fn build_forces(&self, include_extended: bool) -> SpkNonGravs {
         if let Some(ref ng) = self.non_grav {
-            force_set = force_set.with(Box::new(Recenter::<SSB, _>::new(spk, ng.clone())));
+            SpkNonGravs::with_non_grav_mask(include_extended, ng.clone())
+        } else {
+            SpkNonGravs::gravity(include_extended)
         }
-        force_set
     }
 }
 
@@ -306,15 +302,9 @@ impl PyUncertainState {
             self.state.cov_matrix.clone(),
             self.state.free_params.clone(),
         )?;
-        let result = if include_asteroids {
-            let extended = GravParams::selected_masses();
-            let forces = self.build_forces(&spk, &extended);
-            ssb_us.propagate_with(&forces, jd.into())?
-        } else {
-            let planets = GravParams::planets();
-            let forces = self.build_forces(&spk, &planets);
-            ssb_us.propagate_with(&forces, jd.into())?
-        };
+        let forces = self.build_forces(include_asteroids);
+        let result = ssb_us.propagate_with(&forces, jd.into())?;
+
         // Convert back to DynCenter for storage on the Python wrapper
         // (matches the historical shape).
         let dyn_state: UncertainState =
@@ -343,15 +333,8 @@ impl PyUncertainState {
             self.state.cov_matrix.clone(),
             self.state.free_params.clone(),
         )?;
-        let diag = if include_asteroids {
-            let extended = GravParams::selected_masses();
-            let forces = self.build_forces(&spk, &extended);
-            propagate_with_diagnosis(&ssb_us, &forces, jd.into(), n_axes, sigma_factor)?
-        } else {
-            let planets = GravParams::planets();
-            let forces = self.build_forces(&spk, &planets);
-            propagate_with_diagnosis(&ssb_us, &forces, jd.into(), n_axes, sigma_factor)?
-        };
+        let forces = self.build_forces(include_asteroids);
+        let diag = propagate_with_diagnosis(&ssb_us, &forces, jd.into(), n_axes, sigma_factor)?;
         let dyn_state: UncertainState = UncertainState::new(
             diag.propagated.state.into(),
             diag.propagated.cov_matrix,
@@ -384,16 +367,14 @@ impl PyUncertainState {
             self.state.cov_matrix.clone(),
             self.state.free_params.clone(),
         )?;
-        let div = if include_asteroids {
-            let extended = GravParams::selected_masses();
-            let forces = self.build_forces(&spk, &extended);
-            sigma_point_divergence(&ssb_us, &forces, jd.into(), n_axes, sigma_factor)?
-        } else {
-            let planets = GravParams::planets();
-            let forces = self.build_forces(&spk, &planets);
-            sigma_point_divergence(&ssb_us, &forces, jd.into(), n_axes, sigma_factor)?
-        };
-        Ok(div)
+        let forces = self.build_forces(include_asteroids);
+        Ok(sigma_point_divergence(
+            &ssb_us,
+            &forces,
+            jd.into(),
+            n_axes,
+            sigma_factor,
+        )?)
     }
 
     /// String representation.

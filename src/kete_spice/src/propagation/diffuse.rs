@@ -1,7 +1,6 @@
 //! Integration tests for adaptive diffuse-state propagation with SPICE forces.
 mod tests {
     use kete_core::desigs::Desig;
-    use kete_core::forces::GravParams;
     use kete_core::frames::{Equatorial, SSB};
     use kete_core::prelude::{State, UncertainState};
     use kete_core::state::{
@@ -11,7 +10,6 @@ mod tests {
     use nalgebra::DMatrix;
 
     use crate::propagation::SpkNBody;
-    use crate::spk::LOADED_SPK;
 
     fn earth_like_state() -> State<Equatorial, SSB> {
         State::<Equatorial, SSB> {
@@ -28,9 +26,7 @@ mod tests {
     #[test]
     fn single_component_matches_propagate_with_stm() {
         crate::test_data::ensure_test_spk();
-        let spk = LOADED_SPK.try_read().unwrap();
-        let planets = GravParams::planets();
-        let forces = SpkNBody::new(&spk, &planets);
+        let forces = SpkNBody::new(false);
 
         let state = earth_like_state();
         let mut cov = DMatrix::<f64>::zeros(6, 6);
@@ -81,9 +77,7 @@ mod tests {
     #[test]
     fn sigma_divergence_small_cov_short_arc_is_small() {
         crate::test_data::ensure_test_spk();
-        let spk = LOADED_SPK.try_read().unwrap();
-        let planets = GravParams::planets();
-        let forces = SpkNBody::new(&spk, &planets);
+        let forces = SpkNBody::new(false);
 
         let state = earth_like_state();
         let mut cov = DMatrix::<f64>::zeros(6, 6);
@@ -102,9 +96,7 @@ mod tests {
     #[test]
     fn sigma_divergence_grows_with_sigma_factor() {
         crate::test_data::ensure_test_spk();
-        let spk = LOADED_SPK.try_read().unwrap();
-        let planets = GravParams::planets();
-        let forces = SpkNBody::new(&spk, &planets);
+        let forces = SpkNBody::new(false);
 
         let state = earth_like_state();
         let mut cov = DMatrix::<f64>::zeros(6, 6);
@@ -130,9 +122,7 @@ mod tests {
     #[test]
     fn sigma_divergence_zero_cov_returns_zero() {
         crate::test_data::ensure_test_spk();
-        let spk = LOADED_SPK.try_read().unwrap();
-        let planets = GravParams::planets();
-        let forces = SpkNBody::new(&spk, &planets);
+        let forces = SpkNBody::new(false);
 
         let state = earth_like_state();
         let cov = DMatrix::<f64>::zeros(6, 6);
@@ -145,9 +135,7 @@ mod tests {
     #[test]
     fn sigma_divergence_validates_inputs() {
         crate::test_data::ensure_test_spk();
-        let spk = LOADED_SPK.try_read().unwrap();
-        let planets = GravParams::planets();
-        let forces = SpkNBody::new(&spk, &planets);
+        let forces = SpkNBody::new(false);
 
         let state = earth_like_state();
         let cov = DMatrix::<f64>::identity(6, 6) * 1e-12;
@@ -162,9 +150,7 @@ mod tests {
     #[test]
     fn adaptive_propagation_does_not_split_in_linear_regime() {
         crate::test_data::ensure_test_spk();
-        let spk = LOADED_SPK.try_read().unwrap();
-        let planets = GravParams::planets();
-        let forces = SpkNBody::new(&spk, &planets);
+        let forces = SpkNBody::new(false);
 
         let state = earth_like_state();
         let mut cov = DMatrix::<f64>::zeros(6, 6);
@@ -192,9 +178,7 @@ mod tests {
     #[test]
     fn adaptive_propagation_splits_when_nonlinear() {
         crate::test_data::ensure_test_spk();
-        let spk = LOADED_SPK.try_read().unwrap();
-        let planets = GravParams::planets();
-        let forces = SpkNBody::new(&spk, &planets);
+        let forces = SpkNBody::new(false);
 
         let state = earth_like_state();
         let mut cov = DMatrix::<f64>::zeros(6, 6);

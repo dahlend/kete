@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use kete_core::constants;
-use kete_core::forces::{DustNonGrav, ForceSet};
+use kete_core::forces::{DustNonGrav, Sum};
 use kete_core::prelude::*;
 use kete_core::state::StateLike;
 use kete_core::state::propagate_with_stm;
@@ -55,13 +55,9 @@ static HYPERBOLIC: std::sync::LazyLock<State<Ecliptic>> = std::sync::LazyLock::n
 });
 
 fn prop_n_body_radau(state: State<Ecliptic>, dt: f64) {
-    let spk = LOADED_SPK.try_read().unwrap();
-    let planets = kete_core::forces::GravParams::planets();
     let jd = state.epoch + dt;
     let eq_state: State<Equatorial, SSB> = state.into_frame().try_into().unwrap();
-    let _ = eq_state
-        .propagate_with(&SpkNBody::new(&spk, &planets), jd)
-        .unwrap();
+    let _ = eq_state.propagate_with(&SpkNBody::new(false), jd).unwrap();
 }
 
 fn prop_n_body_vec_radau(state: State<Ecliptic>, dt: f64) {
@@ -69,21 +65,19 @@ fn prop_n_body_vec_radau(state: State<Ecliptic>, dt: f64) {
     let state_sun = spk.try_to_sun(state).unwrap();
     let jd = state_sun.epoch + dt;
     let states: Vec<State<Equatorial, SunCenter>> = vec![state_sun.into_frame(); 100];
-    let non_gravs = vec![None; 100];
+    let non_gravs: Vec<Option<kete_core::forces::FrozenForce<kete_core::forces::JplCometNonGrav>>> =
+        vec![None; 100];
     let _ = propagate_n_body_vec(states, jd, None, non_gravs).unwrap();
 }
 
 fn prop_n_body_radau_par(state: &State<Ecliptic>, dt: f64) {
     let states: Vec<State<_>> = (0..100).map(|_| state.clone()).collect();
-    let planets = kete_core::forces::GravParams::planets();
     let _tmp: Vec<_> = states
         .into_par_iter()
         .map(|s| {
-            let spk = LOADED_SPK.try_read().unwrap();
             let jd = s.epoch + dt;
             let eq: State<Equatorial, SSB> = s.into_frame().try_into().unwrap();
-            eq.propagate_with(&SpkNBody::new(&spk, &planets), jd)
-                .unwrap()
+            eq.propagate_with(&SpkNBody::new(false), jd).unwrap()
         })
         .collect();
 }
@@ -92,11 +86,9 @@ fn prop_n_body_radau_par(state: &State<Ecliptic>, dt: f64) {
 // per call so the per-step cache state matches the legacy path's
 // AccelSPKMeta lifetime (rebuilt per propagation in the legacy code too).
 fn prop_n_body_force(state: State<Ecliptic>, dt: f64) {
-    let spk = LOADED_SPK.try_read().unwrap();
-    let planets = kete_core::forces::GravParams::planets();
     let jd = state.epoch + dt;
     let eq_state: State<Equatorial, SSB> = state.into_frame().try_into().unwrap();
-    let force = SpkNBody::new(&spk, &planets);
+    let force = SpkNBody::new(false);
     let _ = eq_state.propagate_with(&force, jd).unwrap();
 }
 
@@ -106,13 +98,9 @@ fn prop_n_body_force(state: State<Ecliptic>, dt: f64) {
 const DUST_BETA: f64 = 1e-3;
 
 fn prop_n_body_force_dust(state: State<Ecliptic>, dt: f64) {
-    let spk = LOADED_SPK.try_read().unwrap();
-    let planets = kete_core::forces::GravParams::planets();
     let jd = state.epoch + dt;
     let eq_state: State<Equatorial, SSB> = state.into_frame().try_into().unwrap();
-    let force: ForceSet<'_, Equatorial, SSB> = ForceSet::new()
-        .with(Box::new(SpkNBody::new(&spk, &planets)))
-        .with(Box::new(Recenter::<SSB, _>::new(&spk, DustNonGrav)));
+    let force = Sum::new(SpkNBody::new(false), Recenter::<SSB, _>::new(DustNonGrav));
     let _ = propagate_with_stm(
         &force,
         eq_state.pos.into(),
@@ -128,14 +116,12 @@ fn prop_n_body_force_par(state: &State<Ecliptic>, dt: f64) {
     let states: Vec<State<_>> = (0..100).map(|_| state.clone()).collect();
     // Cache the planet list once across all tasks; SpkNBody borrows it,
     // SpkNBody borrows the slice for the duration of integration.
-    let planets = kete_core::forces::GravParams::planets();
     let _tmp: Vec<_> = states
         .into_par_iter()
         .map(|s| {
-            let spk = LOADED_SPK.try_read().unwrap();
             let jd = s.epoch + dt;
             let eq: State<Equatorial, SSB> = s.into_frame().try_into().unwrap();
-            let force = SpkNBody::new(&spk, &planets);
+            let force = SpkNBody::new(false);
             eq.propagate_with(&force, jd).unwrap()
         })
         .collect();

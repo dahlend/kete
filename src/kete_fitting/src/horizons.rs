@@ -9,8 +9,7 @@ use kete_core::constants::GMS_SQRT;
 use kete_core::desigs::Desig;
 use kete_core::elements::CometElements;
 use kete_core::errors::{Error, KeteResult};
-use kete_core::forces::{FrozenForce, FrozenNonGrav};
-
+use kete_core::forces::{FrozenForce, FrozenNonGrav, NonGravKind};
 use kete_core::frames::{Ecliptic, Equatorial};
 use kete_core::state::State;
 use kete_core::state::UncertainState;
@@ -631,20 +630,18 @@ fn build_nongrav_from_hash(hash: &std::collections::HashMap<&str, f64>) -> Optio
     let has_dust = hash.contains_key("beta");
 
     if has_jpl {
-        let template: kete_core::forces::NonGravForce =
-            std::sync::Arc::new(kete_core::forces::JplCometNonGrav::new(
-                get("alpha", 0.111_262_042_6),
-                get("r_0", 2.808),
-                get("m", 2.15),
-                get("n", 5.093),
-                get("k", 4.6142),
-                get("dt", 0.0),
-            ));
+        let template = NonGravKind::JplComet(kete_core::forces::JplCometNonGrav::new(
+            get("alpha", 0.111_262_042_6),
+            get("r_0", 2.808),
+            get("m", 2.15),
+            get("n", 5.093),
+            get("k", 4.6142),
+            get("dt", 0.0),
+        ));
         let values = vec![get("a1", 0.0), get("a2", 0.0), get("a3", 0.0)];
         Some(FrozenForce::new(template, values).ok()?)
     } else if has_dust {
-        let template: kete_core::forces::NonGravForce =
-            std::sync::Arc::new(kete_core::forces::DustNonGrav);
+        let template = NonGravKind::Dust(kete_core::forces::DustNonGrav);
         Some(FrozenForce::new(template, vec![get("beta", 0.0)]).ok()?)
     } else {
         let unknown: Vec<&str> = hash.keys().copied().collect();
@@ -695,9 +692,9 @@ fn build_nongrav_from_model_pars(pars: &[NameValue]) -> Option<FrozenNonGrav> {
     }
 
     if found_any {
-        let template: kete_core::forces::NonGravForce = std::sync::Arc::new(
-            kete_core::forces::JplCometNonGrav::new(alpha, r_0, m, n, k, dt),
-        );
+        let template = NonGravKind::JplComet(kete_core::forces::JplCometNonGrav::new(
+            alpha, r_0, m, n, k, dt,
+        ));
         FrozenForce::new(template, vec![a1, a2, a3]).ok()
     } else {
         None

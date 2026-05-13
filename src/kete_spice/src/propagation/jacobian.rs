@@ -30,12 +30,12 @@
 //
 #[cfg(test)]
 mod tests {
-    use crate::propagation::{SpkNBody, compute_state_transition, helio_with_frozen_nongrav};
+    use crate::propagation::{Recenter, SpkNBody, compute_state_transition};
     use crate::spk::LOADED_SPK;
     use kete_core::errors::Error;
     use kete_core::forces::{
         DustNonGrav, FarnocchiaNonGrav, FrozenForce, FrozenNonGrav, GravParams, JplCometNonGrav,
-        NonGravForce, ParameterizedForce, a_over_m_from_physical, analytical_jacobians,
+        NonGravKind, ParameterizedForce, Sum, a_over_m_from_physical, analytical_jacobians,
         lambda_0_from_physical,
     };
     use kete_core::frames::{Equatorial, SSB, Vector};
@@ -43,7 +43,6 @@ mod tests {
     use kete_core::state::{State, StateLike};
     use kete_core::time::{TDB, Time};
     use nalgebra::{Matrix3, Vector3};
-    use std::sync::Arc;
 
     struct AccelSPKMeta<'a> {
         non_grav: Option<FrozenNonGrav>,
@@ -100,12 +99,13 @@ mod tests {
         jd_final: Time<TDB>,
         non_grav: Option<&FrozenNonGrav>,
     ) -> KeteResult<State<Equatorial, SSB>> {
-        let spk = LOADED_SPK.try_read()?;
-        let planets = GravParams::planets();
         match non_grav {
-            None => state.propagate_with(&SpkNBody::new(&spk, &planets), jd_final),
+            None => state.propagate_with(&SpkNBody::new(false), jd_final),
             Some(frozen) => {
-                let force = helio_with_frozen_nongrav(&spk, &planets, frozen)?;
+                let force = Sum::new(
+                    SpkNBody::new(false),
+                    Recenter::<SSB, _>::new(frozen.clone()),
+                );
                 state.propagate_with(&force, jd_final)
             }
         }
@@ -113,13 +113,13 @@ mod tests {
 
     /// Helper: build a frozen JPL-comet non-grav model.
     fn jpl_comet_entry(a1: f64, a2: f64, a3: f64) -> FrozenNonGrav {
-        let force: NonGravForce = Arc::new(JplCometNonGrav::standard_comet());
+        let force = NonGravKind::JplComet(JplCometNonGrav::standard_comet());
         FrozenForce::new(force, vec![a1, a2, a3]).unwrap()
     }
 
     /// Helper: build a frozen Dust non-grav model.
     fn dust_entry(beta: f64) -> FrozenNonGrav {
-        let force: NonGravForce = Arc::new(DustNonGrav);
+        let force = NonGravKind::Dust(DustNonGrav);
         FrozenForce::new(force, vec![beta]).unwrap()
     }
 
@@ -186,7 +186,8 @@ mod tests {
         // 30 days
         let jd_final = (2451545.0 + 30.0).into();
 
-        let (_final_state, sens) = compute_state_transition(&state, jd_final, false, None).unwrap();
+        let (_final_state, sens) =
+            compute_state_transition::<NonGravKind>(&state, jd_final, false, None).unwrap();
 
         // Build STM via finite differences of Radau propagations.
         // eps = 1e-4 AU balances FD truncation (smaller is better) against
@@ -255,7 +256,8 @@ mod tests {
         let state = test_state();
         let jd_final = (2451545.0 + 30.0).into();
 
-        let (_final_state, sens) = compute_state_transition(&state, jd_final, false, None).unwrap();
+        let (_final_state, sens) =
+            compute_state_transition::<NonGravKind>(&state, jd_final, false, None).unwrap();
 
         // Extract the 6x6 STM
         let stm = sens.fixed_view::<6, 6>(0, 0);
@@ -379,7 +381,8 @@ mod tests {
         // 90 days
         let jd_final = (2451545.0 + 90.0).into();
 
-        let (_final_state, sens) = compute_state_transition(&state, jd_final, false, None).unwrap();
+        let (_final_state, sens) =
+            compute_state_transition::<NonGravKind>(&state, jd_final, false, None).unwrap();
 
         // Finite-difference validation of each STM column
         let eps = 1e-5;
@@ -518,8 +521,8 @@ mod tests {
         let flattening = 0.71_f64;
         let a_over_m = a_over_m_from_physical(2000.0, 0.030, flattening);
         let lambda_0 = lambda_0_from_physical(200.0, 0.9, 0.71, flattening, 5.351 / 60.0);
-        let force: NonGravForce =
-            Arc::new(FarnocchiaNonGrav::new(0.52, 0.71, flattening, pole).unwrap());
+        let force =
+            NonGravKind::Farnocchia(FarnocchiaNonGrav::new(0.52, 0.71, flattening, pole).unwrap());
         FrozenForce::new(force, vec![a_over_m, lambda_0]).unwrap()
     }
 

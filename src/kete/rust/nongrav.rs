@@ -7,12 +7,11 @@
 //! for comets) and converts them to the underlying Rust force type on
 //! demand.
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use kete_core::{
     errors::Error,
     forces::{
-        DustNonGrav, FarnocchiaNonGrav, FrozenForce, FrozenNonGrav, JplCometNonGrav, NonGravForce,
+        DustNonGrav, FarnocchiaNonGrav, FrozenForce, FrozenNonGrav, JplCometNonGrav, NonGravKind,
         ParameterMask, ParameterizedForce, a_over_m_from_physical, density_from_a_over_m,
         lambda_0_from_physical, thermal_inertia_from_lambda_0,
     },
@@ -76,9 +75,9 @@ pub struct PyNonGravModel(NonGravData);
 
 impl PyNonGravModel {
     /// Return the typed ParameterizedForce template for this model.
-    pub fn to_force(&self) -> NonGravForce {
+    pub fn to_force(&self) -> NonGravKind {
         match self.0 {
-            NonGravData::Dust { .. } => Arc::new(DustNonGrav),
+            NonGravData::Dust { .. } => NonGravKind::Dust(DustNonGrav),
             NonGravData::JplComet {
                 alpha,
                 r_0,
@@ -87,14 +86,14 @@ impl PyNonGravModel {
                 k,
                 dt,
                 ..
-            } => Arc::new(JplCometNonGrav::new(alpha, r_0, m, n, k, dt)),
+            } => NonGravKind::JplComet(JplCometNonGrav::new(alpha, r_0, m, n, k, dt)),
             NonGravData::Farnocchia {
                 albedo,
                 absorptivity,
                 flattening,
                 spin_pole,
                 ..
-            } => Arc::new(
+            } => NonGravKind::Farnocchia(
                 FarnocchiaNonGrav::new(albedo, absorptivity, flattening, spin_pole)
                     .expect("validated at construction"),
             ),
@@ -129,27 +128,20 @@ impl PyNonGravModel {
     /// are supplied at integration time from the carrying state's `free_params`.
     /// This is the representation stored on [`PyUncertainState`] and
     /// [`PyDiffuseState`].
-    pub fn to_mask(&self) -> ParameterMask<NonGravForce> {
+    pub fn to_mask(&self) -> ParameterMask<NonGravKind> {
         let force = self.to_force();
         let n = force.n_free_params();
         ParameterMask::new(force, vec![None; n]).expect("n matches n_free_params")
     }
 
-    /// Reconstruct a Python wrapper from a [`ParameterizedForce`] template and
+    /// Reconstruct a Python wrapper from a [`NonGravKind`] template and
     /// its current free-parameter values.
-    ///
-    /// Returns `None` if the template is not one of the canonical
-    /// `DustNonGrav` / `JplCometNonGrav` / `FarnocchiaNonGrav`.
-    pub fn from_force(template: &NonGravForce, values: &[f64]) -> Option<Self> {
-        let any = template.as_any()?;
-
-        if any.downcast_ref::<DustNonGrav>().is_some() {
-            return Some(Self(NonGravData::Dust {
+    pub fn from_force(template: &NonGravKind, values: &[f64]) -> Option<Self> {
+        match template {
+            NonGravKind::Dust(_) => Some(Self(NonGravData::Dust {
                 beta: *values.first()?,
-            }));
-        }
-        if let Some(typed) = any.downcast_ref::<JplCometNonGrav>() {
-            return Some(Self(NonGravData::JplComet {
+            })),
+            NonGravKind::JplComet(typed) => Some(Self(NonGravData::JplComet {
                 a1: values.first().copied().unwrap_or(f64::NAN),
                 a2: values.get(1).copied().unwrap_or(f64::NAN),
                 a3: values.get(2).copied().unwrap_or(f64::NAN),
@@ -159,19 +151,16 @@ impl PyNonGravModel {
                 n: typed.n,
                 k: typed.k,
                 dt: typed.dt,
-            }));
-        }
-        if let Some(typed) = any.downcast_ref::<FarnocchiaNonGrav>() {
-            return Some(Self(NonGravData::Farnocchia {
+            })),
+            NonGravKind::Farnocchia(typed) => Some(Self(NonGravData::Farnocchia {
                 a_over_m: values.first().copied().unwrap_or(f64::NAN),
                 lambda_0: values.get(1).copied().unwrap_or(f64::NAN),
                 albedo: typed.albedo,
                 absorptivity: typed.absorptivity,
                 flattening: typed.flattening,
                 spin_pole: typed.spin_pole,
-            }));
+            })),
         }
-        None
     }
 }
 

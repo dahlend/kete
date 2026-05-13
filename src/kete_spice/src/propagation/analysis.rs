@@ -5,7 +5,6 @@
 
 use kete_core::elements::CometElements;
 use kete_core::errors::Error;
-use kete_core::forces::GravParams;
 use kete_core::frames::{Ecliptic, Equatorial};
 use kete_core::prelude::KeteResult;
 use kete_core::state::{State, StateLike};
@@ -149,12 +148,7 @@ fn state_at_time(
         return Ok(st);
     }
     let ssb = spk.try_to_ssb(state.clone())?;
-    let planets = if include_extended {
-        GravParams::selected_masses()
-    } else {
-        GravParams::planets()
-    };
-    let ssb_result = ssb.propagate_with(&SpkNBody::new(spk, &planets), time)?;
+    let ssb_result = ssb.propagate_with(&SpkNBody::new(include_extended), time)?;
     let mut result: State<Equatorial> = ssb_result.into();
     if center != 0 {
         spk.try_change_center(&mut result, center)?;

@@ -7,9 +7,10 @@
 //! gravity from N bodies in SSB-relative coordinates, JPL non-grav and
 //! dust SRP in Sun-relative coordinates, atmospheric drag in
 //! Earth-relative coordinates, polyhedral asteroid gravity in
-//! body-relative coordinates. A [`ForceSet`](kete_core::forces::ForceSet)
-//! requires every member to share `Center`, which would be impossible
-//! without an adapter that bridges between centers.
+//! body-relative coordinates. Composing two forces via
+//! [`Sum`](kete_core::forces::Sum) requires both members to share
+//! `Center`, which would be impossible without an adapter that bridges
+//! between centers.
 //!
 //! [`Recenter`] is that adapter for **inertial-to-inertial translation**.
 //! It looks up the offset between two NAIF bodies via SPK at each call,
@@ -21,7 +22,7 @@
 //! ## Construction
 //!
 //! ```ignore
-//! // Sun-relative dust SRP wrapped to participate in an SSB-centered ForceSet.
+//! // Sun-relative dust SRP wrapped to participate in an SSB-centered force model.
 //! let dust = Recenter::<SSB, _>::new(&spk, DustNonGrav);
 //! //                    ^^^                ^^^^^^^^^
 //! //                    From type         inner force (Center = SunCenter)
@@ -65,11 +66,11 @@ use std::marker::PhantomData;
 
 use kete_core::errors::KeteResult;
 use kete_core::forces::{Force, ParameterizedForce};
-use kete_core::frames::{NaifBody, Vector};
+use kete_core::frames::{CenterBody, Vector};
 use kete_core::time::{TDB, Time};
 use nalgebra::{Matrix3, Matrix3xX, Vector3};
 
-use crate::spk::SpkCollection;
+use crate::spk::LOADED_SPK;
 
 // Per-thread cache for the most recent Recenter shift lookup.
 // Keyed by (from_naif_id, to_naif_id, time.jd) so different Recenter
@@ -94,45 +95,39 @@ thread_local! {
 /// because all four methods are called at the same `time` -- but the
 /// query is repeated per quartet, since `ParameterizedForce` doesn't expose a
 /// per-step context.
-pub struct Recenter<'a, FromC, F>
+pub struct Recenter<FromC, F>
 where
     F: ParameterizedForce,
-    F::Center: NaifBody,
-    FromC: NaifBody,
+    F::Center: CenterBody,
+    FromC: CenterBody,
 {
-    /// Borrowed SPK reference. Same lifetime contract as [`SpkNBody`]:
-    /// the caller holds the read guard for the duration of propagation.
-    ///
-    /// [`SpkNBody`]: super::spk_n_body::SpkNBody
-    pub spk: &'a SpkCollection,
     /// The inner force, written for `Center = F::Center`.
     pub inner: F,
     _phantom: PhantomData<FromC>,
 }
 
-impl<'a, FromC, F> Recenter<'a, FromC, F>
+impl<FromC, F> Recenter<FromC, F>
 where
     F: ParameterizedForce,
-    F::Center: NaifBody,
-    FromC: NaifBody,
+    F::Center: CenterBody,
+    FromC: CenterBody,
 {
     /// Wrap `inner` so it accepts pos/vel relative to `FromC`. The
     /// inner force's `Center` is determined by its impl.
     #[must_use]
-    pub fn new(spk: &'a SpkCollection, inner: F) -> Self {
+    pub fn new(inner: F) -> Self {
         Self {
-            spk,
             inner,
             _phantom: PhantomData,
         }
     }
 }
 
-impl<FromC, F> std::fmt::Debug for Recenter<'_, FromC, F>
+impl<FromC, F> std::fmt::Debug for Recenter<FromC, F>
 where
     F: ParameterizedForce + std::fmt::Debug,
-    F::Center: NaifBody,
-    FromC: NaifBody,
+    F::Center: CenterBody,
+    FromC: CenterBody,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Recenter")
@@ -143,11 +138,11 @@ where
     }
 }
 
-impl<FromC, F> ParameterizedForce for Recenter<'_, FromC, F>
+impl<FromC, F> ParameterizedForce for Recenter<FromC, F>
 where
     F: ParameterizedForce,
-    F::Center: NaifBody,
-    FromC: NaifBody,
+    F::Center: CenterBody,
+    FromC: CenterBody,
 {
     type Frame = F::Frame;
     type Center = FromC;
@@ -167,7 +162,7 @@ where
         vel: &Vector<F::Frame>,
         free_params: &[f64],
     ) -> KeteResult<Vector<F::Frame>> {
-        let (shifted_pos, shifted_vel) = self.shift(time, pos, vel)?;
+        let (shifted_pos, shifted_vel) = Self::shift(time, pos, vel)?;
         self.inner
             .accel(time, &shifted_pos, &shifted_vel, free_params)
     }
@@ -181,7 +176,7 @@ where
     ) -> KeteResult<(Matrix3<f64>, Matrix3<f64>)> {
         // The shift is purely a function of time, so d(shifted)/d(input) = I.
         // The jacobians pass through unchanged.
-        let (shifted_pos, shifted_vel) = self.shift(time, pos, vel)?;
+        let (shifted_pos, shifted_vel) = Self::shift(time, pos, vel)?;
         self.inner
             .jacobians(time, &shifted_pos, &shifted_vel, free_params)
     }
@@ -195,7 +190,7 @@ where
     ) -> KeteResult<Matrix3xX<f64>> {
         // The shift does not depend on parameters, so parameter
         // jacobians pass through unchanged.
-        let (shifted_pos, shifted_vel) = self.shift(time, pos, vel)?;
+        let (shifted_pos, shifted_vel) = Self::shift(time, pos, vel)?;
         self.inner
             .parameter_jacobian(time, &shifted_pos, &shifted_vel, free_params)
     }
@@ -203,19 +198,19 @@ where
 
 /// Marker: `Recenter` is a [`Force`] iff its inner force is. Recenter never
 /// introduces free parameters; it only shifts the coordinate frame.
-impl<FromC, F> Force for Recenter<'_, FromC, F>
+impl<FromC, F> Force for Recenter<FromC, F>
 where
     F: Force,
-    F::Center: NaifBody,
-    FromC: NaifBody,
+    F::Center: CenterBody,
+    FromC: CenterBody,
 {
 }
 
-impl<FromC, F> Recenter<'_, FromC, F>
+impl<FromC, F> Recenter<FromC, F>
 where
     F: ParameterizedForce,
-    F::Center: NaifBody,
-    FromC: NaifBody,
+    F::Center: CenterBody,
+    FromC: CenterBody,
 {
     /// Look up the `(F::Center - FromC)` offset at `time` from SPK and
     /// subtract it from the input `(pos, vel)`. Returns the
@@ -227,7 +222,6 @@ where
     /// without any lock. Each rayon thread has its own slot, so parallel
     /// sigma-point evaluation incurs no cross-thread contention.
     fn shift(
-        &self,
         time: Time<TDB>,
         pos: &Vector<F::Frame>,
         vel: &Vector<F::Frame>,
@@ -251,11 +245,9 @@ where
         let (shift_pos, shift_vel) = if let Some(hit) = cached {
             hit
         } else {
-            let shift = self.spk.try_get_state_with_center::<F::Frame>(
-                F::Center::NAIF_ID,
-                time,
-                FromC::NAIF_ID,
-            )?;
+            let shift = LOADED_SPK
+                .try_read()?
+                .try_get_state_with_center::<F::Frame>(F::Center::NAIF_ID, time, FromC::NAIF_ID)?;
             let sp: Vector3<f64> = shift.pos.into();
             let sv: Vector3<f64> = shift.vel.into();
             SHIFT_CACHE.with_borrow_mut(|c| {
@@ -275,10 +267,9 @@ where
 mod tests {
     use super::*;
     use kete_core::desigs::Desig;
-    use kete_core::forces::DustNonGrav;
+    use kete_core::forces::{DustNonGrav, JplCometNonGrav};
     use kete_core::frames::{Equatorial, SSB};
     use kete_core::state::State;
-    use std::sync::Arc;
 
     use crate::spk::LOADED_SPK;
 
@@ -297,7 +288,7 @@ mod tests {
             center: SSB,
         };
         let beta = 0.001;
-        let dust_force = Recenter::<SSB, _>::new(&spk_guard, DustNonGrav);
+        let dust_force = Recenter::<SSB, _>::new(DustNonGrav);
 
         let pos_ssb: Vector3<f64> = start.pos.into();
         let vel_ssb: Vector3<f64> = start.vel.into();
@@ -331,29 +322,23 @@ mod tests {
     #[test]
     fn recenter_free_params_passthrough() {
         crate::test_data::ensure_test_spk();
-        let spk_guard = LOADED_SPK.try_read().unwrap();
-        let force = Recenter::<SSB, _>::new(&spk_guard, DustNonGrav);
+        let force = Recenter::<SSB, _>::new(DustNonGrav);
         assert_eq!(force.n_free_params(), 1);
         assert_eq!(force.free_param_names(), vec!["beta"]);
     }
 
-    /// End-to-end: composed `ForceSet` of gravity-only `SpkNBody` plus
-    /// Two equivalent JPL Comet routings via `Recenter<SSB, _>` produce
-    /// the same propagation result: one wrapping `JplCometNonGrav` as an
-    /// `Arc<dyn ParameterizedForce>` (the polymorphic API), the other
-    /// wrapping it monomorphized directly. Validates parity between the
-    /// two construction paths.
+    /// End-to-end: `Sum<SpkNBody, Recenter<SSB, _>>` with `JplCometNonGrav`
+    /// composed directly produces a consistent propagation result.
+    /// Smoke test of the static composition path through the variational
+    /// integrator with non-zero free parameters.
     #[test]
-    fn composed_jpl_comet_via_nongrav_model_matches_standalone_force() {
-        use kete_core::forces::{ForceSet, GravParams, JplCometNonGrav, ParameterizedForce};
-        use kete_core::frames::SunCenter;
+    fn composed_jpl_comet_via_sum_propagates_consistently() {
+        use kete_core::forces::Sum;
         use kete_core::state::propagate_with_stm;
 
         use crate::propagation::SpkNBody;
 
         crate::test_data::ensure_test_spk();
-        let spk_guard = LOADED_SPK.try_read().unwrap();
-        let planets = GravParams::planets();
 
         let pos_init = Vector3::new(0.5, 1.0, 0.1);
         let vel_init = Vector3::new(-0.012, 0.008, 0.001);
@@ -364,50 +349,20 @@ mod tests {
         let a2 = 2.0e-9;
         let a3 = -3.0e-10;
 
-        // Path A: ForceSet with the typed JplCometNonGrav wrapped in
-        // an `Arc<dyn ParameterizedForce>` (the polymorphic API).
-        let template_a: Arc<dyn ParameterizedForce<Frame = Equatorial, Center = SunCenter>> =
-            Arc::new(JplCometNonGrav::standard_comet());
-        let force_a: ForceSet<'_, Equatorial, SSB> = ForceSet::new()
-            .with(Box::new(SpkNBody::new(&spk_guard, &planets)))
-            .with(Box::new(Recenter::<SSB, _>::new(&spk_guard, template_a)));
-        let (pos_a, vel_a, sens_a) =
-            propagate_with_stm(&force_a, pos_init, vel_init, &[a1, a2, a3], epoch, target).unwrap();
-
-        // Path B: ForceSet with the typed JplCometNonGrav passed
-        // directly (monomorphized). Should match Path A bit-for-bit.
-        let force_b: ForceSet<'_, Equatorial, SSB> = ForceSet::new()
-            .with(Box::new(SpkNBody::new(&spk_guard, &planets)))
-            .with(Box::new(Recenter::<SSB, _>::new(
-                &spk_guard,
-                JplCometNonGrav::standard_comet(),
-            )));
-        let (pos_b, vel_b, sens_b) =
-            propagate_with_stm(&force_b, pos_init, vel_init, &[a1, a2, a3], epoch, target).unwrap();
-
-        assert!(
-            (pos_a - pos_b).norm() < 1e-12,
-            "pos mismatch: enum={pos_a:?}, standalone={pos_b:?}"
+        let force = Sum::new(
+            SpkNBody::new(false),
+            Recenter::<SSB, _>::new(JplCometNonGrav::standard_comet()),
         );
-        assert!(
-            (vel_a - vel_b).norm() < 1e-12,
-            "vel mismatch: enum={vel_a:?}, standalone={vel_b:?}"
-        );
+        let (pos_f, vel_f, sens_f) =
+            propagate_with_stm(&force, pos_init, vel_init, &[a1, a2, a3], epoch, target).unwrap();
 
-        // STM tolerance reflects the jacobian-implementation gap: the
-        // monolithic SpkNBody path uses analytical-via-internal-FD
-        // partials (`nongrav_param_partials` for JplComet RTN-frame
-        // basis); the composed path goes through `JplCometNonGrav`'s
-        // default forward-FD jacobian. Both are FD-quality, so the STM
-        // matches to FD-precision-squared accumulated over the arc,
-        // not to round-off. Pos/vel match exactly because both paths
-        // call the same `accel` math.
-        let stm_diff = (&sens_a - &sens_b).abs().max();
-        assert!(
-            stm_diff < 1e-3,
-            "composed STM mismatch: max element diff = {stm_diff} \
-             (expected ~1e-5 from FD-vs-FD jacobian noise)"
-        );
+        // Sanity: the propagator produced finite outputs and the augmented
+        // sensitivity matrix has the expected shape (6 state rows by 6 + 3
+        // parameter columns).
+        assert!(pos_f.iter().all(|v| v.is_finite()));
+        assert!(vel_f.iter().all(|v| v.is_finite()));
+        assert_eq!(sens_f.nrows(), 6);
+        assert_eq!(sens_f.ncols(), 9);
     }
 
     /// `Recenter::<FromC, F>` jacobians pass through the inner
@@ -427,7 +382,7 @@ mod tests {
         let beta = 0.001;
 
         // Through wrapper: feed SSB-relative pos/vel.
-        let wrapped = Recenter::<SSB, _>::new(&spk_guard, DustNonGrav);
+        let wrapped = Recenter::<SSB, _>::new(DustNonGrav);
         let (j_pos_wrapped, j_vel_wrapped) = wrapped
             .jacobians(time, &pos_ssb, &vel_ssb, &[beta])
             .unwrap();

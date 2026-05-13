@@ -28,15 +28,14 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use kete_core::forces::{ForceSet, FrozenNonGrav, GravParams, ParameterMask, ParameterizedForce};
-use kete_core::frames::{Equatorial, SSB};
+use kete_core::forces::{FrozenForce, ParameterMask, ParameterizedForce, Sum};
+use kete_core::frames::{Equatorial, SSB, SunCenter};
 use kete_core::prelude::{KeteResult, State};
 use kete_core::state::propagate_with_stm;
 use kete_core::time::{TDB, Time};
 
 use super::recenter::Recenter;
 use super::spk_n_body::SpkNBody;
-use crate::spk::LOADED_SPK;
 use nalgebra::DMatrix;
 
 /// Compute the state transition matrix and optional parameter sensitivities using the
@@ -66,20 +65,15 @@ use nalgebra::DMatrix;
 ///
 /// # Errors
 /// Returns an error if SPK queries fail or integration does not converge.
-pub fn compute_state_transition(
+pub fn compute_state_transition<F>(
     state: &State<Equatorial, SSB>,
     jd: Time<TDB>,
-    include_asteroids: bool,
-    non_grav: Option<&FrozenNonGrav>,
-) -> KeteResult<(State<Equatorial, SSB>, DMatrix<f64>)> {
-    let spk = LOADED_SPK.try_read()?;
-
-    let planets = if include_asteroids {
-        GravParams::selected_masses()
-    } else {
-        GravParams::planets()
-    };
-
+    include_extended: bool,
+    non_grav: Option<&FrozenForce<F>>,
+) -> KeteResult<(State<Equatorial, SSB>, DMatrix<f64>)>
+where
+    F: ParameterizedForce<Frame = Equatorial, Center = SunCenter> + Clone,
+{
     // Gravity-only path stays bare (`SpkNBody` directly).
     //
     // Non-grav path: build an all-`None` variational mask from the frozen
@@ -87,7 +81,7 @@ pub fn compute_state_transition(
     // then pass the frozen values as the nominal `free_params` slice.
     let (pos_f, vel_f, sens) = match non_grav {
         None => propagate_with_stm(
-            &SpkNBody::new(&spk, &planets),
+            &SpkNBody::new(include_extended),
             state.pos.into(),
             state.vel.into(),
             &[],
@@ -97,11 +91,12 @@ pub fn compute_state_transition(
         Some(frozen) => {
             let n = frozen.inner.n_free_params();
             let variational = ParameterMask::new(frozen.inner.clone(), vec![None; n])?;
-            let force_set: ForceSet<'_, Equatorial, SSB> = ForceSet::new()
-                .with(Box::new(SpkNBody::new(&spk, &planets)))
-                .with(Box::new(Recenter::<SSB, _>::new(&spk, variational)));
+            let force = Sum::new(
+                SpkNBody::new(include_extended),
+                Recenter::<SSB, _>::new(variational),
+            );
             propagate_with_stm(
-                &force_set,
+                &force,
                 state.pos.into(),
                 state.vel.into(),
                 &frozen.values,

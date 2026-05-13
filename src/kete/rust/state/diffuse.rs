@@ -3,11 +3,11 @@
 use super::{PyState, PyUncertainState};
 use crate::nongrav::PyNonGravModel;
 use crate::time::PyTime;
-use kete_core::forces::{ForceSet, GravParams, NonGravMask, ParameterizedForce};
+use kete_core::forces::NonGravMask;
+use kete_core::forces::ParameterizedForce;
 use kete_core::frames::{Equatorial, SSB};
 use kete_core::prelude::*;
-use kete_spice::propagation::Recenter;
-use kete_spice::propagation::SpkNBody;
+use kete_spice::propagation::SpkNonGravs;
 use kete_spice::propagation::{
     SplitConfig, mixture_sigma_point_divergence, propagate_diffuse_state_adaptive,
 };
@@ -42,17 +42,12 @@ impl std::fmt::Debug for PyDiffuseState {
 }
 
 impl PyDiffuseState {
-    fn build_forces<'a>(
-        &self,
-        spk: &'a kete_spice::spk::SpkCollection,
-        planets: &'a [GravParams],
-    ) -> ForceSet<'a, Equatorial, SSB> {
-        let mut force_set: ForceSet<'_, Equatorial, SSB> =
-            ForceSet::new().with(Box::new(SpkNBody::new(spk, planets)));
+    fn build_forces(&self, include_extended: bool) -> SpkNonGravs {
         if let Some(ref ng) = self.non_grav {
-            force_set = force_set.with(Box::new(Recenter::<SSB, _>::new(spk, ng.clone())));
+            SpkNonGravs::with_non_grav_mask(include_extended, ng.clone())
+        } else {
+            SpkNonGravs::gravity(include_extended)
         }
-        force_set
     }
 
     /// Convert all components from DynCenter to SSB-typed UncertainStates.
@@ -284,12 +279,8 @@ impl PyDiffuseState {
         let components_ssb = self.components_ssb(&spk)?;
         let mixture_ssb =
             DiffuseState::<Equatorial, SSB>::new(self.mixture.weights.clone(), components_ssb)?;
-        let planets = if include_asteroids {
-            GravParams::selected_masses()
-        } else {
-            GravParams::planets()
-        };
-        let forces = self.build_forces(&spk, &planets);
+
+        let forces = self.build_forces(include_asteroids);
         let propagated = propagate_diffuse_state_adaptive(&mixture_ssb, &forces, target, &cfg)?;
         let propagated_dyn: Vec<UncertainState> = propagated
             .components
@@ -322,13 +313,7 @@ impl PyDiffuseState {
         let mixture_ssb =
             DiffuseState::<Equatorial, SSB>::new(self.mixture.weights.clone(), components_ssb)?;
 
-        let masses = if include_asteroids {
-            GravParams::selected_masses()
-        } else {
-            GravParams::planets()
-        };
-
-        let forces = self.build_forces(&spk, &masses);
+        let forces = self.build_forces(include_asteroids);
         Ok(mixture_sigma_point_divergence(
             &mixture_ssb,
             &forces,

@@ -4,11 +4,11 @@ use kete_core::kepler::moid;
 use kete_core::{
     desigs::try_name_from_id,
     errors::Error,
-    forces::{FrozenNonGrav, GravParams},
-    frames::{Ecliptic, Equatorial, SunCenter},
+    forces::Sum,
+    frames::{Ecliptic, Equatorial, SSB, SunCenter},
     state::{State, StateLike},
 };
-use kete_spice::propagation::{SpkNBody, helio_with_frozen_nongrav};
+use kete_spice::propagation::{Recenter, SpkNBody};
 use pyo3::{IntoPyObjectExt, Py, PyAny, PyResult, Python, pyfunction};
 use rayon::prelude::*;
 
@@ -19,6 +19,7 @@ use crate::{
     state::PyState,
     time::PyTime,
 };
+use kete_core::forces::FrozenNonGrav;
 
 /// Compute the MOID between the input state and an optional second state.
 /// If the second state is not provided, default to Earth.
@@ -144,16 +145,11 @@ pub fn propagation_n_body_spk_py(
         // Errors are collected as KeteResult (Rust) rather than PyResult to avoid
         // creating PyErr objects inside rayon threads (which would require the GIL).
         let proc_chunk: PyResult<Vec<_>> = py.detach(|| {
-            // Acquire the SPK read guard and planet slice once per chunk so the
-            // per-object parallel closure does not re-acquire them on every task.
+            // Acquire the SPK read guard once per chunk for center conversions.
+            // SpkNBody acquires the lock internally for each accel call.
             let spk = kete_spice::prelude::LOADED_SPK
                 .try_read()
                 .map_err(|_| Error::ValueError("SPK lock unavailable".into()))?;
-            let planets = if include_asteroids {
-                GravParams::selected_masses()
-            } else {
-                GravParams::planets()
-            };
 
             chunk_owned
                 .into_par_iter()
@@ -178,9 +174,12 @@ pub fn propagation_n_body_spk_py(
                     }
                     let ssb_state = spk.try_to_ssb(state)?;
                     let result: kete_core::errors::KeteResult<_> = match model.as_ref() {
-                        None => ssb_state.propagate_with(&SpkNBody::new(&spk, &planets), jd),
+                        None => ssb_state.propagate_with(&SpkNBody::new(include_asteroids), jd),
                         Some(frozen) => {
-                            let force = helio_with_frozen_nongrav(&spk, &planets, frozen)?;
+                            let force = Sum::new(
+                                SpkNBody::new(include_asteroids),
+                                Recenter::<SSB, _>::new(frozen.clone()),
+                            );
                             ssb_state.propagate_with(&force, jd)
                         }
                     };
