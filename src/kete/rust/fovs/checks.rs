@@ -1,5 +1,4 @@
 use super::*;
-use kete_core::forces::GravParams;
 use kete_core::fov::{FOV, FovLike, check_statics};
 use kete_core::state::StateLike;
 use kete_spice::fov_checks;
@@ -66,16 +65,11 @@ pub fn fov_checks_py(
     let mut states = pop.states;
     let mut big_step_states = states.clone();
     let mut visible = Vec::new();
-    let planets = if include_asteroids {
-        GravParams::selected_masses()
-    } else {
-        GravParams::planets()
-    };
 
     let spk = LOADED_SPK
         .read()
         .expect("Failed to read the loaded spice kernels.");
-    let forces = SpkNBody::new(&spk, &planets);
+    let forces = SpkNBody::new(include_asteroids);
 
     for fovs in fov_chunks {
         let jd_mean = (fovs.last().unwrap().observer().epoch.jd

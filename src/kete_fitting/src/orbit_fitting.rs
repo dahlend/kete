@@ -30,62 +30,18 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use crate::obs::{AstrometricObservation, differential_light_deflect};
-use kete_core::forces::{FrozenNonGrav, GravParams, ParameterizedForce};
+#[cfg(test)]
+use kete_core::forces::{FrozenForce, NonGravKind};
+use kete_core::forces::{FrozenNonGrav, ParameterizedForce};
 use kete_core::frames::{Equatorial, SSB};
 use kete_core::kepler::light_time_correct;
 use kete_core::prelude::{Error, KeteResult, State, UncertainState};
 use kete_core::state::StateLike;
 use kete_core::time::{TDB, Time};
 use kete_spice::prelude::{LOADED_SPK, compute_state_transition};
-use kete_spice::propagation::{SpkNBody, helio_with_frozen_nongrav};
+use kete_spice::propagation::SpkNonGravs;
 use nalgebra::{DMatrix, DVector};
 use rayon::prelude::*;
-
-#[cfg(test)]
-fn jpl_comet_default_fit(a1: f64, a2: f64, a3: f64) -> FrozenNonGrav {
-    use kete_core::forces::{FrozenForce, JplCometNonGrav, NonGravForce};
-    use std::sync::Arc;
-    let template: NonGravForce = Arc::new(JplCometNonGrav::standard_comet());
-    FrozenForce::new(template, vec![a1, a2, a3]).unwrap()
-}
-
-#[cfg(test)]
-fn dust_fit(beta: f64) -> FrozenNonGrav {
-    use kete_core::forces::{DustNonGrav, FrozenForce, NonGravForce};
-    use std::sync::Arc;
-    let template: NonGravForce = Arc::new(DustNonGrav);
-    FrozenForce::new(template, vec![beta]).unwrap()
-}
-
-/// Helper: propagate an SSB-centered state under heliocentric N-body
-/// gravity plus optional frozen non-grav values.
-fn propagate_helio(
-    state: State<Equatorial, SSB>,
-    jd_final: Time<TDB>,
-    include_extended: bool,
-    non_grav: Option<&FrozenNonGrav>,
-) -> KeteResult<State<Equatorial, SSB>> {
-    let spk = LOADED_SPK.try_read()?;
-    if include_extended {
-        let planets = GravParams::selected_masses();
-        match non_grav {
-            None => state.propagate_with(&SpkNBody::new(&spk, &planets), jd_final),
-            Some(frozen) => {
-                let force = helio_with_frozen_nongrav(&spk, &planets, frozen)?;
-                state.propagate_with(&force, jd_final)
-            }
-        }
-    } else {
-        let planets = GravParams::planets();
-        match non_grav {
-            None => state.propagate_with(&SpkNBody::new(&spk, &planets), jd_final),
-            Some(frozen) => {
-                let force = helio_with_frozen_nongrav(&spk, &planets, frozen)?;
-                state.propagate_with(&force, jd_final)
-            }
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Tuning constants
@@ -395,6 +351,22 @@ pub fn fit_orbit(
     )?;
     rescale_covariance_danby(&mut fit);
     Ok(fit)
+}
+
+/// Helper: propagate an SSB-centered state under heliocentric N-body
+/// gravity plus optional frozen non-grav values.
+fn propagate_helio(
+    state: State<Equatorial, SSB>,
+    jd_final: Time<TDB>,
+    include_extended: bool,
+    non_grav: Option<&FrozenNonGrav>,
+) -> KeteResult<State<Equatorial, SSB>> {
+    let force = match non_grav {
+        None => SpkNonGravs::gravity(include_extended),
+        Some(frozen) => SpkNonGravs::with_frozen_non_grav(include_extended, frozen.clone()),
+    };
+
+    state.propagate_with(&force, jd_final)
 }
 
 /// Internal worker for [`fit_orbit`] that returns a fit with the raw Fisher
@@ -1701,6 +1673,22 @@ fn weighted_rms(
     } else {
         0.0
     }
+}
+
+#[cfg(test)]
+fn jpl_comet_default_fit(a1: f64, a2: f64, a3: f64) -> FrozenNonGrav {
+    use kete_core::forces::JplCometNonGrav;
+    FrozenForce::new(
+        NonGravKind::JplComet(JplCometNonGrav::standard_comet()),
+        vec![a1, a2, a3],
+    )
+    .unwrap()
+}
+
+#[cfg(test)]
+fn dust_fit(beta: f64) -> FrozenNonGrav {
+    use kete_core::forces::DustNonGrav;
+    FrozenForce::new(NonGravKind::Dust(DustNonGrav), vec![beta]).unwrap()
 }
 
 #[cfg(test)]

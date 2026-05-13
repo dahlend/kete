@@ -22,8 +22,8 @@
 //!
 //! All entry points take a generic [`ParameterizedForce<Frame = Equatorial, Center = SSB>`]
 //! and an SSB-centered state. Callers compose their own gravity +
-//! perturbation `ForceSet` and convert any `DynCenter` states to SSB
-//! before calling.
+//! perturbation force model (typically via [`Sum`](crate::forces::Sum))
+//! and convert any `DynCenter` states to SSB before calling.
 
 use crate::errors::Error;
 use crate::forces::ParameterizedForce;

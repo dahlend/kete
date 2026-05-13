@@ -37,8 +37,8 @@ pub mod prelude {
     pub use crate::frame_ext::rotations_to_equatorial_full;
     pub use crate::propagation::{
         LinearityDiagnosis, Recenter, SpkNBody, SplitConfig, compute_state_transition,
-        helio_with_frozen_nongrav, mixture_sigma_point_divergence,
-        propagate_diffuse_state_adaptive, propagate_with_diagnosis, sigma_point_divergence,
+        mixture_sigma_point_divergence, propagate_diffuse_state_adaptive, propagate_with_diagnosis,
+        sigma_point_divergence,
     };
 }
 

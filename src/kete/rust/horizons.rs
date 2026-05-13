@@ -174,10 +174,11 @@ impl PyHorizonsProperties {
     /// Returns ``None`` if no covariance was provided.
     #[getter]
     fn uncertain_state(&self) -> Option<PyUncertainState> {
-        use kete_core::forces::{NonGravForce, ParameterMask, ParameterizedForce};
+        use kete_core::forces::NonGravKind;
+        use kete_core::forces::{ParameterMask, ParameterizedForce};
         self.0.uncertain_state.clone().map(|us| {
             let mask = self.0.non_grav.as_ref().map(|f| {
-                let template: NonGravForce = f.inner.clone();
+                let template: NonGravKind = f.inner.clone().into();
                 let n = template.n_free_params();
                 ParameterMask::new(template, vec![None; n]).expect("n matches n_free_params")
             });
@@ -191,8 +192,10 @@ impl PyHorizonsProperties {
     /// Non-gravitational force model from Horizons, if available.
     #[getter]
     fn non_grav(&self) -> Option<PyNonGravModel> {
+        use kete_core::forces::NonGravKind;
         let f = self.0.non_grav.as_ref()?;
-        PyNonGravModel::from_force(&f.inner, &f.values)
+        let template: NonGravKind = f.inner.clone().into();
+        PyNonGravModel::from_force(&template, &f.values)
     }
 
     /// Alternate designations for this object.

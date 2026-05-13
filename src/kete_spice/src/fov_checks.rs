@@ -4,7 +4,6 @@
 //! The `FovLike` trait and FOV types remain in `kete_core`.
 
 use kete_core::constants::C_AU_PER_DAY_INV;
-use kete_core::forces::GravParams;
 use kete_core::fov::{Contains, FovLike, check_linear, check_two_body};
 use kete_core::frames::{Equatorial, SSB, SunCenter};
 use kete_core::kepler::light_time_correct;
@@ -24,17 +23,12 @@ use rayon::prelude::*;
 pub fn check_n_body<F: FovLike>(
     fov: &F,
     state: State<Equatorial, SSB>,
-    include_asteroids: bool,
+    include_extended: bool,
 ) -> KeteResult<(usize, Contains, State<Equatorial>)> {
     let obs = fov.observer();
 
     let spk = LOADED_SPK.try_read()?;
-    let planets = if include_asteroids {
-        GravParams::selected_masses()
-    } else {
-        GravParams::planets()
-    };
-    let exact_state = state.propagate_with(&SpkNBody::new(&spk, &planets), obs.epoch)?;
+    let exact_state = state.propagate_with(&SpkNBody::new(include_extended), obs.epoch)?;
     let sun_state = spk.try_to_sun(exact_state)?;
 
     let final_state = light_time_correct(&sun_state, &obs.pos)?;
@@ -210,10 +204,9 @@ mod tests {
             spk.try_to_ssb(circular_back.clone()).unwrap()
         };
 
-        let planets = GravParams::planets();
         for offset in [-10.0_f64, -5.0, 0.0, 5.0, 10.0] {
             let spk = LOADED_SPK.try_read().unwrap();
-            let force = SpkNBody::new(&spk, &planets);
+            let force = SpkNBody::new(false);
             let off_state = circular_back_ssb
                 .clone()
                 .propagate_with(&force, circular_back_ssb.epoch - offset)

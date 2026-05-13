@@ -124,7 +124,7 @@ impl<F: ParameterizedForce> ParameterMask<F> {
     }
 }
 
-impl<F: ParameterizedForce + 'static> ParameterizedForce for ParameterMask<F> {
+impl<F: ParameterizedForce> ParameterizedForce for ParameterMask<F> {
     type Frame = F::Frame;
     type Center = F::Center;
 

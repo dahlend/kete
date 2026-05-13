@@ -140,10 +140,6 @@ impl ParameterizedForce for FarnocchiaNonGrav {
     type Frame = Equatorial;
     type Center = SunCenter;
 
-    fn as_any(&self) -> Option<&(dyn std::any::Any + 'static)> {
-        Some(self)
-    }
-
     fn n_free_params(&self) -> usize {
         2
     }

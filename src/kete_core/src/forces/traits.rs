@@ -54,7 +54,7 @@
 use nalgebra::{Matrix3, Matrix3xX, Vector3};
 
 use crate::errors::KeteResult;
-use crate::frames::{InertialFrame, Vector};
+use crate::frames::{CenterBody, InertialFrame, Vector};
 use crate::time::{TDB, Time};
 
 /// A single piece of physics contributing acceleration to a body.
@@ -62,34 +62,15 @@ use crate::time::{TDB, Time};
 /// Forces are stateless templates. Fitted parameters are passed to every
 /// method as a slice; fixed physical constants live as struct fields.
 ///
-/// `Send + Sync` is required because `Vec<Box<dyn ParameterizedForce<...>>>`
-/// instances cross thread boundaries during parallel batch propagation.
-///
-/// `Center` is a marker type identifying which center body the position
-/// and velocity passed to `accel` are measured relative to. It is not
-/// required to implement `CenterBody` on the trait (doing so would
-/// break dyn-compatibility because `CenterBody` carries a `DynCenter:
-/// From<Self>` bound). State/force compatibility is enforced at the
-/// `StateLike::propagate_with` boundary, not on the trait itself.
+/// `Send + Sync` is required because forces cross thread boundaries
+/// during parallel batch propagation.
 pub trait ParameterizedForce: Send + Sync {
     /// Inertial frame the force expects positions and velocities in.
     type Frame: InertialFrame;
 
-    /// Center body marker. Should be one of the kete center types
-    /// (`SSB`, `SunCenter`, `EarthCenter`, `DynCenter`).
-    type Center: Send + Sync + Copy + 'static;
-
-    /// Optional downcast handle for runtime variant introspection.
-    ///
-    /// Default returns `None`; concrete `'static` non-grav impls
-    /// (`DustNonGrav`, `JplCometNonGrav`, `FarnocchiaNonGrav`) override
-    /// to return `Some(self)`. Allows the Python wrapper to recover the
-    /// typed force from an `Arc<dyn ParameterizedForce<...>>`.
-    /// Lifetime-borrowed impls (`SpkNBody<'a>`, `Recenter<'a, ...>`)
-    /// cannot be `Any` and keep the `None` default.
-    fn as_any(&self) -> Option<&(dyn std::any::Any + 'static)> {
-        None
-    }
+    /// Center body the position and velocity passed to `accel` are
+    /// measured relative to.
+    type Center: CenterBody;
 
     /// Number of free (fittable) parameters this force exposes.
     fn n_free_params(&self) -> usize {
@@ -231,65 +212,3 @@ fn fd_step(value: f64) -> f64 {
 /// add `impl Force for X {}` alongside their `ParameterizedForce` impl when
 /// their `n_free_params()` is structurally zero.
 pub trait Force: ParameterizedForce {}
-
-// Blanket `ParameterizedForce` impls for shared/owned smart pointers around a
-// trait object. These let `Arc<dyn ParameterizedForce<...>>` and
-// `Box<dyn ParameterizedForce<...>>` be passed as a force to generic APIs
-// such as `ForceSet::with(Box<dyn ParameterizedForce>)`,
-// `Recenter::<FromC, _>::new(spk, force)`, or `propagate_with_stm(forces, ...)`.
-impl<F> ParameterizedForce for std::sync::Arc<F>
-where
-    F: ParameterizedForce + ?Sized,
-{
-    type Frame = F::Frame;
-    type Center = F::Center;
-
-    fn as_any(&self) -> Option<&(dyn std::any::Any + 'static)> {
-        (**self).as_any()
-    }
-
-    fn n_free_params(&self) -> usize {
-        (**self).n_free_params()
-    }
-
-    fn free_param_names(&self) -> Vec<&'static str> {
-        (**self).free_param_names()
-    }
-
-    fn lower_bounds(&self) -> Vec<Option<f64>> {
-        (**self).lower_bounds()
-    }
-
-    fn accel(
-        &self,
-        time: Time<TDB>,
-        pos: &Vector<Self::Frame>,
-        vel: &Vector<Self::Frame>,
-        free_params: &[f64],
-    ) -> KeteResult<Vector<Self::Frame>> {
-        (**self).accel(time, pos, vel, free_params)
-    }
-
-    fn jacobians(
-        &self,
-        time: Time<TDB>,
-        pos: &Vector<Self::Frame>,
-        vel: &Vector<Self::Frame>,
-        free_params: &[f64],
-    ) -> KeteResult<(Matrix3<f64>, Matrix3<f64>)> {
-        (**self).jacobians(time, pos, vel, free_params)
-    }
-
-    fn parameter_jacobian(
-        &self,
-        time: Time<TDB>,
-        pos: &Vector<Self::Frame>,
-        vel: &Vector<Self::Frame>,
-        free_params: &[f64],
-    ) -> KeteResult<Matrix3xX<f64>> {
-        (**self).parameter_jacobian(time, pos, vel, free_params)
-    }
-}
-
-/// Blanket marker: `Arc<F>` is `Force` iff `F` is.
-impl<F> Force for std::sync::Arc<F> where F: Force + ?Sized {}

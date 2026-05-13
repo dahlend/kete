@@ -1141,7 +1141,6 @@ mod tests {
     use kete_core::Band;
     use kete_core::constants::GMS;
     use kete_core::desigs::Desig;
-    use kete_core::forces::GravParams;
     use kete_core::frames::{SSB, SunCenter};
     use kete_core::kepler::{light_time_correct, propagate_two_body};
     use kete_core::state::StateLike;
@@ -1565,8 +1564,7 @@ mod tests {
         let observations: Vec<AstrometricObservation> = epochs
             .iter()
             .map(|&jd| {
-                let planets = GravParams::planets();
-                let force = SpkNBody::new(&spk, &planets);
+                let force = SpkNBody::new(false);
                 let obj_at = spk
                     .try_to_ssb(obj.clone())
                     .expect("Center conversion failed")
@@ -1622,9 +1620,8 @@ mod tests {
 
         let obj_at = {
             let obj_ssb = spk.try_to_ssb(obj.clone()).unwrap();
-            let planets = GravParams::planets();
             obj_ssb
-                .propagate_with(&SpkNBody::new(&spk, &planets), results[0].1.epoch)
+                .propagate_with(&SpkNBody::new(false), results[0].1.epoch)
                 .unwrap()
         };
         let best = best_candidate(&results, &obj_at);

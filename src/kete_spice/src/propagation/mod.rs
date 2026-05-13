@@ -6,8 +6,6 @@
 //!
 //! - [`SpkNBody`]: N-body Newtonian gravity using SPK ephemerides as the
 //!   source of planet positions.
-//! - [`helio_with_frozen_nongrav`]: convenience constructor that composes
-//!   gravity with a frozen non-grav model.
 //! - [`Recenter`]: a `ParameterizedForce` adapter that shifts the reference body of the
 //!   input pos/vel before delegating to an inner `ParameterizedForce`.
 //! - [`compute_state_transition`]: state transition matrix between two epochs
@@ -36,6 +34,5 @@ pub use kete_core::state::{
     propagate_diffuse_state_adaptive, propagate_with_diagnosis, sigma_point_divergence,
 };
 pub use recenter::Recenter;
-pub use spk_n_body::SpkNBody;
-pub use spk_n_body::helio_with_frozen_nongrav;
+pub use spk_n_body::{SpkNBody, SpkNonGravs};
 pub use stm::compute_state_transition;

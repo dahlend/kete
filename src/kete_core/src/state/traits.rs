@@ -96,8 +96,7 @@ where
         if forces.n_free_params() != 0 {
             return Err(crate::errors::Error::ValueError(format!(
                 "State::propagate_with requires a force with zero free parameters \
-                 (got {}); freeze any non-grav template first via FrozenForce::new \
-                 or helio_with_frozen_nongrav.",
+                 (got {}); freeze any non-grav template first via FrozenForce::new.",
                 forces.n_free_params()
             )));
         }
@@ -230,7 +229,7 @@ where
 mod tests {
     use super::*;
     use crate::desigs::Desig;
-    use crate::forces::{ForceSet, ParameterizedForce};
+    use crate::forces::{ParameterizedForce, Sum};
     use crate::frames::{Equatorial, SunCenter};
 
     /// A trivial central-mass gravity force for testing. Constant GM at
@@ -288,9 +287,9 @@ mod tests {
     }
 
     #[test]
-    fn state_propagate_with_force_set() {
-        // The same TwoBody force inside a (single-element) ForceSet should
-        // produce identical results to using TwoBody directly.
+    fn state_propagate_with_sum_two_forces() {
+        // TwoBody (gm) + TwoBody (0) summed should equal TwoBody (gm)
+        // directly, since the zero force contributes no acceleration.
         let gm = crate::constants::GMS;
         let v_circ = gm.sqrt();
         let dt = 30.0; // 30 days
@@ -305,12 +304,12 @@ mod tests {
             .clone()
             .propagate_with(&TwoBody { gm }, Time::<TDB>::new(dt))
             .unwrap();
-        let set = ForceSet::<Equatorial, SunCenter>::new().with(Box::new(TwoBody { gm }));
-        let through_set = start.propagate_with(&set, Time::<TDB>::new(dt)).unwrap();
+        let sum = Sum::new(TwoBody { gm }, TwoBody { gm: 0.0 });
+        let through_sum = start.propagate_with(&sum, Time::<TDB>::new(dt)).unwrap();
         let p1: Vector3<f64> = direct.pos.into();
-        let p2: Vector3<f64> = through_set.pos.into();
+        let p2: Vector3<f64> = through_sum.pos.into();
         let v1: Vector3<f64> = direct.vel.into();
-        let v2: Vector3<f64> = through_set.vel.into();
+        let v2: Vector3<f64> = through_sum.vel.into();
         assert!((p1 - p2).norm() < 1e-14);
         assert!((v1 - v2).norm() < 1e-14);
     }

@@ -11,41 +11,31 @@ use std::fmt::Debug;
 
 /// Trait for center-body types used in [`State`](crate::state::State).
 ///
-/// Implementors provide the NAIF id of the center body at runtime.
-pub trait CenterBody: Sized + Sync + Send + Clone + Copy + Debug + PartialEq
-where
-    DynCenter: From<Self>,
+/// Implementors expose a NAIF id, either as a compile-time const
+/// ([`NAIF_ID`](Self::NAIF_ID)) for the typed centers ([`SSB`],
+/// [`SunCenter`], [`EarthCenter`]) or via a runtime instance method
+/// ([`center_id`](Self::center_id)) for [`DynCenter`].
+///
+/// `Into<DynCenter>` is a supertrait so any [`CenterBody`] can be
+/// type-erased to [`DynCenter`] without callers repeating the bound.
+pub trait CenterBody:
+    Sized + Sync + Send + Clone + Copy + Debug + PartialEq + Into<DynCenter>
 {
-    /// NAIF id of the center body.
-    fn center_id(&self) -> i32;
-}
-
-/// Marker trait for center-body types that know their NAIF id at compile
-/// time.
-///
-/// Distinct from [`CenterBody`] because it has no `DynCenter: From<Self>`
-/// requirement, which keeps it dyn-compatible -- the [`Force`] trait's
-/// `Center` associated type can require `NaifBody` without breaking
-/// `Box<dyn Force<...>>`. Used by the `Recenter` adapter
-/// (in `kete_spice`) to look up reference-body shifts from SPK at the
-/// type level rather than via runtime IDs.
-///
-/// [`Force`]: crate::forces::Force
-pub trait NaifBody: Send + Sync + Copy + 'static {
     /// NAIF id of this center body, known at compile time.
+    ///
+    /// Typed centers report their actual id. [`DynCenter`] reports `i32::MIN`
+    /// as a sentinel since its id is per-instance; consult
+    /// [`center_id`](Self::center_id) for the runtime value instead.
     const NAIF_ID: i32;
-}
 
-impl NaifBody for SSB {
-    const NAIF_ID: i32 = 0;
-}
-
-impl NaifBody for SunCenter {
-    const NAIF_ID: i32 = 10;
-}
-
-impl NaifBody for EarthCenter {
-    const NAIF_ID: i32 = 399;
+    /// Runtime NAIF id of this center body.
+    ///
+    /// Defaults to [`Self::NAIF_ID`]; [`DynCenter`] overrides to return
+    /// its stored runtime value.
+    #[inline(always)]
+    fn center_id(&self) -> i32 {
+        Self::NAIF_ID
+    }
 }
 
 /// Runtime-determined center body -- the default.
@@ -74,6 +64,8 @@ pub struct SunCenter;
 pub struct EarthCenter;
 
 impl CenterBody for DynCenter {
+    const NAIF_ID: i32 = i32::MIN;
+
     #[inline(always)]
     fn center_id(&self) -> i32 {
         self.0
@@ -105,22 +97,13 @@ impl From<EarthCenter> for DynCenter {
 }
 
 impl CenterBody for SSB {
-    #[inline(always)]
-    fn center_id(&self) -> i32 {
-        0
-    }
+    const NAIF_ID: i32 = 0;
 }
 
 impl CenterBody for SunCenter {
-    #[inline(always)]
-    fn center_id(&self) -> i32 {
-        10
-    }
+    const NAIF_ID: i32 = 10;
 }
 
 impl CenterBody for EarthCenter {
-    #[inline(always)]
-    fn center_id(&self) -> i32 {
-        399
-    }
+    const NAIF_ID: i32 = 399;
 }
