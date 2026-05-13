@@ -52,10 +52,19 @@ enum NonGravData {
 
 /// Non-gravitational force models for n-body propagation.
 ///
-/// The closed-set hierarchy exposed to Python is unchanged from prior
-/// releases. Internally the wrapper holds a typed ParameterizedForce impl
-/// and produces a FrozenForce or ParameterMask on demand for the
-/// propagation machinery.
+/// This is used optionally by the N-Body propagation methods to compute orbits
+/// including non-gravitational forces, such as solar radiation pressure, or
+/// poynting-robertson force.
+///
+/// There are two generic non-gravitational models available, one is specifically
+/// intended for dust modeling, and includes the solar radiation pressure, the other
+/// implements the functional form documented for the JPL Horizons comet model
+/// (see :py:meth:`NonGravModel.new_comet` for the formula).
+///
+/// See :py:meth:`NonGravModel.new_dust` and :py:meth:`NonGravModel.new_comet` for more
+/// details. Note that the Comet model can also represent asteroids which undergo the
+/// Yarkovsky effect, see :py:meth:`NonGravModel.new_asteroid`, which is a convenience
+/// function over the :py:meth:`NonGravModel.new_comet` method, but with 1/r^2 falloff.
 #[pyclass(
     frozen,
     module = "kete.propagation",

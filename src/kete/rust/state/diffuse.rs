@@ -1,10 +1,4 @@
 //! Python wrapper for [`kete_core::state::DiffuseState`].
-//!
-//! Bridges between the Rust shape (per-component `free_params`, no
-//! force template stored on the state) and the Python user-facing
-//! shape (a single `non_grav` model template that applies to every
-//! component, with per-sample parameters preserved through sampling
-//! and propagation).
 
 use super::{PyState, PyUncertainState};
 use crate::nongrav::PyNonGravModel;
@@ -254,62 +248,19 @@ impl PyDiffuseState {
         })
     }
 
-    /// Propagate the mixture linearly to a target epoch.
-    ///
-    /// Each component is propagated via the variational integrator;
-    /// the propagated mean and covariance update share a single STM
-    /// per component.
-    #[pyo3(signature = (jd, include_asteroids=false))]
-    fn propagate(&self, jd: PyTime, include_asteroids: bool) -> PyResult<Self> {
-        use kete_core::state::StateLike;
-
-        let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-        let target: Time<TDB> = jd.into();
-        let components_ssb = self.components_ssb(&spk)?;
-        let propagated_ssb: KeteResult<Vec<UncertainState<Equatorial, SSB>>> = if include_asteroids
-        {
-            let extended = GravParams::selected_masses();
-            let forces = self.build_forces(&spk, &extended);
-            components_ssb
-                .into_iter()
-                .map(|c| c.propagate_with(&forces, target))
-                .collect()
-        } else {
-            let planets = GravParams::planets();
-            let forces = self.build_forces(&spk, &planets);
-            components_ssb
-                .into_iter()
-                .map(|c| c.propagate_with(&forces, target))
-                .collect()
-        };
-        // Convert back to DynCenter for the Python wrapper.
-        let propagated_dyn: Vec<UncertainState> = propagated_ssb?
-            .into_iter()
-            .map(|c| {
-                UncertainState::new(c.state.into(), c.cov_matrix, c.free_params)
-                    .expect("dimension preserved")
-            })
-            .collect();
-        let mixture = DiffuseState::new(self.mixture.weights.clone(), propagated_dyn)?;
-        Ok(Self {
-            mixture,
-            non_grav: self.non_grav.clone(),
-        })
-    }
-
     /// Adaptively split nonlinear components, then propagate.
     #[pyo3(signature = (
         jd,
         split_threshold=0.05,
-        max_components=64,
-        max_split_depth=4,
+        max_components=1024,
+        max_split_depth=10,
         n_axes=3,
         sigma_factor=1.0,
         prune_threshold=0.0,
         include_asteroids=false,
     ))]
     #[allow(clippy::too_many_arguments)]
-    fn propagate_adaptive(
+    fn propagate(
         &self,
         jd: PyTime,
         split_threshold: f64,
@@ -333,15 +284,13 @@ impl PyDiffuseState {
         let components_ssb = self.components_ssb(&spk)?;
         let mixture_ssb =
             DiffuseState::<Equatorial, SSB>::new(self.mixture.weights.clone(), components_ssb)?;
-        let propagated = if include_asteroids {
-            let extended = GravParams::selected_masses();
-            let forces = self.build_forces(&spk, &extended);
-            propagate_diffuse_state_adaptive(&mixture_ssb, &forces, target, &cfg)?
+        let planets = if include_asteroids {
+            GravParams::selected_masses()
         } else {
-            let planets = GravParams::planets();
-            let forces = self.build_forces(&spk, &planets);
-            propagate_diffuse_state_adaptive(&mixture_ssb, &forces, target, &cfg)?
+            GravParams::planets()
         };
+        let forces = self.build_forces(&spk, &planets);
+        let propagated = propagate_diffuse_state_adaptive(&mixture_ssb, &forces, target, &cfg)?;
         let propagated_dyn: Vec<UncertainState> = propagated
             .components
             .into_iter()
@@ -372,16 +321,21 @@ impl PyDiffuseState {
         let components_ssb = self.components_ssb(&spk)?;
         let mixture_ssb =
             DiffuseState::<Equatorial, SSB>::new(self.mixture.weights.clone(), components_ssb)?;
-        let result = if include_asteroids {
-            let extended = GravParams::selected_masses();
-            let forces = self.build_forces(&spk, &extended);
-            mixture_sigma_point_divergence(&mixture_ssb, &forces, target, n_axes, sigma_factor)?
+
+        let masses = if include_asteroids {
+            GravParams::selected_masses()
         } else {
-            let planets = GravParams::planets();
-            let forces = self.build_forces(&spk, &planets);
-            mixture_sigma_point_divergence(&mixture_ssb, &forces, target, n_axes, sigma_factor)?
+            GravParams::planets()
         };
-        Ok(result)
+
+        let forces = self.build_forces(&spk, &masses);
+        Ok(mixture_sigma_point_divergence(
+            &mixture_ssb,
+            &forces,
+            target,
+            n_axes,
+            sigma_factor,
+        )?)
     }
 
     /// Number of mixture components.
