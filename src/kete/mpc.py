@@ -156,8 +156,8 @@ def fetch_known_orbit_data(url=None, force_download=False):
             incl=obj["i"],
             lon_node=obj["Node"],
             peri_arg=obj["Peri"],
-            peri_time=Time(obj["Tp"], scaling="utc").jd,
-            epoch=Time(obj["Epoch"], scaling="utc").jd,
+            peri_time=Time(obj["Tp"], scaling="tt").jd,
+            epoch=Time(obj["Epoch"], scaling="tt").jd,
             arc_len=arc_len,
             name=obj.get("Name", None),
         )
@@ -195,8 +195,8 @@ def fetch_known_comet_orbit_data(force_download=False):
             incl=comet["i"],
             lon_node=comet["Node"],
             peri_arg=comet["Peri"],
-            peri_time=Time.from_ymd(*peri_time).jd,
-            epoch=Time.from_ymd(*epoch_time).jd,
+            peri_time=Time.from_ymd(*peri_time, scaling='tt').jd,
+            epoch=Time.from_ymd(*epoch_time, scaling='tt').jd,
         )
         objects.append(obj)
     return pd.DataFrame.from_records(objects)
