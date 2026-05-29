@@ -143,6 +143,8 @@ impl PyTime {
 
     /// Create time object from the Year, Month, and Day.
     ///
+    /// These times are assumed to be in UTC amd conversion is performed automatically.
+    ///
     /// Parameters
     /// ----------
     /// year:
@@ -151,26 +153,11 @@ impl PyTime {
     ///     The Month as an integer, 0 = January etc.
     /// day:
     ///     The day as an integer or float.
-    /// scaling:
-    ///     Accepts 'tdb', 'tai', 'utc', 'tcb', and 'tt', but they are converted to TDB
-    ///     immediately. Defaults to 'utc' for backwards compatibility.
     #[staticmethod]
-    #[pyo3(signature = (year, month, day, scaling="utc"))]
-    pub fn from_ymd(year: i64, month: u32, day: f64, scaling: &str) -> PyResult<Self> {
-        let scaling = scaling.to_lowercase();
+    pub fn from_ymd(year: i64, month: u32, day: f64) -> Self {
         let frac_day = day.rem_euclid(1.0);
         let day = day.div_euclid(1.0) as u32;
-        let jd = Time::<UTC>::from_year_month_day(year, month, day, frac_day).jd;
-        Ok(match scaling.as_str() {
-            "tt" => PyTime(Time::<TDB>::new(jd)),
-            "tdb" => PyTime(Time::<TDB>::new(jd)),
-            "tcb" => PyTime(Time::<TCB>::new(jd).tdb()),
-            "tai" => PyTime(Time::<TAI>::new(jd).tdb()),
-            "utc" => PyTime(Time::<UTC>::new(jd).tdb()),
-            s => Err(Error::ValueError(format!(
-                "Scaling of type ({s}) is not supported, must be one of: 'tt', 'tdb', 'tcb', 'tai', 'utc'",
-            )))?,
-        })
+        PyTime(Time::<UTC>::from_year_month_day(year, month, day, frac_day).tdb())
     }
 
     /// Time in the current time.

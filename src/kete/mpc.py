@@ -165,6 +165,26 @@ def fetch_known_orbit_data(url=None, force_download=False):
     return pd.DataFrame.from_records(objects)
 
 
+def _ymd_to_jd(ymd):
+    """Convert a ``(year, month, day)`` tuple to a Julian Date.
+
+    The day may be fractional; the resulting JD is on the same time scale as the
+    calendar date (no leap-second adjustment). Used for MPC comet perihelion/epoch
+    fields, which are published in TT.
+    """
+    year, month, day = ymd
+    day_int = int(day)
+    frac = day - day_int
+    a = (14 - month) // 12
+    y = year + 4800 - a
+    m = month + 12 * a - 3
+    jdn_noon = (
+        day_int + (153 * m + 2) // 5
+        + 365 * y + y // 4 - y // 100 + y // 400 - 32045
+    )
+    return jdn_noon - 0.5 + frac
+
+
 @lru_cache
 def fetch_known_comet_orbit_data(force_download=False):
     """
@@ -195,8 +215,8 @@ def fetch_known_comet_orbit_data(force_download=False):
             incl=comet["i"],
             lon_node=comet["Node"],
             peri_arg=comet["Peri"],
-            peri_time=Time.from_ymd(*peri_time, scaling='tt').jd,
-            epoch=Time.from_ymd(*epoch_time, scaling='tt').jd,
+            peri_time=Time(_ymd_to_jd(peri_time), scaling="tt").jd,
+            epoch=Time(_ymd_to_jd(epoch_time), scaling="tt").jd,
         )
         objects.append(obj)
     return pd.DataFrame.from_records(objects)
