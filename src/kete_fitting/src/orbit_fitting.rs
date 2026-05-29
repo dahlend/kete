@@ -60,6 +60,18 @@ const EXPANSION_SIGMA_FLOOR_RAD: f64 = 0.5 / 3600.0 * (std::f64::consts::PI / 18
 /// CMC recovery threshold = rejection threshold * this factor (Carpino et al. 2003).
 const CMC_RECOVERY_FRACTION: f64 = 6.0 / 7.0;
 
+/// CMC early-exit threshold.  When a pass flips fewer observations than
+/// `max(n_obs * this, 1)`, declare the rejection set stable and exit the loop.
+///
+/// On long arcs with many marginal observations the included mask can enter
+/// a multi-step cycle (A->B->C->A->...) that the per-observation hysteresis can't
+/// break: pass 0 does the bulk of the rejections (dozens), then subsequent
+/// passes flip a handful of obs back and forth across the threshold without
+/// the LSQ state meaningfully changing.  Treating "fewer than 0.5% of obs
+/// flipped" as stable terminates these cycles after one or two passes while
+/// still letting legitimate multi-pass cleanups proceed.
+const CMC_CHANGE_FRACTION_EXIT: f64 = 0.005;
+
 /// Minimum leverage-corrected expected chi2 denominator (prevents division instability).
 const CMC_MIN_EXPECTED: f64 = 0.5;
 
@@ -275,15 +287,6 @@ pub fn fit_orbit(
         prev_n_in_window = n_in_window;
         let included = vec![true; n_in_window];
 
-        // Score the incoming state on the current window so we can detect
-        // and reject a stage that returns a strictly worse orbit.  Without
-        // this guard, a poorly-constrained early window can converge to a
-        // low-residual but globally wrong orbit and silently poison every
-        // subsequent stage.  compute_residuals is cheap (6-dim, no STM).
-        let pre_rms = compute_residuals(&state, &windowed, include_asteroids, None)
-            .ok()
-            .map_or(f64::INFINITY, |r| weighted_rms(&r, &windowed, &included, 6));
-
         if let Ok(result) = solve_with_rejection(
             &state,
             &windowed,
@@ -297,12 +300,24 @@ pub fn fit_orbit(
         ) && let Ok(candidate) =
             State::<Equatorial, SSB>::try_from(result.uncertain_state.state.clone())
         {
-            // Re-score the candidate on the FULL window (ignoring any
-            // outlier rejections inside solve_with_rejection) for an
-            // apples-to-apples comparison.
+            // Compare pre- and post-stage RMS on the **candidate's included
+            // set** (the inliers the candidate claims are good).  Scoring on
+            // the full window would penalize the candidate for successfully
+            // rejecting outliers, since those outliers inflate the full-window
+            // RMS but were correctly excluded.  Apples-to-apples on the
+            // candidate's inlier set: if the incoming state already fits
+            // those inliers better than the candidate does, something is off
+            // and we keep the incoming state.
+            let pre_rms = compute_residuals(&state, &windowed, include_asteroids, None)
+                .ok()
+                .map_or(f64::INFINITY, |r| {
+                    weighted_rms(&r, &windowed, &result.included, 6)
+                });
             let post_rms = compute_residuals(&candidate, &windowed, include_asteroids, None)
                 .ok()
-                .map_or(f64::INFINITY, |r| weighted_rms(&r, &windowed, &included, 6));
+                .map_or(f64::INFINITY, |r| {
+                    weighted_rms(&r, &windowed, &result.included, 6)
+                });
             if post_rms.is_finite() && post_rms <= pre_rms {
                 state = candidate;
             }
@@ -495,7 +510,7 @@ fn solve_with_rejection(
     let chi2_rej = chi2_threshold;
     let chi2_rec = chi2_threshold * CMC_RECOVERY_FRACTION;
 
-    for _ in 0..max_reject_passes {
+    for pass in 0..max_reject_passes {
         // Sweep over every caller-allowed observation (mask = `included`)
         // so that currently rejected observations also receive z-scores
         // and can be recovered.  stm_sweep emits one StmObs per included
@@ -582,6 +597,23 @@ fn solve_with_rejection(
         if new_included == current_included {
             break;
         }
+
+        // Small-change exit: long-arc fits with many marginal observations can
+        // enter a multi-step cycle of a few obs flipping at the threshold
+        // without the LSQ state meaningfully improving. When the per-pass
+        // change is a tiny fraction of the total, treat it as converged.
+        // First pass always runs in full (initial rejection burst can be large).
+        let n_changed = new_included
+            .iter()
+            .zip(current_included.iter())
+            .filter(|(a, b)| a != b)
+            .count();
+        let change_floor =
+            ((sorted_obs.len() as f64 * CMC_CHANGE_FRACTION_EXIT) as usize).max(1);
+        if pass > 0 && n_changed <= change_floor {
+            break;
+        }
+
         current_included = new_included;
 
         let iter_state: State<Equatorial, SSB> = fit.uncertain_state.state.clone().try_into()?;
