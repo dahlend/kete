@@ -280,6 +280,24 @@ where
             h0.copysign((integrator.final_time - integrator.cur_time).elapsed)
         };
 
+        // Convergence tolerance scales with the JD magnitude to stay above
+        // f64 precision.  Absolute tolerance of 1e-12 is finer than the ULP
+        // of cur_time.jd around modern epochs (JD ~2.5e6 has ULP ~5.5e-10),
+        // so an absolute check could never be satisfied and the loop would
+        // never terminate.  Use a relative tolerance scaled by max(|cur|,
+        // |final|) with an absolute floor for the JD=0 case.
+        let convergence_tol = {
+            let scale = integrator
+                .cur_time
+                .jd
+                .abs()
+                .max(integrator.final_time.jd.abs());
+            // Absolute floor of 1e-12 covers the small-JD limit; relative
+            // factor of 1e-13 leaves ~3 orders of magnitude of headroom
+            // above f64 ULP at any reasonable JD.
+            (scale * 1e-13).max(1e-12)
+        };
+
         let mut step_failures = 0;
         loop {
             if (integrator.cur_time - integrator.final_time).elapsed.abs() <= next_step_size.abs() {
@@ -288,7 +306,7 @@ where
             match integrator.step(next_step_size) {
                 Ok(s) => {
                     next_step_size = s;
-                    if (integrator.cur_time - integrator.final_time).elapsed.abs() < 1e-12 {
+                    if (integrator.cur_time - integrator.final_time).elapsed.abs() < convergence_tol {
                         return Ok((
                             integrator.cur_state,
                             integrator.cur_state_der,
