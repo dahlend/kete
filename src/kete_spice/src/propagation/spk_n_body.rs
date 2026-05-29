@@ -71,7 +71,7 @@ impl<'a> SpkNBody<'a> {
     #[must_use]
     pub fn new(spk: &'a SpkCollection, include_extended: bool) -> Self {
         let massive_obj = if include_extended {
-            GravParams::known_masses().clone()
+            GravParams::selected_masses().clone()
         } else {
             GravParams::planets().clone()
         };
