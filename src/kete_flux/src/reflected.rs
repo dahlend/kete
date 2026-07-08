@@ -36,6 +36,18 @@ use nalgebra::Vector3;
 
 /// This computes the phase curve correction using the IAU standard for the HG model.
 ///
+/// The returned value is in **linear flux space**, i.e. it is the multiplicative
+/// factor `phi(phase)` by which the object's brightness is scaled relative to its
+/// brightness at zero phase angle. It ranges from `1.0` at zero phase down toward
+/// `0.0` at large phase, and is *not* in magnitudes.
+///
+/// To use it:
+/// - For flux: multiply the zero-phase flux by this value directly (see
+///   [`hg_apparent_flux`]).
+/// - For magnitudes: apply `-2.5 * log10(phi(phase))` to get the phase term to add
+///   to the magnitude (see [`hg_apparent_mag`]). It must be `2.5 * log10`'ed; do
+///   not add the raw returned value to a magnitude.
+///
 /// Specifically page Page 550 - Equation (A4):
 ///
 /// Asteroids II. University of Arizona Press, Tucson, pp. 524-556.

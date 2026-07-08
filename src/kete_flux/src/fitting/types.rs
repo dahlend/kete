@@ -312,22 +312,11 @@ impl Model {
     pub(super) fn log_likelihood(self, params: &ModelParams, obs: &[FluxObs]) -> f64 {
         let fwd = self.evaluate_forward_model(params, obs);
 
-        let nu = STUDENT_NU;
-        let mut ll = 0.0;
-        for (i, ob) in obs.iter().enumerate() {
-            let mf = fwd.model_fluxes[i];
-            let sigma_eff = params.f_sigma * ob.sigma;
-            let sigma2 = sigma_eff * sigma_eff;
-            if ob.is_upper_limit {
-                if mf > ob.flux {
-                    let r = mf - ob.flux;
-                    ll += -0.5 * (nu + 1.0) * (1.0 + r * r / (nu * sigma2)).ln();
-                }
-            } else {
-                let r = ob.flux - mf;
-                ll += -sigma_eff.ln() - 0.5 * (nu + 1.0) * (1.0 + r * r / (nu * sigma2)).ln();
-            }
-        }
+        let ll: f64 = obs
+            .iter()
+            .zip(&fwd.model_fluxes)
+            .map(|(ob, &mf)| ob.log_likelihood_term(mf, params.f_sigma))
+            .sum();
 
         if ll.is_finite() {
             ll
@@ -389,32 +378,347 @@ impl Model {
     }
 }
 
-/// A single flux observation at a known geometry.
+/// A single flux constraint at a known geometry.
+///
+/// The constraint on the model flux is a **sum of independent [`Penalty`]
+/// terms** -- e.g. a hard [`Penalty::TopHat`] interval and/or a
+/// [`Penalty::Center`] point estimate -- the same primitives a [`ParamPrior`]
+/// composes for a parameter, here applied to the model flux (the projection
+/// differs; the penalties are shared). Use the [`Self::detection`],
+/// [`Self::upper_limit`], and [`Self::bounded`] constructors for the common
+/// cases, or [`Self::from_parts`] for combinations.
 #[derive(Debug, Clone)]
 pub struct FluxObs {
-    /// Observed flux in Jy (or upper-limit threshold if `is_upper_limit`).
-    pub flux: f64,
-    /// 1-sigma uncertainty in Jy.
-    pub sigma: f64,
+    /// Independent penalty terms on the model flux; the total cost is their sum.
+    pub(super) penalties: Vec<Penalty>,
     /// Band information for this observation.
     pub band: BandInfo,
-    /// If true, `flux` is a non-detection upper limit, not a measurement.
-    pub is_upper_limit: bool,
     /// Sun-to-object vector in AU (Ecliptic frame).
     pub sun2obj: Vector3<f64>,
     /// Sun-to-observer vector in AU (Ecliptic frame).
     pub sun2obs: Vector3<f64>,
 }
 
+impl FluxObs {
+    /// General constructor: an optional hard `(lo, hi)` interval and/or an
+    /// optional point estimate `(mean, sigma_lo, sigma_hi)`, where each scale
+    /// may be `None` to leave that side unconstrained (a one-sided limit). At
+    /// least one of `bounds`/`point` should be `Some` to constrain anything.
+    ///
+    /// # Panics
+    /// Panics if `bounds` is `Some((lo, hi))` with `hi <= lo`; callers exposed
+    /// to user input should validate first and raise a proper error.
+    #[must_use]
+    pub fn from_parts(
+        bounds: Option<(f64, f64)>,
+        point: Option<(f64, Option<f64>, Option<f64>)>,
+        band: BandInfo,
+        sun2obj: Vector3<f64>,
+        sun2obs: Vector3<f64>,
+    ) -> Self {
+        let mut penalties = Vec::new();
+        if let Some((lo, hi)) = bounds {
+            penalties.push(Penalty::top_hat(lo, hi));
+        }
+        if let Some((mean, scale_lo, scale_hi)) = point {
+            // Flux measurements are heavy-tailed and inflate with f_sigma, so the
+            // anchor (`normalize`) applies (suppressed internally if one-sided).
+            penalties.push(Penalty::Center {
+                mean,
+                scale_lo,
+                scale_hi,
+                tail: Tail::StudentT,
+                normalize: true,
+            });
+        }
+        Self {
+            penalties,
+            band,
+            sun2obj,
+            sun2obs,
+        }
+    }
+
+    /// A two-sided flux detection `flux +/- sigma` (symmetric error).
+    #[must_use]
+    pub fn detection(
+        flux: f64,
+        sigma: f64,
+        band: BandInfo,
+        sun2obj: Vector3<f64>,
+        sun2obs: Vector3<f64>,
+    ) -> Self {
+        Self::detection_asym(flux, sigma, sigma, band, sun2obj, sun2obs)
+    }
+
+    /// A two-sided flux detection with asymmetric error: `sigma_lo` below the
+    /// measured `flux`, `sigma_hi` above.
+    #[must_use]
+    pub fn detection_asym(
+        flux: f64,
+        sigma_lo: f64,
+        sigma_hi: f64,
+        band: BandInfo,
+        sun2obj: Vector3<f64>,
+        sun2obs: Vector3<f64>,
+    ) -> Self {
+        Self::from_parts(
+            None,
+            Some((flux, Some(sigma_lo), Some(sigma_hi))),
+            band,
+            sun2obj,
+            sun2obs,
+        )
+    }
+
+    /// A soft photometric upper limit: a non-detection at `threshold` with noise
+    /// scale `sigma`. Only model fluxes exceeding the threshold are penalized
+    /// (the below-threshold side is unconstrained).
+    #[must_use]
+    pub fn upper_limit(
+        threshold: f64,
+        sigma: f64,
+        band: BandInfo,
+        sun2obj: Vector3<f64>,
+        sun2obs: Vector3<f64>,
+    ) -> Self {
+        Self::from_parts(
+            None,
+            Some((threshold, None, Some(sigma))),
+            band,
+            sun2obj,
+            sun2obs,
+        )
+    }
+
+    /// A hard flux interval `[lo, hi]` with no point estimate.
+    #[must_use]
+    pub fn bounded(
+        lo: f64,
+        hi: f64,
+        band: BandInfo,
+        sun2obj: Vector3<f64>,
+        sun2obs: Vector3<f64>,
+    ) -> Self {
+        Self::from_parts(Some((lo, hi)), None, band, sun2obj, sun2obs)
+    }
+
+    /// The centering term's `(mean, scale_lo, scale_hi)`, if any.
+    fn center(&self) -> Option<(f64, Option<f64>, Option<f64>)> {
+        self.penalties.iter().find_map(Penalty::as_center)
+    }
+
+    /// Point-estimate flux (the center), or `None` for a bounds-only constraint.
+    #[must_use]
+    pub fn point_estimate(&self) -> Option<f64> {
+        self.center().map(|(mean, _, _)| mean)
+    }
+
+    /// Lower-side 1-sigma scale, or `None` (no point estimate, or upper limit).
+    #[must_use]
+    pub fn sigma_lo(&self) -> Option<f64> {
+        self.center().and_then(|(_, lo, _)| lo)
+    }
+
+    /// Upper-side 1-sigma scale, or `None` (no point estimate, or lower limit).
+    #[must_use]
+    pub fn sigma_hi(&self) -> Option<f64> {
+        self.center().and_then(|(_, _, hi)| hi)
+    }
+
+    /// Hard `(lo, hi)` flux interval, or `None` if unbounded.
+    #[must_use]
+    pub fn bounds(&self) -> Option<(f64, f64)> {
+        self.penalties.iter().find_map(Penalty::as_top_hat)
+    }
+
+    /// Whether this is a (one-sided) non-detection upper limit.
+    #[must_use]
+    pub fn is_upper_limit(&self) -> bool {
+        matches!(self.center(), Some((_, None, Some(_))))
+    }
+
+    /// Whether this observation is a two-sided detection (counts toward the
+    /// reduced-chi2 degrees of freedom).
+    pub(super) fn is_detection(&self) -> bool {
+        matches!(self.center(), Some((_, Some(_), Some(_))))
+    }
+
+    /// Standardized residual `(mean - model) / (f_sigma * sigma_eff)` for MAP
+    /// diagnostics, or `None` when there is no point estimate, or the residual
+    /// falls on an unconstrained side (e.g. below an upper-limit threshold).
+    pub(super) fn standardized_residual(&self, model_flux: f64, f_sigma: f64) -> Option<f64> {
+        let (mean, scale_lo, scale_hi) = self.center()?;
+        let r = mean - model_flux;
+        let sigma = f_sigma * centering_scale(scale_lo, scale_hi, r)?;
+        Some(if sigma > 0.0 { r / sigma } else { 0.0 })
+    }
+
+    /// Log-likelihood contribution of this observation: the sum of its penalty
+    /// terms. Hard `bounds` are walls not scaled by `f_sigma`; a point estimate
+    /// is a Student-t term scaled by `f_sigma`. See [`Penalty::cost`].
+    pub(super) fn log_likelihood_term(&self, model_flux: f64, f_sigma: f64) -> f64 {
+        self.penalties.iter().map(|p| p.cost(model_flux, f_sigma)).sum()
+    }
+}
+
+/// Unnormalized Student-t(nu=[`STUDENT_NU`]) log kernel for residual `r` and
+/// scale `sigma`: the residual-dependent part of the log-likelihood.
+#[must_use]
+fn student_t_log_kernel(r: f64, sigma: f64) -> f64 {
+    let sigma2 = sigma * sigma;
+    -0.5 * (STUDENT_NU + 1.0) * (1.0 + r * r / (STUDENT_NU * sigma2)).ln()
+}
+
+/// Tail shape of a [`Penalty::Center`] term.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Tail {
+    /// Plain Gaussian -- used by priors.
+    Gaussian,
+    /// Heavy-tailed Student-t(nu = [`STUDENT_NU`]) -- used by robust measurements.
+    StudentT,
+}
+
+/// One additive penalty term on a scalar quantity.
+///
+/// A constraint -- a [`ParamPrior`] on a parameter, or a [`FluxObs`] on a model
+/// flux -- is a *sum* of these. The terms are independent costs with no shared
+/// parameters; the caller supplies the scalar (the projection) and sums each
+/// term's [`Penalty::cost`]. New constraint shapes are new variants here.
+#[derive(Debug, Clone)]
+pub(super) enum Penalty {
+    /// Hard interval: logistic-barrier walls of steepness `k`, flat (zero cost)
+    /// inside `[lo, hi]`, falling off outside. Never scaled by `scale_factor`.
+    TopHat { lo: f64, hi: f64, k: f64 },
+    /// (Possibly asymmetric / one-sided) centering term toward `mean`.
+    ///
+    /// `scale_lo`/`scale_hi` are the below-/above-`mean` 1-sigma widths; a `None`
+    /// side is left unconstrained (a one-sided limit). `normalize` adds the
+    /// residual-independent `-(scale_factor * sigma_bar).ln()` anchor that pins a
+    /// fitted scale -- applied only when both sides are present (off for priors,
+    /// and automatically suppressed for a one-sided/censored term).
+    Center {
+        mean: f64,
+        scale_lo: Option<f64>,
+        scale_hi: Option<f64>,
+        tail: Tail,
+        normalize: bool,
+    },
+}
+
+impl Penalty {
+    /// A hard `[lo, hi]` interval with width-aware wall steepness.
+    ///
+    /// Steepness is `BARRIER_K` per unit for intervals wider than 1, and
+    /// `BARRIER_K` per interval-width for narrower ones -- so a tight interval
+    /// (flux bounds at ~1e-3 Jy, or the tight-bounds parameter-fixing idiom in
+    /// [`ParamPrior`]) reads as a wall rather than a gentle slope, while wide
+    /// intervals keep the legacy fixed steepness.
+    ///
+    /// # Panics
+    /// Panics if `hi <= lo`; callers exposed to user input should validate
+    /// first and raise a proper error.
+    pub(super) fn top_hat(lo: f64, hi: f64) -> Self {
+        assert!(hi > lo, "TopHat interval requires lo < hi, got ({lo}, {hi})");
+        let k = BARRIER_K / (hi - lo).min(1.0);
+        Self::TopHat { lo, hi, k }
+    }
+
+    /// Log-cost contribution at scalar `x`. `scale_factor` multiplies the
+    /// centering scales (1.0 for priors, the fitted `f_sigma` for measurements);
+    /// a [`Penalty::TopHat`] ignores it.
+    pub(super) fn cost(&self, x: f64, scale_factor: f64) -> f64 {
+        match *self {
+            Self::TopHat { lo, hi, k } => logistic_barrier(x, lo, hi, k),
+            Self::Center {
+                mean,
+                scale_lo,
+                scale_hi,
+                tail,
+                normalize,
+            } => {
+                let r = mean - x;
+                let mut c = 0.0;
+                if let Some(scale) = centering_scale(scale_lo, scale_hi, r) {
+                    let sigma = scale_factor * scale;
+                    c += match tail {
+                        Tail::Gaussian => {
+                            let z = r / sigma;
+                            -0.5 * z * z
+                        }
+                        Tail::StudentT => student_t_log_kernel(r, sigma),
+                    };
+                }
+                if normalize && let (Some(lo), Some(hi)) = (scale_lo, scale_hi) {
+                    let sigma_bar = 0.5 * (lo + hi);
+                    c += -(scale_factor * sigma_bar).ln();
+                }
+                c
+            }
+        }
+    }
+
+    /// The `(mean, scale_lo, scale_hi)` of a [`Penalty::Center`], else `None`.
+    pub(super) fn as_center(&self) -> Option<(f64, Option<f64>, Option<f64>)> {
+        match *self {
+            Self::Center {
+                mean,
+                scale_lo,
+                scale_hi,
+                ..
+            } => Some((mean, scale_lo, scale_hi)),
+            Self::TopHat { .. } => None,
+        }
+    }
+
+    /// The `(lo, hi)` of a [`Penalty::TopHat`], else `None`.
+    pub(super) fn as_top_hat(&self) -> Option<(f64, f64)> {
+        match *self {
+            Self::TopHat { lo, hi, .. } => Some((lo, hi)),
+            Self::Center { .. } => None,
+        }
+    }
+}
+
+/// Effective 1-sigma scale on the side of residual `r = center - x` (before any
+/// `scale_factor`), or `None` if that side is unconstrained (a one-sided limit).
+///
+/// Two-sided values form a split (two-piece) normal/Student-t: the side's scale
+/// applies strictly, so a 1-sigma deviation always scores as exactly 1 sigma.
+/// The kernel's gradient is still continuous at `r = 0` (it vanishes from both
+/// sides); only the curvature jumps, which the finite-difference NUTS sampler
+/// tolerates. At exactly `r = 0` the kernel is zero, so the returned mean scale
+/// only affects the (also zero) standardized residual.
+fn centering_scale(scale_lo: Option<f64>, scale_hi: Option<f64>, r: f64) -> Option<f64> {
+    match (scale_lo, scale_hi) {
+        (Some(lo), Some(hi)) => Some(if r > 0.0 {
+            lo
+        } else if r < 0.0 {
+            hi
+        } else {
+            0.5 * (lo + hi)
+        }),
+        // Upper limit: only the above-center side (model above, r < 0) bites.
+        (None, Some(hi)) => (r < 0.0).then_some(hi),
+        // Lower limit: only the below-center side (model below, r > 0) bites.
+        (Some(lo), None) => (r > 0.0).then_some(lo),
+        (None, None) => None,
+    }
+}
+
 /// Configuration for a single fitted parameter's prior.
 ///
 /// Each parameter has:
 /// - `bounds`: `(lo, hi)` logistic-barrier hard bounds.
-/// - `gaussian`: Optional `(mean, sigma)` Gaussian centering prior.
+/// - `gaussian`: Optional `(mean, sigma_lo, sigma_hi)` Gaussian centering prior.
 ///
-/// When `gaussian` is `Some((mean, sigma))`, the posterior is pulled toward
-/// `mean`.  When `gaussian` is `None`, only the hard bounds apply
-/// (flat/uniform prior within the bounded region).
+/// When `gaussian` is `Some((mean, sigma_lo, sigma_hi))`, the posterior is
+/// pulled toward `mean`. The prior may be asymmetric: `sigma_lo` applies when
+/// the parameter is below `mean`, `sigma_hi` when it is above (the two are
+/// equal for an ordinary symmetric prior). This lets an external measurement of
+/// a parameter -- e.g. an optical H with a lopsided error bar -- be entered as a
+/// prior. When `gaussian` is `None`, only the hard bounds apply (flat/uniform
+/// prior within the bounded region).
 ///
 /// To effectively fix a parameter to a value, set tight bounds around it
 /// (e.g., `bounds = (val - 0.001, val + 0.001)`) -- the logistic barrier
@@ -423,9 +727,10 @@ pub struct FluxObs {
 pub struct ParamPrior {
     /// (lo, hi) logistic-barrier bounds.
     pub bounds: (f64, f64),
-    /// Optional Gaussian centering prior (mean, sigma).
-    /// `None` means flat prior within bounds.
-    pub gaussian: Option<(f64, f64)>,
+    /// Optional Gaussian centering prior `(mean, sigma_lo, sigma_hi)`.
+    /// `sigma_lo`/`sigma_hi` are the below-/above-mean 1-sigma widths (equal
+    /// when symmetric). `None` means flat prior within bounds.
+    pub gaussian: Option<(f64, f64, f64)>,
 }
 
 impl ParamPrior {
@@ -438,20 +743,41 @@ impl ParamPrior {
         }
     }
 
-    /// Create a prior with hard bounds and a Gaussian center.
+    /// Create a prior with hard bounds and a symmetric Gaussian center.
     #[must_use]
     pub fn with_gaussian(lo: f64, hi: f64, mean: f64, sigma: f64) -> Self {
         Self {
             bounds: (lo, hi),
-            gaussian: Some((mean, sigma)),
+            gaussian: Some((mean, sigma, sigma)),
         }
     }
 
-    /// Evaluate the log-prior contribution for this parameter.
+    /// Create a prior with hard bounds and an asymmetric Gaussian center.
+    ///
+    /// `sigma_lo` is the 1-sigma width below `mean`, `sigma_hi` the width above.
+    #[must_use]
+    pub fn with_gaussian_asym(lo: f64, hi: f64, mean: f64, sigma_lo: f64, sigma_hi: f64) -> Self {
+        Self {
+            bounds: (lo, hi),
+            gaussian: Some((mean, sigma_lo, sigma_hi)),
+        }
+    }
+
+    /// Evaluate the log-prior contribution for this parameter: a hard
+    /// [`Penalty::top_hat`] wall plus, if present, a Gaussian
+    /// [`Penalty::Center`]. Priors are never inflated by `f_sigma`
+    /// (`scale_factor = 1.0`) and carry no anchor.
     pub(super) fn log_prob(&self, x: f64) -> f64 {
-        let mut lp = logistic_barrier(x, self.bounds.0, self.bounds.1, BARRIER_K);
-        if let Some((mean, sigma)) = self.gaussian {
-            lp += gaussian_log_prior(x, mean, sigma);
+        let mut lp = Penalty::top_hat(self.bounds.0, self.bounds.1).cost(x, 1.0);
+        if let Some((mean, scale_lo, scale_hi)) = self.gaussian {
+            lp += Penalty::Center {
+                mean,
+                scale_lo: Some(scale_lo),
+                scale_hi: Some(scale_hi),
+                tail: Tail::Gaussian,
+                normalize: false,
+            }
+            .cost(x, 1.0);
         }
         lp
     }
@@ -459,7 +785,7 @@ impl ParamPrior {
     /// Midpoint of the bounds, or the Gaussian mean if set.
     pub(crate) fn center(&self) -> f64 {
         self.gaussian
-            .map_or(0.5 * (self.bounds.0 + self.bounds.1), |(m, _)| m)
+            .map_or(0.5 * (self.bounds.0 + self.bounds.1), |(m, _, _)| m)
     }
 }
 
@@ -536,12 +862,6 @@ pub(super) fn logistic_barrier(x: f64, lo: f64, hi: f64, k: f64) -> f64 {
         }
     }
     log_sigmoid(k * (x - lo)) + log_sigmoid(k * (hi - x))
-}
-
-/// Gaussian log-prior: -(x - mu)^2 / (2 sigma^2).
-fn gaussian_log_prior(x: f64, mean: f64, sigma: f64) -> f64 {
-    let z = (x - mean) / sigma;
-    -0.5 * z * z
 }
 
 /// Result of evaluating the forward model at a parameter point.
