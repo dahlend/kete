@@ -65,6 +65,21 @@ where
     /// `Np` may be zero (no fitted parameters), the typical case for a
     /// pure orbit-determination state.
     pub free_params: Vec<f64>,
+
+    /// Peak sigma-point Mahalanobis divergence ever recorded for this
+    /// trajectory during adaptive propagation, never reset.  The metric
+    /// measures the linear (STM-based) prediction error as a
+    /// sigma-equivalent distance in the propagated 6-D position+velocity
+    /// covariance -- see [`sigma_point_divergence`](crate::state::sigma_point_divergence)
+    /// for the full definition.
+    ///
+    /// `0.0` means the state has never been propagated through adaptive
+    /// diagnosis, or every diagnosis returned a clean linear result.
+    /// A value above the adaptive `split_threshold` indicates the
+    /// linear representation of this component lost accuracy during its
+    /// history and could not be split further (e.g. due to a
+    /// `max_components` budget cap).  Inherited by split children.
+    pub max_unresolved_divergence: f64,
 }
 
 impl<F, C> UncertainState<F, C>
@@ -97,6 +112,7 @@ where
             state,
             cov_matrix,
             free_params,
+            max_unresolved_divergence: 0.0,
         })
     }
 }

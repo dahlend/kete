@@ -174,6 +174,8 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(flux::solar_flux_py, m)?)?;
     m.add_function(wrap_pyfunction!(flux::neatm_model_flux_py, m)?)?;
     m.add_function(wrap_pyfunction!(flux::frm_model_flux_py, m)?)?;
+    m.add_function(wrap_pyfunction!(flux::tpm_model_flux_py, m)?)?;
+    m.add_function(wrap_pyfunction!(flux::roughness_mean_slope_to_rms_py, m)?)?;
     m.add_function(wrap_pyfunction!(flux::resolve_hg_params_py, m)?)?;
     m.add_function(wrap_pyfunction!(
         flux::comet_dust_phase_curve_correction_py,

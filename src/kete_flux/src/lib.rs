@@ -5,6 +5,7 @@
 //! - HG system: [`hg_apparent_mag`], [`hg_apparent_flux`], [`hg_phase_curve_correction`]
 //! - NEATM thermal model: [`neatm_thermal_flux`], [`neatm_total_flux`]
 //! - FRM thermal model: [`frm_thermal_flux`], [`frm_total_flux`]
+//! - TPM thermal model (thermal inertia): [`tpm_thermal_flux`], [`tpm_total_flux`]
 //!
 //
 // BSD 3-Clause License
@@ -39,16 +40,18 @@
 
 mod comets;
 mod common;
+mod crater;
 pub mod fitting;
 mod frm;
 mod neatm;
 mod reflected;
 mod shapes;
 mod sun;
+mod tpm;
 
 pub use self::comets::CometMKParams;
 pub use self::common::{
-    BandInfo, ColorCorrFn, ModelResults, black_body_flux, bond_albedo, flux_to_mag,
+    BandInfo, ColorCorrFn, ModelResults, assemble_total, black_body_flux, bond_albedo, flux_to_mag,
     lambertian_flux, lambertian_vis_scale_factor, mag_to_flux, sub_solar_temperature,
 };
 pub use self::frm::{frm_facet_temperature, frm_thermal_flux, frm_total_flux};
@@ -60,3 +63,8 @@ pub use self::reflected::{
 };
 pub use self::shapes::{ConvexShape, DEFAULT_SHAPE, Facet, TriangleFacet, TriangleShape};
 pub use self::sun::{solar_flux, solar_flux_black_body};
+pub use self::tpm::{
+    EllipsoidTemplate, RoughnessCorrection, SpinState, ThermalParams, TpmFieldGrid, TpmShape,
+    gamma_from_mean_slope, mean_slope_angle, rms_slope, tpm_thermal_flux, tpm_thermal_flux_cached,
+    tpm_thermal_flux_rough, tpm_total_flux, tpm_total_flux_cached, tpm_total_flux_rough,
+};

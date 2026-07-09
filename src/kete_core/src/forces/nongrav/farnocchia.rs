@@ -1,6 +1,6 @@
 //! Farnocchia et al. 2025 oblate-spheroid radiation + thermal recoil force.
 
-use nalgebra::Vector3;
+use nalgebra::{Matrix3xX, Vector3};
 
 use crate::constants::{F0_OVER_C_AU_DAY2, SOLAR_FLUX, STEFAN_BOLTZMANN};
 use crate::errors::{Error, KeteResult};
@@ -184,7 +184,13 @@ impl ParameterizedForce for FarnocchiaNonGrav {
         let srp_pole = four_ninths_a0 * (psi_z - psi_x) * r_dot_s;
         let mut accel = scale * (srp_radial * r_hat + srp_pole * s_hat);
 
-        if self.absorptivity > 0.0 && lambda_0 > 0.0 {
+        // Thermal recoil. The zero-lag limit `lambda_0 = 0` is included:
+        // there `Lambda_1 = 1` and `Lambda_2 = 0`, leaving the radial recoil
+        // from instantaneous re-emission with no transverse (Yarkovsky)
+        // component. This keeps the force continuous in `lambda_0`, which the
+        // fitters rely on when the parameter starts at 0. Set `absorptivity`
+        // to 0 to disable the thermal terms entirely.
+        if self.absorptivity > 0.0 && lambda_0 >= 0.0 {
             let lambda = lambda_0 / j2_theta.powf(0.75) * r.powf(1.5);
             let denom = 1.0 + 2.0 * lambda + 2.0 * lambda * lambda;
             let big_lambda_1 = (1.0 + lambda) / denom;
@@ -201,5 +207,172 @@ impl ParameterizedForce for FarnocchiaNonGrav {
         }
 
         Ok(Vector::<Equatorial>::new(accel.into()))
+    }
+
+    fn parameter_jacobian(
+        &self,
+        _time: Time<TDB>,
+        pos: &Vector<Equatorial>,
+        _vel: &Vector<Equatorial>,
+        free_params: &[f64],
+    ) -> KeteResult<Matrix3xX<f64>> {
+        let a_over_m = free_params[0];
+        let lambda_0 = free_params[1];
+        let e = self.flattening;
+
+        // Geometry mirrors `accel`; the FD-consistency test guards the two
+        // copies against drifting apart.
+        let s_hat: Vector3<f64> = self.spin_pole.into();
+        let pos_v: Vector3<f64> = (*pos).into();
+        let r = pos_v.norm();
+        let r_inv = r.recip();
+        let r_hat = pos_v * r_inv;
+        let g = r_inv * r_inv;
+
+        let (psi_x, psi_z, _sigma) = shape_factors(e);
+
+        let r_dot_s = r_hat.dot(&s_hat);
+        let cos_theta_0 = -r_dot_s;
+        let sin2_theta_0 = (1.0 - cos_theta_0 * cos_theta_0).max(0.0);
+        let j2_theta = (e * e * sin2_theta_0 + cos_theta_0 * cos_theta_0).sqrt();
+
+        // The whole acceleration is linear in `a_over_m`, so its column is the
+        // acceleration evaluated per unit `a_over_m`.
+        let unit_scale = F0_OVER_C_AU_DAY2 * g;
+        let four_ninths_a0 = 4.0 / 9.0 * self.albedo;
+        let srp_radial = j2_theta + four_ninths_a0 * psi_x;
+        let srp_pole = four_ninths_a0 * (psi_z - psi_x) * r_dot_s;
+        let mut d_a_over_m = unit_scale * (srp_radial * r_hat + srp_pole * s_hat);
+
+        let mut d_lambda_0 = Vector3::zeros();
+        if self.absorptivity > 0.0 && lambda_0 >= 0.0 {
+            // `lambda = lambda_0 * c` with `c` position-only, so
+            // `d/d(lambda_0) = c * d/d(lambda)`.
+            let c = r.powf(1.5) / j2_theta.powf(0.75);
+            let lambda = lambda_0 * c;
+            let denom = 1.0 + 2.0 * lambda + 2.0 * lambda * lambda;
+            let big_lambda_1 = (1.0 + lambda) / denom;
+            let big_lambda_2 = lambda / denom;
+
+            let four_ninths_alpha = 4.0 / 9.0 * self.absorptivity;
+
+            let t1_radial = big_lambda_1 * psi_x;
+            let t1_pole = (psi_z - big_lambda_1 * psi_x) * r_dot_s;
+            d_a_over_m += (four_ninths_alpha * unit_scale) * (t1_radial * r_hat + t1_pole * s_hat);
+            d_a_over_m -=
+                (four_ninths_alpha * unit_scale * big_lambda_2 * psi_x) * r_hat.cross(&s_hat);
+
+            // d(Lambda_1)/d(lambda) and d(Lambda_2)/d(lambda).
+            let inv_denom2 = (denom * denom).recip();
+            let d_big_1 = -(1.0 + 4.0 * lambda + 2.0 * lambda * lambda) * inv_denom2;
+            let d_big_2 = (1.0 - 2.0 * lambda * lambda) * inv_denom2;
+
+            d_lambda_0 = (a_over_m * four_ninths_alpha * unit_scale * psi_x * c)
+                * (d_big_1 * (r_hat - r_dot_s * s_hat) - d_big_2 * r_hat.cross(&s_hat));
+        }
+
+        let mut out = Matrix3xX::<f64>::zeros(2);
+        out.set_column(0, &d_a_over_m);
+        out.set_column(1, &d_lambda_0);
+        Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn force() -> FarnocchiaNonGrav {
+        FarnocchiaNonGrav::new(0.15, 0.9, 0.9, Vector::<Equatorial>::new([0.2, -0.3, 0.93]))
+            .unwrap()
+    }
+
+    fn pos() -> Vector<Equatorial> {
+        Vector::<Equatorial>::new([1.2, -0.4, 0.2])
+    }
+    fn vel() -> Vector<Equatorial> {
+        Vector::<Equatorial>::new([0.003, 0.011, -0.001])
+    }
+    fn epoch() -> Time<TDB> {
+        Time::<TDB>::new(2_451_545.0)
+    }
+
+    fn accel_at(f: &FarnocchiaNonGrav, params: &[f64]) -> Vector3<f64> {
+        f.accel(epoch(), &pos(), &vel(), params).unwrap().into()
+    }
+
+    fn jac_col(f: &FarnocchiaNonGrav, params: &[f64], col: usize) -> Vector3<f64> {
+        let jac = f
+            .parameter_jacobian(epoch(), &pos(), &vel(), params)
+            .unwrap();
+        Vector3::new(jac[(0, col)], jac[(1, col)], jac[(2, col)])
+    }
+
+    #[test]
+    fn analytic_jacobian_matches_finite_difference() {
+        let f = force();
+        let params = [2e-5, 0.7];
+        let steps = [1e-9, 1e-6];
+        for col in 0..2 {
+            let analytic = jac_col(&f, &params, col);
+            let mut p = params;
+            p[col] += steps[col];
+            let a_plus = accel_at(&f, &p);
+            p[col] = params[col] - steps[col];
+            let a_minus = accel_at(&f, &p);
+            let fd = (a_plus - a_minus) / (2.0 * steps[col]);
+            let scale = fd.norm();
+            assert!(
+                (analytic - fd).norm() < 1e-6 * scale,
+                "column {col}: analytic {analytic:?} vs fd {fd:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn continuous_at_zero_lag() {
+        let f = force();
+        let a_zero = accel_at(&f, &[1e-5, 0.0]);
+        let a_eps = accel_at(&f, &[1e-5, 1e-12]);
+        assert!(
+            (a_zero - a_eps).norm() < 1e-9 * a_zero.norm(),
+            "zero-lag limit is discontinuous"
+        );
+
+        // The zero-lag limit keeps the radial recoil from instantaneous
+        // re-emission; disabling thermal entirely (absorptivity = 0) must
+        // differ from lambda_0 = 0.
+        let f_no_thermal =
+            FarnocchiaNonGrav::new(0.15, 0.0, 0.9, Vector::<Equatorial>::new([0.2, -0.3, 0.93]))
+                .unwrap();
+        let a_srp_only = accel_at(&f_no_thermal, &[1e-5, 0.0]);
+        assert!(
+            (a_zero - a_srp_only).norm() > 1e-3 * a_zero.norm(),
+            "lambda_0 = 0 should retain the radial thermal recoil"
+        );
+    }
+
+    #[test]
+    fn jacobian_well_defined_at_fit_start() {
+        let f = force();
+
+        // Both free parameters at the fit's 0 starting point: the a_over_m
+        // column is the finite unit acceleration; the lambda_0 column is
+        // exactly zero because the whole force scales with a_over_m.
+        let col_am = jac_col(&f, &[0.0, 0.0], 0);
+        let col_l0 = jac_col(&f, &[0.0, 0.0], 1);
+        assert!(col_am.norm().is_finite() && col_am.norm() > 0.0);
+        assert_eq!(col_l0.norm(), 0.0);
+
+        // Once a_over_m is off zero the lambda_0 column is finite and matches
+        // a forward difference (valid now that the force is continuous at 0).
+        let params = [1e-5, 0.0];
+        let analytic = jac_col(&f, &params, 1);
+        let h = 1e-8;
+        let fd = (accel_at(&f, &[1e-5, h]) - accel_at(&f, &params)) / h;
+        assert!(
+            (analytic - fd).norm() < 1e-6 * analytic.norm(),
+            "lambda_0 partial at 0: analytic {analytic:?} vs fd {fd:?}"
+        );
     }
 }

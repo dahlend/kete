@@ -41,7 +41,7 @@ use crate::obs::AstrometricObservation;
 
 use crate::orbit_fitting::{StmObs, accumulate_normal_equations, stm_sweep};
 use kete_core::constants::GMS;
-use kete_core::forces::FrozenNonGrav;
+use kete_core::forces::{NonGravMask, ParameterizedForce};
 
 use kete_core::frames::{Equatorial, SSB};
 use kete_core::kepler::propagate_two_body;
@@ -267,8 +267,10 @@ struct OrbitalPosterior {
     included: Vec<bool>,
     /// Whether to include extended (asteroid) perturbers.
     include_asteroids: bool,
-    /// Non-gravitational model (if any).
-    non_grav: Option<FrozenNonGrav>,
+    /// Non-gravitational force template (if any).
+    ng_mask: Option<NonGravMask>,
+    /// Seed non-grav parameter values (empty when `ng_mask` is `None`).
+    ng_seed_values: Vec<f64>,
 }
 
 impl OrbitalPosterior {
@@ -278,17 +280,12 @@ impl OrbitalPosterior {
         &self.seed_vec + &self.whiten_l * &xi_vec
     }
 
-    /// Build a `State` (and optional `NonGravFit`) from the full
+    /// Extract a `State` and current non-grav values from the full
     /// Cartesian parameter vector.
     fn vec_to_state(
         &self,
         cart_full: &DVector<f64>,
-    ) -> (
-        State<Equatorial, SSB>,
-        Option<FrozenNonGrav>,
-        [f64; 3],
-        [f64; 3],
-    ) {
+    ) -> (State<Equatorial, SSB>, Vec<f64>, [f64; 3], [f64; 3]) {
         let pos: [f64; 3] = cart_full.as_slice()[..3].try_into().unwrap();
         let vel: [f64; 3] = cart_full.as_slice()[3..6].try_into().unwrap();
 
@@ -296,13 +293,10 @@ impl OrbitalPosterior {
         state.pos = pos.into();
         state.vel = vel.into();
 
-        let ng = self.non_grav.as_ref().map(|model| {
-            let mut m = model.clone();
-            m.values = (0..m.values.len()).map(|k| cart_full[6 + k]).collect();
-            m
-        });
+        let np = self.ng_seed_values.len();
+        let ng_values: Vec<f64> = (0..np).map(|k| cart_full[6 + k]).collect();
 
-        (state, ng, pos, vel)
+        (state, ng_values, pos, vel)
     }
 
     /// Compute logp and gradient from an STM sweep result.
@@ -383,7 +377,7 @@ impl CpuLogpFunc for OrbitalPosterior {
 
     fn logp(&mut self, position: &[f64], gradient: &mut [f64]) -> Result<f64, Self::LogpError> {
         let cart_full = self.xi_to_cart(position);
-        let (trial_state, trial_ng, pos, vel) = self.vec_to_state(&cart_full);
+        let (trial_state, trial_ng_values, pos, vel) = self.vec_to_state(&cart_full);
 
         // Hard wall: reject unbound (hyperbolic) proposals.
         // Two-body energy: E = v^2/2 - mu/r.  Bound <=> E < 0 <=> v^2 < 2*mu/r.
@@ -402,7 +396,8 @@ impl CpuLogpFunc for OrbitalPosterior {
             &self.obs,
             &self.included,
             self.include_asteroids,
-            trial_ng.as_ref(),
+            self.ng_mask.as_ref(),
+            &trial_ng_values,
         )
         .map_err(|e| PropagationError {
             msg: format!("STM sweep failed: {e}"),
@@ -430,13 +425,14 @@ fn build_cholesky(
     seed: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
     include_asteroids: bool,
-    non_grav: Option<&FrozenNonGrav>,
+    mask: Option<&NonGravMask>,
+    ng_values: &[f64],
 ) -> DMatrix<f64> {
-    let np = non_grav.map_or(0, |ng: &FrozenNonGrav| ng.values.len());
+    let np = mask.map_or(0, ParameterizedForce::n_free_params);
     let included = vec![true; obs.len()];
 
     if let Ok((info_mat, _, _)) =
-        accumulate_normal_equations(seed, obs, &included, include_asteroids, non_grav)
+        accumulate_normal_equations(seed, obs, &included, include_asteroids, mask, ng_values)
         && let Some(chol) = sqrt_cov_from_info(&info_mat)
     {
         return chol;
@@ -542,13 +538,14 @@ pub fn fit_orbit_mcmc(
     include_asteroids: bool,
     num_draws: usize,
     num_tune: usize,
-    non_grav: Option<&FrozenNonGrav>,
+    non_grav: Option<&NonGravMask>,
     maxdepth: u64,
     target_accept: f64,
 ) -> KeteResult<OrbitSamples> {
     if seeds.is_empty() {
         return Err(Error::ValueError("No seeds provided".into()));
     }
+    let ng_zeros: Vec<f64> = non_grav.map_or_else(Vec::new, |m| vec![0.0; m.n_free_params()]);
 
     // Propagate all seeds to the first seed's epoch if needed.
     let epoch = seeds[0].epoch;
@@ -606,7 +603,7 @@ pub fn fit_orbit_mcmc(
     // Pre-compute Cholesky factors for each seed (serial, fast).
     let chol_factors: Vec<DMatrix<f64>> = seeds
         .iter()
-        .map(|seed| build_cholesky(seed, &sorted_obs, include_asteroids, non_grav))
+        .map(|seed| build_cholesky(seed, &sorted_obs, include_asteroids, non_grav, &ng_zeros))
         .collect();
 
     // Scale warmup across sub-chains: each sub-chain adapts independently,
@@ -629,6 +626,7 @@ pub fn fit_orbit_mcmc(
                 &sorted_obs,
                 include_asteroids,
                 non_grav,
+                &ng_zeros,
                 draws,
                 tune_per_chain,
                 maxdepth,
@@ -670,14 +668,15 @@ fn run_single_chain(
     whiten_l: &DMatrix<f64>,
     sorted_obs: &Arc<[AstrometricObservation]>,
     include_asteroids: bool,
-    non_grav: Option<&FrozenNonGrav>,
+    mask: Option<&NonGravMask>,
+    ng_values: &[f64],
     num_draws: usize,
     num_tune: usize,
     maxdepth: u64,
     target_accept: f64,
     chain_idx: u64,
 ) -> KeteResult<(Vec<Vec<f64>>, Vec<bool>, Vec<f64>)> {
-    let np = non_grav.map_or(0, |ng: &FrozenNonGrav| ng.values.len());
+    let np = ng_values.len();
     let d = 6 + np;
 
     // Seed vector in Cartesian coordinates.
@@ -690,10 +689,8 @@ fn run_single_chain(
     seed_vec[3] = vel[0];
     seed_vec[4] = vel[1];
     seed_vec[5] = vel[2];
-    if let Some(ng) = non_grav {
-        for k in 0..np {
-            seed_vec[6 + k] = ng.values[k];
-        }
+    for k in 0..np {
+        seed_vec[6 + k] = ng_values[k];
     }
 
     // If the seed orbit is hyperbolic, project velocity to make it
@@ -718,7 +715,8 @@ fn run_single_chain(
         obs: Arc::clone(sorted_obs),
         included: vec![true; sorted_obs.len()],
         include_asteroids,
-        non_grav: non_grav.cloned(),
+        ng_mask: mask.cloned(),
+        ng_seed_values: ng_values.to_vec(),
     };
 
     let mut settings = LowRankNutsSettings {
@@ -951,7 +949,8 @@ mod tests {
             obs: Arc::clone(&obs),
             included: vec![],
             include_asteroids: false,
-            non_grav: None,
+            ng_mask: None,
+            ng_seed_values: vec![],
         };
 
         // Evaluate at a small offset from the seed.
@@ -1036,7 +1035,8 @@ mod tests {
             obs: Arc::clone(&obs),
             included: vec![],
             include_asteroids: false,
-            non_grav: None,
+            ng_mask: None,
+            ng_seed_values: vec![],
         };
 
         // Evaluate at a moderate offset in whitened space.

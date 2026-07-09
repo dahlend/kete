@@ -4,9 +4,7 @@
 
 use kete_core::Band;
 
-use kete_core::forces::FrozenForce;
-
-use kete_core::forces::FrozenNonGrav;
+use kete_core::forces::{NonGravMask, ParameterMask, ParameterizedForce};
 use kete_core::frames::{Equatorial, Vector};
 use kete_core::prelude::*;
 use kete_fitting::{
@@ -22,11 +20,8 @@ use crate::state::PyUncertainState;
 use crate::time::PyTime;
 use crate::vector::PyVector;
 
-/// Build a [`FrozenNonGrav`] from a Python-side [`PyNonGravModel`].
-fn py_to_fit(m: &PyNonGravModel) -> FrozenNonGrav {
-    let template = m.to_force();
-    let values = m.initial_values();
-    FrozenForce::new(template, values).expect("template n_free_params matches values len")
+fn py_to_fit(m: &PyNonGravModel) -> NonGravMask {
+    m.to_mask()
 }
 
 /// Radians to arcseconds conversion factor.
@@ -536,11 +531,11 @@ impl PyOrbitFit {
     /// The uncertain orbit state (state + covariance + non-grav model).
     #[getter]
     fn uncertain_state(&self) -> PyUncertainState {
-        use kete_core::forces::{ParameterMask, ParameterizedForce};
-        let mask = self.inner.non_grav.as_ref().map(|f| {
-            let template = f.inner.clone();
-            let n = template.n_free_params();
-            ParameterMask::new(template, vec![None; n]).expect("n matches n_free_params")
+        // Build an all-None ParameterMask from the FrozenNonGrav inner kind so
+        // PyUncertainState gets the template it needs for re-propagation.
+        let mask = self.inner.non_grav.as_ref().and_then(|f| {
+            let n = f.inner.n_free_params();
+            ParameterMask::new(f.inner.clone(), vec![None; n]).ok()
         });
         PyUncertainState {
             state: self.inner.uncertain_state.clone(),
@@ -629,6 +624,8 @@ impl PyOrbitFit {
     #[getter]
     fn non_grav(&self) -> Option<PyNonGravModel> {
         let f = self.inner.non_grav.as_ref()?;
+        // f is FrozenNonGrav = FrozenForce<NonGravKind>: inner is the kind,
+        // values are the baked-in parameter values.
         PyNonGravModel::from_force(&f.inner, &f.values)
     }
 
@@ -685,7 +682,10 @@ impl PyOrbitFit {
 /// observations : list
 ///     List of :class:`~kete.fitting.Observation` to fit.
 /// non_grav : :class:`~kete.propagation.NonGravModel`, optional
-///     Non-gravitational force model.
+///     Non-gravitational force model. Parameters set to NaN in the model are
+///     fit (starting from 0); parameters with concrete values are held fixed.
+///     A model with no NaN parameters is used as a fixed force and nothing
+///     in it is fit.
 /// include_asteroids : bool
 ///     If True, include asteroid masses in the force model (slower but more
 ///     accurate for near-Earth objects). Default is False.
@@ -1019,6 +1019,8 @@ impl PyOrbitSamples {
 ///     sampling parameters.  These draws are discarded.  Default is 500.
 /// non_grav : :class:`~kete.propagation.NonGravModel`, optional
 ///     Shared non-gravitational force model applied to all chains.
+///     Parameters set to NaN in the model are sampled; parameters with
+///     concrete values are held fixed.
 /// maxdepth : int
 ///     Maximum tree depth for the sampler.  Higher values allow more
 ///     thorough exploration at greater computational cost.
@@ -1063,7 +1065,7 @@ pub fn fit_orbit_mcmc_py(
     };
 
     let obs: Vec<AstrometricObservation> = observations.into_iter().map(|o| o.obs).collect();
-    let ng: Option<FrozenNonGrav> = non_grav.as_ref().map(py_to_fit);
+    let ng: Option<NonGravMask> = non_grav.as_ref().map(py_to_fit);
 
     let result = fit_orbit_mcmc(
         &ssb_seeds,

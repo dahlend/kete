@@ -28,7 +28,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use kete_core::forces::{FrozenForce, ParameterMask, ParameterizedForce, Sum};
+use kete_core::forces::{FrozenForce, ParameterizedForce, Sum};
 use kete_core::frames::{Equatorial, SSB, SunCenter};
 use kete_core::prelude::{KeteResult, State};
 use kete_core::state::propagate_with_stm;
@@ -91,11 +91,9 @@ where
             jd,
         )?,
         Some(frozen) => {
-            let n = frozen.inner.n_free_params();
-            let variational = ParameterMask::new(frozen.inner.clone(), vec![None; n])?;
             let force = Sum::new(
                 SpkNBody::new(&spk, include_extended),
-                Recenter::<SSB, _>::new(&spk, variational),
+                Recenter::<SSB, _>::new(&spk, frozen.inner.clone()),
             );
             propagate_with_stm(
                 &force,

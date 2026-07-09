@@ -30,11 +30,247 @@
 //! Core types and helper functions shared across the fitting submodules.
 
 use crate::{
-    BandInfo, ModelResults, flux_to_mag, frm_total_flux, hg_apparent_flux, hg_apparent_mag,
-    mag_to_flux, neatm_total_flux,
+    BandInfo, EllipsoidTemplate, ModelResults, RoughnessCorrection, SpinState, ThermalParams,
+    TpmFieldGrid, TpmShape, flux_to_mag, frm_total_flux, gamma_from_mean_slope, hg_apparent_flux,
+    hg_apparent_mag, mag_to_flux, neatm_total_flux, sub_solar_temperature, tpm_total_flux_cached,
 };
 use kete_core::constants::V_MAG_ZERO;
+use kete_core::errors::{Error, KeteResult};
 use nalgebra::Vector3;
+use std::sync::Arc;
+
+/// Fixed surface roughness for a TPM fit: the precomputed [`RoughnessCorrection`]
+/// applied to the smooth flux. Roughness is an input (it is strongly degenerate with
+/// thermal inertia), not a fitted parameter.
+///
+/// User-facing roughness is the mean slope angle `theta_bar` (see
+/// [`mean_slope_angle`](crate::mean_slope_angle)); `gamma` here is the internal crater
+/// opening half-angle it maps to, which is what the correction table is keyed on.
+#[derive(Debug, Clone)]
+pub struct RoughnessFit {
+    /// Internal crater opening half-angle (radians), derived from the configured mean
+    /// slope angle via [`gamma_from_mean_slope`](crate::gamma_from_mean_slope).
+    pub gamma: f64,
+    /// Shared correction table covering the relevant `Theta`/phase range.
+    pub correction: Arc<RoughnessCorrection>,
+}
+
+/// Fixed TPM configuration for fitting: spin state, body shape, and a precomputed
+/// field grid.
+///
+/// Spin and shape are inputs (from lightcurve inversion), not fitted parameters. The
+/// grid is shared (via `Arc`) across chains and observations to amortize the heat
+/// solve.
+#[derive(Debug, Clone)]
+pub struct TpmConfig {
+    /// Spin state (pole, rotation period, phase).
+    pub spin: SpinState,
+    /// Body-fixed shape (sphere, ellipsoid, or custom mesh).
+    pub shape: TpmShape,
+    /// Coarse (low-facet) shape used only as the cheap forward model for the
+    /// Nelder-Mead seed and whitening; the posterior chains use the full `shape`.
+    /// For custom meshes (which cannot be coarsened) this is just `shape`.
+    pub seed_shape: TpmShape,
+    /// Precomputed diurnal field grid covering the relevant `Theta` range.
+    pub grid: Arc<TpmFieldGrid>,
+    /// Optional surface roughness applied via the correction table.
+    pub roughness: Option<RoughnessFit>,
+    /// Fit the oblate axis ratio `c/a` (`b/a` fixed at 1) as a free parameter. When any
+    /// shape/phase extra is fit, the shape is rebuilt per step from `template` at the
+    /// sampled axis ratios, so `shape` / `seed_shape` are ignored. The
+    /// `(Theta, sub-solar-lat)` cache is shape-independent, so this adds only a re-mesh
+    /// + re-render, no heat solve.
+    pub fit_c_a: bool,
+    /// Fit the axis ratio `b/a` as a free parameter (a triaxial body). Implies fitting
+    /// `c/a` too; a triaxial shape produces a rotational lightcurve.
+    pub fit_b_a: bool,
+    /// Fit the rotation phase `phase0` (radians) as a free parameter. Relevant only for
+    /// a non-axisymmetric (triaxial) shape. Restricted to `[0, pi)` -- an ellipsoid is
+    /// point-symmetric, so `phase0` and `phase0 + pi` are degenerate.
+    pub fit_phase0: bool,
+    /// Reusable ellipsoid tessellation used to rebuild the shape cheaply when an axis
+    /// ratio is fit. Resolution should match `shape`/`seed_shape`.
+    pub template: Option<EllipsoidTemplate>,
+}
+
+impl TpmConfig {
+    /// Build the configuration for a TPM fit from the observations and priors:
+    /// construct the sampling shapes, span a field grid over the `Theta` range
+    /// implied by the thermal-inertia prior and the observation distances, and
+    /// set up the roughness correction table when requested.
+    ///
+    /// `mean_slope` is the surface mean slope angle in radians (see
+    /// [`gamma_from_mean_slope`]). `fit_shape` is `(fit_c_a, fit_b_a, fit_phase0)`.
+    /// When `fit_roughness` is set the correction table is loaded even without a
+    /// fixed `mean_slope`; the prior center seeds the fallback crater angle.
+    ///
+    /// # Errors
+    /// Returns `ValueError` if no valid thermal-parameter range can be derived
+    /// from the observations, or if the shipped roughness table does not cover
+    /// the observation bands.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "TPM configuration has many inputs"
+    )]
+    pub fn for_fit(
+        obs: &[FluxObs],
+        spin: SpinState,
+        axis_ratios: Option<(f64, f64)>,
+        mean_slope: Option<f64>,
+        fit_roughness: bool,
+        fit_shape: (bool, bool, bool),
+        emissivity: f64,
+        priors: &FluxPriors,
+    ) -> KeteResult<Self> {
+        // Sampling shape facet counts. A smooth convex disk-integrated flux converges
+        // quickly in facet count: ~256 facets match the full 2048-facet mesh to <0.1%
+        // in flux (see `facet_count_study`) at ~8x lower render cost, which dominates
+        // the fit. The Nelder-Mead seed only locates the basin, so it uses an even
+        // coarser mesh. (Triaxial shapes have a rotational lightcurve and may warrant
+        // more facets; the common axisymmetric/oblate case is smooth and converges
+        // fastest.)
+        const FIT_SPHERE_FACETS: u32 = 256;
+        const FIT_ELLIPSOID_DIV: u32 = 6; // 8 * 6^2 = 288 facets
+        const SEED_SPHERE_FACETS: u32 = 128;
+        const SEED_ELLIPSOID_DIV: u32 = 4; // 8 * 4^2 = 128 facets
+
+        let (fit_c_a, fit_b_a, fit_phase0) = fit_shape;
+        let (shape, seed_shape) = match axis_ratios {
+            Some((b_over_a, c_over_a)) => (
+                TpmShape::ellipsoid_with_div(FIT_ELLIPSOID_DIV, 1.0, b_over_a, c_over_a),
+                TpmShape::ellipsoid_with_div(SEED_ELLIPSOID_DIV, 1.0, b_over_a, c_over_a),
+            ),
+            None => (
+                TpmShape::sphere_with_facets(FIT_SPHERE_FACETS),
+                TpmShape::sphere_with_facets(SEED_SPHERE_FACETS),
+            ),
+        };
+
+        // When fitting any axis ratio, the shape is rebuilt per step from this
+        // template at the sampled (b/a, c/a), so `shape`/`seed_shape` above are
+        // unused.
+        let template = (fit_c_a || fit_b_a).then(|| EllipsoidTemplate::new(FIT_ELLIPSOID_DIV));
+
+        // Span the grid over the prior's thermal-inertia bounds across all
+        // observation distances, padded so the sampler stays inside the grid. T_ss
+        // depends only weakly on albedo, so a fiducial value is used for the range
+        // estimate. Theta scales linearly with thermal inertia, so a unit-inertia
+        // [`ThermalParams::thermal_parameter`] gives the per-observation scale.
+        let (gamma_lo, gamma_hi) = priors.thermal_inertia.bounds;
+        let unit_inertia = ThermalParams {
+            thermal_inertia: 1.0,
+            emissivity,
+        };
+        let mut theta_min = f64::INFINITY;
+        let mut theta_max: f64 = 0.0;
+        for ob in obs {
+            let sun_dist = ob.sun2obj.norm();
+            let t_ss = sub_solar_temperature(sun_dist, 0.1, 0.15, 1.0, emissivity);
+            if t_ss <= 0.0 {
+                continue;
+            }
+            let scale = unit_inertia.thermal_parameter(spin.period, t_ss);
+            theta_min = theta_min.min(gamma_lo * scale);
+            theta_max = theta_max.max(gamma_hi * scale);
+        }
+        if !theta_max.is_finite() || theta_max <= 0.0 {
+            return Err(Error::ValueError(
+                "Could not determine a valid thermal-parameter range from the observations.".into(),
+            ));
+        }
+        // Padded range for the field grid (keeps the sampler off the grid edges).
+        let grid_theta_min = (theta_min * 0.5).max(1e-4);
+        let grid_theta_max = theta_max * 2.0;
+
+        // Surface roughness: load the shipped correction table and apply it cheaply
+        // per evaluation. When roughness is fitted the table is still required (the
+        // sampled mean slope drives it); the stored `gamma` is only a fallback
+        // placeholder, taken from the prior center.
+        let roughness = if mean_slope.is_some() || fit_roughness {
+            let theta_bar = mean_slope.unwrap_or_else(|| priors.roughness.center());
+            let table = RoughnessCorrection::shipped();
+            // Fail loudly if the table does not cover the observation bands (the
+            // nearest-band snap would be a silently wrong correction). The Theta /
+            // T_ss axes clamp gracefully at their asymptotic edges, so they are not
+            // gated here.
+            validate_roughness_coverage(&table, obs)?;
+            Some(RoughnessFit {
+                gamma: gamma_from_mean_slope(theta_bar),
+                correction: Arc::new(table),
+            })
+        } else {
+            None
+        };
+
+        Ok(Self {
+            spin,
+            shape,
+            seed_shape,
+            grid: Arc::new(TpmFieldGrid::new(grid_theta_min, grid_theta_max)?),
+            roughness,
+            fit_c_a,
+            fit_b_a,
+            fit_phase0,
+            template,
+        })
+    }
+}
+
+/// Verify the shipped roughness correction table actually covers a fit's observation
+/// bands. Outside its band set the table snaps to the nearest tabulated band, which
+/// for a far-off wavelength is a silently wrong correction -- so surface that as a
+/// clear up-front error. (The table's thermal-parameter and sub-solar-temperature
+/// axes clamp *gracefully* at their edges -- those regimes are the smooth low/high
+/// asymptotes -- so they are documented, not gated.)
+fn validate_roughness_coverage(table: &RoughnessCorrection, obs: &[FluxObs]) -> KeteResult<()> {
+    // The table's WISE bands are far apart, so require each observation to sit within
+    // 15% of a tabulated band -- else the nearest-band snap is meaningless.
+    const WAVELENGTH_TOL: f64 = 0.15;
+    let table_wl = table.wavelengths();
+    for ob in obs {
+        let wl = ob.band.wavelength;
+        let nearest = table_wl
+            .iter()
+            .copied()
+            .min_by(|a, b| (a - wl).abs().total_cmp(&(b - wl).abs()))
+            .unwrap_or(f64::NAN);
+        if !nearest.is_finite() || (nearest - wl).abs() > WAVELENGTH_TOL * wl {
+            return Err(Error::ValueError(format!(
+                "roughness needs a correction table covering every observation band, but \
+                 the shipped table (WISE bands {table_wl:?} nm) has none within \
+                 {pct:.0}% of {wl:.0} nm. Fit without roughness, or use the on-the-fly \
+                 rough forward model, which computes at the true wavelength.",
+                pct = WAVELENGTH_TOL * 100.0,
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Which shape / phase quantities a TPM fit treats as free parameters. Appended (in
+/// this order) to the end of the TPM parameter vector so the base indices stay stable.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ShapeFit {
+    pub fit_c_a: bool,
+    pub fit_b_a: bool,
+    pub fit_phase0: bool,
+}
+
+impl ShapeFit {
+    /// Derive the descriptor from an optional config (all-false for non-TPM fits).
+    pub(crate) fn from_config(tpm: Option<&TpmConfig>) -> Self {
+        tpm.map_or(Self::default(), |c| Self {
+            fit_c_a: c.fit_c_a,
+            fit_b_a: c.fit_b_a,
+            fit_phase0: c.fit_phase0,
+        })
+    }
+
+    /// Number of appended free parameters.
+    pub(crate) fn n_extra(self) -> usize {
+        usize::from(self.fit_c_a) + usize::from(self.fit_b_a) + usize::from(self.fit_phase0)
+    }
+}
 
 /// Degrees of freedom for the Student-t likelihood.
 pub(super) const STUDENT_NU: f64 = 5.0;
@@ -51,20 +287,37 @@ pub enum Model {
     Frm,
     /// HG reflected-light model only -- fits H and G.
     Hg,
+    /// Thermophysical model -- thermal inertia is a free parameter; spin is a fixed
+    /// input. Requires a [`TpmConfig`].
+    Tpm,
+    /// Thermophysical model with surface roughness (mean slope angle `theta_bar`) as an
+    /// additional free parameter, applied via the correction table. Requires a
+    /// [`TpmConfig`] carrying a [`RoughnessFit`]. Roughness is partially degenerate
+    /// with thermal inertia, so it needs multi-band and phase-angle coverage to
+    /// separate the two.
+    TpmRough,
 }
 
 impl Model {
     /// Number of free parameters.
     ///
-    /// NEATM: `[D, beaming, H, G, f_sigma, R_IR]` -> 6.
-    /// FRM:   `[D, H, G, f_sigma, R_IR]`           -> 5.
-    /// HG:    `[H, G, f_sigma]`                     -> 3.
-    #[must_use]
-    pub fn dim(self) -> usize {
-        match self {
-            Self::Neatm => 6,
+    /// NEATM:      `[D, beaming, H, G, f_sigma, R_IR]`                    -> 6.
+    /// TPM:        `[D, thermal_inertia, H, G, f_sigma, R_IR]`            -> 6.
+    /// `TpmRough`: `[D, thermal_inertia, roughness, H, G, f_sigma, R_IR]` -> 7.
+    /// FRM:        `[D, H, G, f_sigma, R_IR]`                             -> 5.
+    /// HG:         `[H, G, f_sigma]`                                      -> 3.
+    pub(crate) fn dim(self, shape_fit: ShapeFit) -> usize {
+        let base = match self {
+            Self::TpmRough => 7,
+            Self::Neatm | Self::Tpm => 6,
             Self::Frm => 5,
             Self::Hg => 3,
+        };
+        // Fitted shape/phase extras are appended at the end of the TPM vector.
+        base + if self.is_tpm() {
+            shape_fit.n_extra()
+        } else {
+            0
         }
     }
 
@@ -72,6 +325,18 @@ impl Model {
     #[must_use]
     pub fn is_neatm(self) -> bool {
         matches!(self, Self::Neatm)
+    }
+
+    /// Whether this is a TPM model (smooth or with fitted roughness).
+    #[must_use]
+    pub fn is_tpm(self) -> bool {
+        matches!(self, Self::Tpm | Self::TpmRough)
+    }
+
+    /// Whether this TPM model fits surface roughness as a free parameter.
+    #[must_use]
+    pub fn fits_roughness(self) -> bool {
+        matches!(self, Self::TpmRough)
     }
 
     /// Whether this is the HG reflected-light-only model.
@@ -85,10 +350,9 @@ impl Model {
     /// NEATM: `["diameter", "vis_albedo", "beaming", "h_mag", "g_param", "r_ir", "f_sigma"]`
     /// FRM:   `["diameter", "vis_albedo", "h_mag", "g_param", "r_ir", "f_sigma"]`
     /// HG:    `["h_mag", "g_param", "f_sigma"]`
-    #[must_use]
-    pub fn draw_column_names(self) -> &'static [&'static str] {
-        match self {
-            Self::Neatm => &[
+    pub(crate) fn draw_column_names(self, shape_fit: ShapeFit) -> Vec<&'static str> {
+        let mut cols: Vec<&'static str> = match self {
+            Self::Neatm => vec![
                 "diameter",
                 "vis_albedo",
                 "beaming",
@@ -97,7 +361,26 @@ impl Model {
                 "r_ir",
                 "f_sigma",
             ],
-            Self::Frm => &[
+            Self::Tpm => vec![
+                "diameter",
+                "vis_albedo",
+                "thermal_inertia",
+                "h_mag",
+                "g_param",
+                "r_ir",
+                "f_sigma",
+            ],
+            Self::TpmRough => vec![
+                "diameter",
+                "vis_albedo",
+                "thermal_inertia",
+                "roughness",
+                "h_mag",
+                "g_param",
+                "r_ir",
+                "f_sigma",
+            ],
+            Self::Frm => vec![
                 "diameter",
                 "vis_albedo",
                 "h_mag",
@@ -105,8 +388,22 @@ impl Model {
                 "r_ir",
                 "f_sigma",
             ],
-            Self::Hg => &["h_mag", "g_param", "f_sigma"],
+            Self::Hg => vec!["h_mag", "g_param", "f_sigma"],
+        };
+        // Fitted shape/phase extras are appended last, in the same order as
+        // `to_draw_row` / `unpack` (c_a, b_a, phase0).
+        if self.is_tpm() {
+            if shape_fit.fit_c_a {
+                cols.push("c_a");
+            }
+            if shape_fit.fit_b_a {
+                cols.push("b_a");
+            }
+            if shape_fit.fit_phase0 {
+                cols.push("phase0");
+            }
         }
+        cols
     }
 
     /// Decode the raw parameter vector into physical parameters.
@@ -119,7 +416,13 @@ impl Model {
     /// - NEATM: `[diameter, beaming, h_mag, g_param, f_sigma, r_ir]`
     /// - FRM:   `[diameter, h_mag, g_param, f_sigma, r_ir]`
     /// - HG:    `[h_mag, g_param, f_sigma]`
-    pub(crate) fn unpack(self, x: &[f64], emissivity: f64, c_hg: f64) -> ModelParams {
+    pub(crate) fn unpack(
+        self,
+        x: &[f64],
+        emissivity: f64,
+        c_hg: f64,
+        shape_fit: ShapeFit,
+    ) -> ModelParams {
         if self.is_hg() {
             let h_mag = x[0];
             let vis_albedo = 1.0;
@@ -127,23 +430,33 @@ impl Model {
             return ModelParams {
                 diameter,
                 beaming: f64::NAN,
+                thermal_inertia: f64::NAN,
+                roughness: f64::NAN,
                 h_mag,
                 g_param: x[1],
                 emissivity,
                 f_sigma: x[2],
                 r_ir: f64::NAN,
                 vis_albedo,
+                c_a: f64::NAN,
+                b_a: f64::NAN,
+                phase0: f64::NAN,
             };
         }
 
         // Thermal models share the same trailing layout:
-        //   [D, (beaming)?, H, G, f_sigma, R_IR]
-        // The only difference is whether beaming is present.
+        //   [D, (beaming | ln thermal_inertia)?, (roughness)?, H, G, f_sigma, R_IR]
+        // NEATM has a free beaming at x[1]; TPM has a free thermal inertia at x[1],
+        // sampled in log space (Gamma spans decades), so x[1] = ln(Gamma) and is
+        // exponentiated here; TpmRough adds a free roughness (crater half-angle,
+        // radians) at x[2]; FRM has neither (beaming fixed at pi). `h` is the index of
+        // H magnitude.
         let diameter = x[0];
-        let (beaming, h) = if self.is_neatm() {
-            (x[1], 2)
-        } else {
-            (std::f64::consts::PI, 1)
+        let (beaming, thermal_inertia, roughness, h) = match self {
+            Self::Neatm => (x[1], f64::NAN, f64::NAN, 2),
+            Self::Tpm => (f64::NAN, x[1].exp(), f64::NAN, 2),
+            Self::TpmRough => (f64::NAN, x[1].exp(), x[2], 3),
+            Self::Frm | Self::Hg => (std::f64::consts::PI, f64::NAN, f64::NAN, 1),
         };
 
         let h_mag = x[h];
@@ -158,15 +471,36 @@ impl Model {
             f64::INFINITY
         };
 
+        // Fitted shape/phase extras (TPM only) are appended after r_ir, in order
+        // c_a, b_a, phase0, each present only if fit.
+        let mut idx = h + 4;
+        let mut take = |fit: bool| {
+            if fit && self.is_tpm() {
+                let v = x[idx];
+                idx += 1;
+                v
+            } else {
+                f64::NAN
+            }
+        };
+        let c_a = take(shape_fit.fit_c_a);
+        let b_a = take(shape_fit.fit_b_a);
+        let phase0 = take(shape_fit.fit_phase0);
+
         ModelParams {
             diameter,
             beaming,
+            thermal_inertia,
+            roughness,
             h_mag,
             g_param: x[h + 1],
             emissivity,
             f_sigma: x[h + 2],
             r_ir: x[h + 3],
             vis_albedo,
+            c_a,
+            b_a,
+            phase0,
         }
     }
 }
@@ -179,12 +513,21 @@ impl Model {
 pub(crate) struct ModelParams {
     pub diameter: f64,
     pub beaming: f64,
+    pub thermal_inertia: f64,
+    /// Mean slope angle `theta_bar` (radians); `NaN` unless the model fits roughness.
+    pub roughness: f64,
     pub h_mag: f64,
     pub g_param: f64,
     pub emissivity: f64,
     pub f_sigma: f64,
     pub r_ir: f64,
     pub vis_albedo: f64,
+    /// Axis ratio `c/a`; `NaN` unless the TPM fits a shape.
+    pub c_a: f64,
+    /// Axis ratio `b/a`; `NaN` unless the TPM fits a triaxial shape.
+    pub b_a: f64,
+    /// Rotation phase `phase0` (radians); `NaN` unless the TPM fits it.
+    pub phase0: f64,
 }
 
 impl ModelParams {
@@ -193,15 +536,34 @@ impl ModelParams {
     /// NEATM: `[diameter, vis_albedo, beaming, h_mag, g_param, r_ir, f_sigma]`
     /// FRM:   `[diameter, vis_albedo, h_mag, g_param, r_ir, f_sigma]`
     /// HG:    `[h_mag, g_param, f_sigma]`
-    pub(crate) fn to_draw_row(&self, model: Model) -> Vec<f64> {
+    pub(crate) fn to_draw_row(&self, model: Model, shape_fit: ShapeFit) -> Vec<f64> {
         if model.is_hg() {
             return vec![self.h_mag, self.g_param, self.f_sigma];
         }
         let mut row = vec![self.diameter, self.vis_albedo];
         if model.is_neatm() {
             row.push(self.beaming);
+        } else if model.is_tpm() {
+            row.push(self.thermal_inertia);
+            // Roughness draws are reported as the mean slope angle in degrees.
+            if model.fits_roughness() {
+                row.push(self.roughness.to_degrees());
+            }
         }
         row.extend_from_slice(&[self.h_mag, self.g_param, self.r_ir, self.f_sigma]);
+        // Fitted shape/phase extras appended last (matches `draw_column_names`).
+        // phase0 is reported in degrees to match the angle convention.
+        if model.is_tpm() {
+            if shape_fit.fit_c_a {
+                row.push(self.c_a);
+            }
+            if shape_fit.fit_b_a {
+                row.push(self.b_a);
+            }
+            if shape_fit.fit_phase0 {
+                row.push(self.phase0.to_degrees());
+            }
+        }
         row
     }
 }
@@ -216,12 +578,104 @@ impl Model {
         bands: &[BandInfo],
         sun2obj: &Vector3<f64>,
         sun2obs: &Vector3<f64>,
+        epoch: f64,
+        tpm: Option<&TpmConfig>,
     ) -> ModelResults {
         let band_albedos: Vec<f64> = bands
             .iter()
             .map(|_| params.r_ir * params.vis_albedo)
             .collect();
         match self {
+            Self::Tpm | Self::TpmRough => {
+                let cfg = tpm.expect("TPM model requires a TpmConfig");
+                let thermal = ThermalParams {
+                    thermal_inertia: params.thermal_inertia,
+                    emissivity: params.emissivity,
+                };
+                // When fitting axis ratios, rebuild the shape cheaply from the template
+                // at the sampled (b/a, c/a); the field cache is unaffected. A fitted
+                // phase0 overrides the configured rotation phase.
+                let fitted = if params.c_a.is_finite() || params.b_a.is_finite() {
+                    let b_a = if params.b_a.is_finite() {
+                        params.b_a
+                    } else {
+                        1.0
+                    };
+                    let c_a = if params.c_a.is_finite() {
+                        params.c_a
+                    } else {
+                        1.0
+                    };
+                    cfg.template.as_ref().map(|t| t.shape(1.0, b_a, c_a))
+                } else {
+                    None
+                };
+                let shape = fitted.as_ref().unwrap_or(&cfg.shape);
+                let spin = if params.phase0.is_finite() {
+                    let mut s = cfg.spin.clone();
+                    s.phase0 = params.phase0;
+                    s
+                } else {
+                    cfg.spin.clone()
+                };
+                let mut result = tpm_total_flux_cached(
+                    &cfg.grid,
+                    bands,
+                    &band_albedos,
+                    &spin,
+                    shape,
+                    &thermal,
+                    params.diameter,
+                    params.vis_albedo,
+                    params.g_param,
+                    params.h_mag,
+                    sun2obj,
+                    sun2obs,
+                    epoch,
+                );
+                // Apply the roughness correction (fast) to the smooth thermal flux,
+                // preserving the reflected-light contribution.
+                if let Some(rough) = &cfg.roughness {
+                    // When roughness is fitted (TpmRough) the sampled mean slope angle
+                    // drives the correction; otherwise the fixed config value is used.
+                    // The correction table is keyed by the internal crater opening
+                    // half-angle, so convert the mean slope angle to gamma first.
+                    let gamma = if params.roughness.is_finite() {
+                        gamma_from_mean_slope(params.roughness)
+                    } else {
+                        rough.gamma
+                    };
+                    let t_ss = sub_solar_temperature(
+                        sun2obj.norm(),
+                        params.vis_albedo,
+                        params.g_param,
+                        1.0,
+                        params.emissivity,
+                    );
+                    if t_ss > 0.0 && cfg.spin.period > 0.0 {
+                        let theta = thermal.thermal_parameter(cfg.spin.period, t_ss);
+                        let obj2sun = (-sun2obj).normalize();
+                        let obj2obs = (sun2obs - sun2obj).normalize();
+                        let phase = obj2sun.dot(&obj2obs).clamp(-1.0, 1.0).acos();
+                        for ((band, tf), total) in bands
+                            .iter()
+                            .zip(result.thermal_fluxes.iter_mut())
+                            .zip(result.fluxes.iter_mut())
+                        {
+                            let refl = *total - *tf;
+                            *tf *= rough.correction.factor_at_wavelength(
+                                theta,
+                                gamma,
+                                phase,
+                                t_ss,
+                                band.wavelength,
+                            );
+                            *total = *tf + refl;
+                        }
+                    }
+                }
+                result
+            }
             Self::Neatm => neatm_total_flux(
                 bands,
                 &band_albedos,
@@ -286,6 +740,7 @@ impl Model {
         self,
         params: &ModelParams,
         obs: &[FluxObs],
+        tpm: Option<&TpmConfig>,
     ) -> ForwardModelResult {
         let n = obs.len();
         let mut model_fluxes = Vec::with_capacity(n);
@@ -293,7 +748,8 @@ impl Model {
 
         for ob in obs {
             let bands = [ob.band];
-            let result = self.compute_fluxes(params, &bands, &ob.sun2obj, &ob.sun2obs);
+            let result =
+                self.compute_fluxes(params, &bands, &ob.sun2obj, &ob.sun2obs, ob.epoch, tpm);
             let rf = result.reflected_fraction();
             model_fluxes.push(result.fluxes[0]);
             reflected_frac.push(rf[0]);
@@ -309,8 +765,13 @@ impl Model {
     ///
     /// Returns a value to be **maximized** (negative of the NLL).
     /// Returns `f64::NEG_INFINITY` for infeasible points.
-    pub(super) fn log_likelihood(self, params: &ModelParams, obs: &[FluxObs]) -> f64 {
-        let fwd = self.evaluate_forward_model(params, obs);
+    pub(super) fn log_likelihood(
+        self,
+        params: &ModelParams,
+        obs: &[FluxObs],
+        tpm: Option<&TpmConfig>,
+    ) -> f64 {
+        let fwd = self.evaluate_forward_model(params, obs, tpm);
 
         let nu = STUDENT_NU;
         let mut ll = 0.0;
@@ -356,6 +817,39 @@ impl Model {
         lp += priors.diameter.log_prob(params.diameter);
         if self.is_neatm() {
             lp += priors.beaming.log_prob(params.beaming);
+        } else if self.is_tpm() {
+            // Thermal inertia uses a log-uniform (Jeffreys) prior: a flat,
+            // barrier-bounded density in log(Gamma). This is the standard choice for a
+            // scale parameter spanning decades and matches how the literature reports
+            // Gamma (log-space medians). The user-facing bounds are in linear Gamma and
+            // converted to log here; Gamma is also sampled in log space (see `unpack`),
+            // so the barrier acts directly on the sampled coordinate.
+            let ln_gamma = params.thermal_inertia.ln();
+            let (gamma_lo, gamma_hi) = priors.thermal_inertia.bounds;
+            lp += logistic_barrier(
+                ln_gamma,
+                gamma_lo.max(f64::MIN_POSITIVE).ln(),
+                gamma_hi.max(f64::MIN_POSITIVE).ln(),
+                BARRIER_K,
+            );
+            if let Some((mean, sigma)) = priors.thermal_inertia.gaussian {
+                // An optional Gaussian center on Gamma is applied in log space (mean in
+                // linear Gamma, sigma as a log-width).
+                lp += gaussian_log_prior(ln_gamma, mean.max(f64::MIN_POSITIVE).ln(), sigma);
+            }
+            if self.fits_roughness() {
+                lp += priors.roughness.log_prob(params.roughness);
+            }
+            // Fitted shape/phase extras are signalled by a finite value (NaN otherwise).
+            if params.c_a.is_finite() {
+                lp += priors.c_a.log_prob(params.c_a);
+            }
+            if params.b_a.is_finite() {
+                lp += priors.b_a.log_prob(params.b_a);
+            }
+            if params.phase0.is_finite() {
+                lp += priors.phase0.log_prob(params.phase0);
+            }
         }
         lp += priors.r_ir.log_prob(params.r_ir);
         lp += priors.vis_albedo.log_prob(params.vis_albedo);
@@ -374,9 +868,10 @@ impl Model {
         c_hg: f64,
         emissivity: f64,
         priors: &FluxPriors,
+        tpm: Option<&TpmConfig>,
     ) -> f64 {
-        let params = self.unpack(x, emissivity, c_hg);
-        let ll = self.log_likelihood(&params, obs);
+        let params = self.unpack(x, emissivity, c_hg, ShapeFit::from_config(tpm));
+        let ll = self.log_likelihood(&params, obs, tpm);
         if !ll.is_finite() {
             return f64::NEG_INFINITY;
         }
@@ -404,6 +899,9 @@ pub struct FluxObs {
     pub sun2obj: Vector3<f64>,
     /// Sun-to-observer vector in AU (Ecliptic frame).
     pub sun2obs: Vector3<f64>,
+    /// Observation time (Julian date). Used by the TPM model to set the rotation
+    /// phase; ignored by NEATM/FRM/HG.
+    pub epoch: f64,
 }
 
 /// Configuration for a single fitted parameter's prior.
@@ -457,7 +955,8 @@ impl ParamPrior {
     }
 
     /// Midpoint of the bounds, or the Gaussian mean if set.
-    pub(crate) fn center(&self) -> f64 {
+    #[must_use]
+    pub fn center(&self) -> f64 {
         self.gaussian
             .map_or(f64::midpoint(self.bounds.0, self.bounds.1), |(m, _)| m)
     }
@@ -477,6 +976,17 @@ pub struct FluxPriors {
     pub diameter: ParamPrior,
     /// Prior on beaming parameter.  Used by NEATM.
     pub beaming: ParamPrior,
+    /// Prior on thermal inertia `Gamma` (SI units). Used by TPM. `Gamma` is sampled
+    /// and prior'd in log space: the `bounds` are linear `Gamma` but the prior is
+    /// log-uniform within them (the standard scale-parameter / Jeffreys choice). An
+    /// optional `gaussian` center is therefore also interpreted in log space -- `mean`
+    /// is a linear `Gamma` (the lognormal median) and `sigma` is a multiplicative /
+    /// log-width, not a linear standard deviation.
+    pub thermal_inertia: ParamPrior,
+    /// Prior on surface roughness as the mean slope angle `theta_bar` (radians). Used by
+    /// the roughness-fitting TPM variant. The cap geometry caps `theta_bar` at ~1 rad
+    /// (57.3 deg), so bounds should stay below that ceiling.
+    pub roughness: ParamPrior,
     /// Prior on IR-to-visible albedo ratio `r_ir`.  Used by NEATM/FRM.
     pub r_ir: ParamPrior,
     /// Prior on H magnitude.
@@ -488,12 +998,20 @@ pub struct FluxPriors {
     pub vis_albedo: ParamPrior,
     /// Prior on `f_sigma`, the uncertainty scaling factor.
     pub f_sigma: ParamPrior,
+    /// Prior on the axis ratio `c/a`. Used only when the TPM fits a shape.
+    pub c_a: ParamPrior,
+    /// Prior on the axis ratio `b/a`. Used only when the TPM fits a triaxial shape.
+    pub b_a: ParamPrior,
+    /// Prior on the rotation phase `phase0` (radians). Used only when the TPM fits it.
+    pub phase0: ParamPrior,
 }
 
 impl Default for FluxPriors {
     /// Sensible defaults (all in linear/physical units):
     /// - diameter in [0.001, 1000] km (bounds only)
     /// - beaming in [0.5, 3.0], Gaussian(1.0, 0.3)
+    /// - `thermal_inertia` in [1, 2500] SI (log-uniform within bounds)
+    /// - roughness (mean slope angle) in [0, 50] deg, bounds only (radians internally)
     /// - `r_ir` in [0.5, 2.0], Gaussian(1.6, 0.3)
     /// - `h_mag` in [-5, 35] (bounds only)
     /// - `g_param` in [-0.3, 0.7], Gaussian(0.2, 0.05)
@@ -503,11 +1021,20 @@ impl Default for FluxPriors {
         Self {
             diameter: ParamPrior::bounds_only(0.001, 1000.0),
             beaming: ParamPrior::with_gaussian(0.5, 3.0, 1.0, 0.3),
+            thermal_inertia: ParamPrior::bounds_only(1.0, 2500.0),
+            // Mean slope angle, 0-50 deg in radians (margin below the ~57 deg ceiling).
+            roughness: ParamPrior::bounds_only(0.0_f64.to_radians(), 50.0_f64.to_radians()),
             r_ir: ParamPrior::with_gaussian(0.5, 2.0, 1.6, 0.3),
             h_mag: ParamPrior::bounds_only(-5.0, 35.0),
             g_param: ParamPrior::with_gaussian(-0.3, 0.7, 0.2, 0.05),
             vis_albedo: ParamPrior::bounds_only(0.01, 1.0),
             f_sigma: ParamPrior::bounds_only(0.5, 5.0),
+            // oblate c/a in (0, 1], gently centered at 0.85.
+            c_a: ParamPrior::with_gaussian(0.1, 1.0, 0.85, 0.2),
+            // b/a in (0, 1], gently centered at 0.85.
+            b_a: ParamPrior::with_gaussian(0.1, 1.0, 0.85, 0.2),
+            // phase0 restricted to [0, pi) (the ellipsoid's point-symmetry domain).
+            phase0: ParamPrior::bounds_only(0.0, std::f64::consts::PI),
         }
     }
 }

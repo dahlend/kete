@@ -52,6 +52,7 @@ use nalgebra::{Matrix3, Matrix3xX};
 
 use crate::errors::{Error, KeteResult};
 use crate::forces::ParameterizedForce;
+use crate::forces::frozen::FrozenForce;
 use crate::frames::Vector;
 use crate::time::{TDB, Time};
 
@@ -70,6 +71,21 @@ pub struct ParameterMask<F: ParameterizedForce> {
 
     /// One entry per inner parameter; `Some(v)` freezes, `None` exposes.
     pub mask: Vec<Option<f64>>,
+}
+
+impl<F: ParameterizedForce + Clone> ParameterMask<F> {
+    /// Create a [`FrozenForce`] of the inner force with all parameters
+    /// resolved: frozen slots from the mask, free slots from `free_values`.
+    ///
+    /// Use this to produce a propagation-ready force for the final orbit result
+    /// or for the inner loop's residual evaluation.
+    ///
+    /// # Errors
+    /// Returns `ValueError` if `free_values.len() != self.n_free_params()`.
+    pub fn freeze_inner(&self, free_values: &[f64]) -> KeteResult<FrozenForce<F>> {
+        let full = self.merge(free_values)?;
+        FrozenForce::new(self.inner.clone(), full)
+    }
 }
 
 impl<F: ParameterizedForce> ParameterMask<F> {

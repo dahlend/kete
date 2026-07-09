@@ -68,9 +68,11 @@ from .propagation import (
 from .time import Time
 from .vector import (
     CometElements,
+    DiffuseState,
     Frames,
     SimultaneousStates,
     State,
+    UncertainState,
     Vector,
 )
 
@@ -90,6 +92,7 @@ __all__ = [
     "constants",
     "covariance",
     "Data",
+    "DiffuseState",
     "flux",
     "flux_to_mag",
     "fov",
@@ -130,6 +133,7 @@ __all__ = [
     "state_transition",
     "tap",
     "Time",
+    "UncertainState",
     "Vector",
     "wise",
     "WiseCmos",

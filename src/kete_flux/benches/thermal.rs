@@ -3,8 +3,11 @@
 #![allow(clippy::missing_assert_message, reason = "Unnecessary for benchmarks")]
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use kete_flux::{BandInfo, frm_thermal_flux, neatm_thermal_flux, resolve_hg_params};
-use nalgebra::Vector3;
+use kete_flux::{
+    BandInfo, SpinState, ThermalParams, TpmShape, frm_thermal_flux, neatm_thermal_flux,
+    resolve_hg_params, tpm_thermal_flux,
+};
+use nalgebra::{UnitVector3, Vector3};
 use pprof::criterion::{Output, PProfProfiler};
 use std::hint::black_box;
 
@@ -30,6 +33,27 @@ fn frm_bench(bands: &[BandInfo], diam: f64, vis_albedo: f64, g_param: f64, emiss
     let result = frm_thermal_flux(
         bands, diam, vis_albedo, g_param, emissivity, &sun2obj, &sun2obs,
     );
+    assert!(!result.is_empty());
+}
+
+fn tpm_bench(bands: &[BandInfo], diam: f64, vis_albedo: f64, g_param: f64, emissivity: f64) {
+    let sun2obj = Vector3::new(1.0, 0.0, 0.0);
+    let sun2obs = Vector3::new(0.0, 1.0, 0.0);
+    let spin = SpinState {
+        pole: UnitVector3::new_normalize(Vector3::new(0.0, 0.0, 1.0)),
+        period: 6.0 * 3600.0,
+        phase0: 0.0,
+        epoch0: 0.0,
+    };
+    let shape = TpmShape::sphere();
+    let thermal = ThermalParams {
+        thermal_inertia: 200.0,
+        emissivity,
+    };
+    let result = tpm_thermal_flux(
+        bands, &spin, &shape, &thermal, diam, vis_albedo, g_param, &sun2obj, &sun2obs, 0.0,
+    )
+    .unwrap();
     assert!(!result.is_empty());
 }
 
@@ -115,7 +139,47 @@ pub fn frm_benchmark(c: &mut Criterion) {
     });
 }
 
+#[allow(clippy::missing_panics_doc, reason = "Benchmarking only")]
+pub fn tpm_benchmark(c: &mut Criterion) {
+    let mut tpm_group = c.benchmark_group("TPM");
+
+    let (_h_mag, vis_albedo, diam) =
+        resolve_hg_params(Some(15.0), Some(0.2), None, Some(1329.0)).unwrap();
+    let g_param = 0.15;
+
+    let wise_bands = BandInfo::WISE.to_vec();
+
+    let generic_bands: Vec<BandInfo> = [1000.0; 4]
+        .iter()
+        .zip([f64::NAN; 4])
+        .map(|(wavelength, z_mag)| BandInfo::new(*wavelength, 1.0, z_mag, None))
+        .collect();
+
+    tpm_group.bench_function(BenchmarkId::new("tpm", "No Color Correction"), |b| {
+        b.iter(|| {
+            tpm_bench(
+                black_box(&generic_bands),
+                black_box(diam),
+                black_box(vis_albedo),
+                black_box(g_param),
+                black_box(0.9),
+            );
+        });
+    });
+    tpm_group.bench_function(BenchmarkId::new("tpm", "Wise Color Correction"), |b| {
+        b.iter(|| {
+            tpm_bench(
+                black_box(&wise_bands),
+                black_box(diam),
+                black_box(vis_albedo),
+                black_box(g_param),
+                black_box(0.9),
+            );
+        });
+    });
+}
+
 criterion_group!(name=thermal;
                 config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
-                targets=neatm_benchmark, frm_benchmark);
+                targets=neatm_benchmark, frm_benchmark, tpm_benchmark);
 criterion_main!(thermal);

@@ -35,8 +35,8 @@ mod tests {
     use kete_core::errors::Error;
     use kete_core::forces::{
         DustNonGrav, FarnocchiaNonGrav, FrozenForce, FrozenNonGrav, GravParams, JplCometNonGrav,
-        NonGravKind, ParameterizedForce, Sum, a_over_m_from_physical, analytical_jacobians,
-        lambda_0_from_physical,
+        NonGravKind, NonGravMask, ParameterMask, ParameterizedForce, Sum, a_over_m_from_physical,
+        analytical_jacobians, lambda_0_from_physical,
     };
     use kete_core::frames::{Equatorial, SSB, Vector};
     use kete_core::prelude::{Desig, KeteResult};
@@ -97,7 +97,7 @@ mod tests {
     fn propagate(
         state: State<Equatorial, SSB>,
         jd_final: Time<TDB>,
-        non_grav: Option<&FrozenNonGrav>,
+        non_grav: Option<&FrozenForce<NonGravMask>>,
     ) -> KeteResult<State<Equatorial, SSB>> {
         let spk = LOADED_SPK.try_read()?;
         match non_grav {
@@ -113,15 +113,19 @@ mod tests {
     }
 
     /// Helper: build a frozen JPL-comet non-grav model.
-    fn jpl_comet_entry(a1: f64, a2: f64, a3: f64) -> FrozenNonGrav {
-        let force = NonGravKind::JplComet(JplCometNonGrav::standard_comet());
-        FrozenForce::new(force, vec![a1, a2, a3]).unwrap()
+    fn jpl_comet_entry(a1: f64, a2: f64, a3: f64) -> FrozenForce<NonGravMask> {
+        let kind = NonGravKind::JplComet(JplCometNonGrav::standard_comet());
+        let n = kind.n_free_params();
+        let mask = ParameterMask::new(kind, vec![None; n]).unwrap();
+        FrozenForce::new(mask, vec![a1, a2, a3]).unwrap()
     }
 
     /// Helper: build a frozen Dust non-grav model.
-    fn dust_entry(beta: f64) -> FrozenNonGrav {
-        let force = NonGravKind::Dust(DustNonGrav);
-        FrozenForce::new(force, vec![beta]).unwrap()
+    fn dust_entry(beta: f64) -> FrozenForce<NonGravMask> {
+        let kind = NonGravKind::Dust(DustNonGrav);
+        let n = kind.n_free_params();
+        let mask = ParameterMask::new(kind, vec![None; n]).unwrap();
+        FrozenForce::new(mask, vec![beta]).unwrap()
     }
 
     /// Compute da/dr and da/dv via central finite differences of [`spk_accel_cached`].
@@ -516,15 +520,17 @@ mod tests {
         check_jacobians_match(5e-6);
     }
 
-    fn radiation_test_model() -> FrozenNonGrav {
+    fn radiation_test_model() -> FrozenForce<NonGravMask> {
         // Realistic 1998 KY26-like inputs.
         let pole = Vector::<Equatorial>::from_ra_dec(49_f64.to_radians(), -28_f64.to_radians());
         let flattening = 0.71_f64;
         let a_over_m = a_over_m_from_physical(2000.0, 0.030, flattening);
         let lambda_0 = lambda_0_from_physical(200.0, 0.9, 0.71, flattening, 5.351 / 60.0);
-        let force =
+        let kind =
             NonGravKind::Farnocchia(FarnocchiaNonGrav::new(0.52, 0.71, flattening, pole).unwrap());
-        FrozenForce::new(force, vec![a_over_m, lambda_0]).unwrap()
+        let n = kind.n_free_params();
+        let mask = ParameterMask::new(kind, vec![None; n]).unwrap();
+        FrozenForce::new(mask, vec![a_over_m, lambda_0]).unwrap()
     }
 
     #[test]

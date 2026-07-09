@@ -7,10 +7,13 @@ Modeling is broken into categories of complexity, ranging from pure black body
 calculations, through to telescope specific models. Picking the appropriate model can
 save significant development time, but removes some of the control for the user.
 
-For multi-band thermal + reflected light modeling, use :py:func:`neatm_model_flux` or
-:py:func:`frm_model_flux`. These evaluate the model in parallel across multiple
-geometries and return :py:class:`ModelResults` objects containing total, thermal,
-and reflected fluxes.
+For multi-band thermal + reflected light modeling, use :py:func:`neatm_model_flux`,
+:py:func:`frm_model_flux`, or :py:func:`tpm_model_flux`. These return
+:py:class:`ModelResults` objects containing total, thermal, and reflected fluxes.
+
+:py:func:`tpm_model_flux` is a thermophysical model that accounts for thermal
+inertia (a thermal memory in the surface), and requires a spin state. It is more
+physically detailed but substantially more expensive than NEATM or FRM.
 
 Use :py:func:`resolve_hg_params` to compute any missing value from the
 (H-mag, diameter, visible albedo) triad before calling the model functions.
@@ -46,8 +49,10 @@ from ._core import (
     neatm_facet_temps,
     neatm_model_flux,
     resolve_hg_params,
+    roughness_mean_slope_to_rms,
     solar_flux,
     sub_solar_temperature,
+    tpm_model_flux,
 )
 
 __all__ = [
@@ -70,6 +75,8 @@ __all__ = [
     "neatm_model_flux",
     "ParamPrior",
     "resolve_hg_params",
+    "roughness_mean_slope_to_rms",
     "solar_flux",
     "sub_solar_temperature",
+    "tpm_model_flux",
 ]

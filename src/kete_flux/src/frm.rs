@@ -29,10 +29,9 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use crate::{
-    BandInfo, DEFAULT_SHAPE, ModelResults, black_body_flux, flux_to_mag, hg_apparent_flux,
-    hg_apparent_mag, lambertian_vis_scale_factor, mag_to_flux, sub_solar_temperature,
+    BandInfo, DEFAULT_SHAPE, ModelResults, assemble_total, black_body_flux,
+    lambertian_vis_scale_factor, sub_solar_temperature,
 };
-use kete_core::constants::V_MAG_ZERO;
 
 use nalgebra::{UnitVector3, Vector3};
 use std::f64::consts::PI;
@@ -144,39 +143,16 @@ pub fn frm_total_flux(
     let thermal_fluxes = frm_thermal_flux(
         obs_bands, diameter, vis_albedo, g_param, emissivity, sun2obj, sun2obs,
     );
-
-    let mut hg_fluxes = Vec::with_capacity(thermal_fluxes.len());
-    let mut fluxes = Vec::with_capacity(thermal_fluxes.len());
-    for ((band, t_flux), albedo) in obs_bands.iter().zip(&thermal_fluxes).zip(band_albedos) {
-        let refl = hg_apparent_flux(
-            g_param,
-            diameter,
-            sun2obj,
-            sun2obs,
-            band.wavelength,
-            *albedo,
-        ) * band.solar_correction;
-        hg_fluxes.push(refl);
-        fluxes.push(*t_flux + refl);
-    }
-
-    let v_band_magnitude = hg_apparent_mag(g_param, h_mag, sun2obj, sun2obs);
-    let v_band_flux = mag_to_flux(v_band_magnitude, V_MAG_ZERO);
-
-    let magnitudes: Vec<_> = obs_bands
-        .iter()
-        .zip(&fluxes)
-        .map(|(band_info, flux)| flux_to_mag(*flux, band_info.zero_mag))
-        .collect();
-
-    ModelResults {
-        fluxes,
-        magnitudes,
+    assemble_total(
+        obs_bands,
+        band_albedos,
         thermal_fluxes,
-        hg_fluxes,
-        v_band_magnitude,
-        v_band_flux,
-    }
+        diameter,
+        g_param,
+        h_mag,
+        sun2obj,
+        sun2obs,
+    )
 }
 
 #[cfg(test)]

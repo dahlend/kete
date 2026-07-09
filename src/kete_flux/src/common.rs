@@ -28,10 +28,11 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use nalgebra::UnitVector3;
+use nalgebra::{UnitVector3, Vector3};
 use std::f64::consts::PI;
 
-use kete_core::constants::{AU_KM, SOLAR_FLUX, STEFAN_BOLTZMANN};
+use crate::{hg_apparent_flux, hg_apparent_mag};
+use kete_core::constants::{AU_KM, SOLAR_FLUX, STEFAN_BOLTZMANN, V_MAG_ZERO};
 pub use kete_core::{BandInfo, ColorCorrFn};
 
 /// Output of a flux calculation.
@@ -224,6 +225,68 @@ pub fn mag_to_flux(mag: f64, mag_zero_flux: f64) -> f64 {
 #[must_use]
 pub fn flux_to_mag(flux: f64, mag_zero_flux: f64) -> f64 {
     -2.5 * (flux / mag_zero_flux).log10()
+}
+
+/// Add the HG reflected-light contribution to a set of thermal fluxes and assemble the
+/// [`ModelResults`].
+///
+/// Shared by every thermal model (NEATM, FRM, TPM): each takes the per-band thermal
+/// flux it computed and combines it with the HG reflected flux and V-band magnitude in
+/// exactly the same way.
+///
+/// # Arguments
+///
+/// * `obs_bands` - Wavelength band information of the observer.
+/// * `band_albedos` - Albedo of the object for each band.
+/// * `thermal_fluxes` - Thermal flux in Jy for each band.
+/// * `diameter` - Diameter of the object in km.
+/// * `g_param` - The G parameter in the HG system.
+/// * `h_mag` - The H parameter of the object in the HG system.
+/// * `sun2obj` - Position of the object with respect to the Sun in AU.
+/// * `sun2obs` - Position of the observer with respect to the Sun in AU.
+#[must_use]
+pub fn assemble_total(
+    obs_bands: &[BandInfo],
+    band_albedos: &[f64],
+    thermal_fluxes: Vec<f64>,
+    diameter: f64,
+    g_param: f64,
+    h_mag: f64,
+    sun2obj: &Vector3<f64>,
+    sun2obs: &Vector3<f64>,
+) -> ModelResults {
+    let mut hg_fluxes = Vec::with_capacity(thermal_fluxes.len());
+    let mut fluxes = Vec::with_capacity(thermal_fluxes.len());
+    for ((band, t_flux), albedo) in obs_bands.iter().zip(&thermal_fluxes).zip(band_albedos) {
+        let refl = hg_apparent_flux(
+            g_param,
+            diameter,
+            sun2obj,
+            sun2obs,
+            band.wavelength,
+            *albedo,
+        ) * band.solar_correction;
+        hg_fluxes.push(refl);
+        fluxes.push(*t_flux + refl);
+    }
+
+    let v_band_magnitude = hg_apparent_mag(g_param, h_mag, sun2obj, sun2obs);
+    let v_band_flux = mag_to_flux(v_band_magnitude, V_MAG_ZERO);
+
+    let magnitudes: Vec<_> = obs_bands
+        .iter()
+        .zip(&fluxes)
+        .map(|(band_info, flux)| flux_to_mag(*flux, band_info.zero_mag))
+        .collect();
+
+    ModelResults {
+        fluxes,
+        magnitudes,
+        thermal_fluxes,
+        hg_fluxes,
+        v_band_magnitude,
+        v_band_flux,
+    }
 }
 
 #[cfg(test)]

@@ -91,8 +91,10 @@ mod tests {
         }
         let component = UncertainState::<Equatorial, SSB>::new(state, cov, vec![]).unwrap();
         let jd_final = (2451545.0 + 10.0).into();
-        let div = sigma_point_divergence(&component, &forces, jd_final, 3, 1.0).unwrap();
-        assert!(div < 1e-3, "expected near-linear regime, got {div}");
+        let div = sigma_point_divergence(&component, &forces, jd_final, 3, 1.0, None).unwrap();
+        // Mahalanobis divergence well below split_threshold (~3.0) -- this
+        // is "well under a hundredth of a sigma off in the predicted Gaussian".
+        assert!(div < 0.01, "expected near-linear regime, got {div}");
     }
 
     #[test]
@@ -112,13 +114,15 @@ mod tests {
         let component = UncertainState::<Equatorial, SSB>::new(state, cov, vec![]).unwrap();
         let jd_final = (2451545.0 + 200.0).into();
 
-        let d1 = sigma_point_divergence(&component, &forces, jd_final, 3, 1.0).unwrap();
-        let d3 = sigma_point_divergence(&component, &forces, jd_final, 3, 3.0).unwrap();
+        let d1 = sigma_point_divergence(&component, &forces, jd_final, 3, 1.0, None).unwrap();
+        let d3 = sigma_point_divergence(&component, &forces, jd_final, 3, 3.0, None).unwrap();
 
         assert!(
             d3 > d1,
             "divergence should grow with sigma_factor: d1={d1}, d3={d3}"
         );
+        // Mahalanobis divergence at 3-sigma sample of a small-cov / 200-day arc
+        // should be clearly nonzero -- a few milli-sigma at least.
         assert!(d3 > 1e-3, "3-sigma divergence too small: {d3}");
     }
 
@@ -132,7 +136,7 @@ mod tests {
         let cov = DMatrix::<f64>::zeros(6, 6);
         let component = UncertainState::<Equatorial, SSB>::new(state, cov, vec![]).unwrap();
         let jd_final = (2451545.0 + 30.0).into();
-        let div = sigma_point_divergence(&component, &forces, jd_final, 3, 1.0).unwrap();
+        let div = sigma_point_divergence(&component, &forces, jd_final, 3, 1.0, None).unwrap();
         assert_eq!(div, 0.0);
     }
 
@@ -146,10 +150,15 @@ mod tests {
         let cov = DMatrix::<f64>::identity(6, 6) * 1e-12;
         let component = UncertainState::<Equatorial, SSB>::new(state, cov, vec![]).unwrap();
         let jd_final = (2451545.0 + 10.0).into();
-        assert!(sigma_point_divergence(&component, &forces, jd_final, 0, 1.0).is_err());
-        assert!(sigma_point_divergence(&component, &forces, jd_final, 3, 0.0).is_err());
-        assert!(sigma_point_divergence(&component, &forces, jd_final, 3, f64::NAN).is_err());
-        assert!(sigma_point_divergence(&component, &forces, jd_final, 3, -1.0).is_err());
+        assert!(sigma_point_divergence(&component, &forces, jd_final, 0, 1.0, None).is_err());
+        assert!(sigma_point_divergence(&component, &forces, jd_final, 3, 0.0, None).is_err());
+        assert!(sigma_point_divergence(&component, &forces, jd_final, 3, f64::NAN, None).is_err());
+        assert!(sigma_point_divergence(&component, &forces, jd_final, 3, -1.0, None).is_err());
+        // position_spacing_au must be positive when Some.
+        assert!(
+            sigma_point_divergence(&component, &forces, jd_final, 3, 1.0, Some(-0.001)).is_err()
+        );
+        assert!(sigma_point_divergence(&component, &forces, jd_final, 3, 1.0, Some(0.0)).is_err());
     }
 
     #[test]
@@ -179,6 +188,112 @@ mod tests {
         let result = propagate_diffuse_state_adaptive(&mixture, &forces, jd_final, &cfg).unwrap();
         assert_eq!(result.n_components(), 1);
         assert!((result.weights[0] - 1.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn time_bisection_arc_under_target_skips_bisection() {
+        // A 200-day arc with target_arc_days=500 (default) should produce the
+        // same result as target_arc_days=infinity -- no time bisection.
+        crate::test_data::ensure_test_spk();
+        let spk = crate::spk::LOADED_SPK.try_read().unwrap();
+        let forces = SpkNBody::new(&spk, false);
+
+        let state = earth_like_state();
+        let mut cov = DMatrix::<f64>::zeros(6, 6);
+        for i in 0..3 {
+            cov[(i, i)] = (6.685e-9_f64).powi(2);
+        }
+        for i in 3..6 {
+            cov[(i, i)] = 1e-20;
+        }
+        let component = UncertainState::<Equatorial, SSB>::new(state, cov, vec![]).unwrap();
+        let mixture = DiffuseState::from_uncertain(component);
+
+        let cfg_bisecting = SplitConfig {
+            target_arc_days: 500.0,
+            ..SplitConfig::default()
+        };
+        let cfg_no_bisect = SplitConfig {
+            target_arc_days: f64::INFINITY,
+            ..SplitConfig::default()
+        };
+        let jd_final = (2451545.0 + 200.0).into();
+        let r1 =
+            propagate_diffuse_state_adaptive(&mixture, &forces, jd_final, &cfg_bisecting).unwrap();
+        let r2 =
+            propagate_diffuse_state_adaptive(&mixture, &forces, jd_final, &cfg_no_bisect).unwrap();
+        assert_eq!(r1.n_components(), r2.n_components());
+        // Means should match to integration precision.
+        for (c1, c2) in r1.components.iter().zip(r2.components.iter()) {
+            for i in 0..3 {
+                assert!(
+                    (c1.state.pos[i] - c2.state.pos[i]).abs() < 1e-12,
+                    "pos[{i}] mismatch"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn time_bisection_long_arc_produces_consistent_propagation() {
+        // A 1000-day arc with target_arc_days=200 forces several bisections.
+        // The end state should match a manually-chunked propagation.
+        crate::test_data::ensure_test_spk();
+        let spk = crate::spk::LOADED_SPK.try_read().unwrap();
+        let forces = SpkNBody::new(&spk, false);
+
+        let state = earth_like_state();
+        let mut cov = DMatrix::<f64>::zeros(6, 6);
+        for i in 0..3 {
+            cov[(i, i)] = (6.685e-9_f64).powi(2);
+        }
+        for i in 3..6 {
+            cov[(i, i)] = 1e-20;
+        }
+        let component = UncertainState::<Equatorial, SSB>::new(state, cov, vec![]).unwrap();
+        let mixture = DiffuseState::from_uncertain(component);
+
+        let cfg = SplitConfig {
+            target_arc_days: 200.0,
+            ..SplitConfig::default()
+        };
+        let jd_final = (2451545.0 + 1000.0).into();
+        let bisected = propagate_diffuse_state_adaptive(&mixture, &forces, jd_final, &cfg).unwrap();
+
+        // Sanity: at very small covariance the mixture should stay single-component
+        // through 1000 days (well within linear regime).
+        assert_eq!(bisected.n_components(), 1);
+        let total_w: f64 = bisected.weights.iter().sum();
+        assert!((total_w - 1.0).abs() < 1e-12, "weights drifted: {total_w}");
+    }
+
+    #[test]
+    fn time_bisection_validates_target_arc_days() {
+        crate::test_data::ensure_test_spk();
+        let spk = crate::spk::LOADED_SPK.try_read().unwrap();
+        let forces = SpkNBody::new(&spk, false);
+
+        let state = earth_like_state();
+        let cov = DMatrix::<f64>::identity(6, 6) * 1e-12;
+        let component = UncertainState::<Equatorial, SSB>::new(state, cov, vec![]).unwrap();
+        let mixture = DiffuseState::from_uncertain(component);
+        let jd_final = (2451545.0 + 10.0).into();
+
+        let cfg_zero = SplitConfig {
+            target_arc_days: 0.0,
+            ..SplitConfig::default()
+        };
+        let cfg_neg = SplitConfig {
+            target_arc_days: -1.0,
+            ..SplitConfig::default()
+        };
+        let cfg_nan = SplitConfig {
+            target_arc_days: f64::NAN,
+            ..SplitConfig::default()
+        };
+        assert!(propagate_diffuse_state_adaptive(&mixture, &forces, jd_final, &cfg_zero).is_err());
+        assert!(propagate_diffuse_state_adaptive(&mixture, &forces, jd_final, &cfg_neg).is_err());
+        assert!(propagate_diffuse_state_adaptive(&mixture, &forces, jd_final, &cfg_nan).is_err());
     }
 
     #[test]

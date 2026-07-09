@@ -300,13 +300,27 @@ where
 
         let mut step_failures = 0;
         loop {
+            // Defensive non-finite check: if `next_step_size` is NaN/Inf, the
+            // comparison `(cur_time - final_time).abs() <= NaN.abs()` is false
+            // (NaN propagates), so the early-exit and step-size-floor branches
+            // below would never fire and the loop would spin forever.  Fail
+            // fast instead.  Non-finite state at this point typically means a
+            // particle landed at a gravitational singularity (rel_pos = 0)
+            // during the previous step, producing 0/0 = NaN in the
+            // acceleration.
+            if !next_step_size.is_finite() {
+                return Err(Error::Convergence(
+                    "Radau produced non-finite step size (state likely diverged).".into(),
+                ));
+            }
             if (integrator.cur_time - integrator.final_time).elapsed.abs() <= next_step_size.abs() {
                 next_step_size = (integrator.final_time - integrator.cur_time).elapsed;
             }
             match integrator.step(next_step_size) {
                 Ok(s) => {
                     next_step_size = s;
-                    if (integrator.cur_time - integrator.final_time).elapsed.abs() < convergence_tol {
+                    if (integrator.cur_time - integrator.final_time).elapsed.abs() < convergence_tol
+                    {
                         return Ok((
                             integrator.cur_state,
                             integrator.cur_state_der,

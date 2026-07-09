@@ -223,6 +223,40 @@ impl PyUncertainState {
         self.state.state.epoch.jd.into()
     }
 
+    /// Peak sigma-point Mahalanobis divergence ever recorded for this
+    /// component during adaptive propagation.
+    ///
+    /// The metric measures the linear (STM-based) prediction error in
+    /// units of the predicted uncertainty -- a Mahalanobis distance
+    /// in the propagated 6-D position+velocity covariance::
+    ///
+    ///     d = sqrt( (delta_full - delta_lin)^T * P_f^-1 * (delta_full - delta_lin) )
+    ///
+    /// "How many sigma off is the linear answer, relative to its own
+    /// predicted uncertainty?"  For samples drawn from the predicted
+    /// Gaussian, `d` follows a chi distribution in 6 dimensions:
+    /// expected value ~ 2.4, 90% containment ~ 3.0, 95% ~ 3.55, 99% ~ 4.1.
+    ///
+    /// Practical interpretation:
+    ///
+    /// * ``< split_threshold`` (default 3.0): linear prediction lands
+    ///   within ~90% containment of the predicted Gaussian.  Trust the
+    ///   STM approximation; the Gaussian shape is reliable.
+    /// * ``3.0 - 5.0``: prediction at the edge of the predicted spread.
+    ///   Borderline -- expect some non-Gaussian tail behavior.
+    /// * ``> 5.0``: prediction is many sigma outside the predicted
+    ///   distribution.  The linear approximation is broken in this
+    ///   region; raise ``max_components``, lower ``sigma_factor``, or
+    ///   shorten the propagation arc between adaptive steps.
+    ///
+    /// ``0.0`` means the component has never been adaptively diagnosed,
+    /// or every step returned a clean linear result.  Inherited by split
+    /// children so the full lineage history is preserved.
+    #[getter]
+    fn max_unresolved_divergence(&self) -> f64 {
+        self.state.max_unresolved_divergence
+    }
+
     /// Names of all parameters in the covariance matrix, in row/column
     /// order.
     ///
@@ -298,87 +332,117 @@ impl PyUncertainState {
     /// include_asteroids : bool, optional
     ///     If True, include asteroid masses in the force model.
     #[pyo3(signature = (jd, include_asteroids=false))]
-    fn propagate(&self, jd: PyTime, include_asteroids: bool) -> PyResult<Self> {
-        let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-        let ssb_state = spk.try_to_ssb(self.state.state.clone())?;
-        let ssb_us = UncertainState::<Equatorial, SSB>::new(
-            ssb_state,
-            self.state.cov_matrix.clone(),
-            self.state.free_params.clone(),
-        )?;
-        let forces = self.build_forces(&spk, include_asteroids);
-        let result = ssb_us.propagate_with(&forces, jd.into())?;
-
-        // Convert back to DynCenter for storage on the Python wrapper
-        // (matches the historical shape).
-        let dyn_state: UncertainState =
-            UncertainState::new(result.state.into(), result.cov_matrix, result.free_params)?;
-        Ok(Self {
-            state: dyn_state,
-            non_grav: self.non_grav.clone(),
+    fn propagate(&self, py: Python<'_>, jd: PyTime, include_asteroids: bool) -> PyResult<Self> {
+        let target: Time<TDB> = jd.into();
+        py.detach(|| {
+            let spk = LOADED_SPK.try_read().map_err(Error::from)?;
+            let ssb_state = spk.try_to_ssb(self.state.state.clone())?;
+            let ssb_us = UncertainState::<Equatorial, SSB>::new(
+                ssb_state,
+                self.state.cov_matrix.clone(),
+                self.state.free_params.clone(),
+            )?;
+            let forces = self.build_forces(&spk, include_asteroids);
+            let result = ssb_us.propagate_with(&forces, target)?;
+            let dyn_state: UncertainState =
+                UncertainState::new(result.state.into(), result.cov_matrix, result.free_params)?;
+            Ok(Self {
+                state: dyn_state,
+                non_grav: self.non_grav.clone(),
+            })
         })
     }
 
     /// Propagate this :class:`~kete.UncertainState` linearly *and*
     /// compute its sigma-point divergence in a single variational
     /// integration.
-    #[pyo3(signature = (jd, n_axes=3, sigma_factor=1.0, include_asteroids=false))]
+    #[pyo3(signature = (
+        jd,
+        n_axes=3,
+        sigma_factor=1.0,
+        position_spacing_au=Some(0.001),
+        include_asteroids=false,
+    ))]
     fn propagate_with_diagnosis(
         &self,
+        py: Python<'_>,
         jd: PyTime,
         n_axes: usize,
         sigma_factor: f64,
+        position_spacing_au: Option<f64>,
         include_asteroids: bool,
     ) -> PyResult<(Self, f64)> {
-        let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-        let ssb_state = spk.try_to_ssb(self.state.state.clone())?;
-        let ssb_us = UncertainState::<Equatorial, SSB>::new(
-            ssb_state,
-            self.state.cov_matrix.clone(),
-            self.state.free_params.clone(),
-        )?;
-        let forces = self.build_forces(&spk, include_asteroids);
-        let diag = propagate_with_diagnosis(&ssb_us, &forces, jd.into(), n_axes, sigma_factor)?;
-        let dyn_state: UncertainState = UncertainState::new(
-            diag.propagated.state.into(),
-            diag.propagated.cov_matrix,
-            diag.propagated.free_params,
-        )?;
-        Ok((
-            Self {
-                state: dyn_state,
-                non_grav: self.non_grav.clone(),
-            },
-            diag.divergence,
-        ))
+        let target: Time<TDB> = jd.into();
+        py.detach(|| {
+            let spk = LOADED_SPK.try_read().map_err(Error::from)?;
+            let ssb_state = spk.try_to_ssb(self.state.state.clone())?;
+            let ssb_us = UncertainState::<Equatorial, SSB>::new(
+                ssb_state,
+                self.state.cov_matrix.clone(),
+                self.state.free_params.clone(),
+            )?;
+            let forces = self.build_forces(&spk, include_asteroids);
+            let diag = propagate_with_diagnosis(
+                &ssb_us,
+                &forces,
+                target,
+                n_axes,
+                sigma_factor,
+                position_spacing_au,
+            )?;
+            let dyn_state: UncertainState = UncertainState::new(
+                diag.propagated.state.into(),
+                diag.propagated.cov_matrix,
+                diag.propagated.free_params,
+            )?;
+            Ok((
+                Self {
+                    state: dyn_state,
+                    non_grav: self.non_grav.clone(),
+                },
+                diag.divergence,
+            ))
+        })
     }
 
     /// Sigma-point divergence: a relative measure of how much the
     /// linear (STM-based) propagation deviates from full nonlinear
     /// propagation along the dominant eigenvectors of the covariance.
-    #[pyo3(signature = (jd, n_axes=3, sigma_factor=1.0, include_asteroids=false))]
+    #[pyo3(signature = (
+        jd,
+        n_axes=3,
+        sigma_factor=1.0,
+        position_spacing_au=Some(0.001),
+        include_asteroids=false,
+    ))]
     fn sigma_point_divergence(
         &self,
+        py: Python<'_>,
         jd: PyTime,
         n_axes: usize,
         sigma_factor: f64,
+        position_spacing_au: Option<f64>,
         include_asteroids: bool,
     ) -> PyResult<f64> {
-        let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-        let ssb_state = spk.try_to_ssb(self.state.state.clone())?;
-        let ssb_us = UncertainState::<Equatorial, SSB>::new(
-            ssb_state,
-            self.state.cov_matrix.clone(),
-            self.state.free_params.clone(),
-        )?;
-        let forces = self.build_forces(&spk, include_asteroids);
-        Ok(sigma_point_divergence(
-            &ssb_us,
-            &forces,
-            jd.into(),
-            n_axes,
-            sigma_factor,
-        )?)
+        let target: Time<TDB> = jd.into();
+        py.detach(|| {
+            let spk = LOADED_SPK.try_read().map_err(Error::from)?;
+            let ssb_state = spk.try_to_ssb(self.state.state.clone())?;
+            let ssb_us = UncertainState::<Equatorial, SSB>::new(
+                ssb_state,
+                self.state.cov_matrix.clone(),
+                self.state.free_params.clone(),
+            )?;
+            let forces = self.build_forces(&spk, include_asteroids);
+            Ok(sigma_point_divergence(
+                &ssb_us,
+                &forces,
+                target,
+                n_axes,
+                sigma_factor,
+                position_spacing_au,
+            )?)
+        })
     }
 
     /// String representation.

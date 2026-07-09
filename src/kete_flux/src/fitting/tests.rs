@@ -28,10 +28,14 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use super::*;
-use crate::fitting::types::logistic_barrier;
-use crate::{BandInfo, frm_total_flux, neatm_total_flux, resolve_hg_params};
+use crate::fitting::types::{ShapeFit, logistic_barrier};
+use crate::{
+    BandInfo, EllipsoidTemplate, RoughnessCorrection, SpinState, ThermalParams, TpmFieldGrid,
+    TpmShape, frm_total_flux, neatm_total_flux, resolve_hg_params, tpm_total_flux,
+};
 use kete_core::constants::C_V;
-use nalgebra::Vector3;
+use nalgebra::{UnitVector3, Vector3};
+use std::sync::Arc;
 
 /// Resolved HG parameters for testing.
 struct TestHg {
@@ -68,8 +72,8 @@ fn make_neg_log_likelihood(
 ) -> impl Fn(&[f64]) -> f64 {
     let obs = obs.to_vec();
     move |x: &[f64]| -> f64 {
-        let params = model.unpack(x, emissivity, c_hg);
-        let ll = model.log_likelihood(&params, &obs);
+        let params = model.unpack(x, emissivity, c_hg, ShapeFit::default());
+        let ll = model.log_likelihood(&params, &obs, None);
         if ll.is_finite() { -ll } else { f64::MAX }
     }
 }
@@ -114,10 +118,97 @@ fn synthetic_neatm_obs() -> (Vec<FluxObs>, TestHg) {
             is_upper_limit: false,
             sun2obj,
             sun2obs,
+            epoch: 0.0,
         })
         .collect();
 
     (obs, hg)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+#[ignore = "pprof sampling profile of the fitting hot path; writes /tmp/fit_flamegraph.svg"]
+fn profile_fit_hotpath() {
+    use std::collections::HashMap;
+    // Build a realistic per-evaluation workload: the exact log_posterior call NUTS
+    // makes for every finite-difference gradient evaluation, with the 256-facet
+    // sampling shape and a cached field grid (as the fitter uses).
+    let (base, hg, spin, gamma) = synthetic_tpm_obs();
+    let obs: Vec<FluxObs> = base.iter().cloned().cycle().take(160).collect();
+    let cfg = TpmConfig {
+        spin: spin.clone(),
+        shape: TpmShape::sphere_with_facets(256),
+        seed_shape: TpmShape::sphere_with_facets(128),
+        grid: Arc::new(TpmFieldGrid::new(0.1, 50.0).unwrap()),
+        roughness: None,
+        fit_c_a: false,
+        fit_b_a: false,
+        fit_phase0: false,
+        template: None,
+    };
+    let priors = FluxPriors::default();
+    let x = [hg.diameter, gamma.ln(), hg.h_mag, hg.g_param, 1.0, 1.0];
+
+    let guard = pprof::ProfilerGuardBuilder::default()
+        .frequency(1000)
+        .blocklist(&["libc", "libgcc", "pthread", "vdso"])
+        .build()
+        .unwrap();
+
+    let t0 = std::time::Instant::now();
+    let mut iters = 0_u64;
+    let mut acc = 0.0;
+    while t0.elapsed().as_secs_f64() < 6.0 {
+        acc += Model::Tpm.log_posterior(&x, &obs, C_V, 0.9, &priors, Some(&cfg));
+        iters += 1;
+    }
+    assert!(acc.is_finite());
+
+    let report = guard.report().build().unwrap();
+    if let Ok(f) = std::fs::File::create("/tmp/fit_flamegraph.svg") {
+        let _ = report.flamegraph(f);
+    }
+
+    // Self-time split: aggregate by the *innermost* inlined symbol at the leaf frame
+    // (inlining collapses several functions into one address, so the whole inlined
+    // chain at the leaf is inspected, not just the outermost symbol).
+    let total: isize = report.data.values().sum();
+    let mut self_time: HashMap<String, isize> = HashMap::new();
+    for (frames, count) in &report.data {
+        if let Some(leaf_chain) = frames.frames.first() {
+            // Tally each symbol in the leaf's inlined chain so geometry (asin/atan2),
+            // field sampling, and the Planck exp are all visible regardless of order.
+            for sym in leaf_chain {
+                *self_time.entry(format!("{sym}")).or_default() += *count;
+            }
+        }
+    }
+    let mut rows: Vec<_> = self_time.into_iter().collect();
+    rows.sort_by_key(|(_, c)| -*c);
+    eprintln!(
+        "PROFILE iters={iters} total_samples={total} ({:.2} us/eval)",
+        t0.elapsed().as_secs_f64() / iters as f64 * 1e6
+    );
+    eprintln!("-- symbols present in the leaf inlined chain (inclusive of inlining) --");
+    for (name, c) in rows.iter().take(30) {
+        eprintln!("  {:5.1}%  {name}", 100.0 * *c as f64 / total as f64);
+    }
+    // Also show the full inlined leaf chain for the hottest distinct leaf frames.
+    let mut stacks: Vec<_> = report.data.iter().collect();
+    stacks.sort_by_key(|(_, c)| -**c);
+    eprintln!("-- hottest leaf frames (innermost ... outermost) --");
+    for (frames, count) in stacks.into_iter().take(12) {
+        let chain: Vec<String> = frames
+            .frames
+            .first()
+            .map(|lvl| lvl.iter().map(|s| format!("{s}")).collect())
+            .unwrap_or_default();
+        eprintln!(
+            "  {:5.1}%  {}",
+            100.0 * *count as f64 / total as f64,
+            chain.join("  <  ")
+        );
+    }
 }
 
 #[test]
@@ -166,7 +257,7 @@ fn test_neatm_fit_recovery() {
     };
 
     let n_obs = obs.len();
-    let res = fit_mcmc(Model::Neatm, &obs, C_V, 0.9, &priors, 1, 50, 50)
+    let res = fit_mcmc(Model::Neatm, &obs, C_V, 0.9, &priors, 1, 50, 50, None)
         .expect("MCMC should produce a result");
 
     let d_median = {
@@ -186,9 +277,590 @@ fn test_neatm_fit_recovery() {
     assert_eq!(res.best_fit_residuals.len(), n_obs);
     assert_eq!(res.best_fit_reflected_frac.len(), n_obs);
     assert!(
-        res.reduced_chi2.is_finite() || n_obs <= Model::Neatm.dim(),
+        res.reduced_chi2.is_finite() || n_obs <= Model::Neatm.dim(ShapeFit::default()),
         "reduced_chi2 should be finite when nobs > nparams",
     );
+}
+
+/// Build a synthetic multi-phase TPM observation set: a 10 km asteroid at 2 AU with
+/// thermal inertia Gamma = 200 SI, a 6 h prograde rotation, observed at several phase
+/// angles (so the night-side / thermal-lag signal constrains Gamma).
+#[test]
+fn test_tpm_oblate_layout_and_forward() {
+    // Oblate c/a as a fitted parameter: the layout grows by one, c/a is decoded from
+    // the appended slot, and the forward model rebuilds the shape via the template so a
+    // flattened body differs from the sphere.
+    let (base, _hg, spin, _gamma) = synthetic_tpm_obs();
+    let cfg = TpmConfig {
+        spin,
+        shape: TpmShape::sphere_with_facets(256),
+        seed_shape: TpmShape::sphere_with_facets(128),
+        grid: Arc::new(TpmFieldGrid::new(0.1, 50.0).unwrap()),
+        roughness: None,
+        fit_c_a: true,
+        fit_b_a: false,
+        fit_phase0: false,
+        template: Some(EllipsoidTemplate::new(12)),
+    };
+
+    // layout: [D, thermal_inertia, H, G, f_sigma, R_IR, c_a]
+    assert_eq!(
+        Model::Tpm.dim(ShapeFit {
+            fit_c_a: true,
+            ..ShapeFit::default()
+        }),
+        7
+    );
+    assert_eq!(Model::Tpm.dim(ShapeFit::default()), 6);
+    assert_eq!(
+        *Model::Tpm
+            .draw_column_names(ShapeFit {
+                fit_c_a: true,
+                ..ShapeFit::default()
+            })
+            .last()
+            .unwrap(),
+        "c_a"
+    );
+
+    let x = [10.0, 150.0, 18.0, 0.15, 1.0, 1.6, 0.6];
+    let p = Model::Tpm.unpack(
+        &x,
+        0.9,
+        C_V,
+        ShapeFit {
+            fit_c_a: true,
+            ..ShapeFit::default()
+        },
+    );
+    assert!((p.c_a - 0.6).abs() < 1e-12);
+    // the appended c/a flows through the draw row
+    assert!(
+        (*p.to_draw_row(
+            Model::Tpm,
+            ShapeFit {
+                fit_c_a: true,
+                ..ShapeFit::default()
+            }
+        )
+        .last()
+        .unwrap()
+            - 0.6)
+            .abs()
+            < 1e-12
+    );
+
+    let ob = &base[0];
+    let bands = [ob.band];
+    let flat =
+        Model::Tpm.compute_fluxes(&p, &bands, &ob.sun2obj, &ob.sun2obs, ob.epoch, Some(&cfg));
+
+    // c/a = 1 is a sphere; the flattened body must give a different thermal flux.
+    let mut xs = x;
+    xs[6] = 1.0;
+    let ps = Model::Tpm.unpack(
+        &xs,
+        0.9,
+        C_V,
+        ShapeFit {
+            fit_c_a: true,
+            ..ShapeFit::default()
+        },
+    );
+    let sph =
+        Model::Tpm.compute_fluxes(&ps, &bands, &ob.sun2obj, &ob.sun2obs, ob.epoch, Some(&cfg));
+
+    let rel = (flat.fluxes[0] - sph.fluxes[0]).abs() / sph.fluxes[0];
+    assert!(
+        rel > 1e-3,
+        "oblate flux {} should differ from sphere {}",
+        flat.fluxes[0],
+        sph.fluxes[0]
+    );
+}
+
+fn synthetic_tpm_obs() -> (Vec<FluxObs>, TestHg, SpinState, f64) {
+    let hg = TestHg::new(0.15, Some(18.0), None, Some(10.0));
+    let spin = SpinState {
+        pole: UnitVector3::new_normalize(Vector3::new(0.0, 0.0, 1.0)),
+        period: 6.0 * 3600.0,
+        phase0: 0.0,
+        epoch0: 0.0,
+    };
+    let gamma = 200.0;
+    let thermal = ThermalParams {
+        thermal_inertia: gamma,
+        emissivity: 0.9,
+    };
+    let r_ir = 1.0;
+    let bands = BandInfo::WISE;
+    let band_albedos: Vec<f64> = bands.iter().map(|_| r_ir * hg.vis_albedo).collect();
+
+    let sun2obj = Vector3::new(2.0, 0.0, 0.0);
+    let obj2sun_hat = -sun2obj.normalize();
+
+    let mut obs = Vec::new();
+    for phase_deg in [0.0, 45.0, 90.0, 135.0] {
+        let phi = phase_deg * std::f64::consts::PI / 180.0;
+        let obj2obs_hat = Vector3::new(obj2sun_hat.x * phi.cos(), -phi.sin(), 0.0);
+        let sun2obs = sun2obj + 1.0 * obj2obs_hat;
+
+        // truth from the direct (exact) solver
+        let result = tpm_total_flux(
+            &bands,
+            &band_albedos,
+            &spin,
+            &TpmShape::sphere(),
+            &thermal,
+            hg.diameter,
+            hg.vis_albedo,
+            hg.g_param,
+            hg.h_mag,
+            &sun2obj,
+            &sun2obs,
+            0.0,
+        )
+        .unwrap();
+        for (band, &flux) in bands.into_iter().zip(&result.fluxes) {
+            obs.push(FluxObs {
+                flux,
+                sigma: flux * 0.05,
+                band,
+                is_upper_limit: false,
+                sun2obj,
+                sun2obs,
+                epoch: 0.0,
+            });
+        }
+    }
+    (obs, hg, spin, gamma)
+}
+
+/// Synthetic TPM observations of a known oblate body (`c/a < 1`) seen across a spread
+/// of aspects -- the sub-solar latitude is swept from equator-on toward pole-on, which
+/// is what makes `c/a` identifiable (a single aspect is degenerate with diameter).
+fn synthetic_oblate_obs(c_a: f64) -> (Vec<FluxObs>, TestHg, SpinState) {
+    let hg = TestHg::new(0.15, Some(18.0), None, Some(10.0));
+    let spin = SpinState {
+        pole: UnitVector3::new_normalize(Vector3::new(0.0, 0.0, 1.0)),
+        period: 6.0 * 3600.0,
+        phase0: 0.0,
+        epoch0: 0.0,
+    };
+    let thermal = ThermalParams {
+        thermal_inertia: 200.0,
+        emissivity: 0.9,
+    };
+    let shape = TpmShape::ellipsoid(1.0, 1.0, c_a);
+    let bands = BandInfo::WISE;
+    let band_albedos: Vec<f64> = bands.iter().map(|_| hg.vis_albedo).collect();
+
+    let mut obs = Vec::new();
+    // sub-solar latitude sweep (pole is +z): equator-on to near pole-on.
+    for lat_deg in [0.0_f64, 20.0, 40.0, 60.0, 75.0] {
+        let lat = lat_deg.to_radians();
+        let sun2obj = 2.0 * Vector3::new(lat.cos(), 0.0, lat.sin());
+        let obj2sun_hat = -sun2obj.normalize();
+        // observer at a ~20 deg phase angle, offset in the y direction.
+        let obj2obs_hat = (obj2sun_hat + 0.36 * Vector3::<f64>::y()).normalize();
+        let sun2obs = sun2obj + obj2obs_hat;
+
+        let result = tpm_total_flux(
+            &bands,
+            &band_albedos,
+            &spin,
+            &shape,
+            &thermal,
+            hg.diameter,
+            hg.vis_albedo,
+            hg.g_param,
+            hg.h_mag,
+            &sun2obj,
+            &sun2obs,
+            0.0,
+        )
+        .unwrap();
+        for (band, &flux) in bands.into_iter().zip(&result.fluxes) {
+            obs.push(FluxObs {
+                flux,
+                sigma: flux * 0.02,
+                band,
+                is_upper_limit: false,
+                sun2obj,
+                sun2obs,
+                epoch: 0.0,
+            });
+        }
+    }
+    (obs, hg, spin)
+}
+
+#[test]
+fn test_tpm_oblate_fit_recovery() {
+    // End-to-end: fit the oblate axis ratio c/a with NUTS and check it is recovered
+    // (and clearly distinguished from a sphere). Multi-aspect data make it identifiable.
+    let truth_c_a = 0.6;
+    let (obs, hg, spin) = synthetic_oblate_obs(truth_c_a);
+    let cfg = TpmConfig {
+        spin,
+        shape: TpmShape::sphere(),
+        seed_shape: TpmShape::sphere_with_facets(512),
+        grid: Arc::new(TpmFieldGrid::with_resolution(0.01, 100.0, 20, 15).unwrap()),
+        roughness: None,
+        fit_c_a: true,
+        fit_b_a: false,
+        fit_phase0: false,
+        template: Some(EllipsoidTemplate::new(8)),
+    };
+    let priors = FluxPriors {
+        h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
+        ..FluxPriors::default()
+    };
+
+    let res = fit_mcmc(Model::Tpm, &obs, C_V, 0.9, &priors, 1, 60, 60, Some(&cfg))
+        .expect("oblate TPM MCMC should produce a result");
+
+    // c/a is the appended last draw column.
+    assert_eq!(*res.column_names().last().unwrap(), "c_a");
+
+    let median = |col: usize| {
+        let vals: Vec<f64> = res.draws.iter().map(|r| r[col]).collect();
+        kete_stats::prelude::SortedData::try_from(vals)
+            .unwrap()
+            .median()
+    };
+
+    // diameter (col 0) stays well constrained by the total flux.
+    let d_median = median(0);
+    assert!(
+        (d_median - 10.0).abs() / 10.0 < 0.35,
+        "fit diameter {d_median:.2} too far from truth 10.0",
+    );
+
+    // c/a (last col) should be recovered near truth and clearly below a sphere.
+    let c_a_median = median(res.column_names().len() - 1);
+    assert!(
+        (0.4..0.85).contains(&c_a_median),
+        "fit c/a {c_a_median:.2} did not recover the oblate truth {truth_c_a}",
+    );
+}
+
+/// Synthetic observations of a known triaxial body. The rotation is sampled across one
+/// period at an equatorial aspect (which carries the `b/a` lightcurve and `phase0`),
+/// plus a couple of off-aspect epochs that pin `c/a`.
+fn synthetic_triaxial_obs(b_a: f64, c_a: f64, phase0: f64) -> (Vec<FluxObs>, SpinState) {
+    let hg = TestHg::new(0.15, Some(15.0), Some(0.05), None);
+    let period = 6.0 * 3600.0;
+    let spin = SpinState {
+        pole: UnitVector3::new_normalize(Vector3::new(0.0, 0.0, 1.0)),
+        period,
+        phase0,
+        epoch0: 0.0,
+    };
+    let thermal = ThermalParams {
+        thermal_inertia: 200.0,
+        emissivity: 0.9,
+    };
+    let shape = TpmShape::ellipsoid(1.0, b_a, c_a);
+    let bands = BandInfo::WISE;
+    let albedos: Vec<f64> = bands.iter().map(|_| hg.vis_albedo).collect();
+    let one_rotation_days = period / 86_400.0;
+
+    let push = |s2o: &Vector3<f64>, s2b: &Vector3<f64>, epoch: f64, obs: &mut Vec<FluxObs>| {
+        let r = tpm_total_flux(
+            &bands,
+            &albedos,
+            &spin,
+            &shape,
+            &thermal,
+            hg.diameter,
+            hg.vis_albedo,
+            hg.g_param,
+            hg.h_mag,
+            s2o,
+            s2b,
+            epoch,
+        )
+        .unwrap();
+        for (band, &flux) in bands.into_iter().zip(&r.fluxes) {
+            obs.push(FluxObs {
+                flux,
+                sigma: flux * 0.02,
+                band,
+                is_upper_limit: false,
+                sun2obj: *s2o,
+                sun2obs: *s2b,
+                epoch,
+            });
+        }
+    };
+
+    let mut obs = Vec::new();
+    // equatorial aspect, sampled across one rotation -> the b/a lightcurve + phase0.
+    let s2o_eq = Vector3::new(2.0, 0.0, 0.0);
+    let o2o = (-s2o_eq.normalize() + 0.36 * Vector3::<f64>::y()).normalize();
+    let s2b_eq = s2o_eq + o2o;
+    for k in 0..8 {
+        let epoch = one_rotation_days * f64::from(k) / 8.0;
+        push(&s2o_eq, &s2b_eq, epoch, &mut obs);
+    }
+    // off-aspect epochs (sub-solar latitude raised) -> constrain c/a.
+    for lat_deg in [45.0_f64, 70.0] {
+        let lat = lat_deg.to_radians();
+        let s2o = 2.0 * Vector3::new(lat.cos(), 0.0, lat.sin());
+        let o2o = (-s2o.normalize() + 0.36 * Vector3::<f64>::y()).normalize();
+        let s2b = s2o + o2o;
+        push(&s2o, &s2b, 0.0, &mut obs);
+    }
+    (obs, spin)
+}
+
+#[test]
+#[ignore = "slow: full triaxial MCMC recovery (9-dim fit; run on demand)"]
+fn test_tpm_triaxial_fit_recovery() {
+    // Fit a full triaxial shape (b/a, c/a) plus the rotation phase phase0 and check
+    // they are recovered. phase0 is restricted to [0, pi) and multi-started.
+    let (truth_b_a, truth_c_a, truth_phase0) = (0.7, 0.5, 0.9);
+    let (obs, spin) = synthetic_triaxial_obs(truth_b_a, truth_c_a, truth_phase0);
+    let cfg = TpmConfig {
+        spin: SpinState {
+            phase0: 0.0,
+            ..spin
+        },
+        shape: TpmShape::sphere(),
+        seed_shape: TpmShape::sphere_with_facets(512),
+        grid: Arc::new(TpmFieldGrid::with_resolution(0.01, 100.0, 20, 15).unwrap()),
+        roughness: None,
+        fit_c_a: true,
+        fit_b_a: true,
+        fit_phase0: true,
+        // Coarse template (matches the binding's fit resolution) keeps the on-demand
+        // run tractable; disk-integrated flux is converged at this facet count.
+        template: Some(EllipsoidTemplate::new(8)),
+    };
+    let priors = FluxPriors {
+        h_mag: ParamPrior::with_gaussian(-5.0, 35.0, 15.0, 1.0),
+        ..FluxPriors::default()
+    };
+
+    let res = fit_mcmc(Model::Tpm, &obs, C_V, 0.9, &priors, 1, 60, 60, Some(&cfg))
+        .expect("triaxial TPM MCMC should produce a result");
+
+    let cols = res.column_names();
+    let idx = |name: &str| cols.iter().position(|c| *c == name).unwrap();
+    let median = |col: usize| {
+        let vals: Vec<f64> = res.draws.iter().map(|r| r[col]).collect();
+        kete_stats::prelude::SortedData::try_from(vals)
+            .unwrap()
+            .median()
+    };
+
+    let b_a = median(idx("b_a"));
+    let c_a = median(idx("c_a"));
+    let phase0_deg = median(idx("phase0"));
+    assert!(
+        (0.5..0.9).contains(&b_a),
+        "fit b/a {b_a:.2} did not recover truth {truth_b_a}",
+    );
+    assert!(
+        (0.35..0.7).contains(&c_a),
+        "fit c/a {c_a:.2} did not recover truth {truth_c_a}",
+    );
+    // phase0 truth ~51.6 deg; allow a wide band (it is the most degenerate parameter).
+    let truth_deg = truth_phase0.to_degrees();
+    assert!(
+        (phase0_deg - truth_deg).abs() < 30.0,
+        "fit phase0 {phase0_deg:.0} deg far from truth {truth_deg:.0}",
+    );
+}
+
+/// Build a `TpmConfig` whose grid covers the `Theta` range spanned by the
+/// thermal-inertia prior at this geometry.
+fn tpm_config_for(spin: &SpinState) -> TpmConfig {
+    TpmConfig {
+        spin: spin.clone(),
+        shape: TpmShape::sphere(),
+        seed_shape: TpmShape::sphere_with_facets(512),
+        grid: Arc::new(TpmFieldGrid::with_resolution(0.01, 100.0, 20, 15).unwrap()),
+        roughness: None,
+        fit_c_a: false,
+        fit_b_a: false,
+        fit_phase0: false,
+        template: None,
+    }
+}
+
+#[test]
+fn test_tpm_nll_at_truth() {
+    let (obs, hg, spin, gamma) = synthetic_tpm_obs();
+    let cfg = tpm_config_for(&spin);
+
+    let nll = |g: f64| -> f64 {
+        // [D, ln(thermal_inertia), H, G, f_sigma, R_IR]
+        let x = [hg.diameter, g.ln(), hg.h_mag, hg.g_param, 1.0, 1.0];
+        let params = Model::Tpm.unpack(&x, 0.9, C_V, ShapeFit::default());
+        -Model::Tpm.log_likelihood(&params, &obs, Some(&cfg))
+    };
+
+    let at_truth = nll(gamma);
+    assert!(at_truth.is_finite());
+    // the likelihood should prefer the true inertia over very wrong values
+    assert!(at_truth < nll(5.0), "truth should beat very low inertia");
+    assert!(
+        at_truth < nll(1500.0),
+        "truth should beat very high inertia"
+    );
+}
+
+#[test]
+fn test_tpm_roughness_scales_thermal_flux() {
+    // A constant roughness correction R = 1.2 should raise each model flux by scaling
+    // the thermal part (reflected light is left unscaled), so smooth < rough <= 1.2x.
+    let (obs, hg, spin, _gamma) = synthetic_tpm_obs();
+    let smooth_cfg = tpm_config_for(&spin);
+
+    let wl: Vec<f64> = BandInfo::WISE.iter().map(|b| b.wavelength).collect();
+    let factors = vec![1.2; wl.len()];
+    let rc = RoughnessCorrection::from_factors(&[1.0], &[0.5], &[0.0], &[300.0], &wl, factors);
+    let mut rough_cfg = tpm_config_for(&spin);
+    rough_cfg.roughness = Some(RoughnessFit {
+        gamma: 0.5,
+        correction: Arc::new(rc),
+    });
+
+    // [D, ln(thermal_inertia), H, G, f_sigma, R_IR]
+    let x = [hg.diameter, 200.0_f64.ln(), hg.h_mag, hg.g_param, 1.0, 1.0];
+    let params = Model::Tpm.unpack(&x, 0.9, C_V, ShapeFit::default());
+    let smooth = Model::Tpm.evaluate_forward_model(&params, &obs, Some(&smooth_cfg));
+    let rough = Model::Tpm.evaluate_forward_model(&params, &obs, Some(&rough_cfg));
+
+    for (s, r) in smooth.model_fluxes.iter().zip(&rough.model_fluxes) {
+        assert!(*r > *s, "roughness should raise flux: {r} vs {s}");
+        assert!(
+            *r <= s * 1.2 + 1e-9,
+            "raise is bounded by R on the thermal part: {r} vs {}",
+            s * 1.2
+        );
+    }
+}
+
+#[test]
+fn test_tpm_fit_recovery() {
+    let (obs, hg, spin, _gamma) = synthetic_tpm_obs();
+    let cfg = tpm_config_for(&spin);
+    let priors = FluxPriors {
+        h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
+        ..FluxPriors::default()
+    };
+
+    let res = fit_mcmc(Model::Tpm, &obs, C_V, 0.9, &priors, 1, 40, 40, Some(&cfg))
+        .expect("TPM MCMC should produce a result");
+
+    assert_eq!(res.column_names()[2], "thermal_inertia");
+
+    let median = |col: usize| {
+        let vals: Vec<f64> = res.draws.iter().map(|r| r[col]).collect();
+        kete_stats::prelude::SortedData::try_from(vals)
+            .unwrap()
+            .median()
+    };
+
+    // diameter (column 0) is well constrained by the total flux
+    let d_median = median(0);
+    assert!(
+        (d_median - 10.0).abs() / 10.0 < 0.3,
+        "fit diameter {d_median:.2} too far from truth 10.0",
+    );
+    // thermal inertia (column 2) is weakly constrained; require only that it is
+    // recovered to the right order of magnitude and not pinned at a prior edge.
+    let gamma_median = median(2);
+    assert!(
+        (50.0..=800.0).contains(&gamma_median),
+        "fit thermal inertia {gamma_median:.0} not in the expected range",
+    );
+}
+
+#[test]
+fn test_tpm_rough_layout_and_fitted_roughness() {
+    // The roughness-fitting variant adds a 7th parameter (mean slope angle at x[2]),
+    // exposes a "roughness" draw column, and the sampled roughness -- not the config
+    // value -- drives the correction. The sampled mean slope angle is converted to the
+    // internal crater opening half-angle before the correction table lookup, so this
+    // also exercises that theta_bar -> gamma -> factor stays monotone.
+    assert_eq!(Model::TpmRough.dim(ShapeFit::default()), 7);
+    assert_eq!(
+        Model::TpmRough.draw_column_names(ShapeFit::default())[3],
+        "roughness"
+    );
+
+    // A correction table that increases with gamma (1.0 at 0.2 rad, 1.4 at 1.0 rad).
+    let wl: Vec<f64> = BandInfo::WISE.iter().map(|b| b.wavelength).collect();
+    let n_wl = wl.len();
+    let gammas = [0.2_f64, 1.0];
+    let phases = [0.0, std::f64::consts::PI];
+    let mut factors = Vec::new();
+    for &g in &gammas {
+        for _ in &phases {
+            for _ in 0..n_wl {
+                factors.push(if g < 0.5 { 1.0 } else { 1.4 });
+            }
+        }
+    }
+    let rc = RoughnessCorrection::from_factors(&[1.0], &gammas, &phases, &[300.0], &wl, factors);
+
+    let (obs, hg, spin, _gamma) = synthetic_tpm_obs();
+    let mut cfg = tpm_config_for(&spin);
+    cfg.roughness = Some(RoughnessFit {
+        gamma: 0.5,
+        correction: Arc::new(rc),
+    });
+
+    // [D, ln(thermal_inertia), roughness, H, G, f_sigma, R_IR]
+    let low = [
+        hg.diameter,
+        200.0_f64.ln(),
+        0.25,
+        hg.h_mag,
+        hg.g_param,
+        1.0,
+        1.0,
+    ];
+    let high = [
+        hg.diameter,
+        200.0_f64.ln(),
+        0.95,
+        hg.h_mag,
+        hg.g_param,
+        1.0,
+        1.0,
+    ];
+
+    let p_low = Model::TpmRough.unpack(&low, 0.9, C_V, ShapeFit::default());
+    assert!(
+        (p_low.roughness - 0.25).abs() < 1e-12,
+        "mean slope angle read from x[2]"
+    );
+    // draw row carries roughness in degrees at column 3.
+    let row = p_low.to_draw_row(Model::TpmRough, ShapeFit::default());
+    assert_eq!(row.len(), 8);
+    assert!((row[3] - 0.25_f64.to_degrees()).abs() < 1e-9);
+
+    let f_low = Model::TpmRough.evaluate_forward_model(&p_low, &obs, Some(&cfg));
+    let p_high = Model::TpmRough.unpack(&high, 0.9, C_V, ShapeFit::default());
+    let f_high = Model::TpmRough.evaluate_forward_model(&p_high, &obs, Some(&cfg));
+
+    // Larger fitted roughness -> larger thermal correction -> higher flux.
+    let mut any_increase = false;
+    for (lo, hi) in f_low.model_fluxes.iter().zip(&f_high.model_fluxes) {
+        assert!(
+            *hi >= *lo - 1e-9,
+            "fitted gamma must not lower flux: {hi} vs {lo}"
+        );
+        if *hi > *lo + 1e-9 {
+            any_increase = true;
+        }
+    }
+    assert!(any_increase, "the sampled roughness should drive the flux");
 }
 
 #[test]
@@ -225,6 +897,7 @@ fn test_frm_nll_at_truth() {
             is_upper_limit: false,
             sun2obj,
             sun2obs,
+            epoch: 0.0,
         })
         .collect();
 
@@ -311,6 +984,7 @@ fn test_frm_fit_recovery() {
             is_upper_limit: false,
             sun2obj,
             sun2obs,
+            epoch: 0.0,
         })
         .collect();
 
@@ -318,7 +992,7 @@ fn test_frm_fit_recovery() {
         h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
         ..FluxPriors::default()
     };
-    let res = fit_mcmc(Model::Frm, &obs, C_V, 0.9, &priors, 1, 50, 50)
+    let res = fit_mcmc(Model::Frm, &obs, C_V, 0.9, &priors, 1, 50, 50, None)
         .expect("MCMC should produce a result");
 
     let d_median = {
@@ -340,7 +1014,7 @@ fn test_frm_fit_recovery() {
     assert_eq!(res.best_fit_residuals.len(), n_obs);
     assert_eq!(res.best_fit_reflected_frac.len(), n_obs);
     assert!(
-        res.reduced_chi2.is_finite() || n_obs <= Model::Frm.dim(),
+        res.reduced_chi2.is_finite() || n_obs <= Model::Frm.dim(ShapeFit::default()),
         "reduced_chi2 should be finite when nobs > nparams",
     );
 }
@@ -362,6 +1036,7 @@ fn test_neatm_batch() {
             num_chains: 1,
             num_tune: 50,
             num_draws: 50,
+            tpm: None,
         },
         FitTask {
             model: Model::Neatm,
@@ -372,6 +1047,7 @@ fn test_neatm_batch() {
             num_chains: 1,
             num_tune: 50,
             num_draws: 50,
+            tpm: None,
         },
     ];
     let results = fit_batch(&tasks);
@@ -411,6 +1087,7 @@ fn test_frm_batch() {
             is_upper_limit: false,
             sun2obj,
             sun2obs,
+            epoch: 0.0,
         })
         .collect();
     let priors = FluxPriors {
@@ -426,6 +1103,7 @@ fn test_frm_batch() {
         num_chains: 1,
         num_tune: 50,
         num_draws: 50,
+        tpm: None,
     }];
     let results = fit_batch(&tasks);
     assert_eq!(results.len(), 1);
@@ -439,7 +1117,7 @@ fn test_coupling_consistency_neatm() {
         h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
         ..FluxPriors::default()
     };
-    let res = fit_mcmc(Model::Neatm, &obs, C_V, 0.9, &priors, 1, 50, 50).unwrap();
+    let res = fit_mcmc(Model::Neatm, &obs, C_V, 0.9, &priors, 1, 50, 50, None).unwrap();
 
     // Every draw must satisfy D = c_hg / sqrt(pV) * 10^(-H/5).
     // H is now per-draw at index 3.
@@ -486,6 +1164,7 @@ fn test_coupling_consistency_frm() {
             is_upper_limit: false,
             sun2obj,
             sun2obs,
+            epoch: 0.0,
         })
         .collect();
 
@@ -493,7 +1172,7 @@ fn test_coupling_consistency_frm() {
         h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
         ..FluxPriors::default()
     };
-    let res = fit_mcmc(Model::Frm, &obs, C_V, 0.9, &priors, 1, 50, 50).unwrap();
+    let res = fit_mcmc(Model::Frm, &obs, C_V, 0.9, &priors, 1, 50, 50, None).unwrap();
 
     // H is now per-draw at index 2.
     let c_hg = C_V;
@@ -544,6 +1223,7 @@ fn test_neatm_w3_w4_only() {
             is_upper_limit: false,
             sun2obj,
             sun2obs,
+            epoch: 0.0,
         })
         .collect();
 
@@ -551,7 +1231,7 @@ fn test_neatm_w3_w4_only() {
         h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
         ..FluxPriors::default()
     };
-    let res = fit_mcmc(Model::Neatm, &obs, C_V, 0.9, &priors, 1, 50, 50)
+    let res = fit_mcmc(Model::Neatm, &obs, C_V, 0.9, &priors, 1, 50, 50, None)
         .expect("W3+W4 MCMC should produce a result");
 
     let d_median = {
@@ -584,7 +1264,7 @@ fn test_all_upper_limits_no_panic() {
         h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
         ..FluxPriors::default()
     };
-    let _ = fit_mcmc(Model::Neatm, &ul_obs, C_V, 0.9, &priors, 1, 50, 50);
+    let _ = fit_mcmc(Model::Neatm, &ul_obs, C_V, 0.9, &priors, 1, 50, 50, None);
 }
 
 #[test]
@@ -596,7 +1276,7 @@ fn test_mcmc_draw_column_counts() {
     };
 
     // NEATM: 7 columns [D, pV, beaming, H, G, R_IR, f_sigma].
-    let neatm_res = fit_mcmc(Model::Neatm, &obs, C_V, 0.9, &priors, 1, 50, 50).unwrap();
+    let neatm_res = fit_mcmc(Model::Neatm, &obs, C_V, 0.9, &priors, 1, 50, 50, None).unwrap();
     for (i, d) in neatm_res.draws.iter().enumerate() {
         assert_eq!(d.len(), 7, "NEATM draw {i} should have 7 columns");
         // D, pV, beaming, R_IR, f_sigma must be positive.
@@ -619,7 +1299,7 @@ fn test_mcmc_draw_column_counts() {
     }
 
     // FRM: 6 columns [D, pV, H, G, R_IR, f_sigma].
-    let frm_res = fit_mcmc(Model::Frm, &obs, C_V, 0.9, &priors, 1, 50, 50).unwrap();
+    let frm_res = fit_mcmc(Model::Frm, &obs, C_V, 0.9, &priors, 1, 50, 50, None).unwrap();
     for (i, d) in frm_res.draws.iter().enumerate() {
         assert_eq!(d.len(), 6, "FRM draw {i} should have 6 columns");
         // D, pV, R_IR, f_sigma must be positive.
@@ -640,7 +1320,7 @@ fn test_mcmc_draw_column_counts() {
         h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg_hg.h_mag, 1.0),
         ..FluxPriors::default()
     };
-    let hg_res = fit_mcmc(Model::Hg, &hg_obs, C_V, 0.9, &hg_priors, 1, 50, 50).unwrap();
+    let hg_res = fit_mcmc(Model::Hg, &hg_obs, C_V, 0.9, &hg_priors, 1, 50, 50, None).unwrap();
     for (i, d) in hg_res.draws.iter().enumerate() {
         assert_eq!(d.len(), 3, "HG draw {i} should have 3 columns");
         assert!(d[0].is_finite(), "HG draw {i} H = {} not finite", d[0]);
@@ -694,6 +1374,7 @@ fn synthetic_hg_obs() -> (Vec<FluxObs>, TestHg) {
             is_upper_limit: false,
             sun2obj: s2o,
             sun2obs: s2obs,
+            epoch: 0.0,
         });
     }
 
@@ -739,7 +1420,7 @@ fn test_hg_fit_recovery() {
         ..FluxPriors::default()
     };
 
-    let res = fit_mcmc(Model::Hg, &obs, C_V, 0.9, &priors, 1, 100, 100)
+    let res = fit_mcmc(Model::Hg, &obs, C_V, 0.9, &priors, 1, 100, 100, None)
         .expect("HG MCMC should produce a result");
 
     // H should recover near 18.0.
@@ -763,7 +1444,7 @@ fn test_hg_fit_recovery() {
     assert_eq!(res.best_fit_residuals.len(), n_obs);
     assert_eq!(res.best_fit_reflected_frac.len(), n_obs);
     assert!(
-        res.reduced_chi2.is_finite() || n_obs <= Model::Hg.dim(),
+        res.reduced_chi2.is_finite() || n_obs <= Model::Hg.dim(ShapeFit::default()),
         "reduced_chi2 should be finite when nobs > nparams",
     );
 
@@ -793,6 +1474,7 @@ fn test_hg_batch() {
             num_chains: 1,
             num_tune: 50,
             num_draws: 50,
+            tpm: None,
         },
         FitTask {
             model: Model::Hg,
@@ -803,6 +1485,7 @@ fn test_hg_batch() {
             num_chains: 1,
             num_tune: 50,
             num_draws: 50,
+            tpm: None,
         },
     ];
     let results = fit_batch(&tasks);
@@ -855,6 +1538,7 @@ fn test_multi_geometry_neatm() {
                 is_upper_limit: false,
                 sun2obj: *sun2obj,
                 sun2obs: *sun2obs,
+                epoch: 0.0,
             });
         }
     }
@@ -866,7 +1550,7 @@ fn test_multi_geometry_neatm() {
         h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
         ..FluxPriors::default()
     };
-    let res = fit_mcmc(Model::Neatm, &obs, C_V, 0.9, &priors, 1, 50, 50)
+    let res = fit_mcmc(Model::Neatm, &obs, C_V, 0.9, &priors, 1, 50, 50, None)
         .expect("Multi-geometry NEATM MCMC should produce a result");
 
     let d_median = {

@@ -82,7 +82,6 @@ pub use traits::{Force, ParameterizedForce};
 /// and its parameters need to be exposed for variational integration.
 pub type NonGravMask = ParameterMask<NonGravKind>;
 
-/// A [`NonGravKind`] with parameter values baked in. Used wherever a
-/// single concrete parameter estimate drives a plain-`State` propagation
-/// (batch propagation, covariance samples, orbit-fitter inner loop).
+/// A [`NonGravKind`] with all parameter values baked in. Used for plain
+/// `State` propagation where every non-grav parameter is known.
 pub type FrozenNonGrav = FrozenForce<NonGravKind>;

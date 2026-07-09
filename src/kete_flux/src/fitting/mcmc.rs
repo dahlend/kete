@@ -30,7 +30,7 @@
 //! MCMC posterior sampling via NUTS for model fitting,
 //! plus parallel batch fitting.
 
-use super::types::{FluxObs, FluxPriors, Model};
+use super::types::{FluxObs, FluxPriors, Model, ShapeFit, TpmConfig};
 use kete_core::errors::{Error, KeteResult};
 use kete_stats::fitting::{NelderMeadResult, nelder_mead};
 use nalgebra::{DMatrix, DVector};
@@ -46,11 +46,13 @@ fn build_neg_log_posterior(
     c_hg: f64,
     emissivity: f64,
     priors: &FluxPriors,
+    tpm: Option<&TpmConfig>,
 ) -> impl Fn(&[f64]) -> f64 {
     let obs = obs.to_vec();
     let priors = priors.clone();
+    let tpm = tpm.cloned();
     move |x: &[f64]| -> f64 {
-        let lp = model.log_posterior(x, &obs, c_hg, emissivity, &priors);
+        let lp = model.log_posterior(x, &obs, c_hg, emissivity, &priors, tpm.as_ref());
         if lp.is_finite() { -lp } else { f64::MAX }
     }
 }
@@ -68,14 +70,52 @@ fn nelder_mead_seed(
     c_hg: f64,
     emissivity: f64,
     priors: &FluxPriors,
+    tpm: Option<&TpmConfig>,
 ) -> KeteResult<NelderMeadSeed> {
-    let objective = build_neg_log_posterior(model, obs, c_hg, emissivity, priors);
+    let objective = build_neg_log_posterior(model, obs, c_hg, emissivity, priors, tpm);
+    let shape_fit = ShapeFit::from_config(tpm);
 
     // Derive seed values for H, G from priors.
     let h0 = priors.h_mag.center();
     let g0 = priors.g_param.center();
 
-    let (starts, scale): (Vec<Vec<f64>>, Vec<f64>) = match model {
+    let (mut starts, mut scale): (Vec<Vec<f64>>, Vec<f64>) = match model {
+        Model::Tpm => {
+            // [D, ln(thermal_inertia), H, G, f_sigma, R_IR] -- Gamma is sampled in log
+            // space, so its seed values and scale are in log(Gamma).
+            let mid_d = priors.diameter.center();
+            let ln_gamma = priors.thermal_inertia.center().ln();
+            let mid_r_ir = priors.r_ir.center();
+            (
+                vec![
+                    vec![mid_d, ln_gamma, h0, g0, 1.5, mid_r_ir],
+                    vec![mid_d, 50.0_f64.ln(), h0, g0, 1.0, mid_r_ir],
+                    vec![1.0, 200.0_f64.ln(), h0, g0, 1.0, mid_r_ir],
+                    vec![20.0, 500.0_f64.ln(), h0, g0, 1.0, mid_r_ir],
+                    vec![50.0, 100.0_f64.ln(), h0, g0, 2.0, mid_r_ir],
+                ],
+                vec![5.0, 0.7, 1.0, 0.05, 0.2, 0.2],
+            )
+        }
+        Model::TpmRough => {
+            // [D, ln(thermal_inertia), roughness(rad), H, G, f_sigma, R_IR] -- Gamma is
+            // sampled in log space; roughness is the mean slope angle (radians), seeded
+            // within the [0, 50] deg default bound (0.35 rad ~= 20 deg, 0.6 rad ~= 34 deg).
+            let mid_d = priors.diameter.center();
+            let ln_gamma = priors.thermal_inertia.center().ln();
+            let r0 = priors.roughness.center();
+            let mid_r_ir = priors.r_ir.center();
+            (
+                vec![
+                    vec![mid_d, ln_gamma, r0, h0, g0, 1.5, mid_r_ir],
+                    vec![mid_d, 50.0_f64.ln(), r0, h0, g0, 1.0, mid_r_ir],
+                    vec![1.0, 200.0_f64.ln(), 0.35, h0, g0, 1.0, mid_r_ir],
+                    vec![20.0, 500.0_f64.ln(), 0.6, h0, g0, 1.0, mid_r_ir],
+                    vec![50.0, 100.0_f64.ln(), r0, h0, g0, 2.0, mid_r_ir],
+                ],
+                vec![5.0, 0.7, 0.2, 1.0, 0.05, 0.2, 0.2],
+            )
+        }
         Model::Neatm => {
             // [D, beaming, H, G, f_sigma, R_IR]
             let mid_d = priors.diameter.center();
@@ -158,15 +198,54 @@ fn nelder_mead_seed(
         }
     };
 
-    let mut best: Option<(Vec<f64>, f64)> = None;
-    for start in &starts {
-        if let Ok(NelderMeadResult { point, value, .. }) =
-            nelder_mead(&objective, start, &scale, 1e-7, 2_000)
-            && best.as_ref().is_none_or(|b| value < b.1)
-        {
-            best = Some((point, value));
+    // Fitted shape/phase extras are appended (in order c_a, b_a, phase0) to the TPM
+    // parameter vector; extend each restart and the scale to match.
+    if model.is_tpm() {
+        if shape_fit.fit_c_a {
+            let v = priors.c_a.center();
+            for s in &mut starts {
+                s.push(v);
+            }
+            scale.push(0.15);
+        }
+        if shape_fit.fit_b_a {
+            let v = priors.b_a.center();
+            for s in &mut starts {
+                s.push(v);
+            }
+            scale.push(0.15);
+        }
+        if shape_fit.fit_phase0 {
+            let v = priors.phase0.center();
+            for s in &mut starts {
+                s.push(v);
+            }
+            scale.push(0.3);
+            // phase0 is multimodal over its [0, pi) domain; add restarts spanning it so
+            // the seed is not trapped at one rotational extremum.
+            let p_idx = starts[0].len() - 1;
+            let extra: Vec<Vec<f64>> = [0.25_f64, 0.5, 0.75]
+                .iter()
+                .map(|frac| {
+                    let mut s = starts[0].clone();
+                    s[p_idx] = frac * std::f64::consts::PI;
+                    s
+                })
+                .collect();
+            starts.extend(extra);
         }
     }
+
+    // The restarts are independent; run them in parallel (this multi-start search is
+    // the dominant single-threaded cost of a fit before the chains begin).
+    let best = starts
+        .par_iter()
+        .filter_map(|start| {
+            nelder_mead(&objective, start, &scale, 1e-7, 2_000)
+                .ok()
+                .map(|r| (r.point, r.value))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1));
 
     let (params, value) = best.ok_or_else(|| {
         Error::Convergence("Nelder-Mead failed to find a feasible starting point".into())
@@ -192,10 +271,19 @@ const GRAD_FALLBACK: f64 = 1e-10;
 pub struct FitResult {
     /// Which model was fit.
     /// Determines the draw column layout:
-    /// NEATM: `[D, pV, beaming, H, G, R_IR, f_sigma]`,
-    /// FRM:   `[D, pV, H, G, R_IR, f_sigma]`,
-    /// HG:    `[H, G, f_sigma]`.
+    /// NEATM:      `[D, pV, beaming, H, G, R_IR, f_sigma]`,
+    /// TPM:        `[D, pV, thermal_inertia, H, G, R_IR, f_sigma]`,
+    /// `TpmRough`: `[D, pV, thermal_inertia, roughness, H, G, R_IR, f_sigma]`,
+    /// FRM:        `[D, pV, H, G, R_IR, f_sigma]`,
+    /// HG:         `[H, G, f_sigma]`.
     pub model: Model,
+
+    /// Whether the axis ratio `c/a` was fit (appends a `c_a` draw column).
+    pub fit_c_a: bool,
+    /// Whether the axis ratio `b/a` was fit (appends a `b_a` draw column).
+    pub fit_b_a: bool,
+    /// Whether the rotation phase `phase0` was fit (appends a `phase0` draw column).
+    pub fit_phase0: bool,
 
     /// Raw posterior draws.  Column layout depends on `model`.
     pub draws: Vec<Vec<f64>>,
@@ -228,8 +316,17 @@ pub struct FitResult {
 impl FitResult {
     /// Column names for the posterior draw vectors.
     #[must_use]
-    pub fn column_names(&self) -> &'static [&'static str] {
-        self.model.draw_column_names()
+    pub fn column_names(&self) -> Vec<&'static str> {
+        self.model.draw_column_names(self.shape_fit())
+    }
+
+    /// The shape/phase fit descriptor reconstructed from the stored flags.
+    pub(crate) fn shape_fit(&self) -> ShapeFit {
+        ShapeFit {
+            fit_c_a: self.fit_c_a,
+            fit_b_a: self.fit_b_a,
+            fit_phase0: self.fit_phase0,
+        }
     }
 }
 
@@ -264,6 +361,8 @@ struct Posterior {
     /// Cholesky-like factor: `x = seed + L * xi`.
     whiten_l: DMatrix<f64>,
     model: Model,
+    /// Fixed TPM configuration (spin + field grid); `None` for non-TPM models.
+    tpm: Option<TpmConfig>,
 }
 
 impl Posterior {
@@ -276,8 +375,14 @@ impl Posterior {
 
     /// Evaluate the log-posterior at physical parameter vector `x`.
     fn eval_logp(&self, x: &[f64]) -> f64 {
-        self.model
-            .log_posterior(x, &self.obs, self.c_hg, self.emissivity, &self.priors)
+        self.model.log_posterior(
+            x,
+            &self.obs,
+            self.c_hg,
+            self.emissivity,
+            &self.priors,
+            self.tpm.as_ref(),
+        )
     }
 }
 
@@ -476,17 +581,45 @@ pub fn fit_mcmc(
     num_chains: usize,
     num_tune: usize,
     num_draws: usize,
+    tpm: Option<&TpmConfig>,
 ) -> KeteResult<FitResult> {
-    // 1. Multi-start NM seed.
-    let nm = nelder_mead_seed(model, obs, c_hg, emissivity, priors)?;
-    let seed = nm.params;
+    // 1. Multi-start NM seed. The seed and whitening use a coarse (low-facet) shape
+    //    -- a cheap, approximate forward model that is good enough to locate the basin;
+    //    the posterior chains below use the full-resolution shape so the final estimates
+    //    are not degraded.
+    let shape_fit = ShapeFit::from_config(tpm);
+    let seed_tpm = tpm.map(|t| {
+        let mut c = t.clone();
+        c.shape = t.seed_shape.clone();
+        c
+    });
+    let nm = nelder_mead_seed(model, obs, c_hg, emissivity, priors, seed_tpm.as_ref())?;
+
+    // The multi-start seed (and the whitening below) use a coarse, low-facet shape for
+    // speed. For TPM, polish that seed once with the full-resolution shape so the
+    // reported MAP -- best-fit fluxes, residuals, reduced chi-squared, and the chain
+    // center -- is the true full-shape optimum, directly comparable to a literature
+    // chi-squared minimum. Non-TPM models have no coarse/full split, so their seed is
+    // already the optimum and the polish is skipped.
+    let seed = if tpm.is_some() {
+        let objective = build_neg_log_posterior(model, obs, c_hg, emissivity, priors, tpm);
+        let scale: Vec<f64> = nm
+            .params
+            .iter()
+            .map(|v| (v.abs() * 0.05).max(0.02))
+            .collect();
+        nelder_mead(&objective, &nm.params, &scale, 1e-7, 2_000)
+            .map_or_else(|_| nm.params.clone(), |r| r.point)
+    } else {
+        nm.params
+    };
 
     let seed_vec = DVector::from_column_slice(&seed);
 
-    // MAP diagnostics at the NM seed.
+    // MAP diagnostics at the full-resolution optimum.
     let (reduced_chi2, nobs, best_fit_fluxes, best_fit_residuals, best_fit_reflected_frac) = {
-        let params = model.unpack(&seed, emissivity, c_hg);
-        let fwd = model.evaluate_forward_model(&params, obs);
+        let params = model.unpack(&seed, emissivity, c_hg, shape_fit);
+        let fwd = model.evaluate_forward_model(&params, obs, tpm);
         let mut chi2 = 0.0;
         let mut n = 0_usize;
         let mut residuals = Vec::with_capacity(obs.len());
@@ -503,17 +636,18 @@ pub fn fit_mcmc(
                 n += 1;
             }
         }
-        let dof = n.saturating_sub(model.dim());
+        let dof = n.saturating_sub(model.dim(shape_fit));
         let reduced = if dof > 0 { chi2 / dof as f64 } else { f64::NAN };
         (reduced, n, fwd.model_fluxes, residuals, fwd.reflected_frac)
     };
 
     // Diagonal whitening from FD Hessian of the objective.
-    let d = model.dim();
+    let d = model.dim(shape_fit);
     let fallback: Vec<f64> = std::iter::once(0.3)
         .chain(std::iter::repeat_n(0.15, d - 1))
         .collect();
-    let objective = build_neg_log_posterior(model, obs, c_hg, emissivity, priors);
+    let objective =
+        build_neg_log_posterior(model, obs, c_hg, emissivity, priors, seed_tpm.as_ref());
     let scales = hessian_whitening_scales(&objective, &seed, &fallback);
     let whiten_l = DMatrix::from_diagonal(&DVector::from_column_slice(&scales));
 
@@ -529,6 +663,7 @@ pub fn fit_mcmc(
                 seed_vec: seed_vec.clone(),
                 whiten_l: whiten_l.clone(),
                 model,
+                tpm: tpm.cloned(),
             };
             let (xi_draws, div) = run_chain(
                 posterior,
@@ -544,8 +679,8 @@ pub fn fit_mcmc(
                 .map(|(xi, d)| {
                     let xi_dv = DVector::from_column_slice(xi);
                     let x = &seed_vec + &whiten_l * &xi_dv;
-                    let p = model.unpack(x.as_slice(), emissivity, c_hg);
-                    (p.to_draw_row(model), d)
+                    let p = model.unpack(x.as_slice(), emissivity, c_hg, shape_fit);
+                    (p.to_draw_row(model, shape_fit), d)
                 })
                 .unzip();
             Ok((phys, filtered_div))
@@ -585,6 +720,9 @@ pub fn fit_mcmc(
 
     Ok(FitResult {
         model,
+        fit_c_a: shape_fit.fit_c_a,
+        fit_b_a: shape_fit.fit_b_a,
+        fit_phase0: shape_fit.fit_phase0,
         draws: all_draws,
         divergent: all_divergent,
         n_divergent,
@@ -615,6 +753,8 @@ pub struct FitTask {
     pub num_tune: usize,
     /// Number of posterior draws per chain.
     pub num_draws: usize,
+    /// Fixed TPM configuration (spin + field grid); required for `Model::Tpm`.
+    pub tpm: Option<TpmConfig>,
 }
 
 /// Fit many objects in parallel using rayon.
@@ -635,6 +775,7 @@ pub fn fit_batch(tasks: &[FitTask]) -> Vec<KeteResult<FitResult>> {
                 t.num_chains,
                 t.num_tune,
                 t.num_draws,
+                t.tpm.as_ref(),
             )
         })
         .collect()

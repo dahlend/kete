@@ -64,11 +64,13 @@ impl PyDiffuseState {
             .iter()
             .map(|c| {
                 let ssb_state = spk.try_to_ssb(c.state.clone())?;
-                UncertainState::<Equatorial, SSB>::new(
+                let mut us = UncertainState::<Equatorial, SSB>::new(
                     ssb_state,
                     c.cov_matrix.clone(),
                     c.free_params.clone(),
-                )
+                )?;
+                us.max_unresolved_divergence = c.max_unresolved_divergence;
+                Ok(us)
             })
             .collect()
     }
@@ -153,6 +155,42 @@ impl PyDiffuseState {
         self.mixture.n_components()
     }
 
+    /// Maximum ``max_unresolved_divergence`` across all components.
+    ///
+    /// This is the peak STM-linearization error recorded anywhere in
+    /// the mixture's history.  See
+    /// :attr:`~kete.UncertainState.max_unresolved_divergence` for the
+    /// per-component metric definition.  Values above the adaptive
+    /// ``split_threshold`` used during propagation indicate at least
+    /// one component is under-resolved -- typically because the
+    /// ``max_components`` budget was full or the chaos has driven the
+    /// covariance past the linear regime.
+    #[getter]
+    fn max_unresolved_divergence(&self) -> f64 {
+        self.mixture
+            .components
+            .iter()
+            .map(|c| c.max_unresolved_divergence)
+            .fold(0.0_f64, f64::max)
+    }
+
+    /// Total weight of components whose ``max_unresolved_divergence``
+    /// exceeds ``threshold``.
+    ///
+    /// Useful to ask "how much of the distribution is under-resolved
+    /// past my tolerance?"  Pass the same ``split_threshold`` used at
+    /// propagation time to get a probability-mass measure of
+    /// under-resolution.
+    fn unresolved_weight(&self, threshold: f64) -> f64 {
+        self.mixture
+            .components
+            .iter()
+            .zip(self.mixture.weights.iter())
+            .filter(|(c, _)| c.max_unresolved_divergence > threshold)
+            .map(|(_, w)| *w)
+            .sum()
+    }
+
     /// Number of free parameters per component.
     #[getter]
     fn n_params(&self) -> usize {
@@ -233,41 +271,64 @@ impl PyDiffuseState {
         Ok((states, non_gravs))
     }
 
-    /// Drop components below ``min_weight`` and renormalize.
+    /// Recursively K=3 split every component along its dominant covariance
+    /// eigenvector, ``depth`` times.
     ///
-    /// After many adaptive propagation steps, outer sub-components
-    /// accumulate at small weights and can be discarded without
-    /// meaningfully changing the mixture.
-    fn prune(&self, min_weight: f64) -> PyResult<Self> {
-        let mut next = self.mixture.clone();
-        next.prune(min_weight)?;
+    /// Each level multiplies the component count by 3 and recomputes the
+    /// dominant eigenvector on each child's updated covariance, so
+    /// successive levels target the next-most-uncertain direction.  Use
+    /// before propagation as a static pre-split when the initial mixture
+    /// is too coarse to capture later nonlinearity.
+    ///
+    /// Parameters
+    /// ----------
+    /// depth : int
+    ///     Number of recursive split levels.  ``0`` returns a copy.
+    #[pyo3(signature = (depth=1))]
+    fn split_all(&self, depth: u32) -> PyResult<Self> {
+        let mixture = self.mixture.split_all(depth)?;
         Ok(Self {
-            mixture: next,
+            mixture,
             non_grav: self.non_grav.clone(),
         })
     }
 
     /// Adaptively split nonlinear components, then propagate.
+    ///
+    /// ``split_threshold`` is a Mahalanobis-distance threshold in the
+    /// propagated 6-D position+velocity covariance; see
+    /// :attr:`~kete.UncertainState.max_unresolved_divergence` for the
+    /// metric definition.  Typical values: 3.0 (~90% containment), 3.5
+    /// (95%), 4.0 (99%) for samples drawn from the predicted Gaussian.
+    ///
+    /// ``target_arc_days`` caps the arc length per state-space adaptive
+    /// step; longer requests are recursively bisected in time.  Set to
+    /// ``float('inf')`` to disable time bisection.
     #[pyo3(signature = (
         jd,
-        split_threshold=0.05,
+        split_threshold=3.0,
         max_components=1024,
         max_split_depth=10,
         n_axes=3,
         sigma_factor=1.0,
-        prune_threshold=0.0,
+        position_spacing_au=Some(0.001),
+        target_arc_days=f64::INFINITY,
+        min_split_improvement=0.5,
         include_asteroids=false,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn propagate(
         &self,
+        py: Python<'_>,
         jd: PyTime,
         split_threshold: f64,
         max_components: usize,
         max_split_depth: u32,
         n_axes: usize,
         sigma_factor: f64,
-        prune_threshold: f64,
+        position_spacing_au: Option<f64>,
+        target_arc_days: f64,
+        min_split_improvement: f64,
         include_asteroids: bool,
     ) -> PyResult<Self> {
         let cfg = SplitConfig {
@@ -276,55 +337,70 @@ impl PyDiffuseState {
             max_split_depth,
             n_axes,
             sigma_factor,
-            prune_threshold,
+            position_spacing_au,
+            target_arc_days,
+            min_split_improvement,
         };
-        let spk = LOADED_SPK.try_read().map_err(Error::from)?;
         let target: Time<TDB> = jd.into();
-        let components_ssb = self.components_ssb(&spk)?;
-        let mixture_ssb =
-            DiffuseState::<Equatorial, SSB>::new(self.mixture.weights.clone(), components_ssb)?;
-
-        let forces = self.build_forces(&spk, include_asteroids);
-        let propagated = propagate_diffuse_state_adaptive(&mixture_ssb, &forces, target, &cfg)?;
-        let propagated_dyn: Vec<UncertainState> = propagated
-            .components
-            .into_iter()
-            .map(|c| {
-                UncertainState::new(c.state.into(), c.cov_matrix, c.free_params)
-                    .expect("dimension preserved")
+        py.detach(|| {
+            let spk = LOADED_SPK.try_read().map_err(Error::from)?;
+            let components_ssb = self.components_ssb(&spk)?;
+            let mixture_ssb =
+                DiffuseState::<Equatorial, SSB>::new(self.mixture.weights.clone(), components_ssb)?;
+            let forces = self.build_forces(&spk, include_asteroids);
+            let propagated = propagate_diffuse_state_adaptive(&mixture_ssb, &forces, target, &cfg)?;
+            let propagated_dyn: Vec<UncertainState> = propagated
+                .components
+                .into_iter()
+                .map(|c| {
+                    let mut us = UncertainState::new(c.state.into(), c.cov_matrix, c.free_params)
+                        .expect("dimension preserved");
+                    us.max_unresolved_divergence = c.max_unresolved_divergence;
+                    us
+                })
+                .collect();
+            let mixture = DiffuseState::new(propagated.weights, propagated_dyn)?;
+            Ok(Self {
+                mixture,
+                non_grav: self.non_grav.clone(),
             })
-            .collect();
-        let mixture = DiffuseState::new(propagated.weights, propagated_dyn)?;
-        Ok(Self {
-            mixture,
-            non_grav: self.non_grav.clone(),
         })
     }
 
     /// Per-component sigma-point divergence between linear and nonlinear
     /// propagation to ``jd``.
-    #[pyo3(signature = (jd, n_axes=3, sigma_factor=1.0, include_asteroids=false))]
+    #[pyo3(signature = (
+        jd,
+        n_axes=3,
+        sigma_factor=1.0,
+        position_spacing_au=Some(0.001),
+        include_asteroids=false,
+    ))]
     fn sigma_point_divergence(
         &self,
+        py: Python<'_>,
         jd: PyTime,
         n_axes: usize,
         sigma_factor: f64,
+        position_spacing_au: Option<f64>,
         include_asteroids: bool,
     ) -> PyResult<Vec<f64>> {
-        let spk = LOADED_SPK.try_read().map_err(Error::from)?;
         let target: Time<TDB> = jd.into();
-        let components_ssb = self.components_ssb(&spk)?;
-        let mixture_ssb =
-            DiffuseState::<Equatorial, SSB>::new(self.mixture.weights.clone(), components_ssb)?;
-
-        let forces = self.build_forces(&spk, include_asteroids);
-        Ok(mixture_sigma_point_divergence(
-            &mixture_ssb,
-            &forces,
-            target,
-            n_axes,
-            sigma_factor,
-        )?)
+        py.detach(|| {
+            let spk = LOADED_SPK.try_read().map_err(Error::from)?;
+            let components_ssb = self.components_ssb(&spk)?;
+            let mixture_ssb =
+                DiffuseState::<Equatorial, SSB>::new(self.mixture.weights.clone(), components_ssb)?;
+            let forces = self.build_forces(&spk, include_asteroids);
+            Ok(mixture_sigma_point_divergence(
+                &mixture_ssb,
+                &forces,
+                target,
+                n_axes,
+                sigma_factor,
+                position_spacing_au,
+            )?)
+        })
     }
 
     /// Number of mixture components.
@@ -332,13 +408,40 @@ impl PyDiffuseState {
         self.mixture.n_components()
     }
 
+    /// Indexed access: returns the ``(weight, UncertainState)`` pair at
+    /// position ``idx``.  Supports negative indexing.
+    ///
+    /// Combined with ``__len__``, this also enables direct iteration::
+    ///
+    ///     for weight, component in diffuse_state:
+    ///         ...
+    fn __getitem__(&self, mut idx: isize) -> PyResult<(f64, PyUncertainState)> {
+        let n = self.mixture.n_components() as isize;
+        if idx < 0 {
+            idx += n;
+        }
+        if idx < 0 || idx >= n {
+            return Err(pyo3::exceptions::PyIndexError::new_err(
+                "DiffuseState index out of range",
+            ));
+        }
+        let i = idx as usize;
+        let component = PyUncertainState {
+            state: self.mixture.components[i].clone(),
+            non_grav: self.non_grav.clone(),
+        };
+        Ok((self.mixture.weights[i], component))
+    }
+
     /// String representation.
     fn __repr__(&self) -> String {
+        let max_div = self.max_unresolved_divergence();
         format!(
-            "DiffuseState(n_components={}, cov_dim={}, epoch={:.6})",
+            "DiffuseState(n_components={}, cov_dim={}, epoch={:.6}, max_unresolved_divergence={:.4})",
             self.mixture.n_components(),
             self.mixture.cov_dim(),
             self.mixture.epoch().jd,
+            max_div,
         )
     }
 }

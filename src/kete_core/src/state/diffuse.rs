@@ -229,6 +229,9 @@ where
 
     /// Component states.  All share epoch, center, and covariance
     /// dimension; per-component `free_params` may differ in value.
+    /// Each component carries its own `max_unresolved_divergence`
+    /// diagnostic recording the peak linear-approximation error
+    /// encountered along its history.
     pub components: Vec<UncertainState<F, C>>,
 }
 
@@ -337,46 +340,6 @@ where
         6 + self.n_params()
     }
 
-    /// Drop components whose weight is below `min_weight` and renormalize
-    /// the remaining weights to sum to `1.0`.
-    ///
-    /// After adaptive splitting, outer sub-components accumulate at
-    /// weights as small as `HUBER_K3_WEIGHTS[0]^depth`.  Pruning removes
-    /// these negligible components before the next propagation step,
-    /// keeping the component count bounded without meaningfully changing
-    /// the mixture.
-    ///
-    /// # Errors
-    /// Returns an error if every component would be pruned or if the
-    /// surviving weights sum to zero.
-    pub fn prune(&mut self, min_weight: f64) -> KeteResult<()> {
-        let mut new_weights = Vec::with_capacity(self.weights.len());
-        let mut new_components = Vec::with_capacity(self.components.len());
-        for (w, c) in self.weights.iter().zip(self.components.iter()) {
-            if *w >= min_weight {
-                new_weights.push(*w);
-                new_components.push(c.clone());
-            }
-        }
-        if new_weights.is_empty() {
-            return Err(Error::ValueError(format!(
-                "prune({min_weight}) would remove every component"
-            )));
-        }
-        let sum: f64 = new_weights.iter().sum();
-        if sum <= 0.0 {
-            return Err(Error::ValueError(
-                "surviving weights sum to zero after prune".into(),
-            ));
-        }
-        for w in &mut new_weights {
-            *w /= sum;
-        }
-        self.weights = new_weights;
-        self.components = new_components;
-        Ok(())
-    }
-
     /// Draw random samples from the mixture distribution.
     ///
     /// Each sample is drawn by selecting a component with probability
@@ -430,6 +393,41 @@ where
         }
 
         Ok(results)
+    }
+
+    /// Recursively K=3 split every component along its dominant covariance
+    /// eigenvector, `depth` times.
+    ///
+    /// Each level multiplies the component count by 3.  Between levels the
+    /// dominant eigenvector is recomputed on each child's updated
+    /// covariance, so subsequent splits target the next-most-uncertain
+    /// direction.  Useful as a static pre-split before propagation when
+    /// the initial mixture is too coarse to capture later nonlinearity.
+    ///
+    /// `depth == 0` returns a clone.
+    ///
+    /// # Errors
+    /// Returns the first error from [`split_axial_k3_along`] -- typically
+    /// a degenerate covariance or non-positive variance along the chosen
+    /// direction.
+    pub fn split_all(&self, depth: u32) -> KeteResult<Self> {
+        let mut current_weights = self.weights.clone();
+        let mut current_components = self.components.clone();
+        for _ in 0..depth {
+            let mut next_weights = Vec::with_capacity(current_weights.len() * 3);
+            let mut next_components = Vec::with_capacity(current_components.len() * 3);
+            for (w, c) in current_weights.iter().zip(current_components.iter()) {
+                let dir = dominant_eigenvector(&c.cov_matrix)?;
+                let parts = split_axial_k3_along(c, &dir)?;
+                for (w_split, c_split) in parts {
+                    next_weights.push(w * w_split);
+                    next_components.push(c_split);
+                }
+            }
+            current_weights = next_weights;
+            current_components = next_components;
+        }
+        Self::new(current_weights, current_components)
     }
 }
 
@@ -557,23 +555,36 @@ where
     let mut cov_new = component.cov_matrix.clone();
     cov_new -= outer * alpha;
     // Force exact symmetry to eliminate floating-point roundoff drift.
-    let cov_new = (&cov_new + cov_new.transpose()) * 0.5;
+    let mut cov_new = (&cov_new + cov_new.transpose()) * 0.5;
 
     // Sanity check: the rank-1 reduction is guaranteed PD when d lies
-    // in (or near) the dominant eigenspace of P.  For pathological
-    // alignments with a small-eigenvalue direction it can fail; surface
-    // that as an error so callers can fall back to a safer split.
+    // in (or near) the dominant eigenspace of P.  Small negative
+    // eigenvalues at the ~1e-9 relative level are floating-point noise
+    // from the symmetric eigendecomposition; clip them to zero and
+    // reconstruct.  Larger negative eigenvalues mean d was aligned with
+    // a small-eigenvalue direction -- surface those as a genuine error
+    // so callers can fall back to a safer split.
     let sym = SymmetricEigen::new(cov_new.clone());
     let min_eig = sym
         .eigenvalues
         .iter()
         .copied()
         .fold(f64::INFINITY, f64::min);
-    if min_eig < -sigma_sq.abs() * 1e-10 {
+    let tol = sigma_sq.abs() * 1e-8;
+    if min_eig < -tol {
         return Err(Error::ValueError(format!(
             "split_axial_k3_along: post-split covariance not positive-definite \
              (min eigenvalue {min_eig:.3e}, projected variance {sigma_sq:.3e})"
         )));
+    }
+    if min_eig < 0.0 {
+        // Clip tiny negative eigenvalues to zero and rebuild.  Preserves
+        // mean and second-moment behavior while ensuring downstream code
+        // sees a strictly PSD covariance.
+        let lambda_clipped: Vec<f64> = sym.eigenvalues.iter().map(|&e| e.max(0.0)).collect();
+        let lambda_diag = DMatrix::from_diagonal(&DVector::from_vec(lambda_clipped));
+        cov_new = &sym.eigenvectors * lambda_diag * sym.eigenvectors.transpose();
+        cov_new = (&cov_new + cov_new.transpose()) * 0.5;
     }
 
     let mut result = Vec::with_capacity(3);
@@ -620,7 +631,12 @@ where
         .map(|i| base.free_params[i] + delta[6 + i])
         .collect();
 
-    UncertainState::new(new_state, new_cov, new_params)
+    let mut new_uncertain = UncertainState::new(new_state, new_cov, new_params)?;
+    // Children inherit the parent's accumulated linear-approximation
+    // history.  Their own future diagnoses will update the field
+    // independently as they evolve.
+    new_uncertain.max_unresolved_divergence = base.max_unresolved_divergence;
+    Ok(new_uncertain)
 }
 
 #[cfg(test)]
@@ -939,28 +955,6 @@ mod tests {
                 assert_eq!(a.0.vel[i], b.0.vel[i]);
             }
         }
-    }
-
-    #[test]
-    fn test_prune_drops_low_weight_components() {
-        let a = small_uncertain("A");
-        let b = small_uncertain("B");
-        let c = small_uncertain("C");
-        let mut d = DiffuseState::new(vec![0.6, 0.3, 0.1], vec![a, b, c]).unwrap();
-        d.prune(0.2).unwrap();
-        assert_eq!(d.n_components(), 2);
-        // Remaining weights renormalize to sum to 1.
-        assert!((d.weights.iter().sum::<f64>() - 1.0).abs() < 1e-15);
-        // Original ratio 0.6 : 0.3 = 2 : 1 -> 2/3, 1/3.
-        assert!((d.weights[0] - 2.0 / 3.0).abs() < 1e-15);
-        assert!((d.weights[1] - 1.0 / 3.0).abs() < 1e-15);
-    }
-
-    #[test]
-    fn test_prune_rejects_total_pruning() {
-        let a = small_uncertain("A");
-        let mut d = DiffuseState::from_uncertain(a);
-        assert!(d.prune(2.0).is_err());
     }
 
     /// The K=3 split tables must satisfy the moment-preservation

@@ -1,7 +1,11 @@
 //! Model inputs and outputs for NEATM/FRM/Reflected.
 
 use kete_core::BandInfo;
-use kete_flux::{frm_total_flux, neatm_total_flux, resolve_hg_params};
+use kete_flux::{
+    SpinState, ThermalParams, TpmShape, frm_total_flux, gamma_from_mean_slope, neatm_total_flux,
+    resolve_hg_params, rms_slope, tpm_total_flux, tpm_total_flux_rough,
+};
+use nalgebra::UnitVector3;
 use pyo3::prelude::*;
 
 use crate::{frame::PyFrames, vector::VectorLike};
@@ -291,6 +295,219 @@ pub fn frm_model_flux_py(
         &s2obs,
     )
     .into())
+}
+
+/// Compute TPM (thermophysical model) thermal + reflected fluxes for a geometry.
+///
+/// Unlike NEATM and FRM, the TPM solves the 1D heat conduction equation into the
+/// subsurface, so the surface has a thermal memory set by the thermal inertia. The
+/// night side stays warm and the temperature peak lags local noon. The model uses a
+/// smooth sphere and requires a spin state (pole and rotation period).
+///
+/// This model is substantially more expensive than NEATM or FRM (it iterates the
+/// heat solver to a periodic steady state per latitude band).
+///
+/// Parameters
+/// ----------
+/// sun2obj :
+///     Vector pointing from the Sun to the object (AU).
+/// sun2obs :
+///     Vector pointing from the Sun to the observer (AU).
+/// band_albedos :
+///     Albedo of the object in each band (0-1).
+/// thermal_inertia :
+///     Thermal inertia ``Gamma`` in SI units (J m^-2 K^-1 s^-1/2). Must be
+///     non-negative; ``0`` is the instantaneous-equilibrium limit (equivalent to
+///     NEATM with a beaming of 1).
+/// period :
+///     Rotation period in seconds. Must be non-negative; ``0`` is the infinitely
+///     fast rotator limit (equivalent to FRM).
+/// pole :
+///     Spin axis direction (ecliptic). Rotation is right-handed about this vector;
+///     a reversed pole gives retrograde rotation, which sets the sign of the
+///     thermal lag.
+/// h_mag :
+///     H magnitude of the object in the HG system. At least two of
+///     ``h_mag``, ``diameter``, and ``vis_albedo`` must be provided.
+/// diameter :
+///     Diameter of the object in km.
+/// vis_albedo :
+///     Visible geometric albedo.
+/// g_param :
+///     G phase coefficient, defaults to ``0.15``.
+/// emissivity :
+///     Emissivity of the object, defaults to ``0.9``.
+/// axis_ratios :
+///     Optional ``(b/a, c/a)`` semi-axis ratios for an ellipsoidal shape, where
+///     ``a`` is the long axis (body x) and ``c`` is along the pole (body z). ``None``
+///     (default) is a sphere; ``(1.0, c/a)`` is an oblate spheroid; ``b/a != 1`` is a
+///     triaxial ellipsoid. ``diameter`` is the effective (equal-area-sphere) diameter.
+/// epoch :
+///     Observation time (Julian date). Only affects non-axisymmetric (triaxial)
+///     shapes, for which it sets the rotation phase.
+/// phase0 :
+///     Rotation phase (radians) at ``epoch0``. Defaults to ``0``.
+/// epoch0 :
+///     Reference epoch (Julian date) for ``phase0``. Defaults to ``0``.
+/// roughness :
+///     Optional surface roughness as the mean slope angle ``theta_bar`` in degrees,
+///     ``(0, 57.3]`` (the cross-model roughness convention; the full-coverage
+///     spherical-cap geometry tops out near 57.3 deg). ``None`` (default) is a smooth
+///     surface. The rough (beaming) path solves a crater per latitude band on the fly
+///     and is substantially slower than the smooth model.
+/// band_wavelengths :
+///     List of effective wavelengths in nm. Required unless ``bands`` is given.
+/// bands :
+///     Band preset name: ``"wise"``, ``"neos"``, ``"irac"``, ``"mips"``, or
+///     ``"irs_pu"``. If given, ``band_wavelengths`` is ignored and the standard
+///     band definitions (including color corrections and zero magnitudes) are used.
+/// zero_mags :
+///     Optional list of zero-point magnitudes for each band. Only used when
+///     ``band_wavelengths`` is provided.
+///
+/// Returns
+/// -------
+/// ModelResults
+///     Fluxes and magnitudes for the given geometry.
+#[pyfunction]
+#[pyo3(name = "tpm_model_flux", signature = (sun2obj, sun2obs, band_albedos,
+    thermal_inertia, period, pole, h_mag=None, diameter=None, vis_albedo=None,
+    g_param=0.15, emissivity=0.9, axis_ratios=None, epoch=0.0, phase0=0.0,
+    epoch0=0.0, roughness=None, band_wavelengths=None, bands=None, zero_mags=None))]
+#[allow(clippy::too_many_arguments)]
+pub fn tpm_model_flux_py(
+    sun2obj: VectorLike,
+    sun2obs: VectorLike,
+    band_albedos: Vec<f64>,
+    thermal_inertia: f64,
+    period: f64,
+    pole: VectorLike,
+    h_mag: Option<f64>,
+    diameter: Option<f64>,
+    vis_albedo: Option<f64>,
+    g_param: f64,
+    emissivity: f64,
+    axis_ratios: Option<(f64, f64)>,
+    epoch: f64,
+    phase0: f64,
+    epoch0: f64,
+    roughness: Option<f64>,
+    band_wavelengths: Option<Vec<f64>>,
+    bands: Option<&str>,
+    zero_mags: Option<Vec<f64>>,
+) -> PyResult<PyModelResults> {
+    // Zero period (infinitely fast rotator) and zero inertia (instantaneous
+    // equilibrium) are valid limits; negative or non-finite values are not.
+    if !(thermal_inertia.is_finite() && thermal_inertia >= 0.0) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "thermal_inertia must be finite and non-negative.",
+        ));
+    }
+    if !(period.is_finite() && period >= 0.0) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "period must be finite and non-negative.",
+        ));
+    }
+    let obs_bands = resolve_bands(band_wavelengths, bands, zero_mags)?;
+    let (h_mag, vis_albedo, diameter) = resolve_hg_params(h_mag, vis_albedo, diameter, None)?;
+    let s2o = sun2obj.into_vector(PyFrames::Ecliptic).into();
+    let s2obs = sun2obs.into_vector(PyFrames::Ecliptic).into();
+    let pole_vec = pole.into_vector(PyFrames::Ecliptic).into();
+    let spin = SpinState {
+        pole: UnitVector3::new_normalize(pole_vec),
+        period,
+        phase0,
+        epoch0,
+    };
+    // axis_ratios = (b/a, c/a); a is the long axis along body-x, c is along the pole.
+    let shape = match axis_ratios {
+        Some((b_over_a, c_over_a)) => TpmShape::ellipsoid(1.0, b_over_a, c_over_a),
+        None => TpmShape::sphere(),
+    };
+    let thermal = ThermalParams {
+        thermal_inertia,
+        emissivity,
+    };
+
+    // Roughness (mean slope angle, given in degrees) selects the slower beaming path;
+    // otherwise the smooth surface is used. The mean slope angle is converted to the
+    // internal crater opening half-angle that the rough solver is parameterized by.
+    if let Some(roughness_deg) = roughness {
+        // Mean slope angle (degrees); the full-coverage cap tops out at the hemisphere
+        // limit ~57.3 deg, above which it cannot be represented. The converter clamps
+        // the sub-0.01 deg rounding overshoot at the ceiling.
+        if !(roughness_deg.is_finite() && roughness_deg > 0.0 && roughness_deg <= 57.3) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "roughness must be a mean slope angle in (0, 57.3] degrees.",
+            ));
+        }
+        let roughness_angle = gamma_from_mean_slope(roughness_deg.to_radians());
+        return Ok(tpm_total_flux_rough(
+            &obs_bands,
+            &band_albedos,
+            &spin,
+            &shape,
+            &thermal,
+            diameter,
+            vis_albedo,
+            g_param,
+            h_mag,
+            &s2o,
+            &s2obs,
+            epoch,
+            roughness_angle,
+        )?
+        .into());
+    }
+
+    Ok(tpm_total_flux(
+        &obs_bands,
+        &band_albedos,
+        &spin,
+        &shape,
+        &thermal,
+        diameter,
+        vis_albedo,
+        g_param,
+        h_mag,
+        &s2o,
+        &s2obs,
+        epoch,
+    )?
+    .into())
+}
+
+/// Convert a surface-roughness mean slope angle to the equivalent RMS slope angle.
+///
+/// kete parameterizes roughness by the mean slope angle ``theta_bar`` (the
+/// convention-stable, cross-model roughness number; e.g. Hapke photometric roughness).
+/// Some thermal-modeling work instead quotes an RMS surface slope (e.g. the Rozitis &
+/// Green ATPM and Gaussian-random-surface models). This returns the derived,
+/// approximate RMS slope of the full-coverage spherical-cap geometry, for
+/// cross-comparison with that literature.
+///
+/// Parameters
+/// ----------
+/// mean_slope :
+///     Mean slope angle ``theta_bar`` in degrees, ``(0, 57.3]``.
+///
+/// Returns
+/// -------
+/// float
+///     Approximate RMS slope angle in degrees. NOTE: the RMS slope is dominated by the
+///     steepest micro-facets, so it is reliable only in the realistic regime (mean
+///     slope up to ~35 deg) and rises steeply toward the hemisphere limit; treat it as
+///     indicative beyond that.
+#[pyfunction]
+#[pyo3(name = "roughness_mean_slope_to_rms")]
+pub fn roughness_mean_slope_to_rms_py(mean_slope: f64) -> PyResult<f64> {
+    if !(mean_slope.is_finite() && mean_slope > 0.0 && mean_slope <= 57.3) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "mean_slope must be in (0, 57.3] degrees.",
+        ));
+    }
+    let gamma = gamma_from_mean_slope(mean_slope.to_radians());
+    Ok(rms_slope(gamma).to_degrees())
 }
 
 /// Build a band list from either explicit wavelengths or a preset group name.
