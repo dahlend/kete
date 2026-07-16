@@ -192,8 +192,8 @@ mod tests {
 
     #[test]
     fn time_bisection_arc_under_target_skips_bisection() {
-        // A 200-day arc with target_arc_days=500 (default) should produce the
-        // same result as target_arc_days=infinity -- no time bisection.
+        // A 200-day arc with target_arc_days=500 should produce the same
+        // result as target_arc_days=infinity -- no time bisection.
         crate::test_data::ensure_test_spk();
         let spk = crate::spk::LOADED_SPK.try_read().unwrap();
         let forces = SpkNBody::new(&spk, false);

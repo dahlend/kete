@@ -496,7 +496,7 @@ impl Default for SplitConfig {
             sigma_factor: 1.0,
             position_spacing_au: Some(0.001),
             target_arc_days: f64::INFINITY,
-            min_split_improvement: 0.5,
+            min_split_improvement: 0.1,
         }
     }
 }
@@ -582,15 +582,20 @@ where
     // Each round (generation) holds all current candidates.  Each item
     // carries (weight, component, split_depth, parent_divergence) where
     // parent_divergence is the divergence that triggered the split
-    // creating this component (`f64::INFINITY` for the initial generation,
-    // meaning "no parent split occurred yet").  This lets us detect
-    // diminishing-returns splits: if a child's divergence is close to
-    // (or exceeds) the parent's, further splitting won't help.
-    let mut generation: Vec<(f64, UncertainState<Equatorial, SSB>, u32, f64)> = diffuse
+    // creating this component: `None` for the initial generation (no parent
+    // split yet), `Some(d)` for a split child.  Using `Option` rather than an
+    // `f64::INFINITY` sentinel keeps "no parent" distinct from "infinite
+    // divergence" (a sigma point that could not be propagated); conflating the
+    // two previously let an infinite child divergence satisfy the
+    // diminishing-returns test and settle a first-generation component with
+    // zero splits.  This lets us detect diminishing-returns splits: if a
+    // child's divergence is close to (or exceeds) the parent's, further
+    // splitting won't help.
+    let mut generation: Vec<(f64, UncertainState<Equatorial, SSB>, u32, Option<f64>)> = diffuse
         .weights
         .iter()
         .zip(diffuse.components.iter())
-        .map(|(w, c)| (*w, c.clone(), 0_u32, f64::INFINITY))
+        .map(|(w, c)| (*w, c.clone(), 0_u32, None))
         .collect();
 
     let mut settled: Vec<(f64, UncertainState<Equatorial, SSB>)> =
@@ -604,7 +609,7 @@ where
                 /// Already-propagated parent at epoch `jd`.  Used to settle
                 /// the component when the budget cannot accommodate the split.
                 propagated: UncertainState<Equatorial, SSB>,
-                parts: Vec<(f64, UncertainState<Equatorial, SSB>, u32, f64)>,
+                parts: Vec<(f64, UncertainState<Equatorial, SSB>, u32, Option<f64>)>,
             },
         }
 
@@ -626,27 +631,46 @@ where
                         prop.max_unresolved_divergence = diag.divergence;
                     }
 
+                    // A non-finite divergence means a sigma point could not be
+                    // propagated -- typically a perturbed state hitting a
+                    // gravitational singularity during a deep encounter.
+                    // Splitting cannot fix this: the children inherit the same
+                    // singular geometry.  Settle and let max_unresolved_divergence
+                    // (now infinite) flag the component as untrustworthy.  The
+                    // Hill-sphere boundary check is meant to route these to a
+                    // fallback before they reach here; this is the honest last
+                    // resort if one slips through.
+                    let unresolvable = !diag.divergence.is_finite();
+
                     // Diminishing-returns check: if this split produced less
                     // than `min_split_improvement` fractional reduction in
                     // divergence, further splitting won't help (chaos is the
                     // floor, not covariance size).  Force-settle immediately
-                    // rather than cascading.
-                    let no_improvement = config.min_split_improvement > 0.0
-                        && diag.divergence
-                            >= parent_divergence * (1.0 - config.min_split_improvement);
+                    // rather than cascading.  Only meaningful against a real,
+                    // finite parent divergence; `None` marks the initial
+                    // generation, which is always allowed its first split.
+                    let no_improvement = match parent_divergence {
+                        Some(pd) if config.min_split_improvement > 0.0 => {
+                            diag.divergence >= pd * (1.0 - config.min_split_improvement)
+                        }
+                        _ => false,
+                    };
 
                     if diag.divergence <= config.split_threshold
                         || depth >= config.max_split_depth
+                        || unresolvable
                         || no_improvement
                     {
                         return Ok(GenOutcome::Settled(w, prop));
                     }
 
+                    // `unresolvable` is false here, so `diag.divergence` is
+                    // finite -- children carry a finite `Some(parent)`.
                     let parts = split_for_propagation(&c, &prop.cov_matrix, &diag.augmented_stm)?;
                     let child_divergence = diag.divergence;
                     let sub: Vec<_> = parts
                         .into_iter()
-                        .map(|(ws, cs)| (w * ws, cs, depth + 1, child_divergence))
+                        .map(|(ws, cs)| (w * ws, cs, depth + 1, Some(child_divergence)))
                         .collect();
                     Ok(GenOutcome::WantsSplit {
                         weight: w,
@@ -657,11 +681,12 @@ where
             )
             .collect();
 
-        let mut next_gen: Vec<(f64, UncertainState<Equatorial, SSB>, u32, f64)> = Vec::new();
+        let mut next_gen: Vec<(f64, UncertainState<Equatorial, SSB>, u32, Option<f64>)> =
+            Vec::new();
         let mut pending_splits: Vec<(
             f64,
             UncertainState<Equatorial, SSB>,
-            Vec<(f64, UncertainState<Equatorial, SSB>, u32, f64)>,
+            Vec<(f64, UncertainState<Equatorial, SSB>, u32, Option<f64>)>,
         )> = Vec::new();
         for outcome in outcomes? {
             match outcome {

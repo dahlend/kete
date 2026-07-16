@@ -179,30 +179,42 @@ pub const HUBER_K3_SIGMA: f64 = f64::consts::FRAC_1_SQRT_2;
 /// in that direction).  Propagate each perturbed orbit via the full N-body
 /// integrator to the target epoch.  The STM predicts where those points
 /// should have moved under a linearized model; compare the two predictions.
-/// The divergence score is:
+/// The divergence score is a Mahalanobis distance -- the linear
+/// prediction error normalized by the propagated position+velocity
+/// covariance:
 ///
 /// ```text
-/// divergence = max_k  ||delta_full_k - delta_lin_k|| / ||delta_lin_k||
+/// d = max_k  sqrt( (delta_full_k - delta_lin_k)^T P_f^-1 (delta_full_k - delta_lin_k) )
 /// ```
 ///
-/// where delta is the displacement from the propagated mean.  A value
-/// near zero means the dynamics are nearly linear over the component's
-/// uncertainty region and propagating it as a single Gaussian is safe.
-/// A value above the split threshold (default 0.05, i.e. 5% relative
-/// error) means the banana distortion is significant and the component
-/// should be split into narrower sub-components first.
+/// where `delta_full_k` is the displacement of the nonlinearly propagated
+/// sigma point from the propagated mean, `delta_lin_k` is the STM (linear)
+/// prediction of that displacement, and `P_f` is the 6x6 position+velocity
+/// block of the propagated covariance.  `d` answers "how many sigma off is
+/// the linear answer, relative to its own predicted uncertainty?"  For
+/// samples drawn from the predicted distribution it follows a 6-D chi
+/// distribution (E[d] ~ 2.4, 90% containment ~ 3.0).  A value below the
+/// split threshold (`SplitConfig::split_threshold`, default 3.0) means the
+/// component may be propagated as a single Gaussian; above it, the banana
+/// distortion is significant and the component is split into narrower
+/// sub-components first.  In addition to these sigma-shell probes, each
+/// dominant axis contributes a fixed-scale pure-position probe
+/// (`SplitConfig::position_spacing_au`) that catches nonlinearity
+/// localized near the mean, such as a nearby perturbing planet.
 ///
 /// In practice a well-observed main-belt asteroid rarely needs splitting
 /// even over months of propagation, while a poorly-constrained near-Earth
 /// object on a close-approach trajectory may need several splits to keep
 /// the mixture accurate.
 ///
-/// Splitting stops when either a hard cap on the total number of
-/// components is reached (`max_components`, default 64) or when a component
-/// has been split `max_split_depth` times (default 4) without falling below
-/// the threshold.  In both cases the component is propagated linearly
-/// as-is rather than split further.  The caps exist to bound runtime; if
-/// they are frequently hit, lower the threshold or increase the caps.
+/// Splitting stops when the total number of components reaches
+/// `SplitConfig::max_components` (default 1024), when a component has been
+/// split `SplitConfig::max_split_depth` times (default 10), or when a split
+/// stops meaningfully reducing the divergence
+/// (`SplitConfig::min_split_improvement`).  In each case the component is
+/// propagated linearly as-is and its `max_unresolved_divergence` records the
+/// divergence at which it settled.  The caps exist to bound runtime; if they
+/// are frequently hit, raise the threshold or the caps.
 ///
 /// # Usage
 ///
