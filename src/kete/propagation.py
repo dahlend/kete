@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from ._core import (
     NonGravModel,
+    SymplecticSim,
     a_over_m_from_physical,
     closest_approach,
     density_from_a_over_m,
@@ -15,6 +16,8 @@ from ._core import (
     propagate_n_body,
     propagate_n_body_long,
     propagate_two_body,
+    register_custom_mass,
+    register_mass,
     thermal_inertia_from_lambda_0,
 )
 
@@ -28,5 +31,8 @@ __all__ = [
     "propagate_n_body",
     "propagate_n_body_long",
     "propagate_two_body",
+    "register_custom_mass",
+    "register_mass",
+    "SymplecticSim",
     "thermal_inertia_from_lambda_0",
 ]

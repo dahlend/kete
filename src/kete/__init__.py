@@ -60,10 +60,14 @@ from .fov import (
 )
 from .horizons import HorizonsProperties
 from .propagation import (
+    NonGravModel,
+    SymplecticSim,
     closest_approach,
     moid,
     propagate_n_body,
     propagate_two_body,
+    register_custom_mass,
+    register_mass,
 )
 from .time import Time
 from .vector import (
@@ -127,6 +131,10 @@ __all__ = [
     "SpherexCmos",
     "SpherexField",
     "spice",
+    "SymplecticSim",
+    "NonGravModel",
+    "register_custom_mass",
+    "register_mass",
     "spitzer",
     "SpitzerFrame",
     "State",

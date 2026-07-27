@@ -16,6 +16,7 @@ mod jpl_comet;
 mod kind;
 
 pub use dust::DustNonGrav;
+pub(crate) use farnocchia::radiation_accel;
 pub use farnocchia::{
     FarnocchiaNonGrav, a_over_m_from_physical, density_from_a_over_m, lambda_0_from_physical,
     thermal_inertia_from_lambda_0,

@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 
 use kete_core::{
+    constants::C_V,
     errors::Error,
     forces::{
         DustNonGrav, FarnocchiaNonGrav, FrozenForce, FrozenNonGrav, JplCometNonGrav, NonGravKind,
@@ -17,6 +18,7 @@ use kete_core::{
     },
     frames::{Equatorial, Vector},
 };
+use kete_flux::diam_from_h_mag_albedo;
 use pyo3::{PyResult, exceptions::PyValueError, pyclass, pyfunction, pymethods};
 
 use crate::frame::PyFrames;
@@ -483,6 +485,105 @@ impl PyNonGravModel {
             flattening,
             spin_pole: pole,
         }))
+    }
+
+    /// Construct a Farnocchia radiation force model from an absolute
+    /// magnitude H and assumed physical properties.
+    ///
+    /// This is the usual entry point for a collisional family, where H is
+    /// measured and the rest is assumed. It composes the standard chain:
+    ///
+    /// 1. ``H`` and ``albedo`` give the diameter,
+    ///    ``D = 1329 / sqrt(albedo) * 10 ** (-H / 5)`` km (see
+    ///    :func:`~kete.conversion.compute_diameter`).
+    /// 2. the diameter and ``density`` give the area-to-mass ratio,
+    ///    ``A/M = 3 / (4 * density * R)``, which is the radiation pressure
+    ///    coupling (see :func:`~kete.propagation.a_over_m_from_physical`).
+    ///    Since ``A/M`` scales as ``1 / (density * D)``, the drift rate
+    ///    scales as ``1 / D``: five magnitudes fainter is ten times the
+    ///    drift.
+    /// 3. ``thermal_inertia`` and ``rotation_period`` give the thermal lag
+    ///    (see :func:`~kete.propagation.lambda_0_from_physical`).
+    ///
+    /// The result is an ordinary Farnocchia :class:`NonGravModel`, usable
+    /// with both :func:`~kete.propagate_n_body` and
+    /// :class:`~kete.SymplecticSim`; the stored :attr:`a_over_m` and
+    /// :attr:`lambda_0` are readable so the chain can be checked, and
+    /// :meth:`bulk_density` / :meth:`thermal_inertia` invert it.
+    ///
+    /// Parameters
+    /// ----------
+    /// h_mag :
+    ///     Absolute magnitude H.
+    /// spin_pole :
+    ///     Spin pole (any :class:`~kete.Vector` or length-3 sequence), fixed
+    ///     in inertial space. A collisional family should be given randomly
+    ///     oriented poles rather than one shared pole.
+    /// albedo :
+    ///     Geometric albedo. Sets the diameter along with H, and enters
+    ///     radiation pressure.
+    /// density :
+    ///     Bulk density in ``kg / m^3``.
+    /// thermal_inertia :
+    ///     Thermal inertia in SI units (``J m^-2 K^-1 s^-1/2``).
+    /// rotation_period :
+    ///     Rotation period in hours.
+    /// emissivity :
+    ///     Surface emissivity.
+    /// absorptivity :
+    ///     ``alpha = 1 - A_B`` where ``A_B`` is the Bond albedo.
+    /// flattening :
+    ///     Axis ratio ``e = R_P / R_E``. Use ``1.0`` for a sphere.
+    #[staticmethod]
+    #[pyo3(signature = (h_mag, spin_pole, albedo=0.15, density=2500.0, thermal_inertia=200.0,
+        rotation_period=6.0, emissivity=0.9, absorptivity=0.9, flattening=1.0))]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "physical surface properties, all keyword arguments with defaults"
+    )]
+    pub fn new_farnocchia_from_h_mag(
+        h_mag: f64,
+        spin_pole: VectorLike,
+        albedo: f64,
+        density: f64,
+        thermal_inertia: f64,
+        rotation_period: f64,
+        emissivity: f64,
+        absorptivity: f64,
+        flattening: f64,
+    ) -> PyResult<Self> {
+        if !(albedo > 0.0 && albedo.is_finite()) {
+            Err(PyValueError::new_err(format!(
+                "albedo must be finite and positive to convert H to a diameter, found {albedo}."
+            )))?;
+        }
+        if !(density > 0.0 && density.is_finite()) {
+            Err(PyValueError::new_err(format!(
+                "density must be finite and positive, found {density}."
+            )))?;
+        }
+        if !(rotation_period > 0.0 && rotation_period.is_finite()) {
+            Err(PyValueError::new_err(format!(
+                "rotation_period must be finite and positive, found {rotation_period}."
+            )))?;
+        }
+        let diameter = diam_from_h_mag_albedo(h_mag, albedo, C_V);
+        let a_over_m = a_over_m_from_physical(density, diameter, flattening);
+        let lambda_0 = lambda_0_from_physical(
+            thermal_inertia,
+            emissivity,
+            absorptivity,
+            flattening,
+            rotation_period,
+        );
+        Self::new_farnocchia(
+            a_over_m,
+            lambda_0,
+            albedo,
+            absorptivity,
+            flattening,
+            spin_pole,
+        )
     }
 
     /// Stored area-to-mass ratio ``A/M`` (``m^2 / kg``) for a

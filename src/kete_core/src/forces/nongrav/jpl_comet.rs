@@ -82,9 +82,43 @@ impl JplCometNonGrav {
                 }
             }
         }
-        let rr0 = pos.norm() / self.r_0;
-        Ok(self.alpha * rr0.powf(-self.m) * (1.0 + rr0.powf(self.n)).powf(-self.k))
+        Ok(self.g_of_r(pos.norm()))
     }
+
+    /// Evaluate `g(r)` at the given heliocentric distance.
+    fn g_of_r(&self, r: f64) -> f64 {
+        let rr0 = r / self.r_0;
+        self.alpha * rr0.powf(-self.m) * (1.0 + rr0.powf(self.n)).powf(-self.k)
+    }
+
+    /// Acceleration from the given `a1`/`a2`/`a3`, with `g(r)` evaluated at
+    /// the current distance (the `dt` lag is not applied; callers with a
+    /// nonzero `dt` must use the [`ParameterizedForce::accel`] path).
+    ///
+    /// `pos` and `vel` are Sun-relative on any shared inertial axes; the
+    /// model is built from dot and cross products only, so it is frame
+    /// covariant and the result is returned on the same axes. This is the
+    /// shared core used by the Wisdom-Holman map's kick.
+    pub(crate) fn accel_no_lag(
+        &self,
+        pos: &Vector3<f64>,
+        vel: &Vector3<f64>,
+        a1: f64,
+        a2: f64,
+        a3: f64,
+    ) -> Vector3<f64> {
+        let (r_hat, t_hat, n_hat) = rtn_dirs(pos, vel);
+        let scale = self.g_of_r(pos.norm());
+        r_hat * (scale * a1) + t_hat * (scale * a2) + n_hat * (scale * a3)
+    }
+}
+
+/// The radial / transverse / normal unit vectors of a Sun-relative state.
+fn rtn_dirs(pos: &Vector3<f64>, vel: &Vector3<f64>) -> (Vector3<f64>, Vector3<f64>, Vector3<f64>) {
+    let r_hat = pos.normalize();
+    let t_hat = (vel - r_hat * vel.dot(&r_hat)).normalize();
+    let n_hat = r_hat.cross(&t_hat);
+    (r_hat, t_hat, n_hat)
 }
 
 impl ParameterizedForce for JplCometNonGrav {
@@ -108,14 +142,12 @@ impl ParameterizedForce for JplCometNonGrav {
     ) -> KeteResult<Vector<Equatorial>> {
         let pos: Vector3<f64> = (*pos).into();
         let vel: Vector3<f64> = (*vel).into();
-        let pos_norm = pos.normalize();
-        let t_vec = (vel - pos_norm * vel.dot(&pos_norm)).normalize();
-        let n_vec = pos_norm.cross(&t_vec);
+        let (r_hat, t_hat, n_hat) = rtn_dirs(&pos, &vel);
 
         let scale = self.g_r(&pos, &vel)?;
 
         let [a1, a2, a3] = [free_params[0], free_params[1], free_params[2]];
-        let result = pos_norm * (scale * a1) + t_vec * (scale * a2) + n_vec * (scale * a3);
+        let result = r_hat * (scale * a1) + t_hat * (scale * a2) + n_hat * (scale * a3);
         Ok(Vector::<Equatorial>::new(result.into()))
     }
 
@@ -130,16 +162,14 @@ impl ParameterizedForce for JplCometNonGrav {
         // times the RTN basis, independent of the parameter values.
         let pos: Vector3<f64> = (*pos).into();
         let vel: Vector3<f64> = (*vel).into();
-        let pos_norm = pos.normalize();
-        let t_vec = (vel - pos_norm * vel.dot(&pos_norm)).normalize();
-        let n_vec = pos_norm.cross(&t_vec);
+        let (r_hat, t_hat, n_hat) = rtn_dirs(&pos, &vel);
 
         let scale = self.g_r(&pos, &vel)?;
 
         let mut out = Matrix3xX::<f64>::zeros(3);
-        out.set_column(0, &(pos_norm * scale));
-        out.set_column(1, &(t_vec * scale));
-        out.set_column(2, &(n_vec * scale));
+        out.set_column(0, &(r_hat * scale));
+        out.set_column(1, &(t_hat * scale));
+        out.set_column(2, &(n_hat * scale));
         Ok(out)
     }
 }

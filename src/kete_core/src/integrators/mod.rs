@@ -17,6 +17,11 @@
 //! called to demonstrate some of the differences in performance between the different
 //! integrators. These tests are very simple, but informative.
 //!
+//! Separate from the general-purpose ODE integrators above, [`WisdomHolman`] is a
+//! fixed-step symplectic N-body map for very long term (millions to billions of
+//! years) orbital evolution, where adaptive integrators accumulate secular energy
+//! drift. It trades short-term accuracy for bounded long-term error; see its
+//! documentation for the splitting it uses and the domain where it applies.
 //!
 
 mod bulirsch_stoer;
@@ -25,6 +30,7 @@ mod picard;
 mod radau;
 mod runge_kutta;
 mod util;
+mod wisdom_holman;
 
 pub use bulirsch_stoer::BulirschStoerIntegrator;
 pub use gauss_jackson::GaussJacksonIntegrator;
@@ -34,6 +40,7 @@ pub use picard::{
 };
 pub use radau::RadauIntegrator;
 pub use runge_kutta::RK45Integrator;
+pub use wisdom_holman::{Encounter, LostParticle, LostReason, WisdomHolman};
 
 #[cfg(test)]
 mod stress_tests;

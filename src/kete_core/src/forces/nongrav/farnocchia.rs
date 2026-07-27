@@ -57,6 +57,76 @@ pub fn thermal_inertia_from_lambda_0(
         / (sigma.powf(0.75) * (std::f64::consts::PI / (2.0 * rotation_period * 3600.0)).sqrt())
 }
 
+/// Radiation pressure and thermal recoil acceleration in AU/Day^2, expressed
+/// on the axes of whatever frame `pos` and `spin_pole` share.
+///
+/// `pos` is Sun-relative in AU and `spin_pole` must be a unit vector. The model
+/// is built entirely from dot and cross products of the position and spin-pole
+/// directions, so it is frame covariant: rotating both inputs rotates the
+/// result. Callers may therefore work in any inertial frame, provided both
+/// inputs are expressed in it.
+///
+/// This is the shared core of [`FarnocchiaNonGrav::accel`] (which supplies the
+/// equatorial frame) and the Wisdom-Holman map's Yarkovsky kick (which
+/// pre-rotates the pole into the map's frame to avoid rotating in its inner
+/// loop). It is infallible so callers need no error plumbing.
+///
+/// The term along `r_hat x s_hat`, carrying the thermal lag `Lambda_2`, is the
+/// Yarkovsky drift driver; it is not curl-free, which is what lets it do
+/// secular work on the semi-major axis.
+pub(crate) fn radiation_accel(
+    pos: &Vector3<f64>,
+    spin_pole: &Vector3<f64>,
+    albedo: f64,
+    absorptivity: f64,
+    flattening: f64,
+    a_over_m: f64,
+    lambda_0: f64,
+) -> Vector3<f64> {
+    let e = flattening;
+    let r = pos.norm();
+    let r_inv = r.recip();
+    let r_hat = pos * r_inv;
+    let g = r_inv * r_inv;
+
+    let (psi_x, psi_z, _sigma) = shape_factors(e);
+
+    let r_dot_s = r_hat.dot(spin_pole);
+    let cos_theta_0 = -r_dot_s;
+    let sin2_theta_0 = (1.0 - cos_theta_0 * cos_theta_0).max(0.0);
+    let j2_theta = (e * e * sin2_theta_0 + cos_theta_0 * cos_theta_0).sqrt();
+
+    let scale = a_over_m * F0_OVER_C_AU_DAY2 * g;
+
+    let four_ninths_a0 = 4.0 / 9.0 * albedo;
+    let srp_radial = j2_theta + four_ninths_a0 * psi_x;
+    let srp_pole = four_ninths_a0 * (psi_z - psi_x) * r_dot_s;
+    let mut accel = scale * (srp_radial * r_hat + srp_pole * spin_pole);
+
+    // Thermal recoil. The zero-lag limit `lambda_0 = 0` is included: there
+    // `Lambda_1 = 1` and `Lambda_2 = 0`, leaving the radial recoil from
+    // instantaneous re-emission with no transverse (Yarkovsky) component. This
+    // keeps the force continuous in `lambda_0`, which the fitters rely on when
+    // the parameter starts at 0. Set `absorptivity` to 0 to disable the thermal
+    // terms entirely.
+    if absorptivity > 0.0 && lambda_0 >= 0.0 {
+        let lambda = lambda_0 / j2_theta.powf(0.75) * r.powf(1.5);
+        let denom = 1.0 + 2.0 * lambda + 2.0 * lambda * lambda;
+        let big_lambda_1 = (1.0 + lambda) / denom;
+        let big_lambda_2 = lambda / denom;
+
+        let four_ninths_alpha = 4.0 / 9.0 * absorptivity;
+
+        let t1_radial = big_lambda_1 * psi_x;
+        let t1_pole = (psi_z - big_lambda_1 * psi_x) * r_dot_s;
+        accel += (four_ninths_alpha * scale) * (t1_radial * r_hat + t1_pole * spin_pole);
+
+        let t2_coeff = -four_ninths_alpha * scale * big_lambda_2 * psi_x;
+        accel += t2_coeff * r_hat.cross(spin_pole);
+    }
+    accel
+}
+
 /// Oblate-spheroid shape factors `(psi_X, psi_Z, Sigma)` (Farnocchia 2025).
 ///
 /// `e` is the axis ratio `R_P / R_E`. Sphere limit (`e >= 1`): all factors 1.
@@ -159,53 +229,15 @@ impl ParameterizedForce for FarnocchiaNonGrav {
         _vel: &Vector<Equatorial>,
         free_params: &[f64],
     ) -> KeteResult<Vector<Equatorial>> {
-        let a_over_m = free_params[0];
-        let lambda_0 = free_params[1];
-        let e = self.flattening;
-
-        let s_hat: Vector3<f64> = self.spin_pole.into();
-        let pos_v: Vector3<f64> = (*pos).into();
-        let r = pos_v.norm();
-        let r_inv = r.recip();
-        let r_hat = pos_v * r_inv;
-        let g = r_inv * r_inv;
-
-        let (psi_x, psi_z, _sigma) = shape_factors(e);
-
-        let r_dot_s = r_hat.dot(&s_hat);
-        let cos_theta_0 = -r_dot_s;
-        let sin2_theta_0 = (1.0 - cos_theta_0 * cos_theta_0).max(0.0);
-        let j2_theta = (e * e * sin2_theta_0 + cos_theta_0 * cos_theta_0).sqrt();
-
-        let scale = a_over_m * F0_OVER_C_AU_DAY2 * g;
-
-        let four_ninths_a0 = 4.0 / 9.0 * self.albedo;
-        let srp_radial = j2_theta + four_ninths_a0 * psi_x;
-        let srp_pole = four_ninths_a0 * (psi_z - psi_x) * r_dot_s;
-        let mut accel = scale * (srp_radial * r_hat + srp_pole * s_hat);
-
-        // Thermal recoil. The zero-lag limit `lambda_0 = 0` is included:
-        // there `Lambda_1 = 1` and `Lambda_2 = 0`, leaving the radial recoil
-        // from instantaneous re-emission with no transverse (Yarkovsky)
-        // component. This keeps the force continuous in `lambda_0`, which the
-        // fitters rely on when the parameter starts at 0. Set `absorptivity`
-        // to 0 to disable the thermal terms entirely.
-        if self.absorptivity > 0.0 && lambda_0 >= 0.0 {
-            let lambda = lambda_0 / j2_theta.powf(0.75) * r.powf(1.5);
-            let denom = 1.0 + 2.0 * lambda + 2.0 * lambda * lambda;
-            let big_lambda_1 = (1.0 + lambda) / denom;
-            let big_lambda_2 = lambda / denom;
-
-            let four_ninths_alpha = 4.0 / 9.0 * self.absorptivity;
-
-            let t1_radial = big_lambda_1 * psi_x;
-            let t1_pole = (psi_z - big_lambda_1 * psi_x) * r_dot_s;
-            accel += (four_ninths_alpha * scale) * (t1_radial * r_hat + t1_pole * s_hat);
-
-            let t2_coeff = -four_ninths_alpha * scale * big_lambda_2 * psi_x;
-            accel += t2_coeff * r_hat.cross(&s_hat);
-        }
-
+        let accel = radiation_accel(
+            &(*pos).into(),
+            &self.spin_pole.into(),
+            self.albedo,
+            self.absorptivity,
+            self.flattening,
+            free_params[0],
+            free_params[1],
+        );
         Ok(Vector::<Equatorial>::new(accel.into()))
     }
 

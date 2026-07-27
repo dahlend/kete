@@ -59,6 +59,62 @@ pub fn sphere_of_influence(semi_major: f64, gm_body: f64, gm_central: f64) -> f6
     semi_major * (gm_body / gm_central).powf(0.4)
 }
 
+/// Osculating semi-major axis from a position and velocity about a central
+/// body, via the vis-viva relation.
+///
+///   a = 1 / (2 / r - v^2 / GM)
+///
+/// Negative for a hyperbolic orbit, infinite for an exactly parabolic one.
+///
+/// Parameters
+/// ----------
+/// pos :
+///     Position relative to the central body in AU.
+/// vel :
+///     Velocity relative to the central body in AU/Day.
+/// gm_central :
+///     Gravitational parameter of the central body (AU^3/day^2).
+///
+/// Returns
+/// -------
+/// float
+///     Semi-major axis in AU.
+#[must_use]
+pub fn semi_major_axis(pos: &Vector3<f64>, vel: &Vector3<f64>, gm_central: f64) -> f64 {
+    (2.0 / pos.norm() - vel.norm_squared() / gm_central).recip()
+}
+
+/// Perihelion distance of the osculating orbit from a position and velocity
+/// about a central body.
+///
+///   q = p / (1 + e),  p = |r x v|^2 / GM,  e^2 = 1 + 2 E p / GM
+///
+/// Valid for any conic; the squared eccentricity is clamped against roundoff
+/// below zero near circular orbits.
+///
+/// Parameters
+/// ----------
+/// pos :
+///     Position relative to the central body in AU.
+/// vel :
+///     Velocity relative to the central body in AU/Day.
+/// gm_central :
+///     Gravitational parameter of the central body (AU^3/day^2).
+///
+/// Returns
+/// -------
+/// float
+///     Perihelion distance in AU.
+#[must_use]
+pub fn perihelion_dist(pos: &Vector3<f64>, vel: &Vector3<f64>, gm_central: f64) -> f64 {
+    let semi_latus = pos.cross(vel).norm_squared() / gm_central;
+    let specific_energy = 0.5 * vel.norm_squared() - gm_central / pos.norm();
+    let ecc = (1.0 + 2.0 * specific_energy * semi_latus / gm_central)
+        .max(0.0)
+        .sqrt();
+    semi_latus / (1.0 + ecc)
+}
+
 /// Compute the Tisserand parameter relative to a perturbing body.
 ///
 ///   T = a_P / a + 2 cos(i) sqrt((a / a_P) (1 - e^2))

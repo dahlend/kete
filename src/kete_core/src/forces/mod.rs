@@ -69,6 +69,8 @@ pub use gravity::{
     GravParams, MASSES_KNOWN, MASSES_SELECTED, analytical_jacobians, known_masses,
     register_custom_mass, register_mass, registered_masses,
 };
+pub(crate) use gravity::{apply_gr_correction, j2_correction};
+pub(crate) use nongrav::radiation_accel;
 pub use nongrav::{
     DustNonGrav, FarnocchiaNonGrav, JplCometNonGrav, NonGravKind, a_over_m_from_physical,
     density_from_a_over_m, lambda_0_from_physical, thermal_inertia_from_lambda_0,

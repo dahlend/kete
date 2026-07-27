@@ -239,7 +239,7 @@ impl GravParams {
         // Special cases for different objects
         match self.naif_id {
             // Sun and Jupiter share an identical correction shape (GR plus
-            // ecliptic-frame J2); only the J2 coefficient differs.
+            // ecliptic-pole J2); only the J2 coefficient differs.
             5 | 10 => {
                 let j2 = if self.naif_id == 10 {
                     SUN_J2
@@ -247,11 +247,23 @@ impl GravParams {
                     JUPITER_J2
                 };
                 apply_gr_correction(accel, rel_pos, rel_vel, mass);
-                let rel_pos_eclip = Ecliptic::from_equatorial(*rel_pos);
-                *accel +=
-                    Ecliptic::to_equatorial(j2_correction(&rel_pos_eclip, self.radius, j2, mass));
+                *accel += j2_correction(
+                    rel_pos,
+                    &ECLIPTIC_POLE_EQUATORIAL,
+                    f64::from(self.radius),
+                    j2,
+                    mass,
+                );
             }
-            399 => *accel += j2_correction(rel_pos, self.radius, EARTH_J2, mass),
+            399 => {
+                *accel += j2_correction(
+                    rel_pos,
+                    &Vector3::z(),
+                    f64::from(self.radius),
+                    EARTH_J2,
+                    mass,
+                );
+            }
             _ => (),
         }
 
@@ -305,22 +317,34 @@ impl GravParams {
     }
 }
 
-/// Calculate the effects of the J2 term
+/// The ecliptic pole expressed on equatorial axes, used as the spin axis of
+/// the Sun and Jupiter J2 terms (both poles are approximated by the ecliptic
+/// pole, a fraction-of-a-degree-scale approximation on an already small term).
+static ECLIPTIC_POLE_EQUATORIAL: std::sync::LazyLock<Vector3<f64>> =
+    std::sync::LazyLock::new(|| Ecliptic::to_equatorial(Vector3::z()));
+
+/// Acceleration from the J2 oblateness term of a body.
 ///
-/// Z is the z component of the unit vector.
+/// `rel_pos` is the position relative to the body and `pole` the body's unit
+/// spin axis, both expressed on the same axes; the result is returned on
+/// those axes. `radius` is the body's equatorial radius in AU and `mass` its
+/// GM in AU^3/Day^2.
 #[inline(always)]
-fn j2_correction(rel_pos: &Vector3<f64>, radius: f32, j2: f64, mass: f64) -> Vector3<f64> {
+pub(crate) fn j2_correction(
+    rel_pos: &Vector3<f64>,
+    pole: &Vector3<f64>,
+    radius: f64,
+    j2: f64,
+    mass: f64,
+) -> Vector3<f64> {
     let r = rel_pos.norm();
-    let z_squared = 5.0 * (rel_pos.z / r).powi(2);
+    let z = rel_pos.dot(pole);
+    let z_squared = 5.0 * (z / r).powi(2);
 
     // this is formatted a little funny in an attempt to reduce numerical noise
     // 3/2 * j2 * mass * radius^2 / distance^5
-    let coef = 1.5 * j2 * mass * (f64::from(radius) / r).powi(2) * r.powi(-3);
-    Vector3::<f64>::new(
-        rel_pos.x * coef * (z_squared - 1.0),
-        rel_pos.y * coef * (z_squared - 1.0),
-        rel_pos.z * coef * (z_squared - 3.0),
-    )
+    let coef = 1.5 * j2 * mass * (radius / r).powi(2) * r.powi(-3);
+    coef * ((z_squared - 1.0) * rel_pos - (2.0 * z) * pole)
 }
 
 /// Analytical Jacobian of the J2 oblateness acceleration `da_J2/dd` in
@@ -422,9 +446,14 @@ pub fn analytical_jacobians(
     (da_dr, da_dv)
 }
 
-/// Add the effects of general relativistic motion to an acceleration vector
+/// Add the effects of general relativistic motion to an acceleration vector.
+///
+/// This is the first-order Schwarzschild (single-body 1PN) acceleration
+/// `(GM/c^2 r^3) [(4GM/r - v^2) r + 4 (r.v) v]`, with `rel_pos`/`rel_vel`
+/// relative to the central body. It reproduces both the secular apsidal
+/// precession and the relativistic mean motion.
 #[inline(always)]
-fn apply_gr_correction(
+pub(crate) fn apply_gr_correction(
     accel: &mut Vector3<f64>,
     rel_pos: &Vector3<f64>,
     rel_vel: &Vector3<f64>,

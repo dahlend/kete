@@ -32,7 +32,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use crate::constants::{C_AU_PER_DAY_INV, GMS, GMS_SQRT};
+use crate::constants::{C_AU_PER_DAY_INV, GMS};
 use crate::errors::Error;
 use crate::frames::{InertialFrame, SunCenter, Vector};
 use crate::prelude::{CometElements, KeteResult};
@@ -166,7 +166,7 @@ const PARABOLIC_BETA: f64 = 1e-10;
 ///  "A fast and accurate universal Kepler solver without Stumpff series."
 ///  Monthly Notices of the Royal Astronomical Society 453.3 (2015): 3015-3023.
 ///  <https://arxiv.org/abs/1508.02699>
-fn g_1(s: f64, beta: f64) -> f64 {
+pub(crate) fn g_1(s: f64, beta: f64) -> f64 {
     // the limit of this equation as beta approaches 0 is s
     if beta.abs() < PARABOLIC_BETA {
         return s;
@@ -186,7 +186,7 @@ fn g_1(s: f64, beta: f64) -> f64 {
 ///  "A fast and accurate universal Kepler solver without Stumpff series."
 ///  Monthly Notices of the Royal Astronomical Society 453.3 (2015): 3015-3023.
 ///  <https://arxiv.org/abs/1508.02699>
-fn g_2(s: f64, beta: f64) -> f64 {
+pub(crate) fn g_2(s: f64, beta: f64) -> f64 {
     // the limit of this equation as beta approaches 0 is s^2 / 2
     if beta.abs() < PARABOLIC_BETA {
         return s.powi(2) / 2.0;
@@ -218,15 +218,24 @@ fn g_2(s: f64, beta: f64) -> f64 {
 /// * `r0` - Distance from the central body (AU).
 /// * `v0` - Velocity with respect to the central body (AU/day)
 /// * `rv0` - R vector dotted with the V vector, not normalized.
+/// * `mu` - Gravitational parameter of the central body in AU^3/day^2. This is
+///   [`GMS`] for solar orbits; a radiation-reduced value `(1 - beta) GMS` for
+///   dust grains.
 ///
-fn solve_kepler_universal(mut dt: f64, r0: f64, v0: f64, rv0: f64) -> KeteResult<(f64, f64)> {
-    // beta is GMS / semi_major
-    let beta = 2.0 * GMS / r0 - v0.powi(2);
+pub(crate) fn solve_kepler_universal(
+    mut dt: f64,
+    r0: f64,
+    v0: f64,
+    rv0: f64,
+    mu: f64,
+) -> KeteResult<(f64, f64)> {
+    // beta is mu / semi_major
+    let beta = 2.0 * mu / r0 - v0.powi(2);
     let b_sqrt = beta.abs().sqrt();
 
     let res = {
         if beta >= PARABOLIC_BETA {
-            let period = GMS * b_sqrt.powi(-3);
+            let period = mu * b_sqrt.powi(-3);
             dt %= period * TAU;
             // elliptical orbits
             let f = |x: f64| {
@@ -234,21 +243,21 @@ fn solve_kepler_universal(mut dt: f64, r0: f64, v0: f64, rv0: f64) -> KeteResult
                 let half_sin = (b_sqrt * x / 2.0).sin();
                 let g2 = 2.0 * half_sin * half_sin / beta;
                 let g3 = (x - g1) / beta;
-                r0 * g1 + rv0 * g2 + GMS * g3 - dt
+                r0 * g1 + rv0 * g2 + mu * g3 - dt
             };
             let d = |x: f64| {
                 let (g2d, g1d) = (b_sqrt * x).sin_cos();
                 let g3d = (1.0 - g1d) / beta;
-                r0 * g1d + rv0 * g2d + GMS * g3d
+                r0 * g1d + rv0 * g2d + mu * g3d
             };
             let dd = |x: f64| {
                 let (sin_v, cos_v) = (b_sqrt * x).sin_cos();
-                -r0 * beta * sin_v / b_sqrt - rv0 * cos_v + GMS * sin_v / b_sqrt
+                -r0 * beta * sin_v / b_sqrt - rv0 * cos_v + mu * sin_v / b_sqrt
             };
             // Halley initial guess via one Halley step on the
             // modified Kepler equation starting from dM.
-            let ec = 1.0 - r0 * beta / GMS;
-            let es = rv0 * b_sqrt / GMS;
+            let ec = 1.0 - r0 * beta / mu;
+            let es = rv0 * b_sqrt / mu;
             let dm = dt / period;
             let (sin_dm, cos_dm) = dm.sin_cos();
             let num = ec * sin_dm - es * (1.0 - cos_dm);
@@ -265,9 +274,9 @@ fn solve_kepler_universal(mut dt: f64, r0: f64, v0: f64, rv0: f64) -> KeteResult
             // This is for parabolic orbits.
             // solve a cubic of the form:
             // x^3 + a2 * x^2 + a1 * x + a0 = 0
-            let a0 = -6.0 * dt / GMS;
-            let a1 = 6.0 * r0 / GMS;
-            let a2 = 3.0 * rv0 / GMS;
+            let a0 = -6.0 * dt / mu;
+            let a1 = 6.0 * r0 / mu;
+            let a2 = 3.0 * rv0 / mu;
             let p = (3.0 * a1 - a2.powi(2)) / 3.0;
             let q = (9.0 * a1 * a2 - 27.0 * a0 - 2.0 * a2.powi(3)) / 27.0;
             let w = (q / 2.0 + (q.powi(2) / 4.0 + p.powi(3) / 27.0).sqrt()).powf(1.0 / 3.0);
@@ -280,18 +289,92 @@ fn solve_kepler_universal(mut dt: f64, r0: f64, v0: f64, rv0: f64) -> KeteResult
                 let half_sinh = (b_sqrt * x / 2.0).sinh();
                 let g2 = -2.0 * half_sinh * half_sinh / beta;
                 let g3 = (x - g1) / beta;
-                r0 * g1 + rv0 * g2 + GMS * g3 - dt
+                r0 * g1 + rv0 * g2 + mu * g3 - dt
             };
             let d = |x: f64| {
                 let (g2d, g1d) = (b_sqrt * x).sinh_cosh();
                 let g3d = (1.0 - g1d) / beta;
-                r0 * g1d + rv0 * g2d + GMS * g3d
+                r0 * g1d + rv0 * g2d + mu * g3d
             };
-            newton_raphson(f, d, GMS_SQRT * beta.abs() * dt, 1e-11)
+            // Inverting the large argument form of the equation above, where sinh
+            // and cosh both approach exp(b s) / 2, gives
+            //
+            //   s ~ sign(dt) ln( 2 b^3 |dt| / (mu + r0 |beta| + sign(dt) rv0 b) ) / b
+            //
+            // The denominator is positive for every hyperbolic state, since
+            // (mu + r0 |beta|)^2 - (r0 v0 b)^2 = mu^2 and |rv0| <= r0 v0. The
+            // inversion only describes the motion once the exponential dominates,
+            // which is where the argument of the logarithm exceeds one. Below that
+            // the time is still nearly linear in s, where dt / r0 is the better
+            // start, as dt = r ds and r is near r0 over a short arc.
+            let sign = dt.signum();
+            let guess_arg =
+                2.0 * beta.abs() * b_sqrt * dt.abs() / (mu + r0 * beta.abs() + sign * rv0 * b_sqrt);
+            let guess = if guess_arg > 1.0 {
+                sign * guess_arg.ln() / b_sqrt
+            } else {
+                dt / r0
+            };
+            newton_raphson(f, d, guess, 1e-11)
         }
     }
     .map_err(|_| Error::Convergence("Failed to solve universal kepler equation".into()))?;
     Ok((res, beta))
+}
+
+/// Two-body propagation returning position and velocity increments.
+///
+/// This is the same computation as [`analytic_2_body`], but it returns the change
+/// in position and velocity rather than the new state. The increments are computed
+/// without catastrophic cancellation (f-hat / g-dot-hat formulation, WHFAST eqs
+/// 37-39), which allows callers to apply them with compensated summation. This is
+/// used as the Kepler drift of the Wisdom-Holman symplectic integrator.
+///
+/// Unlike [`analytic_2_body`], this does not subdivide the time interval when the
+/// solver fails to converge, it returns an error immediately.
+///
+/// # Arguments
+///
+/// * `time` - Time to propagate in days.
+/// * `pos` - Starting position, from the center of the sun, in AU.
+/// * `vel` - Starting velocity, in AU/Day.
+/// * `mu` - Gravitational parameter of the central body in AU^3/day^2. Pass
+///   [`GMS`] for a solar orbit, or a radiation-reduced `(1 - beta) GMS` for a
+///   dust grain whose central force is gravity minus radiation pressure.
+///
+/// # Errors
+/// Fails if the input contains non-finite values or the universal Kepler solver
+/// does not converge.
+pub fn analytic_2_body_delta(
+    time: f64,
+    pos: &Vector3<f64>,
+    vel: &Vector3<f64>,
+    mu: f64,
+) -> KeteResult<(Vector3<f64>, Vector3<f64>)> {
+    if time.abs() < 1e-10 {
+        return Ok((Vector3::zeros(), Vector3::zeros()));
+    }
+    let r0 = pos.norm();
+    let v0 = vel.norm();
+    let rv0 = pos.dot(vel);
+
+    if !rv0.is_finite() {
+        Err(Error::Convergence("Input included infinity or NAN.".into()))?;
+    }
+    let (universal_s, beta) = solve_kepler_universal(time, r0, v0, rv0, mu)?;
+    let g1 = g_1(universal_s, beta);
+    let g2 = g_2(universal_s, beta);
+    // f-hat / g-dot-hat formulation (WHFAST eqs 37-39).
+    // Compute the small corrections separately, so the caller may add the initial
+    // values last to avoid catastrophic cancellation when f ~ 1 and g_dot ~ 1.
+    let f_hat = -mu * g2 / r0;
+    let g = r0 * g1 + rv0 * g2;
+    let d_pos = pos * f_hat + vel * g;
+    let new_r0 = (pos + d_pos).norm();
+    let f_dot = -mu / (new_r0 * r0) * g1;
+    let g_dot_hat = -mu * g2 / new_r0;
+    let d_vel = pos * f_dot + vel * g_dot_hat;
+    Ok((d_pos, d_vel))
 }
 
 /// Propagate an object forward in time by the specified amount assuming only 2 body
@@ -333,30 +416,11 @@ pub fn analytic_2_body(
     } else {
         depth += 1;
     }
-    if time.abs() < 1e-10 {
-        return Ok((*pos, *vel));
-    }
-    let r0 = pos.norm();
-    let v0 = vel.norm();
-    let rv0 = pos.dot(vel);
-
-    if !rv0.is_finite() {
+    if !(pos.dot(vel)).is_finite() {
         Err(Error::Convergence("Input included infinity or NAN.".into()))?;
     }
-    if let Ok((universal_s, beta)) = solve_kepler_universal(time, r0, v0, rv0) {
-        let g1 = g_1(universal_s, beta);
-        let g2 = g_2(universal_s, beta);
-        // f-hat / g-dot-hat formulation (WHFAST eqs 37-39).
-        // Compute the small corrections separately, then add the initial values
-        // last to avoid catastrophic cancellation when f ~ 1 and g_dot ~ 1.
-        let f_hat = -GMS * g2 / r0;
-        let g = r0 * g1 + rv0 * g2;
-        let new_pos = (pos * f_hat + vel * g) + pos;
-        let new_r0 = new_pos.norm();
-        let f_dot = -GMS / (new_r0 * r0) * g1;
-        let g_dot_hat = -GMS * g2 / new_r0;
-        let new_vel = (pos * f_dot + vel * g_dot_hat) + vel;
-        Ok((new_pos, new_vel))
+    if let Ok((d_pos, d_vel)) = analytic_2_body_delta(time, pos, vel, GMS) {
+        Ok((d_pos + pos, d_vel + vel))
     } else {
         let (inter_pos, inter_vel) = analytic_2_body((0.5 * time).into(), pos, vel, Some(depth))?;
         analytic_2_body((time * 0.5).into(), &inter_pos, &inter_vel, Some(depth))
@@ -537,9 +601,48 @@ mod tests {
     use std::f64::consts::TAU;
 
     use super::*;
+    use crate::constants::GMS_SQRT;
     use nalgebra::Vector3;
 
     use super::compute_eccentric_anomaly;
+
+    /// A circular orbit about a reduced central mass `mu = (1-beta) GMS`
+    /// (gravity minus radiation pressure) closes after its own period
+    /// `2 pi sqrt(a^3 / mu)` and conserves the reduced-gravity energy. This
+    /// certifies the `mu` parameter of the universal solver.
+    #[test]
+    fn test_kepler_reduced_mu() {
+        for beta in [0.0, 0.1, 0.3] {
+            let mu = (1.0 - beta) * GMS;
+            let r = 1.5;
+            let v = (mu / r).sqrt(); // circular speed for the reduced gravity
+            let pos = Vector3::new(0.0, r, 0.0);
+            let vel = Vector3::new(-v, 0.0, 0.0);
+            let period = TAU * (r.powi(3) / mu).sqrt();
+
+            let (d_pos, d_vel) = analytic_2_body_delta(period, &pos, &vel, mu).unwrap();
+            let end_pos = pos + d_pos;
+            let end_vel = vel + d_vel;
+            let pos_err = (end_pos - pos).norm();
+            let vel_err = (end_vel - vel).norm();
+
+            // Reduced-gravity specific energy is conserved.
+            let e0 = 0.5 * v * v - mu / r;
+            let e1 = 0.5 * end_vel.norm_squared() - mu / end_pos.norm();
+            let e_rel = ((e1 - e0) / e0).abs();
+
+            println!("reduced_mu beta={beta}: pos closure {pos_err:.2e}, energy {e_rel:.2e}");
+            assert!(
+                pos_err < 1e-8,
+                "beta={beta}: orbit did not close: {pos_err:e}"
+            );
+            assert!(
+                vel_err < 1e-8,
+                "beta={beta}: velocity did not close: {vel_err:e}"
+            );
+            assert!(e_rel < 1e-12, "beta={beta}: energy drift {e_rel:e}");
+        }
+    }
 
     #[test]
     fn test_kepler_circular() {
