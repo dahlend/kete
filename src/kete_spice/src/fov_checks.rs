@@ -4,13 +4,15 @@
 //! The `FovLike` trait and FOV types remain in `kete_core`.
 
 use kete_core::constants::C_AU_PER_DAY_INV;
+use kete_core::errors::Error;
+use kete_core::forces::{FrozenNonGrav, Sum};
 use kete_core::fov::{Contains, FovLike, check_linear, check_two_body};
 use kete_core::frames::{Equatorial, SSB, SunCenter};
 use kete_core::kepler::light_time_correct;
 use kete_core::prelude::{KeteResult, SimultaneousStates, State};
 use kete_core::state::StateLike;
 
-use crate::propagation::SpkNBody;
+use crate::propagation::{Recenter, SpkNBody};
 use crate::spk::LOADED_SPK;
 
 use rayon::prelude::*;
@@ -18,17 +20,28 @@ use rayon::prelude::*;
 /// Assuming the object undergoes n-body motion, check to see if it is within the
 /// field of view.
 ///
+/// If a non-gravitational model is provided, it is added to the gravitational
+/// force model during the propagation.
+///
 /// # Errors
 /// Errors can occur for numerous reasons, typically from numerical integration failing.
 pub fn check_n_body<F: FovLike>(
     fov: &F,
     state: State<Equatorial, SSB>,
+    non_grav: Option<&FrozenNonGrav>,
     include_extended: bool,
 ) -> KeteResult<(usize, Contains, State<Equatorial>)> {
     let obs = fov.observer();
 
     let spk = LOADED_SPK.try_read()?;
-    let exact_state = state.propagate_with(&SpkNBody::new(&spk, include_extended), obs.epoch)?;
+    let grav = SpkNBody::new(&spk, include_extended);
+    let exact_state = match non_grav {
+        None => state.propagate_with(&grav, obs.epoch)?,
+        Some(non_grav) => {
+            let force = Sum::new(grav, Recenter::<SSB, _>::new(&spk, non_grav.clone()));
+            state.propagate_with(&force, obs.epoch)?
+        }
+    };
     let sun_state = spk.try_to_sun(exact_state)?;
 
     let final_state = light_time_correct(&sun_state, &obs.pos)?;
@@ -105,6 +118,18 @@ pub fn check_spks<F: FovLike>(fov: &F, obj_ids: &[i32]) -> Vec<Option<Simultaneo
 /// linear then two-body checks are used. For objects further in time, two-body then
 /// n-body propagation is used.
 ///
+/// `non_gravs` must either be empty, meaning no object has a non-gravitational model,
+/// or contain one entry per state. The two-body and linear checks do not include
+/// non-gravitational accelerations, so a state which has a model always takes the
+/// n-body path, with two-body used only as a coarse pre-filter. That pre-filter assumes
+/// the deviation caused by the non-gravitational force over the time between the state
+/// epoch and the observer epoch is small compared to the distance the object may travel
+/// in `dt_limit`.
+///
+/// # Errors
+/// Returns a `ValueError` if `non_gravs` is non-empty and does not have one entry per
+/// state.
+///
 /// # Panics
 ///
 /// - Panics if the SPK read lock is poisoned.
@@ -112,17 +137,28 @@ pub fn check_spks<F: FovLike>(fov: &F, obj_ids: &[i32]) -> Vec<Option<Simultaneo
 pub fn check_visible<F: FovLike>(
     fov: &F,
     states: &[State<Equatorial>],
+    non_gravs: &[Option<FrozenNonGrav>],
     dt_limit: f64,
     include_asteroids: bool,
-) -> Vec<Option<SimultaneousStates>> {
+) -> KeteResult<Vec<Option<SimultaneousStates>>> {
+    if !(non_gravs.is_empty() || non_gravs.len() == states.len()) {
+        Err(Error::ValueError(format!(
+            "non_gravs must be empty or have one entry per state, found {} entries for \
+             {} states.",
+            non_gravs.len(),
+            states.len()
+        )))?;
+    }
     let obs_state = fov.observer();
 
     let final_states: Vec<(usize, State<Equatorial>)> = states
         .iter()
-        .filter_map(|state: &State<_>| {
+        .enumerate()
+        .filter_map(|(idx, state)| {
+            let non_grav = non_gravs.get(idx).and_then(Option::as_ref);
             let max_dist = (state.vel - obs_state.vel).norm() * dt_limit * 2.0;
 
-            if (state.epoch - obs_state.epoch).elapsed.abs() < dt_limit {
+            if non_grav.is_none() && (state.epoch - obs_state.epoch).elapsed.abs() < dt_limit {
                 let (_, contains, _) = check_linear(fov, state);
                 if let Contains::Outside(dist) = contains
                     && dist > max_dist
@@ -147,7 +183,7 @@ pub fn check_visible<F: FovLike>(
                 }
                 let ssb_state = spk.try_to_ssb(state.clone()).ok()?;
                 let (idx, contains, state) =
-                    check_n_body(fov, ssb_state, include_asteroids).ok()?;
+                    check_n_body(fov, ssb_state, non_grav, include_asteroids).ok()?;
                 match contains {
                     Contains::Inside => Some((idx, state)),
                     Contains::Outside(_) => None,
@@ -161,13 +197,13 @@ pub fn check_visible<F: FovLike>(
         detector_states[idx].push(state);
     }
 
-    detector_states
+    Ok(detector_states
         .into_iter()
         .enumerate()
         .map(|(idx, states)| {
             SimultaneousStates::new_exact(states, Some(fov.get_child(idx).into_fov())).ok()
         })
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]
@@ -175,6 +211,7 @@ mod tests {
     use super::*;
     use kete_core::constants::GMS_SQRT;
     use kete_core::desigs::Desig;
+    use kete_core::forces::{DustNonGrav, FrozenForce, NonGravKind};
     use kete_core::fov::{GenericRectangle, OmniDirectional};
     use kete_core::state::State;
 
@@ -221,11 +258,12 @@ mod tests {
                 spk.try_to_sun(off_state.clone()).unwrap()
             };
             assert!(check_two_body(&fov, &off_sun).is_ok());
-            assert!(check_n_body(&fov, off_state.clone(), false).is_ok());
+            assert!(check_n_body(&fov, off_state.clone(), None, false).is_ok());
 
             let off_dyn: State<Equatorial> = off_state.into();
             assert!(
-                check_visible(&fov, &[off_dyn], 6.0, false)
+                check_visible(&fov, &[off_dyn], &[], 6.0, false)
+                    .unwrap()
                     .first()
                     .unwrap()
                     .is_some()
@@ -271,7 +309,7 @@ mod tests {
 
             // Check n body approximation calculation
             let asteroid_ssb = spk.try_to_ssb(asteroid.clone()).unwrap();
-            let n_body = check_n_body(&fov, asteroid_ssb, false);
+            let n_body = check_n_body(&fov, asteroid_ssb, None, false);
             assert!(n_body.is_ok());
             let (_, _, n_body) = n_body.unwrap();
             assert!((observer.epoch.jd - n_body.epoch.jd - dist * C_AU_PER_DAY_INV).abs() < 1e-6);
@@ -295,7 +333,8 @@ mod tests {
             assert!((spk_check.pos - exact.pos).norm() < 1e-12);
 
             assert!(
-                check_visible(&fov, &[asteroid], 6.0, false)
+                check_visible(&fov, &[asteroid], &[], 6.0, false)
+                    .unwrap()
                     .first()
                     .unwrap()
                     .is_some()
@@ -309,5 +348,43 @@ mod tests {
         let sun_state = &sun_check.as_ref().unwrap().states[0];
         // The Sun is always at the solar center.
         assert!(sun_state.pos.norm() < 1e-12);
+    }
+
+    /// A non-gravitational model must change the observed state, including when the
+    /// state epoch is close enough to the observer that the two body check would
+    /// otherwise be used.
+    #[test]
+    fn test_check_visible_non_grav() {
+        crate::test_data::ensure_test_spk();
+        let observer = State::new(
+            Desig::Empty,
+            2451545.0,
+            [0.0, 1., 0.0],
+            [-GMS_SQRT, 0.0, 0.0],
+            10,
+        );
+        let fov = OmniDirectional::new(observer.clone());
+
+        // One day before the observation, well within the dt_limit used below.
+        let asteroid: State<Equatorial> = {
+            let spk = LOADED_SPK.read().unwrap();
+            spk.try_get_state_with_center(20000042, observer.epoch - 1.0, 10)
+                .unwrap()
+        };
+
+        // beta = 0.5 removes half of the solar gravity, which over a day is a
+        // deflection of order 1e-5 au, far above the two body vs n-body difference.
+        let dust = FrozenForce::new(NonGravKind::Dust(DustNonGrav), vec![0.5]).unwrap();
+
+        let states = [asteroid];
+        let grav_only = check_visible(&fov, &states, &[], 3.0, false).unwrap();
+        let with_dust = check_visible(&fov, &states, &[Some(dust)], 3.0, false).unwrap();
+
+        let grav_pos = grav_only[0].as_ref().unwrap().states[0].pos;
+        let dust_pos = with_dust[0].as_ref().unwrap().states[0].pos;
+        assert!((grav_pos - dust_pos).norm() > 1e-6);
+
+        // A non-empty non_gravs which does not cover every state is rejected.
+        assert!(check_visible(&fov, &states, &[None, None], 3.0, false).is_err());
     }
 }

@@ -1,40 +1,66 @@
 use super::*;
+use kete_core::errors::{Error, KeteResult};
+use kete_core::forces::{FrozenNonGrav, Sum};
 use kete_core::fov::{FOV, FovLike, check_statics};
-use kete_core::state::StateLike;
+use kete_core::frames::{Equatorial, SSB};
+use kete_core::state::{State, StateLike};
+use kete_core::time::{TDB, Time};
 use kete_spice::fov_checks;
-use kete_spice::propagation::SpkNBody;
+use kete_spice::propagation::{Recenter, SpkNBody};
 use kete_spice::spk::LOADED_SPK;
 use pyo3::prelude::*;
 use rayon::prelude::*;
 
-use crate::{state::PySimultaneousStates, vector::VectorLike};
+use crate::{nongrav::PyNonGravModel, state::PySimultaneousStates, vector::VectorLike};
 
 /// Given states and field of view, return only the objects which are visible to the
 /// observer, adding a correction for optical light delay.
 ///
 /// Objects are propagated using 2 body physics to the time of the FOV if time steps are
-/// less than the specified `dt`.
+/// less than the specified `dt_limit`. Objects which have a non-gravitational model are
+/// always propagated using n-body physics, since the 2 body approximation cannot
+/// represent the non-gravitational acceleration.
 ///
 /// parameters
 /// ----------
-/// states: list[State]
+/// obj_state: list[State]
 ///     States which do not already have a specified FOV.
-/// fov: list
+/// fovs: list
 ///     A field of view from which to subselect objects which are visible.
-/// dt: float
+/// dt_limit: float
 ///     Length of time in days where 2-body mechanics is a good approximation.
 /// include_asteroids: bool
 ///     Include the additional registered gravitational masses during the computation.
+/// non_gravs: list
+///     A list of non-gravitational terms for each object. If provided, then every
+///     object must have an associated :class:`~NonGravModel` or `None`.
 #[pyfunction]
-#[pyo3(name = "fov_state_check", signature = (obj_state, fovs, dt_limit=3.0, include_asteroids=false))]
+#[pyo3(name = "fov_state_check", signature = (obj_state, fovs, dt_limit=3.0,
+    include_asteroids=false, non_gravs=None))]
 pub fn fov_checks_py(
     py: Python<'_>,
     obj_state: PySimultaneousStates,
     mut fovs: Vec<AllowedFOV>,
     dt_limit: f64,
     include_asteroids: bool,
+    non_gravs: Option<Vec<Option<PyNonGravModel>>>,
 ) -> PyResult<Vec<PySimultaneousStates>> {
     let pop = obj_state.0;
+
+    let mut non_gravs: Vec<Option<FrozenNonGrav>> = match non_gravs {
+        None => vec![None; pop.states.len()],
+        Some(models) => {
+            if models.len() != pop.states.len() {
+                Err(Error::ValueError(
+                    "non_gravs must be the same length as states.".into(),
+                ))?;
+            }
+            models
+                .into_iter()
+                .map(|model| model.map(|model| model.to_frozen()))
+                .collect()
+        }
+    };
 
     fovs.sort_by(|a, b| a.jd().jd.total_cmp(&b.jd().jd));
 
@@ -60,16 +86,47 @@ pub fn fov_checks_py(
     if !chunk.is_empty() {
         fov_chunks.push(chunk);
     }
+    // Epoch that the states sit at, and the reference epoch of the last big step. Note
+    // that `big_jd` is when the last big step was triggered, not the epoch the big step
+    // states are at, which is `jd` at the moment that step is taken.
     let mut jd = pop.epoch().jd;
     let mut big_jd = jd;
+
+    // The states are stepped forward often, in steps of order dt_limit. The big step
+    // states are a second copy which lags behind and is only ever moved in single large
+    // jumps, so they do not accumulate the error of many short integrations. They are
+    // periodically swapped in to replace the small step states.
     let mut states = pop.states;
     let mut big_step_states = states.clone();
-    let mut visible = Vec::new();
+    let mut big_step_non_gravs = non_gravs.clone();
+    let mut visible: Vec<PySimultaneousStates> = Vec::new();
 
     let spk = LOADED_SPK
         .read()
         .expect("Failed to read the loaded spice kernels.");
-    let forces = SpkNBody::new(&spk, include_asteroids);
+
+    // Propagate every state to the given time, dropping any which fail. Failures drop
+    // the state and its non-gravitational model together, keeping the two lists aligned.
+    let propagate = |states: Vec<State<Equatorial>>,
+                     non_gravs: Vec<Option<FrozenNonGrav>>,
+                     jd: Time<TDB>| {
+        states
+            .into_par_iter()
+            .zip(non_gravs)
+            .filter_map(|(state, non_grav)| {
+                let ssb = spk.try_to_ssb(state).ok()?;
+                let grav = SpkNBody::new(&spk, include_asteroids);
+                let moved = match non_grav.as_ref() {
+                    None => ssb.propagate_with(&grav, jd),
+                    Some(non_grav) => {
+                        let force = Sum::new(grav, Recenter::<SSB, _>::new(&spk, non_grav.clone()));
+                        ssb.propagate_with(&force, jd)
+                    }
+                };
+                moved.ok().map(|moved| (moved.into(), non_grav))
+            })
+            .unzip()
+    };
 
     for fovs in fov_chunks {
         let jd_mean = (fovs.last().unwrap().observer().epoch.jd
@@ -79,56 +136,44 @@ pub fn fov_checks_py(
         // Take large steps which are 10x the smaller steps, this helps long term numerical stability
         if (jd_mean - big_jd).abs() >= dt_limit * 50.0 {
             big_jd = jd_mean;
-            big_step_states = big_step_states
-                .into_par_iter()
-                .filter_map(|state| {
-                    let ssb = spk.try_to_ssb(state).ok()?;
-                    ssb.propagate_with(&forces, jd.into()).ok().map(Into::into)
-                })
-                .collect();
+            (big_step_states, big_step_non_gravs) =
+                propagate(big_step_states, big_step_non_gravs, jd.into());
         };
         // Take small steps based off of the large steps.
         if (jd_mean - jd).abs() >= dt_limit {
             if (jd - big_jd).abs() >= dt_limit * 25.0 {
                 states.clone_from(&big_step_states);
+                non_gravs.clone_from(&big_step_non_gravs);
             }
             jd = jd_mean;
-            states = states
-                .into_par_iter()
-                .filter_map(|state| {
-                    let ssb = spk.try_to_ssb(state).ok()?;
-                    ssb.propagate_with(&forces, jd.into()).ok().map(Into::into)
-                })
-                .collect();
+            (states, non_gravs) = propagate(states, non_gravs, jd.into());
         };
 
         // Release the GIL during CPU-intensive parallel work so Python can
         // handle signals and other threads can proceed.
-        py.detach(|| {
-            let vis: Vec<PySimultaneousStates> = fovs
-                .par_chunks(100)
-                .flat_map(|chunk| {
-                    chunk
-                        .iter()
-                        .cloned()
-                        .flat_map(|fov| {
-                            fov_checks::check_visible(&fov, &states, dt_limit, include_asteroids)
-                                .into_iter()
-                                .filter_map(|pop| pop.map(|p| PySimultaneousStates(Box::new(p))))
-                                .collect::<Vec<_>>()
-                        })
-                        .collect::<Vec<_>>()
+        let vis: Vec<Vec<PySimultaneousStates>> = py.detach(|| {
+            fovs.par_chunks(100)
+                .map(|chunk| {
+                    let mut found = Vec::new();
+                    for fov in chunk {
+                        let seen = fov_checks::check_visible(
+                            fov,
+                            &states,
+                            &non_gravs,
+                            dt_limit,
+                            include_asteroids,
+                        )?;
+                        found.extend(seen.into_iter().flatten().map(PySimultaneousStates::from));
+                    }
+                    Ok(found)
                 })
-                .collect::<Vec<_>>();
-
-            if !vis.is_empty() {
-                visible.push(vis);
-            }
-        });
+                .collect::<KeteResult<Vec<_>>>()
+        })?;
+        visible.extend(vis.into_iter().flatten());
 
         py.check_signals()?;
     }
-    Ok(visible.into_iter().flatten().collect())
+    Ok(visible)
 }
 
 /// Check if a list of loaded spice kernel objects are visible in the provided FOVs.
