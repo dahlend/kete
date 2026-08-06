@@ -74,6 +74,17 @@ pub trait InertialFrame: Sized + Sync + Send + Clone + Copy + Debug + PartialEq 
     fn convert<Target: InertialFrame>(vec: Vector3<f64>) -> Vector3<f64> {
         Target::from_equatorial(Self::to_equatorial(vec))
     }
+
+    /// Rotation matrix from this frame to another inertial frame.
+    ///
+    /// [`Self::convert`] applies this to a single vector. The matrix itself is what is
+    /// needed to rotate a Jacobian or a covariance, where the same rotation acts on every
+    /// column rather than on one vector.
+    #[inline(always)]
+    #[must_use]
+    fn rotation_to_frame<Target: InertialFrame>() -> Rotation3<f64> {
+        Target::rotation_to_equatorial().inverse() * *Self::rotation_to_equatorial()
+    }
 }
 
 /// Equatorial frame.

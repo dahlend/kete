@@ -49,11 +49,12 @@ pub fn lambertian_flux_py(
         .sum()
 }
 
-/// Return the Solar flux in Jy / Steradian from the 2000 ASTM Standard Extraterrestrial
+/// Return the Solar flux density in Janskys from the 2000 ASTM Standard Extraterrestrial
 /// Spectrum Reference E-490-00:
 /// <https://www.nrel.gov/grid/solar-resource/spectra-astm-e490.html>
 ///
-/// Returned values are units Janskys / steradian per unit freq.
+/// Returned values are flux densities in units of Janskys, scaled by
+/// ``1 / dist^2`` from the tabulated 1 au spectrum.
 ///
 /// Parameters
 /// ----------

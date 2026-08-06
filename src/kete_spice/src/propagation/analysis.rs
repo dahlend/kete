@@ -49,8 +49,8 @@ pub fn closest_approach(
 
     // Adaptive sample count: at least 20 samples per orbital period of the
     // shorter-period object, minimum 200 total.
-    let elem_a = CometElements::from_state(&state_a.clone().into_frame::<Ecliptic>());
-    let elem_b = CometElements::from_state(&state_b.clone().into_frame::<Ecliptic>());
+    let elem_a = CometElements::from_state(&state_a.clone().into_frame::<Ecliptic>())?;
+    let elem_b = CometElements::from_state(&state_b.clone().into_frame::<Ecliptic>())?;
     let min_period = elem_a.orbital_period().min(elem_b.orbital_period());
     #[allow(clippy::cast_sign_loss, reason = "always positive by construction")]
     let n_samples = if min_period.is_finite() && min_period > 0.0 {

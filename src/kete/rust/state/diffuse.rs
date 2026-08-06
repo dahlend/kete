@@ -5,13 +5,14 @@ use crate::nongrav::PyNonGravModel;
 use crate::time::PyTime;
 use kete_core::forces::NonGravMask;
 use kete_core::forces::ParameterizedForce;
-use kete_core::frames::{Equatorial, SSB};
+use kete_core::frames::Equatorial;
 use kete_core::prelude::*;
 use kete_spice::propagation::SpkNonGravs;
 use kete_spice::propagation::{
     SplitConfig, mixture_sigma_point_divergence, propagate_diffuse_state_adaptive,
 };
 use kete_spice::spk::LOADED_SPK;
+use nalgebra::Vector3;
 use pyo3::prelude::*;
 
 /// A weighted mixture of :class:`~kete.UncertainState` components,
@@ -54,25 +55,18 @@ impl PyDiffuseState {
         }
     }
 
-    /// Convert all components from DynCenter to SSB-typed UncertainStates.
-    fn components_ssb(
-        &self,
+    /// Resolves the Sun against the barycenter for the propagation paths below.
+    ///
+    /// Elements are referred to the Sun while the force models are barycentric, so a state
+    /// crosses between them at every epoch the propagation touches; the adaptive path
+    /// reaches many intermediate epochs while splitting, so it needs something it can ask.
+    fn sun_resolver(
         spk: &kete_spice::spk::SpkCollection,
-    ) -> KeteResult<Vec<UncertainState<Equatorial, SSB>>> {
-        self.mixture
-            .components
-            .iter()
-            .map(|c| {
-                let ssb_state = spk.try_to_ssb(c.state.clone())?;
-                let mut us = UncertainState::<Equatorial, SSB>::new(
-                    ssb_state,
-                    c.cov_matrix.clone(),
-                    c.free_params.clone(),
-                )?;
-                us.max_unresolved_divergence = c.max_unresolved_divergence;
-                Ok(us)
-            })
-            .collect()
+    ) -> impl Fn(Time<TDB>) -> KeteResult<(Vector3<f64>, Vector3<f64>)> + Sync + '_ {
+        move |time| {
+            let sun = spk.try_get_state_with_center::<Equatorial>(10, time, 0)?;
+            Ok((Vector3::from(sun.pos), Vector3::from(sun.vel)))
+        }
     }
 }
 
@@ -132,10 +126,8 @@ impl PyDiffuseState {
     #[getter]
     fn components(&self) -> Vec<PyUncertainState> {
         let template = self.non_grav.clone();
-        self.mixture
-            .components
-            .iter()
-            .cloned()
+        (0..self.mixture.n_components())
+            .filter_map(|i| self.mixture.component(i).ok())
             .map(|us| PyUncertainState {
                 state: us,
                 non_grav: template.clone(),
@@ -167,11 +159,7 @@ impl PyDiffuseState {
     /// covariance past the linear regime.
     #[getter]
     fn max_unresolved_divergence(&self) -> f64 {
-        self.mixture
-            .components
-            .iter()
-            .map(|c| c.max_unresolved_divergence)
-            .fold(0.0_f64, f64::max)
+        self.mixture.max_unresolved_divergence()
     }
 
     /// Total weight of components whose ``max_unresolved_divergence``
@@ -182,13 +170,7 @@ impl PyDiffuseState {
     /// propagation time to get a probability-mass measure of
     /// under-resolution.
     fn unresolved_weight(&self, threshold: f64) -> f64 {
-        self.mixture
-            .components
-            .iter()
-            .zip(self.mixture.weights.iter())
-            .filter(|(c, _)| c.max_unresolved_divergence > threshold)
-            .map(|(_, w)| *w)
-            .sum()
+        self.mixture.unresolved_weight(threshold)
     }
 
     /// Number of free parameters per component.
@@ -206,12 +188,13 @@ impl PyDiffuseState {
     /// Names of all parameters in the per-component covariance matrix, in
     /// row/column order.
     ///
-    /// Always starts with ``["x", "y", "z", "vx", "vy", "vz"]``, followed
-    /// by any non-gravitational parameter names.  Identical for every
-    /// component (all components share the same covariance layout).
+    /// Always starts with ``["p", "f", "g", "h", "k", "L"]``, the modified equinoctial
+    /// elements described on :attr:`kete.UncertainState.cov_matrix`, followed by any
+    /// non-gravitational parameter names.  Identical for every component (all components
+    /// share the same covariance layout).
     #[getter]
     fn param_names(&self) -> Vec<String> {
-        let mut names: Vec<String> = ["x", "y", "z", "vx", "vy", "vz"]
+        let mut names: Vec<String> = ["p", "f", "g", "h", "k", "L"]
             .iter()
             .map(|s| String::from(*s))
             .collect();
@@ -227,12 +210,7 @@ impl PyDiffuseState {
     #[getter]
     fn non_grav(&self) -> Option<PyNonGravModel> {
         let mask = self.non_grav.as_ref()?;
-        let values = self
-            .mixture
-            .components
-            .first()
-            .map(|c| c.free_params.as_slice())
-            .unwrap_or(&[]);
+        let values = self.mixture.free_params();
         let full = mask.merge(values).ok()?;
         PyNonGravModel::from_force(&mask.inner, &full)
     }
@@ -244,7 +222,7 @@ impl PyDiffuseState {
         n_samples: usize,
         seed: Option<u64>,
     ) -> PyResult<(Vec<PyState>, Vec<Option<PyNonGravModel>>)> {
-        let samples = self.mixture.sample(n_samples, seed)?;
+        let samples = self.mixture.sample::<Equatorial>(n_samples, seed)?;
         let spk = LOADED_SPK.try_read().map_err(Error::from)?;
         let mut states = Vec::with_capacity(n_samples);
         let mut non_gravs = Vec::with_capacity(n_samples);
@@ -255,11 +233,7 @@ impl PyDiffuseState {
             states.push(st.into());
             let ng = self.non_grav.as_ref().and_then(|mask| {
                 let raw = if sampled_params.is_empty() {
-                    self.mixture
-                        .components
-                        .first()
-                        .map(|c| c.free_params.as_slice())
-                        .unwrap_or(&[])
+                    self.mixture.free_params()
                 } else {
                     sampled_params.as_slice()
                 };
@@ -296,24 +270,25 @@ impl PyDiffuseState {
     /// Adaptively split nonlinear components, then propagate.
     ///
     /// ``split_threshold`` is a Mahalanobis-distance threshold in the
-    /// propagated 6-D position+velocity covariance; see
+    /// propagated covariance (element coordinates, floored against
+    /// near-null directions); see
     /// :attr:`~kete.UncertainState.max_unresolved_divergence` for the
-    /// metric definition.  Typical values: 3.0 (~90% containment), 3.5
-    /// (95%), 4.0 (99%) for samples drawn from the predicted Gaussian.
-    ///
-    /// ``target_arc_days`` caps the arc length per state-space adaptive
-    /// step; longer requests are recursively bisected in time.  Set to
-    /// ``float('inf')`` to disable time bisection.
+    /// metric definition.  The default ``0.1`` is the density
+    /// calibration: it keeps the represented probability density
+    /// faithful, since probes off by a few tenths of a sigma already
+    /// distort the distribution's shape.  Pass ``3.0``-``4.0`` when only
+    /// the mean and covariance matter (the state-estimation calibration:
+    /// 3.0 is ~90% containment for samples drawn from the predicted
+    /// Gaussian), at far fewer components.
     #[pyo3(signature = (
         jd,
-        split_threshold=3.0,
+        split_threshold=0.1,
         max_components=1024,
         max_split_depth=10,
         n_axes=3,
         sigma_factor=1.0,
         position_spacing_au=Some(0.001),
-        target_arc_days=f64::INFINITY,
-        min_split_improvement=0.5,
+        min_split_improvement=0.1,
         include_asteroids=false,
     ))]
     #[allow(clippy::too_many_arguments)]
@@ -327,7 +302,6 @@ impl PyDiffuseState {
         n_axes: usize,
         sigma_factor: f64,
         position_spacing_au: Option<f64>,
-        target_arc_days: f64,
         min_split_improvement: f64,
         include_asteroids: bool,
     ) -> PyResult<Self> {
@@ -338,30 +312,21 @@ impl PyDiffuseState {
             n_axes,
             sigma_factor,
             position_spacing_au,
-            target_arc_days,
             min_split_improvement,
         };
         let target: Time<TDB> = jd.into();
         py.detach(|| {
             let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-            let components_ssb = self.components_ssb(&spk)?;
-            let mixture_ssb =
-                DiffuseState::<Equatorial, SSB>::new(self.mixture.weights.clone(), components_ssb)?;
             let forces = self.build_forces(&spk, include_asteroids);
-            let propagated = propagate_diffuse_state_adaptive(&mixture_ssb, &forces, target, &cfg)?;
-            let propagated_dyn: Vec<UncertainState> = propagated
-                .components
-                .into_iter()
-                .map(|c| {
-                    let mut us = UncertainState::new(c.state.into(), c.cov_matrix, c.free_params)
-                        .expect("dimension preserved");
-                    us.max_unresolved_divergence = c.max_unresolved_divergence;
-                    us
-                })
-                .collect();
-            let mixture = DiffuseState::new(propagated.weights, propagated_dyn)?;
+            let propagated = propagate_diffuse_state_adaptive(
+                &self.mixture,
+                &forces,
+                target,
+                &cfg,
+                &Self::sun_resolver(&spk),
+            )?;
             Ok(Self {
-                mixture,
+                mixture: propagated,
                 non_grav: self.non_grav.clone(),
             })
         })
@@ -388,17 +353,15 @@ impl PyDiffuseState {
         let target: Time<TDB> = jd.into();
         py.detach(|| {
             let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-            let components_ssb = self.components_ssb(&spk)?;
-            let mixture_ssb =
-                DiffuseState::<Equatorial, SSB>::new(self.mixture.weights.clone(), components_ssb)?;
             let forces = self.build_forces(&spk, include_asteroids);
             Ok(mixture_sigma_point_divergence(
-                &mixture_ssb,
+                &self.mixture,
                 &forces,
                 target,
                 n_axes,
                 sigma_factor,
                 position_spacing_au,
+                &Self::sun_resolver(&spk),
             )?)
         })
     }
@@ -427,7 +390,7 @@ impl PyDiffuseState {
         }
         let i = idx as usize;
         let component = PyUncertainState {
-            state: self.mixture.components[i].clone(),
+            state: self.mixture.component(i)?,
             non_grav: self.non_grav.clone(),
         };
         Ok((self.mixture.weights[i], component))

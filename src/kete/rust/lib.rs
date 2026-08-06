@@ -71,6 +71,7 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<frame::PyFrames>()?;
     m.add_class::<vector::PyVector>()?;
     m.add_class::<elements::PyCometElements>()?;
+    m.add_class::<elements::PyEquinoctialElements>()?;
     m.add_class::<time::PyTime>()?;
     m.add_class::<nongrav::PyNonGravModel>()?;
     m.add_class::<kete_core::analysis::BPlane>()?;

@@ -32,11 +32,11 @@
 
 use core::f64;
 
-use crate::frames::{CenterBody, DynCenter, Equatorial, InertialFrame};
+use crate::frames::InertialFrame;
 #[cfg(test)]
 use crate::prelude::Desig;
 use crate::prelude::{Error, KeteResult, State, TDB, Time, UncertainState};
-use nalgebra::{DMatrix, DVector, SymmetricEigen};
+use nalgebra::{DMatrix, DVector, SymmetricEigen, Vector6};
 use rand::SeedableRng;
 use rand_distr::{Distribution, StandardUniform};
 
@@ -52,58 +52,78 @@ pub const WEIGHT_SUM_TOL: f64 = 1e-10;
 //
 //   N(0,1) ~ w_o * N(-d, s^2)  +  w_c * N(0, s^2)  +  w_o * N(d, s^2)
 //
-// where w_o = HUBER_K3_WEIGHTS[0] = HUBER_K3_WEIGHTS[2],
-//       w_c = HUBER_K3_WEIGHTS[1],
-//       d   = HUBER_K3_MEANS[2] = sqrt(3/2)  (in units of sqrt(lambda)),
-//       s   = HUBER_K3_SIGMA.
+// where w_o = K3_SPLIT_WEIGHTS[0] = K3_SPLIT_WEIGHTS[2],
+//       w_c = K3_SPLIT_WEIGHTS[1],
+//       d   = K3_SPLIT_MEANS[2] = sqrt(3/2)  (in units of sqrt(lambda)),
+//       s   = K3_SPLIT_SIGMA.
 //
-// Derivation of constants (Huber 2008, DeMars et al. 2013)
-// ---------------------------------------------------------
-// Three moment-preservation constraints fix the free parameters:
+// Derivation of constants
+// -----------------------
+// Symmetry handles the odd moments; four constraints then fix the three
+// free parameters (w_o, d, s) uniquely:
 //
 //   (1) Weights sum to one:   2*w_o + w_c = 1
 //   (2) Mean is zero:         symmetric by construction
 //   (3) Variance is one:      2*w_o*(d^2 + s^2) + w_c*s^2 = 1
+//   (4) Fourth moment is 3:   2*w_o*(d^4 + 6*d^2*s^2 + 3*s^4)
+//                               + w_c*3*s^4 = 3
 //
-// Combined with (1), constraint (3) gives:
-//
-//   s^2 = 1 - 2*w_o * d^2
-//
-// The L^2-optimal solution (minimizing the integrated squared difference
-// between the mixture and the original Gaussian) gives:
+// Combined with (1), constraint (3) gives s^2 = 1 - 2*w_o*d^2, and (4)
+// then selects
 //
 //   w_o = 1/6,  w_c = 2/3,  d = sqrt(3/2),  s^2 = 1/2
 //
-// Substituting: s^2 = 1 - 2*(1/6)*(3/2) = 1 - 1/2 = 1/2.  These are the
-// values used here.  They place the outer components farther into the tails
-// (d ~ 1.225 sigma vs the naive d = 1) where the dynamics are most
-// nonlinear, and produce sub-components that are narrower (s ~ 0.707 vs
-// 0.742), both of which are advantages for orbit uncertainty propagation.
+// so the mixture reproduces the moments of N(0, 1) through 5th order
+// exactly (the 6th is 14.25 against 15).  Splitting is applied
+// recursively, so the property that compounds across levels is the
+// moments, which is why the 4th-moment constraint is chosen over
+// alternatives.  The splitting framework follows the Gaussian-mixture
+// splitting literature (e.g. DeMars, Bishop and Jah 2013); note their
+// K=3 library minimizes the L^2 distance to the parent instead, which
+// gives different values (weights ~ [0.2252, 0.5496, 0.2252], means
+// +/- 1.0575, s ~ 0.6716) and does not preserve the 4th moment.
 //
 // Multivariate extension
 // ----------------------
-// For a multivariate component N(m, P), splitting along unit direction v
-// (typically the dominant eigenvector of P, scaled by sqrt(lambda)) gives:
+// For a multivariate component N(m, P), a unit direction u selects the
+// univariate marginal a = u^T (x - m), with variance sigma^2 = u^T P u.
+// Replacing that marginal by the K=3 mixture and keeping the exact
+// conditional p(x | a) intact gives, with the regression vector
 //
-//   mean shift:  delta_k = HUBER_K3_MEANS[k] * sqrt(lambda) * v
-//   new cov:     P_new = P - (1 - s^2) * lambda * v v^T   (rank-1 reduction)
+//   r = P u / sigma,
 //
+//   mean shift:  delta_k = K3_SPLIT_MEANS[k] * r
+//   new cov:     P_new = P - (1 - s^2) * r r^T   (rank-1 reduction)
+//
+// The children slide along the conditional-expectation line E[x | a],
+// which is the ridge of the parent density, so the mixture approximates
+// the parent with the one-dimensional Huber fidelity for ANY direction u.
+// Displacing along u itself instead (delta_k = K3_SPLIT_MEANS[k] * sigma * u,
+// reduction on sigma^2 u u^T) agrees only when u is an eigenvector of P;
+// for any other direction it pushes the children off the ridge, and the
+// gap between siblings grows without bound as u rotates away from the
+// eigenframe, even while the total moments stay exact.
+//
+// When u is an eigenvector, r = sqrt(lambda) u and the two forms coincide.
 // The rank-1 reduction exactly cancels the between-component variance
 // contributed by the shifted means, so the total mixture mean and covariance
-// equal the original -- verifiable via the law of total covariance.
+// equal the original -- verifiable via the law of total covariance. P_new is
+// positive semi-definite for every u: P - r r^T is the conditional
+// covariance of x given a (a Schur complement), and P_new exceeds it by
+// s^2 r r^T.
 
 /// Mixture weights for the K=3 univariate split: `[w_outer, w_center, w_outer]`.
-/// L^2-optimal values: `[1/6, 2/3, 1/6]`.
-pub const HUBER_K3_WEIGHTS: [f64; 3] = [1.0 / 6.0, 2.0 / 3.0, 1.0 / 6.0];
+/// Moment-matched values: `[1/6, 2/3, 1/6]`.
+pub const K3_SPLIT_WEIGHTS: [f64; 3] = [1.0 / 6.0, 2.0 / 3.0, 1.0 / 6.0];
 
 /// Component mean offsets for the K=3 univariate split, in units of
 /// `sqrt(lambda)` along the chosen axis: `[-sqrt(3/2), 0, +sqrt(3/2)]`.
-pub const HUBER_K3_MEANS: [f64; 3] = [-1.224744871391589, 0.0, 1.224744871391589];
+pub const K3_SPLIT_MEANS: [f64; 3] = [-1.224744871391589, 0.0, 1.224744871391589];
 
 /// Per-component standard-deviation scale for the K=3 split.
 /// Derived from `s^2 = 1 - 2 * w_outer * d^2 = 1 - 2*(1/6)*(3/2) = 1/2`,
 /// so `s = sqrt(1/2) = 1/sqrt(2)`.
-pub const HUBER_K3_SIGMA: f64 = f64::consts::FRAC_1_SQRT_2;
+pub const K3_SPLIT_SIGMA: f64 = f64::consts::FRAC_1_SQRT_2;
 
 /// A weighted mixture of [`UncertainState`] components.
 ///
@@ -146,8 +166,8 @@ pub const HUBER_K3_SIGMA: f64 = f64::consts::FRAC_1_SQRT_2;
 /// propagation keeps each sub-component narrow enough that the Gaussian
 /// approximation remains valid.
 ///
-/// The K=3 split (see [`HUBER_K3_WEIGHTS`], [`HUBER_K3_MEANS`],
-/// [`HUBER_K3_SIGMA`]) replaces one component N(mu, P) with three:
+/// The K=3 split (see [`K3_SPLIT_WEIGHTS`], [`K3_SPLIT_MEANS`],
+/// [`K3_SPLIT_SIGMA`]) replaces one component N(mu, P) with three:
 ///
 ///   - two outer components at mu +/- sqrt(3/2) * sqrt(lambda) * v, weight 1/6 each
 ///   - one central component at mu, weight 2/3
@@ -155,14 +175,15 @@ pub const HUBER_K3_SIGMA: f64 = f64::consts::FRAC_1_SQRT_2;
 /// where v is the unit eigenvector of P along its dominant axis and lambda
 /// is the corresponding eigenvalue (the largest variance direction).  Each
 /// sub-component gets a narrower covariance: the variance along v shrinks by
-/// a factor of `HUBER_K3_SIGMA`^2 = 1/2, while all other directions are
+/// a factor of `K3_SPLIT_SIGMA`^2 = 1/2, while all other directions are
 /// unchanged.  The construction is exact: the weighted mean and total
 /// covariance of the three sub-components equal those of the original
 /// component (verified by the law of total covariance).
 ///
-/// The split constants are derived from three constraints -- weights sum to 1,
+/// The split constants are derived from four constraints -- weights sum to 1,
 /// the mixture mean equals the original mean, the mixture variance equals the
-/// original variance -- with the outer means fixed at +/-1 sigma.  This gives
+/// original variance, and the mixture's fourth moment equals the original's --
+/// which place the outer means at `+/- sqrt(3/2)` sigma and give
 /// `s^2 = 1 - 2*(1/6)*(3/2) = 1/2`.  See the constant definitions for details.
 ///
 /// # When a split is triggered
@@ -180,8 +201,7 @@ pub const HUBER_K3_SIGMA: f64 = f64::consts::FRAC_1_SQRT_2;
 /// integrator to the target epoch.  The STM predicts where those points
 /// should have moved under a linearized model; compare the two predictions.
 /// The divergence score is a Mahalanobis distance -- the linear
-/// prediction error normalized by the propagated position+velocity
-/// covariance:
+/// prediction error normalized by the propagated element covariance:
 ///
 /// ```text
 /// d = max_k  sqrt( (delta_full_k - delta_lin_k)^T P_f^-1 (delta_full_k - delta_lin_k) )
@@ -189,12 +209,14 @@ pub const HUBER_K3_SIGMA: f64 = f64::consts::FRAC_1_SQRT_2;
 ///
 /// where `delta_full_k` is the displacement of the nonlinearly propagated
 /// sigma point from the propagated mean, `delta_lin_k` is the STM (linear)
-/// prediction of that displacement, and `P_f` is the 6x6 position+velocity
-/// block of the propagated covariance.  `d` answers "how many sigma off is
+/// prediction of that displacement, and `P_f` is the propagated element
+/// covariance, floored per coordinate so near-null directions do not
+/// dominate.  `d` answers "how many sigma off is
 /// the linear answer, relative to its own predicted uncertainty?"  For
 /// samples drawn from the predicted distribution it follows a 6-D chi
-/// distribution (E[d] ~ 2.4, 90% containment ~ 3.0).  A value below the
-/// split threshold (`SplitConfig::split_threshold`, default 3.0) means the
+/// distribution, whose mean and high-containment quantiles are both of order a
+/// few.  A value below the
+/// split threshold (`SplitConfig::split_threshold`) means the
 /// component may be propagated as a single Gaussian; above it, the banana
 /// distortion is significant and the component is split into narrower
 /// sub-components first.  In addition to these sigma-shell probes, each
@@ -218,58 +240,48 @@ pub const HUBER_K3_SIGMA: f64 = f64::consts::FRAC_1_SQRT_2;
 ///
 /// # Usage
 ///
-/// Use [`DiffuseState::from_uncertain`] to wrap a single [`UncertainState`],
-/// [`DiffuseState::new`] for explicit multi-component construction, and
-/// [`DiffuseState::split_component`] to split one component in place.
-/// Adaptive propagation (repeated split-then-propagate) is handled by
+/// Use [`DiffuseState::from_uncertain`] to wrap a single [`UncertainState`] and
+/// [`DiffuseState::new`] for explicit multi-component construction. Adaptive propagation
+/// (repeated split-then-propagate) is handled by
 /// `kete_spice::propagation::propagate_diffuse_state_adaptive`.
 ///
-/// Generic over the per-component frame `F` and center `C`. The
-/// defaults `<Equatorial, DynCenter>` match the historical concrete
-/// shape; existing callers writing `DiffuseState` (no generic args)
-/// get the same type as before.
+/// # Component independence
+///
+/// Every component carries its own mean orbit and its own covariance over that orbit's
+/// element coordinates. The element storage is a single global coordinate system with no
+/// basis rebuilt per point, so components do not need to share one - which is what makes
+/// the mixture a plain list rather than a base point and a set of offsets.
+///
+/// The one thing that does not commute with independence is the **true longitude**, which
+/// wraps. Averaging it directly is wrong whenever components straddle the branch cut, and
+/// wrong silently. [`Self::mean_and_covariance`] reduces every component to the shortest
+/// signed offset from a reference before averaging, which is correct wherever the mixture
+/// spans less than half a turn.
 #[derive(Debug, Clone)]
-pub struct DiffuseState<F = Equatorial, C = DynCenter>
-where
-    F: InertialFrame,
-    C: CenterBody,
-    DynCenter: From<C>,
-{
-    /// Mixture weights.  Same length as `components`, non-negative,
-    /// summing to `1.0` within `WEIGHT_SUM_TOL`.
+pub struct DiffuseState {
+    /// Mixture weights. Same length as `components`, non-negative, summing to `1.0`
+    /// within [`WEIGHT_SUM_TOL`].
     pub weights: Vec<f64>,
 
-    /// Component states.  All share epoch, center, and covariance
-    /// dimension; per-component `free_params` may differ in value.
-    /// Each component carries its own `max_unresolved_divergence`
-    /// diagnostic recording the peak linear-approximation error
-    /// encountered along its history.
-    pub components: Vec<UncertainState<F, C>>,
+    /// The mixture components, each with its own mean orbit, covariance and free
+    /// parameter values. All share an epoch, a central body and a parameter count.
+    pub components: Vec<UncertainState>,
 }
 
-impl<F, C> DiffuseState<F, C>
-where
-    F: InertialFrame,
-    C: CenterBody,
-    DynCenter: From<C>,
-{
-    /// Construct a [`DiffuseState`] from explicit weights and components.
+impl DiffuseState {
+    /// Construct from explicit weights and components.
     ///
     /// # Errors
-    /// Returns an error if any of the structural invariants is
-    /// violated: mismatched lengths, empty input, negative or
-    /// non-finite weights, weights not summing to `1.0` within
-    /// [`WEIGHT_SUM_TOL`], or components disagreeing on epoch, center,
-    /// or covariance dimension.
-    pub fn new(weights: Vec<f64>, components: Vec<UncertainState<F, C>>) -> KeteResult<Self> {
-        if components.is_empty() {
-            return Err(Error::ValueError(
-                "DiffuseState must have at least one component".into(),
-            ));
-        }
+    /// Returns an error if the lengths disagree, the input is empty, the weights are
+    /// negative, non-finite or do not sum to `1.0` within [`WEIGHT_SUM_TOL`], or the
+    /// components disagree on epoch, central body or parameter count.
+    pub fn new(weights: Vec<f64>, components: Vec<UncertainState>) -> KeteResult<Self> {
+        let first = components.first().ok_or_else(|| {
+            Error::ValueError("DiffuseState must have at least one component".into())
+        })?;
         if weights.len() != components.len() {
             return Err(Error::ValueError(format!(
-                "weights length {} does not match components length {}",
+                "weights ({}) and components ({}) must have equal length",
                 weights.len(),
                 components.len()
             )));
@@ -286,29 +298,28 @@ where
             )));
         }
 
-        let first = &components[0];
-        let epoch = first.state.epoch;
-        let center = first.state.center_id();
-        let n_dim = first.cov_matrix.nrows();
-
+        let (epoch, center_id, n_params) = (
+            first.elements.epoch,
+            first.elements.center_id,
+            first.free_params.len(),
+        );
         for (i, c) in components.iter().enumerate().skip(1) {
-            if c.state.epoch != epoch {
+            if c.elements.epoch != epoch {
                 return Err(Error::ValueError(format!(
-                    "component {i} epoch {} does not match component 0 epoch {}",
-                    c.state.epoch.jd, epoch.jd
+                    "component {i} epoch {} does not match component 0 at {}",
+                    c.elements.epoch.jd, epoch.jd
                 )));
             }
-            if c.state.center_id() != center {
+            if c.elements.center_id != center_id {
                 return Err(Error::ValueError(format!(
-                    "component {i} center {} does not match component 0 center {center}",
-                    c.state.center_id()
+                    "component {i} center {} does not match component 0 at {center_id}",
+                    c.elements.center_id
                 )));
             }
-            if c.cov_matrix.nrows() != n_dim {
+            if c.free_params.len() != n_params {
                 return Err(Error::ValueError(format!(
-                    "component {i} covariance dimension {} does not match component 0 \
-                     dimension {n_dim}",
-                    c.cov_matrix.nrows()
+                    "component {i} has {} free parameters, expected {n_params}",
+                    c.free_params.len()
                 )));
             }
         }
@@ -321,16 +332,131 @@ where
 
     /// Wrap a single [`UncertainState`] as a one-component mixture.
     #[must_use]
-    pub fn from_uncertain(state: UncertainState<F, C>) -> Self {
+    pub fn from_uncertain(state: UncertainState) -> Self {
         Self {
             weights: vec![1.0],
             components: vec![state],
         }
     }
 
-    /// Common epoch shared by all components.
+    /// Component `index`.
+    ///
+    /// # Errors
+    /// Fails if `index` is out of range.
+    pub fn component(&self, index: usize) -> KeteResult<UncertainState> {
+        self.components.get(index).cloned().ok_or_else(|| {
+            Error::ValueError(format!(
+                "component {index} out of range, mixture has {}",
+                self.components.len()
+            ))
+        })
+    }
+
+    /// Weighted mean of the mixture and its total covariance, both in the element
+    /// coordinates of the returned mean.
+    ///
+    /// The covariance is the law of total covariance,
+    /// `P = sum_i w_i (P_i + (m_i - m)(m_i - m)^T)`, with the deviations taken in the
+    /// mean's own coordinates. Rows and columns beyond the sixth are the free parameters.
+    ///
+    /// **The true longitude wraps and is handled explicitly.** Every component is reduced
+    /// to its shortest signed offset from component zero through
+    /// [`EquinoctialElements::offset_to`](crate::elements::EquinoctialElements::offset_to)
+    /// before anything is averaged, and the result is
+    /// carried back onto that reference. A plain arithmetic mean of true longitudes is
+    /// wrong whenever the components straddle the branch cut - two components at
+    /// `L = pi - eps` and `L = -pi + eps` are adjacent on the orbit but average to zero,
+    /// half a turn away from both - and it fails without any symptom. Splitting keeps
+    /// components close, so the failure would essentially never be triggered by ordinary
+    /// use and essentially never be noticed when it was.
+    ///
+    /// The reduction is correct for any mixture spanning less than half a turn in true
+    /// longitude, which every mixture produced by splitting does by a wide margin.
+    ///
+    /// # Errors
+    /// Fails if the mean leaves the elements' physical domain.
+    pub fn mean_and_covariance(&self) -> KeteResult<(UncertainState, DMatrix<f64>)> {
+        let reference = &self.components[0];
+        let n_params = reference.free_params.len();
+        let n_dim = 6 + n_params;
+
+        // Offsets from the reference, with the true longitude reduced to the shortest
+        // signed angle. Everything downstream is linear in these.
+        let offsets: Vec<DVector<f64>> = self
+            .components
+            .iter()
+            .map(|c| {
+                let element_offset = reference.elements.offset_to(&c.elements);
+                DVector::from_iterator(
+                    n_dim,
+                    (0..6)
+                        .map(|i| element_offset[i])
+                        .chain((0..n_params).map(|i| c.free_params[i] - reference.free_params[i])),
+                )
+            })
+            .collect();
+
+        let mut mean_offset = DVector::<f64>::zeros(n_dim);
+        for (w, offset) in self.weights.iter().zip(offsets.iter()) {
+            mean_offset += offset * *w;
+        }
+
+        let mut total = DMatrix::<f64>::zeros(n_dim, n_dim);
+        for ((w, offset), component) in self
+            .weights
+            .iter()
+            .zip(offsets.iter())
+            .zip(self.components.iter())
+        {
+            total += &component.cov_matrix * *w;
+            let dev = offset - &mean_offset;
+            total += &dev * dev.transpose() * *w;
+        }
+
+        let step = Vector6::from_iterator(mean_offset.iter().take(6).copied());
+        let elements = reference.elements.displaced_by(&step);
+        let free_params: Vec<f64> = (0..n_params)
+            .map(|i| reference.free_params[i] + mean_offset[6 + i])
+            .collect();
+        let mean = UncertainState::new(elements, total.clone(), free_params)?;
+        Ok((mean, total))
+    }
+
+    /// Total weight of components whose peak divergence exceeds `threshold`.
+    ///
+    /// A component that hit the `max_components` budget before it could be split keeps the
+    /// divergence that would have triggered the split, so this answers whether a component
+    /// count is convergence or saturation: a large value means the mixture stopped
+    /// splitting because it ran out of budget, not because it had resolved the
+    /// distribution.
+    #[must_use]
+    pub fn unresolved_weight(&self, threshold: f64) -> f64 {
+        self.components
+            .iter()
+            .zip(self.weights.iter())
+            .filter(|(component, _)| component.max_unresolved_divergence > threshold)
+            .map(|(_, weight)| *weight)
+            .sum()
+    }
+
+    /// Peak sigma-point divergence recorded anywhere in the mixture.
+    #[must_use]
+    pub fn max_unresolved_divergence(&self) -> f64 {
+        self.components
+            .iter()
+            .map(|c| c.max_unresolved_divergence)
+            .fold(0.0_f64, f64::max)
+    }
+
+    /// Common epoch of the mixture.
     pub fn epoch(&self) -> Time<TDB> {
-        self.components[0].state.epoch
+        self.components[0].elements.epoch
+    }
+
+    /// Free parameter values of the first component, the mixture's nominal set.
+    #[must_use]
+    pub fn free_params(&self) -> &[f64] {
+        &self.components[0].free_params
     }
 
     /// Number of mixture components.
@@ -339,8 +465,7 @@ where
         self.components.len()
     }
 
-    /// Number of free parameters per component (`0` if all components
-    /// have empty `free_params`).
+    /// Number of free parameters.
     #[must_use]
     pub fn n_params(&self) -> usize {
         self.components[0].free_params.len()
@@ -361,11 +486,11 @@ where
     ///
     /// # Errors
     /// Returns an error if any component's sampling fails.
-    pub fn sample(
+    pub fn sample<F: InertialFrame>(
         &self,
         n_samples: usize,
         seed: Option<u64>,
-    ) -> KeteResult<Vec<(State<F, C>, Vec<f64>)>> {
+    ) -> KeteResult<Vec<(State<F>, Vec<f64>)>> {
         // Build a CDF over the component weights for inverse-CDF sampling.
         let mut cdf = Vec::with_capacity(self.weights.len());
         let mut acc = 0.0;
@@ -382,13 +507,13 @@ where
         // Count how many samples each component owes, drawing the
         // selection up front so the per-component sample counts are
         // deterministic with respect to the seed.
-        let mut counts = vec![0_usize; self.components.len()];
+        let mut counts = vec![0_usize; self.n_components()];
         for _ in 0..n_samples {
             let u: f64 = StandardUniform.sample(&mut rng);
             let idx = cdf
                 .iter()
                 .position(|&c| u <= c)
-                .unwrap_or(self.components.len() - 1);
+                .unwrap_or(self.n_components() - 1);
             counts[idx] += 1;
         }
 
@@ -419,7 +544,7 @@ where
     /// `depth == 0` returns a clone.
     ///
     /// # Errors
-    /// Returns the first error from [`split_axial_k3_along`] -- typically
+    /// Returns the first error from the underlying axial split -- typically
     /// a degenerate covariance or non-positive variance along the chosen
     /// direction.
     pub fn split_all(&self, depth: u32) -> KeteResult<Self> {
@@ -441,34 +566,59 @@ where
         }
         Self::new(current_weights, current_components)
     }
+
+    /// Split component `idx` along its dominant covariance eigenvector into a K=3
+    /// sub-mixture, leaving the other components untouched.
+    ///
+    /// # Errors
+    /// Fails if `idx` is out of range, or if the split fails - typically a degenerate
+    /// covariance or a non-positive variance along the chosen direction.
+    pub fn split_component(&self, idx: usize) -> KeteResult<Self> {
+        let target = self.component(idx)?;
+        let parts = split_axial_k3_along(&target, &dominant_eigenvector(&target.cov_matrix)?)?;
+
+        let mut weights = Vec::with_capacity(self.n_components() + 2);
+        let mut components = Vec::with_capacity(self.n_components() + 2);
+        for (i, (w, c)) in self.weights.iter().zip(self.components.iter()).enumerate() {
+            if i != idx {
+                weights.push(*w);
+                components.push(c.clone());
+            }
+        }
+        for (w_split, c_split) in parts {
+            weights.push(self.weights[idx] * w_split);
+            components.push(c_split);
+        }
+        Self::new(weights, components)
+    }
 }
 
 /// Split a component for adaptive propagation.
 ///
-/// Prefers a dynamics-aware direction: finds the dominant eigenvector of
-/// `prop_cov` (the propagated covariance) and maps it back to initial state
-/// space via `augmented_stm^{-1}`, then calls [`split_axial_k3_along`].
-/// Falls back to splitting along the dominant eigenvector of the component's
-/// own covariance if the STM is singular or the mapped direction fails the
-/// positive-definiteness check.
+/// Prefers a dynamics-aware direction: finds the dominant eigenvector
+/// `v_f` of `prop_cov` (the propagated covariance) and splits the marginal
+/// of the functional `a = v_f^T x_f`, whose pullback to the initial epoch
+/// is `u = augmented_stm^T v_f` (a covector pulls back through the
+/// transpose, not the inverse).  With the regression-form split the
+/// children's initial-space displacement is then `P u / sigma`, which the
+/// STM carries onto `sqrt(lambda_f) * v_f` at the final epoch -- the
+/// propagated mixture is exactly the dominant-eigenvector split of the
+/// propagated covariance.
+///
+/// Falls back to splitting along the dominant eigenvector of the
+/// component's own covariance if `prop_cov` has no positive eigenvalue or
+/// the mapped direction carries no variance.
 ///
 /// # Errors
 /// Returns an error only if both the dynamics-aware split and the fallback
 /// fail (e.g. the component has zero covariance).
-pub fn split_for_propagation<F, C>(
-    component: &UncertainState<F, C>,
+pub fn split_for_propagation(
+    component: &UncertainState,
     prop_cov: &DMatrix<f64>,
     augmented_stm: &DMatrix<f64>,
-) -> KeteResult<Vec<(f64, UncertainState<F, C>)>>
-where
-    F: InertialFrame,
-    C: CenterBody,
-    DynCenter: From<C>,
-{
-    // Prefer dynamics-aware direction; fall back to dominant initial-covariance axis.
+) -> KeteResult<Vec<(f64, UncertainState)>> {
     if let Ok(v_f) = dominant_eigenvector(prop_cov)
-        && let Some(phi_inv) = augmented_stm.clone().try_inverse()
-        && let Ok(parts) = split_axial_k3_along(component, &(phi_inv * v_f))
+        && let Ok(parts) = split_axial_k3_along(component, &(augmented_stm.transpose() * v_f))
     {
         return Ok(parts);
     }
@@ -494,42 +644,37 @@ fn dominant_eigenvector(cov: &DMatrix<f64>) -> KeteResult<DVector<f64>> {
     Ok(sym.eigenvectors.column(max_idx).into_owned())
 }
 
-/// Split a single [`UncertainState`] into a K=3 sub-mixture along an
-/// explicitly supplied direction in initial state space.
+/// Split a single [`UncertainState`] into a K=3 sub-mixture of the
+/// marginal along an explicitly supplied direction in initial state space.
 ///
 /// `direction` does not need to be a unit vector (it is normalized
-/// internally) and does not need to be an eigenvector of the
-/// component's covariance.  The K=3 sub-mixture preserves the
-/// component's mean and total covariance exactly for any direction;
-/// the only failure mode is when the rank-1 covariance reduction
-/// produces a non-positive-definite result, which can happen when
-/// `direction` aligns with a small-eigenvalue subspace of a strongly
-/// anisotropic covariance.
+/// internally) and does not need to be an eigenvector of the component's
+/// covariance: it selects the univariate functional `a = u^T x` whose
+/// marginal is replaced by the K=3 mixture, while the conditional of the
+/// remaining coordinates given `a` is kept exact.  The children are
+/// therefore displaced along the regression vector `P u / sigma` -- the
+/// ridge of the parent density -- not along `u` itself, and the mixture
+/// approximates the parent with the one-dimensional Huber fidelity for
+/// any direction.  Mean and total covariance are preserved exactly, and
+/// the reduced covariance is positive semi-definite by construction.
 ///
-/// The motivating use case is dynamics-aware splitting for
-/// adaptive cloud propagation: the calling layer computes the
-/// dominant eigenvector of the *propagated* covariance and maps it
-/// back through the augmented STM, picking out the initial-state
-/// direction that most amplifies under the dynamics.  For an
-/// isotropic initial covariance the eigenvalue decomposition is
-/// degenerate and naive dominant-eigenvector splitting picks an
-/// arbitrary axis; this entry point lets callers pick a meaningful
-/// one instead.
+/// The motivating use case is dynamics-aware splitting for adaptive
+/// cloud propagation: the calling layer computes the dominant
+/// eigenvector of the *propagated* covariance and pulls it back through
+/// the transpose of the augmented STM, picking out the initial-state
+/// functional that most amplifies under the dynamics.  For an isotropic
+/// initial covariance the eigenvalue decomposition is degenerate and
+/// naive dominant-eigenvector splitting picks an arbitrary axis; this
+/// entry point lets callers pick a meaningful one instead.
 ///
 /// # Errors
 /// Returns an error if `direction` has the wrong length, is zero
-/// (or non-finite), if the variance of the component along
-/// `direction` is non-positive, or if the post-split covariance
-/// fails a positive-definiteness sanity check.
-fn split_axial_k3_along<F, C>(
-    component: &UncertainState<F, C>,
+/// (or non-finite), or if the variance of the component along
+/// `direction` is non-positive.
+fn split_axial_k3_along(
+    component: &UncertainState,
     direction: &DVector<f64>,
-) -> KeteResult<Vec<(f64, UncertainState<F, C>)>>
-where
-    F: InertialFrame,
-    C: CenterBody,
-    DynCenter: From<C>,
-{
+) -> KeteResult<Vec<(f64, UncertainState)>> {
     let dim = component.cov_matrix.nrows();
     if direction.len() != dim {
         return Err(Error::ValueError(format!(
@@ -546,7 +691,7 @@ where
     }
     let d = direction / norm;
 
-    // Variance of the input covariance along d.
+    // Variance of the marginal along d.
     let sigma_sq_mat = d.transpose() * &component.cov_matrix * &d;
     let sigma_sq = sigma_sq_mat[(0, 0)];
     if !sigma_sq.is_finite() || sigma_sq <= 0.0 {
@@ -556,94 +701,69 @@ where
     }
     let sigma = sigma_sq.sqrt();
 
-    // Rank-1 reduction:
-    //   P_new = P - (1 - HUBER_K3_SIGMA^2) * sigma^2 * d d^T
+    // Regression vector r = P d / sigma: the conditional-expectation line of
+    // the parent, along which the children slide.  Rank-1 reduction:
     //
-    // For any direction d, this preserves the total mean (Sigma w_i m_i = 0)
-    // and total covariance (the rank-1 reduction is exactly the
-    // between-component variance contributed by the K=3 means).
-    let alpha = (1.0 - HUBER_K3_SIGMA.powi(2)) * sigma_sq;
-    let outer = &d * d.transpose();
+    //   P_new = P - (1 - K3_SPLIT_SIGMA^2) * r r^T
+    //
+    // For any direction d this preserves the total mean and covariance (the
+    // reduction is exactly the between-component variance contributed by the
+    // K=3 means), and P_new >= P - r r^T, the conditional covariance of the
+    // parent given the marginal -- a Schur complement, so PSD always.
+    let r = (&component.cov_matrix * &d) / sigma;
+    let alpha = 1.0 - K3_SPLIT_SIGMA.powi(2);
+    let outer = &r * r.transpose();
     let mut cov_new = component.cov_matrix.clone();
     cov_new -= outer * alpha;
-    // Force exact symmetry to eliminate floating-point roundoff drift.
-    let mut cov_new = (&cov_new + cov_new.transpose()) * 0.5;
-
-    // Sanity check: the rank-1 reduction is guaranteed PD when d lies
-    // in (or near) the dominant eigenspace of P.  Small negative
-    // eigenvalues at the ~1e-9 relative level are floating-point noise
-    // from the symmetric eigendecomposition; clip them to zero and
-    // reconstruct.  Larger negative eigenvalues mean d was aligned with
-    // a small-eigenvalue direction -- surface those as a genuine error
-    // so callers can fall back to a safer split.
+    // Force exact symmetry, and clip the floating-point noise that the
+    // subtraction can leave at the ~1e-16 relative level on eigenvalues
+    // that are exactly zero in real arithmetic.
+    let cov_new = (&cov_new + cov_new.transpose()) * 0.5;
     let sym = SymmetricEigen::new(cov_new.clone());
     let min_eig = sym
         .eigenvalues
         .iter()
         .copied()
         .fold(f64::INFINITY, f64::min);
-    let tol = sigma_sq.abs() * 1e-8;
-    if min_eig < -tol {
-        return Err(Error::ValueError(format!(
-            "split_axial_k3_along: post-split covariance not positive-definite \
-             (min eigenvalue {min_eig:.3e}, projected variance {sigma_sq:.3e})"
-        )));
-    }
-    if min_eig < 0.0 {
-        // Clip tiny negative eigenvalues to zero and rebuild.  Preserves
-        // mean and second-moment behavior while ensuring downstream code
-        // sees a strictly PSD covariance.
+    let cov_new = if min_eig < 0.0 {
         let lambda_clipped: Vec<f64> = sym.eigenvalues.iter().map(|&e| e.max(0.0)).collect();
         let lambda_diag = DMatrix::from_diagonal(&DVector::from_vec(lambda_clipped));
-        cov_new = &sym.eigenvectors * lambda_diag * sym.eigenvectors.transpose();
-        cov_new = (&cov_new + cov_new.transpose()) * 0.5;
-    }
+        let rebuilt = &sym.eigenvectors * lambda_diag * sym.eigenvectors.transpose();
+        (&rebuilt + rebuilt.transpose()) * 0.5
+    } else {
+        cov_new
+    };
 
     let mut result = Vec::with_capacity(3);
     for k in 0..3 {
-        let offset = HUBER_K3_MEANS[k] * sigma;
-        let delta = &d * offset;
+        let delta = &r * K3_SPLIT_MEANS[k];
         let new_uncertain = build_split_component(component, &delta, cov_new.clone())?;
-        result.push((HUBER_K3_WEIGHTS[k], new_uncertain));
+        result.push((K3_SPLIT_WEIGHTS[k], new_uncertain));
     }
     Ok(result)
 }
 
 /// Build a new [`UncertainState`] by shifting `base`'s mean by `delta`
 /// in the augmented `(6 + Np)` space and replacing its covariance.
-fn build_split_component<F, C>(
-    base: &UncertainState<F, C>,
+fn build_split_component(
+    base: &UncertainState,
     delta: &DVector<f64>,
     new_cov: DMatrix<f64>,
-) -> KeteResult<UncertainState<F, C>>
-where
-    F: InertialFrame,
-    C: CenterBody,
-    DynCenter: From<C>,
-{
+) -> KeteResult<UncertainState> {
     let np = base.free_params.len();
 
-    let new_state = State::<F, C> {
-        desig: base.state.desig.clone(),
-        epoch: base.state.epoch,
-        pos: crate::frames::Vector::<F>::new([
-            base.state.pos[0] + delta[0],
-            base.state.pos[1] + delta[1],
-            base.state.pos[2] + delta[2],
-        ]),
-        vel: crate::frames::Vector::<F>::new([
-            base.state.vel[0] + delta[3],
-            base.state.vel[1] + delta[4],
-            base.state.vel[2] + delta[5],
-        ]),
-        center: base.state.center,
-    };
+    // The first six entries are element coordinates, so the child's mean is placed by
+    // displacing the stored floats. The child is then an exact orbit, which matters here
+    // because splitting deliberately places components far enough apart that a linear
+    // cartesian offset would not describe one.
+    let step = Vector6::from_iterator(delta.iter().take(6).copied());
+    let new_elements = base.elements.displaced_by(&step);
 
     let new_params: Vec<f64> = (0..np)
         .map(|i| base.free_params[i] + delta[6 + i])
         .collect();
 
-    let mut new_uncertain = UncertainState::new(new_state, new_cov, new_params)?;
+    let mut new_uncertain = UncertainState::new(new_elements, new_cov, new_params)?;
     // Children inherit the parent's accumulated linear-approximation
     // history.  Their own future diagnoses will update the field
     // independently as they evolve.
@@ -653,117 +773,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    impl<F, C> DiffuseState<F, C>
-    where
-        F: InertialFrame,
-        C: CenterBody,
-        DynCenter: From<C>,
-    {
-        /// Weighted mean of the Cartesian state across all components.
-        /// Test-only helper for verifying moment preservation after splits.
-        fn mean_state(&self) -> State<F, C> {
-            let first = &self.components[0].state;
-            let mut pos = [0.0; 3];
-            let mut vel = [0.0; 3];
-            for (w, c) in self.weights.iter().zip(self.components.iter()) {
-                for i in 0..3 {
-                    pos[i] += w * c.state.pos[i];
-                    vel[i] += w * c.state.vel[i];
-                }
-            }
-            State {
-                desig: Desig::Empty,
-                epoch: first.epoch,
-                pos: crate::frames::Vector::<F>::new(pos),
-                vel: crate::frames::Vector::<F>::new(vel),
-                center: first.center,
-            }
-        }
-
-        /// Weighted mean of the free parameters across all components.
-        /// Test-only helper for verifying moment preservation after splits.
-        fn mean_params(&self) -> Vec<f64> {
-            let np = self.n_params();
-            if np == 0 {
-                return Vec::new();
-            }
-            let mut params = vec![0.0; np];
-            for (w, c) in self.weights.iter().zip(self.components.iter()) {
-                for (i, p) in c.free_params.iter().enumerate() {
-                    params[i] += w * p;
-                }
-            }
-            params
-        }
-
-        /// Total covariance of the mixture via the law of total covariance:
-        /// `P = sum_i w_i * (P_i + (m_i - m)(m_i - m)^T)`.
-        ///
-        /// Test-only helper for verifying that splitting preserves total
-        /// moments.  Not part of the public API -- in Cartesian space this
-        /// quantity is of limited interpretive value since components spread
-        /// along a curved orbit track produce large off-diagonal terms that
-        /// obscure the actual per-orbit uncertainty.
-        fn covariance(&self) -> DMatrix<f64> {
-            let n = self.cov_dim();
-            let mean_state = self.mean_state();
-            let mean_params = self.mean_params();
-            let mut mean = DVector::<f64>::zeros(n);
-            for i in 0..3 {
-                mean[i] = mean_state.pos[i];
-                mean[3 + i] = mean_state.vel[i];
-            }
-            for (i, p) in mean_params.iter().enumerate() {
-                mean[6 + i] = *p;
-            }
-            let mut total = DMatrix::<f64>::zeros(n, n);
-            let mut comp_vec = DVector::<f64>::zeros(n);
-            for (w, c) in self.weights.iter().zip(self.components.iter()) {
-                total += &c.cov_matrix * *w;
-                for i in 0..3 {
-                    comp_vec[i] = c.state.pos[i];
-                    comp_vec[3 + i] = c.state.vel[i];
-                }
-                for (i, p) in c.free_params.iter().enumerate() {
-                    comp_vec[6 + i] = *p;
-                }
-                let dev = &comp_vec - &mean;
-                total += &dev * dev.transpose() * *w;
-            }
-            total
-        }
-
-        /// Split component `idx` along its dominant covariance eigenvector
-        /// into a K=3 sub-mixture.  Test-only helper used to verify moment
-        /// preservation; splitting is not part of the public API.
-        fn split_component(&self, idx: usize) -> KeteResult<Self> {
-            if idx >= self.components.len() {
-                return Err(Error::ValueError(format!(
-                    "split_component: idx {idx} out of range (n_components={})",
-                    self.components.len()
-                )));
-            }
-            let dir = dominant_eigenvector(&self.components[idx].cov_matrix)?;
-            let parts = split_axial_k3_along(&self.components[idx], &dir)?;
-            let original_w = self.weights[idx];
-            let mut new_weights = Vec::with_capacity(self.weights.len() + 2);
-            let mut new_components = Vec::with_capacity(self.components.len() + 2);
-            for (i, (w, c)) in self.weights.iter().zip(self.components.iter()).enumerate() {
-                if i == idx {
-                    continue;
-                }
-                new_weights.push(*w);
-                new_components.push(c.clone());
-            }
-            for (w_split, c_split) in parts {
-                new_weights.push(original_w * w_split);
-                new_components.push(c_split);
-            }
-            Self::new(new_weights, new_components)
-        }
-    }
-
     use super::*;
+    use crate::elements::EquinoctialElements;
+    use crate::frames::Equatorial;
+    use nalgebra::Vector3;
 
     fn test_state(desig: &str) -> State<Equatorial> {
         State::new(
@@ -778,7 +791,7 @@ mod tests {
 
     fn small_uncertain(desig: &str) -> UncertainState {
         let cov = DMatrix::identity(6, 6) * 1e-12;
-        UncertainState::new(test_state(desig), cov, vec![]).unwrap()
+        UncertainState::from_state(&test_state(desig), &cov, vec![]).unwrap()
     }
 
     #[test]
@@ -791,9 +804,9 @@ mod tests {
         // Length mismatch.
         assert!(DiffuseState::new(vec![1.0], comps.clone()).is_err());
         // Empty components.
-        assert!(DiffuseState::<Equatorial, DynCenter>::new(vec![], vec![]).is_err());
+        assert!(DiffuseState::new(vec![], vec![]).is_err());
         // Valid.
-        assert!(DiffuseState::new(vec![0.5, 0.5], comps).is_ok());
+        assert!(DiffuseState::new(vec![0.5, 0.5], comps.clone()).is_ok());
     }
 
     #[test]
@@ -802,20 +815,15 @@ mod tests {
         let b = small_uncertain("B");
 
         // Different epoch.
-        a.state.epoch = 2451600.0.into();
+        a.elements.epoch = 2451600.0.into();
         assert!(DiffuseState::new(vec![0.5, 0.5], vec![a.clone(), b.clone()]).is_err());
 
         // Different center.
         let mut a = small_uncertain("A");
         let mut b = small_uncertain("B");
-        b.state = State::new(
-            b.state.desig.clone(),
-            b.state.epoch,
-            [b.state.pos[0], b.state.pos[1], b.state.pos[2]],
-            [b.state.vel[0], b.state.vel[1], b.state.vel[2]],
-            // SSB instead of Sun.
-            0,
-        );
+        // The center now lives on the elements rather than on a cartesian state, so the
+        // mismatch is made by relabeling the element center directly.
+        b.elements.center_id = 0;
         assert!(DiffuseState::new(vec![0.5, 0.5], vec![a.clone(), b]).is_err());
 
         // Restore matching center, expect ok.
@@ -831,16 +839,17 @@ mod tests {
         let cov_7 = DMatrix::<f64>::identity(7, 7) * 1e-12;
 
         // Component without free params.
-        let plain = UncertainState::new(st.clone(), cov_6.clone(), vec![]).unwrap();
+        let plain = UncertainState::from_state(&st.clone(), &cov_6.clone(), vec![]).unwrap();
         // Component with one free param -> 7x7 cov.
-        let with_param = UncertainState::new(st.clone(), cov_7, vec![0.01]).unwrap();
+        let with_param = UncertainState::from_state(&st.clone(), &cov_7, vec![0.01]).unwrap();
 
         // Mixing 6x6 and 7x7 cov dims is invalid.
         assert!(DiffuseState::new(vec![0.5, 0.5], vec![plain, with_param.clone()]).is_err());
 
         // Two components both with one free param (different values) are valid.
         let with_param2 =
-            UncertainState::new(st, DMatrix::<f64>::identity(7, 7) * 1e-12, vec![0.05]).unwrap();
+            UncertainState::from_state(&st, &(DMatrix::<f64>::identity(7, 7) * 1e-12), vec![0.05])
+                .unwrap();
         let mix = DiffuseState::new(vec![0.5, 0.5], vec![with_param, with_param2]).unwrap();
         assert_eq!(mix.n_components(), 2);
         assert_eq!(mix.n_params(), 1);
@@ -857,42 +866,127 @@ mod tests {
     }
 
     #[test]
-    fn test_mean_state_collapses_for_single_component() {
+    fn test_mean_collapses_for_single_component() {
         let u = small_uncertain("A");
-        let want_pos = u.state.pos;
-        let want_vel = u.state.vel;
-        let d = DiffuseState::from_uncertain(u);
-        let m = d.mean_state();
-        for i in 0..3 {
-            assert_eq!(m.pos[i], want_pos[i]);
-            assert_eq!(m.vel[i], want_vel[i]);
+        let d = DiffuseState::from_uncertain(u.clone());
+        let (mean, cov) = d.mean_and_covariance().unwrap();
+        // One component is its own mean, so nothing moves and the covariance is its own.
+        let offset = u.elements.offset_to(&mean.elements);
+        for i in 0..6 {
+            assert!(offset[i].abs() < 1e-14, "mean moved in coordinate {i}");
         }
+        assert!((cov - u.cov_matrix).norm() < 1e-30);
     }
 
     #[test]
     fn test_mean_state_two_component() {
-        let mut a = small_uncertain("A");
-        let mut b = small_uncertain("B");
-        a.state = State::new(
-            a.state.desig.clone(),
-            a.state.epoch,
-            [0.0, 0.0, 0.0],
-            [0.0, 0.0, 0.0],
+        // Both components must be real orbits: the mean is taken over states reconstructed
+        // from elements, and the zero state the cartesian version of this test used has no
+        // element representation at all.
+        let cov = DMatrix::identity(6, 6) * 1e-12;
+        let state_a = State::<Equatorial>::new(
+            Desig::Name("A".into()),
+            2451545.0,
+            [1.0, 0.0, 0.0],
+            [0.0, 0.01720209895, 0.0],
             10,
         );
-        b.state = State::new(
-            b.state.desig.clone(),
-            b.state.epoch,
+        let state_b = State::<Equatorial>::new(
+            Desig::Name("B".into()),
+            2451545.0,
             [2.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
+            [0.0, 0.01216622, 0.0],
             10,
         );
+        let a = UncertainState::from_state(&state_a, &cov.clone(), vec![]).unwrap();
+        let b = UncertainState::from_state(&state_b, &cov, vec![]).unwrap();
+        let reference = a.elements.clone();
+        let offset_b = reference.offset_to(&b.elements);
         let d = DiffuseState::new(vec![0.25, 0.75], vec![a, b]).unwrap();
-        let m = d.mean_state();
-        // 0.25 * 0 + 0.75 * 2 = 1.5
-        assert!((m.pos[0] - 1.5).abs() < 1e-15);
-        // 0.25 * 0 + 0.75 * 1 = 0.75
-        assert!((m.vel[1] - 0.75).abs() < 1e-15);
+        let (mean, _) = d.mean_and_covariance().unwrap();
+
+        // The weighted mean is taken in element coordinates, where it is linear by
+        // construction, and is carried back onto the reference component.
+        let got = reference.offset_to(&mean.elements);
+        for i in 0..6 {
+            let expect = 0.75 * offset_b[i];
+            assert!((got[i] - expect).abs() < 1e-12, "mean coordinate {i}");
+        }
+    }
+
+    /// The true longitude wraps, and the mixture moments must reduce it before averaging.
+    ///
+    /// Two components placed either side of the branch cut are a fifth of a radian apart
+    /// on the orbit. A plain arithmetic mean of their stored true longitudes puts the
+    /// answer half a turn away from both, and nothing about the result announces that it
+    /// is wrong. This is the one silent failure mode independent component means
+    /// introduce, and splitting keeps components close enough that ordinary use would
+    /// essentially never trigger it.
+    ///
+    /// Checked against the states rather than against the coordinates: the mean orbit's
+    /// position must sit between the two components' positions, which is a fact about the
+    /// geometry and not about the arithmetic being tested.
+    #[test]
+    fn mixture_mean_reduces_the_wrapped_true_longitude() {
+        let cov = DMatrix::<f64>::identity(6, 6) * 1e-14;
+        let base = UncertainState::from_state(&test_state("A"), &cov, vec![]).unwrap();
+
+        // Straddle the branch cut: one component just below `pi`, one just above, which
+        // `from_state` would store as just above `-pi`.
+        let mut low = base.clone();
+        low.elements.true_lon = std::f64::consts::PI - 0.1;
+        let mut high = base.clone();
+        high.elements.true_lon = -std::f64::consts::PI + 0.1;
+        assert!(
+            (low.elements.true_lon - high.elements.true_lon).abs() > 6.0,
+            "the stored longitudes must actually straddle the cut"
+        );
+
+        let mixture = DiffuseState::new(vec![0.5, 0.5], vec![low.clone(), high.clone()]).unwrap();
+        let (mean, _) = mixture.mean_and_covariance().unwrap();
+
+        // The two components are 0.2 rad apart on the orbit, so the mean sits at `pi`
+        // exactly, halfway between them.
+        let offset = low.elements.offset_to(&mean.elements);
+        assert!(
+            (offset[5] - 0.1).abs() < 1e-14,
+            "the mean sits {} rad from the low component, expected 0.1",
+            offset[5]
+        );
+
+        // The geometric statement, independent of the element arithmetic: the mean orbit's
+        // position lies between the two components' positions, so it is closer to each of
+        // them than they are to each other.
+        let pos = |u: &UncertainState| -> Vector3<f64> {
+            Vector3::from(u.state::<Equatorial>().unwrap().pos)
+        };
+        let (low_pos, high_pos, mean_pos) = (pos(&low), pos(&high), pos(&mean));
+        let separation = (low_pos - high_pos).norm();
+        assert!((mean_pos - low_pos).norm() < separation);
+        assert!((mean_pos - high_pos).norm() < separation);
+
+        // What a plain arithmetic mean of the stored floats would have produced: half a
+        // turn away, on the far side of the orbit. Stated as a number so the failure this
+        // guards against is on the record rather than described.
+        let naive = 0.5 * (low.elements.true_lon + high.elements.true_lon);
+        let mut naive_elements = base.elements.clone();
+        naive_elements.true_lon = naive;
+        let naive_pos = Vector3::from(
+            naive_elements
+                .try_to_state()
+                .unwrap()
+                .into_frame::<Equatorial>()
+                .pos,
+        );
+        println!(
+            "wrapped mean {:.6} rad, naive mean {naive:.6} rad, naive position error {:.4} AU",
+            mean.elements.true_lon,
+            (naive_pos - mean_pos).norm()
+        );
+        assert!(
+            (naive_pos - mean_pos).norm() > 1.0,
+            "the naive mean must be visibly wrong, or this test proves nothing"
+        );
     }
 
     #[test]
@@ -903,53 +997,85 @@ mod tests {
         let st = test_state("A");
         let p = DMatrix::<f64>::identity(6, 6) * 1e-6;
 
+        // Separated along track rather than by a whole AU: the components must stay
+        // within half a revolution of each other for the true longitude offset to place them
+        // unambiguously, and the cartesian version of this test put them on opposite
+        // sides of the orbit, which is exactly the ambiguous case.
         let mut a_state = st.clone();
-        a_state.pos = [-1.0, 0.0, 0.0].into();
+        a_state.pos = [1.0, -0.02, 0.0].into();
         let mut b_state = st;
-        b_state.pos = [1.0, 0.0, 0.0].into();
+        b_state.pos = [1.0, 0.02, 0.0].into();
 
-        let a = UncertainState::new(a_state, p.clone(), vec![]).unwrap();
-        let b = UncertainState::new(b_state, p.clone(), vec![]).unwrap();
+        let a = UncertainState::from_state(&a_state, &p.clone(), vec![]).unwrap();
+        let b = UncertainState::from_state(&b_state, &p.clone(), vec![]).unwrap();
+        let reference = a.elements.clone();
+        // Each component carries its own covariance; the within-term of the law of total
+        // covariance is the weighted sum of those, not one of them twice.
+        let within_a = a.cov_matrix.clone();
+        let within_b = b.cov_matrix.clone();
+        let offset_a = reference.offset_to(&a.elements);
+        let offset_b = reference.offset_to(&b.elements);
         let d = DiffuseState::new(vec![0.5, 0.5], vec![a, b]).unwrap();
 
-        let cov = d.covariance();
-        // Within: 1e-6.  Between along x: 0.5 * (-1)^2 + 0.5 * 1^2 = 1.0.
-        assert!((cov[(0, 0)] - (1e-6 + 1.0)).abs() < 1e-12);
-        // Other diagonal entries get only the within term.
-        assert!((cov[(1, 1)] - 1e-6).abs() < 1e-12);
-        assert!((cov[(2, 2)] - 1e-6).abs() < 1e-12);
+        let (_, cov) = d.mean_and_covariance().unwrap();
+
+        // The identity itself, not a hard-coded number: total = within + between, with
+        // the between term formed from where the components actually sit in element coordinates.
+        let mean: Vec<f64> = (0..6).map(|i| 0.5 * (offset_a[i] + offset_b[i])).collect();
+        for r in 0..6 {
+            for c in 0..6 {
+                let between = 0.5 * (offset_a[r] - mean[r]) * (offset_a[c] - mean[c])
+                    + 0.5 * (offset_b[r] - mean[r]) * (offset_b[c] - mean[c]);
+                let within = 0.5 * within_a[(r, c)] + 0.5 * within_b[(r, c)];
+                let expect = within + between;
+                let scale = (0.5 * (within_a[(r, r)] + within_b[(r, r)])).sqrt()
+                    * (0.5 * (within_a[(c, c)] + within_b[(c, c)])).sqrt()
+                    + between.abs();
+                assert!(
+                    (cov[(r, c)] - expect).abs() / scale.max(1e-30) < 1e-9,
+                    "cov[{r},{c}]: {} vs {expect}",
+                    cov[(r, c)]
+                );
+            }
+        }
     }
 
     #[test]
     fn test_mean_params_with_free_params() {
         let st = test_state("A");
         let cov = DMatrix::<f64>::identity(7, 7) * 1e-12;
-        let a = UncertainState::new(st.clone(), cov.clone(), vec![0.01]).unwrap();
-        let b = UncertainState::new(st, cov, vec![0.05]).unwrap();
+        let a = UncertainState::from_state(&st.clone(), &cov.clone(), vec![0.01]).unwrap();
+        let b = UncertainState::from_state(&st, &cov, vec![0.05]).unwrap();
         let d = DiffuseState::new(vec![0.5, 0.5], vec![a, b]).unwrap();
-        let p = d.mean_params();
-        assert_eq!(p.len(), 1);
-        assert!((p[0] - 0.03).abs() < 1e-15);
+        let (mean, _) = d.mean_and_covariance().unwrap();
+        assert_eq!(mean.free_params.len(), 1);
+        assert!((mean.free_params[0] - 0.03).abs() < 1e-15);
     }
 
     #[test]
     fn test_sample_count_and_distribution() {
-        // A 90/10 mixture should yield ~90% samples from the first
-        // component.  We validate via the desig label (each component
-        // carries a different desig) so we know which it came from.
-        let mut a = small_uncertain("A");
-        let mut b = small_uncertain("B");
-        // Make the components separable in position so samples
-        // unambiguously belong to one or the other given the tiny
-        // covariance.
-        a.state.pos = [0.0, 0.0, 0.0].into();
-        b.state.pos = [100.0, 0.0, 0.0].into();
-        let d = DiffuseState::new(vec![0.9, 0.1], vec![a, b]).unwrap();
+        // A 90/10 mixture should yield ~90% of samples from the first component. The two
+        // are separated along track by a timing offset, which is far enough apart to tell
+        // them apart from a sampled position.
+        let a = small_uncertain("A");
+        let base = a.elements.clone();
+        let mut step = Vector6::zeros();
+        step[5] = 0.35;
+        let mut shifted = a.clone();
+        shifted.elements = base.displaced_by(&step);
 
-        let samples = d.sample(1000, Some(7)).unwrap();
+        let d = DiffuseState::new(vec![0.9, 0.1], vec![a.clone(), shifted]).unwrap();
+
+        let far = base.displaced_by(&step).try_to_state().unwrap();
+        let near = base.try_to_state().unwrap();
+        let midpoint = 0.5 * (near.pos[1] + far.pos[1]);
+
+        let samples: Vec<(State<Equatorial>, Vec<f64>)> = d.sample(1000, Some(7)).unwrap();
         assert_eq!(samples.len(), 1000);
-        let n_a = samples.iter().filter(|(s, _)| s.pos[0] < 50.0).count();
-        // Expect ~900 from component A; allow generous slack.
+        let n_a = samples
+            .iter()
+            .filter(|(s, _)| (s.pos[1] - near.pos[1]).abs() < (midpoint - near.pos[1]).abs())
+            .count();
         assert!(n_a > 850 && n_a < 950, "got n_a = {n_a}");
     }
 
@@ -958,8 +1084,8 @@ mod tests {
         let a = small_uncertain("A");
         let b = small_uncertain("B");
         let d = DiffuseState::new(vec![0.5, 0.5], vec![a, b]).unwrap();
-        let s1 = d.sample(20, Some(42)).unwrap();
-        let s2 = d.sample(20, Some(42)).unwrap();
+        let s1: Vec<(State<Equatorial>, Vec<f64>)> = d.sample(20, Some(42)).unwrap();
+        let s2: Vec<(State<Equatorial>, Vec<f64>)> = d.sample(20, Some(42)).unwrap();
         assert_eq!(s1.len(), s2.len());
         for (a, b) in s1.iter().zip(s2.iter()) {
             for i in 0..3 {
@@ -970,28 +1096,45 @@ mod tests {
     }
 
     /// The K=3 split tables must satisfy the moment-preservation
-    /// constraints for `N(0,1) -> sum_i w_i N(m_i, sigma^2)`.
+    /// constraints for `N(0,1) -> sum_i w_i N(m_i, sigma^2)`, through the
+    /// fourth moment -- the constraint that selects these constants over
+    /// the L^2-optimal library.
     #[test]
-    fn test_huber_k3_constants_preserve_moments() {
-        let sum: f64 = HUBER_K3_WEIGHTS.iter().sum();
+    fn test_k3_split_constants_preserve_moments() {
+        let sum: f64 = K3_SPLIT_WEIGHTS.iter().sum();
         assert!(
             (sum - 1.0).abs() < 1e-15,
             "weights must sum to 1: got {sum}"
         );
-        let mean: f64 = HUBER_K3_WEIGHTS
+        let mean: f64 = K3_SPLIT_WEIGHTS
             .iter()
-            .zip(HUBER_K3_MEANS.iter())
+            .zip(K3_SPLIT_MEANS.iter())
             .map(|(w, m)| w * m)
             .sum();
         assert!(mean.abs() < 1e-15, "mean must be 0: got {mean}");
-        let variance: f64 = HUBER_K3_WEIGHTS
+        let variance: f64 = K3_SPLIT_WEIGHTS
             .iter()
-            .zip(HUBER_K3_MEANS.iter())
-            .map(|(w, m)| w * (m * m + HUBER_K3_SIGMA * HUBER_K3_SIGMA))
+            .zip(K3_SPLIT_MEANS.iter())
+            .map(|(w, m)| w * (m * m + K3_SPLIT_SIGMA * K3_SPLIT_SIGMA))
             .sum();
         assert!(
             (variance - 1.0).abs() < 1e-15,
             "variance must be 1: got {variance}"
+        );
+        // E[a^4] of a mixture of N(m, s^2) components is
+        // sum_i w_i (m^4 + 6 m^2 s^2 + 3 s^4); N(0,1) has 3.
+        let s_sq = K3_SPLIT_SIGMA * K3_SPLIT_SIGMA;
+        let fourth: f64 = K3_SPLIT_WEIGHTS
+            .iter()
+            .zip(K3_SPLIT_MEANS.iter())
+            .map(|(w, m)| {
+                let m_sq = m * m;
+                w * (m_sq * m_sq + 6.0 * m_sq * s_sq + 3.0 * s_sq * s_sq)
+            })
+            .sum();
+        assert!(
+            (fourth - 3.0).abs() < 1e-15,
+            "fourth moment must be 3: got {fourth}"
         );
     }
 
@@ -1001,12 +1144,15 @@ mod tests {
     #[test]
     fn test_split_component_basic() {
         let mut a = small_uncertain("A");
-        // Inflate covariance so the dominant eigenvalue is well-defined
-        // and large enough that split delta is non-trivial.
+        // Inflate covariance so the dominant eigenvalue is well-defined and large enough
+        // that the split delta is non-trivial - but keep it physical. The cartesian
+        // version of this test used a 1 AU standard deviation on a 1 AU orbit, which is a
+        // 100 percent positional uncertainty; harmless as arithmetic, but a one sigma step
+        // in element coordinates drives the orbit outside its own domain and is rejected.
         let mut cov = DMatrix::<f64>::zeros(6, 6);
-        cov[(0, 0)] = 1.0;
-        cov[(1, 1)] = 1e-6;
-        cov[(2, 2)] = 1e-6;
+        cov[(0, 0)] = 1e-6;
+        cov[(1, 1)] = 1e-10;
+        cov[(2, 2)] = 1e-10;
         for i in 3..6 {
             cov[(i, i)] = 1e-12;
         }
@@ -1018,9 +1164,9 @@ mod tests {
         let total_w: f64 = split.weights.iter().sum();
         assert!((total_w - 1.0).abs() < 1e-15);
 
-        // Each sub-weight should equal HUBER_K3_WEIGHTS[k] (since
+        // Each sub-weight should equal K3_SPLIT_WEIGHTS[k] (since
         // original weight was 1.0).
-        for (got, &want) in split.weights.iter().zip(HUBER_K3_WEIGHTS.iter()) {
+        for (got, &want) in split.weights.iter().zip(K3_SPLIT_WEIGHTS.iter()) {
             assert!((got - want).abs() < 1e-15);
         }
     }
@@ -1031,41 +1177,51 @@ mod tests {
     #[test]
     fn test_split_component_preserves_moments() {
         let st = test_state("A");
+        // Scaled to a physical orbit uncertainty. The cartesian version of this test used
+        // AU-scale position sigmas and velocity sigmas several times the orbital speed;
+        // harmless as arithmetic, but not a distribution any orbit representation
+        // describes.
         // Anisotropic covariance -- dominant axis is x.
         let mut cov = DMatrix::<f64>::zeros(6, 6);
-        cov[(0, 0)] = 4.0;
-        cov[(1, 1)] = 1.0;
-        cov[(2, 2)] = 1.0;
+        cov[(0, 0)] = 4e-8;
+        cov[(1, 1)] = 1e-8;
+        cov[(2, 2)] = 1e-8;
         for i in 3..6 {
-            cov[(i, i)] = 0.01;
+            cov[(i, i)] = 1e-14;
         }
-        let a = UncertainState::new(st.clone(), cov.clone(), vec![]).unwrap();
-        let original_mean = a.state.pos;
+        let a = UncertainState::from_state(&st.clone(), &cov.clone(), vec![]).unwrap();
+        let element_cov = a.cov_matrix.clone();
+        let parent_elements = a.elements.clone();
         let d = DiffuseState::from_uncertain(a);
 
         let split = d.split_component(0).unwrap();
-        let split_mean = split.mean_state();
-        let split_cov = split.covariance();
+        let (split_mean, split_cov) = split.mean_and_covariance().unwrap();
 
-        // Mean is preserved.
-        for i in 0..3 {
+        // The moments are asserted **in element coordinates**, which is where the K3
+        // construction does its arithmetic. The cartesian weighted mean of the children is
+        // deliberately not preserved: the map from elements to a state is nonlinear, and
+        // that curvature is the whole reason the element representation exists. Requiring
+        // it here would be requiring the mixture to be a worse description than it is.
+        //
+        // Displacement and differencing are exact vector arithmetic on the stored floats,
+        // so the mean returns to the parent at rounding rather than at any solver floor.
+        let moved = parent_elements.offset_to(&split_mean.elements);
+        for i in 0..6 {
             assert!(
-                (split_mean.pos[i] - original_mean[i]).abs() < 1e-12,
-                "mean[{i}] changed: {} vs {}",
-                split_mean.pos[i],
-                original_mean[i]
+                moved[i].abs() < 1e-14 * element_cov[(i, i)].sqrt().max(1e-12),
+                "element mean {i} moved to {}",
+                moved[i]
             );
         }
-        // Total covariance is preserved (law of total variance).
         for r in 0..6 {
             for c in 0..6 {
-                let diff = (split_cov[(r, c)] - cov[(r, c)]).abs();
-                let scale = cov[(r, c)].abs().max(1e-12);
+                let diff = (split_cov[(r, c)] - element_cov[(r, c)]).abs();
+                let scale = element_cov[(r, r)].sqrt() * element_cov[(c, c)].sqrt();
                 assert!(
-                    diff / scale < 1e-12,
+                    diff / scale < 1e-8,
                     "cov[{r},{c}] changed: {} vs {}, rel_err={}",
                     split_cov[(r, c)],
-                    cov[(r, c)],
+                    element_cov[(r, c)],
                     diff / scale
                 );
             }
@@ -1089,16 +1245,18 @@ mod tests {
         }
         cov[(6, 6)] = 1e-4;
 
-        let a = UncertainState::new(st, cov, vec![0.01]).unwrap();
+        let a = UncertainState::from_state(&st, &cov, vec![0.01]).unwrap();
         let d = DiffuseState::from_uncertain(a);
 
         let split = d.split_component(0).unwrap();
         assert_eq!(split.n_components(), 3);
 
         // Each sub-component should have a different free-param value
-        // (sub means shifted by HUBER_K3_MEANS[k] * sqrt(1e-4) from the original 0.01).
-        let offset = HUBER_K3_MEANS[2] * 1e-4_f64.sqrt(); // sqrt(3/2) * 0.01
-        let mut params: Vec<f64> = split.components.iter().map(|c| c.free_params[0]).collect();
+        // (sub means shifted by K3_SPLIT_MEANS[k] * sqrt(1e-4) from the original 0.01).
+        let offset = K3_SPLIT_MEANS[2] * 1e-4_f64.sqrt(); // sqrt(3/2) * 0.01
+        let mut params: Vec<f64> = (0..split.n_components())
+            .map(|i| split.component(i).unwrap().free_params[0])
+            .collect();
         params.sort_by(f64::total_cmp);
         assert!((params[0] - (0.01 - offset)).abs() < 1e-10);
         assert!((params[1] - 0.01).abs() < 1e-10);
@@ -1109,7 +1267,7 @@ mod tests {
     fn test_split_component_rejects_zero_covariance() {
         let st = test_state("A");
         let cov = DMatrix::<f64>::zeros(6, 6);
-        let a = UncertainState::new(st, cov, vec![]).unwrap();
+        let a = UncertainState::from_state(&st, &cov, vec![]).unwrap();
         let d = DiffuseState::from_uncertain(a);
         assert!(d.split_component(0).is_err());
     }
@@ -1131,14 +1289,16 @@ mod tests {
         // Mildly anisotropic covariance -- not isotropic, but
         // condition number well below the rank-1-reduction limit so
         // off-axis splits stay PD.
+        // Built in element coordinates, where the split arithmetic lives.
+        let elements = EquinoctialElements::from_state(&st.into_frame()).unwrap();
         let mut cov = DMatrix::<f64>::zeros(6, 6);
-        cov[(0, 0)] = 1.5;
-        cov[(1, 1)] = 1.0;
-        cov[(2, 2)] = 0.8;
+        cov[(0, 0)] = 1.5e-8;
+        cov[(1, 1)] = 1.0e-8;
+        cov[(2, 2)] = 0.8e-8;
         for i in 3..6 {
-            cov[(i, i)] = 1.2;
+            cov[(i, i)] = 1.2e-8;
         }
-        let component = UncertainState::new(st.clone(), cov.clone(), vec![]).unwrap();
+        let component = UncertainState::new(elements, cov.clone(), vec![]).unwrap();
 
         // A direction with components in both position and velocity --
         // not aligned with any single eigenvector.
@@ -1148,37 +1308,87 @@ mod tests {
         direction[3] = 0.7;
         direction[5] = -0.3;
 
+        let base = component.elements.clone();
         let parts = split_axial_k3_along(&component, &direction).unwrap();
         let weights: Vec<f64> = parts.iter().map(|(w, _)| *w).collect();
         let comps: Vec<UncertainState> = parts.into_iter().map(|(_, c)| c).collect();
         let mixture = DiffuseState::new(weights, comps).unwrap();
 
-        let m = mixture.mean_state();
-        for i in 0..3 {
+        // Asserted in element coordinates, where the split arithmetic lives. See
+        // `test_split_component_preserves_moments` for why the cartesian mean is not the
+        // invariant here.
+        let element_cov = component.cov_matrix.clone();
+        let (mean, cov_total) = mixture.mean_and_covariance().unwrap();
+        let m = base.offset_to(&mean.elements);
+        for i in 0..6 {
             assert!(
-                (m.pos[i] - st.pos[i]).abs() < 1e-12,
-                "pos[{i}] mismatch under arbitrary-direction split"
-            );
-            assert!(
-                (m.vel[i] - st.vel[i]).abs() < 1e-12,
-                "vel[{i}] mismatch under arbitrary-direction split"
+                m[i].abs() < 1e-14 * element_cov[(i, i)].sqrt().max(1e-12),
+                "element mean {i} moved under arbitrary-direction split"
             );
         }
-        let cov_total = mixture.covariance();
         for r in 0..6 {
             for c in 0..6 {
-                let diff = (cov_total[(r, c)] - cov[(r, c)]).abs();
-                // Absolute + relative tolerance: zero entries are
-                // dominated by float roundoff from the rank-1 update,
-                // not by relative error.
-                let tol = 1e-12 + cov[(r, c)].abs() * 1e-12;
+                let diff = (cov_total[(r, c)] - element_cov[(r, c)]).abs();
+                let scale = element_cov[(r, r)].sqrt() * element_cov[(c, c)].sqrt();
+                // The offsets are plain differences of the stored floats, so the only
+                // error here is the rounding of the rank-1 reduction and the outer
+                // products that undo it.
                 assert!(
-                    diff < tol,
+                    diff / scale.max(1e-30) < 1e-10,
                     "cov[{r},{c}] mismatch under arbitrary-direction split: {} vs {}",
                     cov_total[(r, c)],
-                    cov[(r, c)],
+                    element_cov[(r, c)],
                 );
             }
+        }
+    }
+
+    /// Children of a split must sit on the parent's ridge, whatever
+    /// direction is asked for: the Mahalanobis distance between adjacent
+    /// siblings, measured in the child covariance, equals the univariate
+    /// Huber spacing `d / s = sqrt(3)` for every direction.  The
+    /// direction-along displacement form failed this off the eigenframe --
+    /// moments stayed exact while siblings drifted arbitrarily far apart
+    /// in probability, rendering as separate blobs.
+    #[test]
+    fn test_split_children_stay_on_the_ridge_for_any_direction() {
+        let st = test_state("A");
+        let elements = EquinoctialElements::from_state(&st.into_frame()).unwrap();
+        // Strongly anisotropic and correlated, like a sheared cloud.
+        let mut cov = DMatrix::<f64>::zeros(6, 6);
+        let scales = [1.0e-6, 1.0e-8, 3.0e-9, 1.0e-9, 4.0e-10, 2.0e-10];
+        for (i, s) in scales.iter().enumerate() {
+            cov[(i, i)] = s * s;
+        }
+        cov[(0, 1)] = 0.9 * scales[0] * scales[1];
+        cov[(1, 0)] = cov[(0, 1)];
+        cov[(2, 3)] = -0.5 * scales[2] * scales[3];
+        cov[(3, 2)] = cov[(2, 3)];
+        let component = UncertainState::new(elements, cov, vec![]).unwrap();
+
+        let directions: [[f64; 6]; 4] = [
+            [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0, 0.0, 0.0], // far off the dominant eigenvector
+            [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+            [0.1, -0.4, 1.0, 0.0, -1.0, 0.3],
+        ];
+        for dir in directions {
+            let d = DVector::from_row_slice(&dir);
+            let parts = split_axial_k3_along(&component, &d).unwrap();
+            let child_cov = parts[0].1.cov_matrix.clone();
+            let base = parts[1].1.elements.clone();
+            let delta_vec = base.offset_to(&parts[2].1.elements);
+            let delta = DVector::from_row_slice(delta_vec.as_slice());
+            let solved = child_cov
+                .clone()
+                .svd(true, true)
+                .solve(&delta, 1e-30)
+                .unwrap();
+            let mahal = (delta.transpose() * solved)[(0, 0)].sqrt();
+            assert!(
+                (mahal - 3.0_f64.sqrt()).abs() < 1e-6,
+                "sibling separation {mahal} != sqrt(3) for direction {dir:?}"
+            );
         }
     }
 
@@ -1187,7 +1397,7 @@ mod tests {
     fn test_split_along_validates_direction() {
         let st = test_state("A");
         let cov = DMatrix::<f64>::identity(6, 6);
-        let component = UncertainState::new(st, cov, vec![]).unwrap();
+        let component = UncertainState::from_state(&st, &cov, vec![]).unwrap();
         // Zero direction.
         let zero = DVector::<f64>::zeros(6);
         assert!(split_axial_k3_along(&component, &zero).is_err());
@@ -1203,8 +1413,14 @@ mod tests {
     #[test]
     fn test_split_along_isotropic_is_psd_for_any_direction() {
         let st = test_state("A");
-        let cov = DMatrix::<f64>::identity(6, 6) * 0.25;
-        let component = UncertainState::new(st, cov, vec![]).unwrap();
+        // Isotropy is basis dependent, and the split operates in element coordinates, so the
+        // covariance is built there directly. Converting an isotropic *cartesian*
+        // covariance would hand the splitter something with a condition number of order
+        // cond(K)^2, and testing direction independence against that measures the change
+        // of basis rather than the splitter.
+        let elements = EquinoctialElements::from_state(&st.into_frame()).unwrap();
+        let cov = DMatrix::<f64>::identity(6, 6) * 1e-12;
+        let component = UncertainState::new(elements, cov, vec![]).unwrap();
         // A handful of arbitrary unit-ish directions, none aligned
         // with the canonical basis.
         let directions = [

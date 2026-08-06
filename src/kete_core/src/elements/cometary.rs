@@ -1,5 +1,6 @@
-//! # Orbital Elements
-//! This allows conversion to and from cometary orbital elements to [`State`].
+//! # Cometary Orbital Elements
+//!
+//! Conversion to and from cometary orbital elements and [`State`].
 //
 // BSD 3-Clause License
 //
@@ -31,8 +32,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use crate::constants::GMS_SQRT;
-use crate::forces::GravParams;
+use super::gm_sqrt_for_center;
 use crate::frames::{CenterBody, DynCenter, Ecliptic};
 use crate::kepler::{PARABOLIC_ECC_LIMIT, compute_eccentric_anomaly, compute_true_anomaly};
 use crate::prelude::{Desig, KeteResult, State};
@@ -82,39 +82,31 @@ pub struct CometElements {
 }
 
 impl CometElements {
-    /// Look up the sqrt of the gravitational parameter for a given NAIF center ID.
-    /// Falls back to the Sun if the ID is not found.
-    #[must_use]
-    fn gm_sqrt_for_center(center_id: i32) -> f64 {
-        let known = GravParams::known_masses();
-        known
-            .iter()
-            .find(|p| p.naif_id == center_id)
-            .map_or(GMS_SQRT, |p| p.mass.sqrt())
-    }
-
     /// Create cometary elements from a state.
-    #[must_use]
-    pub fn from_state<C: CenterBody>(state: &State<Ecliptic, C>) -> Self
+    ///
+    /// # Errors
+    /// Fails if the state's center has no known mass. Elements are defined about a
+    /// gravitating body, and which body it is sets `mu`; there is no sensible default.
+    pub fn from_state<C: CenterBody>(state: &State<Ecliptic, C>) -> KeteResult<Self>
     where
         DynCenter: From<C>,
     {
-        let gm_sqrt = Self::gm_sqrt_for_center(state.center_id());
-        Self::from_pos_vel(
+        let gm_sqrt = gm_sqrt_for_center(state.center_id())?;
+        Ok(Self::from_pos_vel(
             state.desig.clone(),
             state.epoch,
             &state.pos.into(),
             &state.vel.into(),
             state.center_id(),
             gm_sqrt,
-        )
+        ))
     }
 
     /// Construct Cometary Orbital elements from a position and velocity vector.
     ///
     /// The units of the vectors are AU and AU/Day.
     ///
-    fn from_pos_vel(
+    pub(super) fn from_pos_vel(
         desig: Desig,
         epoch: Time<TDB>,
         pos: &Vector3<f64>,
@@ -243,7 +235,7 @@ impl CometElements {
 
     /// Convert orbital elements into a cartesian coordinate position and velocity.
     /// Units are in AU and AU/Day.
-    fn to_pos_vel(&self) -> KeteResult<[[f64; 3]; 2]> {
+    pub(super) fn to_pos_vel(&self) -> KeteResult<[[f64; 3]; 2]> {
         let elliptical = self.eccentricity < 1.0 - PARABOLIC_ECC_LIMIT;
         let hyperbolic = self.eccentricity > 1.0 + PARABOLIC_ECC_LIMIT;
         let parabolic = !elliptical && !hyperbolic;
@@ -345,37 +337,44 @@ impl CometElements {
     }
 
     /// Compute the orbital period in days.
-    /// Infinity is returned if the orbit is parabolic or hyperbolic.
+    /// Infinity is returned if the orbit is not bound.
     #[must_use]
     pub fn orbital_period(&self) -> f64 {
-        let semi_major = self.semi_major();
-        match semi_major {
-            a if a <= 1e-8 => f64::INFINITY,
-            a => TAU * a.powf(1.5) / self.gm_sqrt,
+        if self.eccentricity >= 1.0 - PARABOLIC_ECC_LIMIT {
+            return f64::INFINITY;
         }
+        TAU * self.semi_major().powf(1.5) / self.gm_sqrt
     }
 
     /// Compute the Aphelion distance in AU.
+    /// Infinity is returned if the orbit is not bound.
     #[must_use]
     pub fn aphelion(&self) -> f64 {
-        match self.eccentricity {
-            ecc if ((ecc - 1.0).abs() <= PARABOLIC_ECC_LIMIT) => f64::NAN,
-            ecc => self.peri_dist * (1.0 + ecc) / (1.0 - ecc),
+        if self.eccentricity >= 1.0 - PARABOLIC_ECC_LIMIT {
+            return f64::INFINITY;
         }
+        self.peri_dist * (1.0 + self.eccentricity) / (1.0 - self.eccentricity)
     }
 
     /// Compute the mean motion in radians per day.
+    ///
+    /// A parabolic orbit has no angular mean motion. In the parabolic band this returns
+    /// `sqrt(GM)` in AU^(3/2)/day, the rate conjugate to the Barker variable the parabolic
+    /// branch of [`compute_eccentric_anomaly`] solves in, so that the product with the time
+    /// since perihelion is the quantity that solver expects.
     #[must_use]
     pub fn mean_motion(&self) -> f64 {
         match self.eccentricity {
-            ecc if ((ecc - 1.0).abs() <= PARABOLIC_ECC_LIMIT) => {
-                self.gm_sqrt * 1.5 / 2_f64.sqrt() / self.peri_dist.powf(1.5)
-            }
+            ecc if ((ecc - 1.0).abs() <= PARABOLIC_ECC_LIMIT) => self.gm_sqrt,
             _ => self.gm_sqrt / self.semi_major().abs().powf(1.5),
         }
     }
 
     /// Compute the mean anomaly in radians.
+    ///
+    /// Reduced to `[0, 2 pi)` only for an elliptical orbit. Open orbits have no period to
+    /// reduce against, and in the parabolic band this is not an angle at all but the Barker
+    /// variable described on [`Self::mean_motion`], in AU^(3/2).
     #[must_use]
     pub fn mean_anomaly(&self) -> f64 {
         let mm = self.mean_motion();
@@ -407,7 +406,7 @@ mod tests {
     #[test]
     fn test_specific_conversion() {
         {
-            // This was previously a failed instance.
+            // A case that exercises the branch selection in the conversion.
             let elem = CometElements {
                 desig: Desig::Empty,
                 epoch: 2461722.5.into(),
@@ -423,7 +422,7 @@ mod tests {
             assert!(elem.to_pos_vel().is_ok());
         }
         {
-            // This was previously a failed instance.
+            // A case that exercises the branch selection in the conversion.
             let elem = CometElements {
                 desig: Desig::Empty,
                 epoch: 2455341.243793971.into(),
@@ -440,6 +439,9 @@ mod tests {
             assert!(elem.to_pos_vel().is_ok());
         }
         {
+            // Inside the parabolic band, so this exercises Barker's equation. The
+            // reference is Barker solved independently: with `n = sqrt(GM / (2 q^3))`,
+            // `n (t - T) = D + D^3 / 3` for `D = tan(nu / 2)`.
             let elem = CometElements {
                 desig: Desig::Empty,
                 epoch: 2455562.5.into(),
@@ -452,7 +454,75 @@ mod tests {
                 center_id: 10,
                 gm_sqrt: GMS_SQRT,
             };
-            assert!((elem.true_anomaly().unwrap() - 2.6071638616282553).abs() < 1e-6);
+            let barker = {
+                let dt = (elem.epoch - elem.peri_time).elapsed;
+                let rate = GMS_SQRT / (2.0 * elem.peri_dist.powi(3)).sqrt();
+                let target = rate * dt;
+                let mut lo = 0.0_f64;
+                let mut hi = 1e3_f64;
+                for _ in 0..200 {
+                    let mid = 0.5 * (lo + hi);
+                    if mid + mid.powi(3) / 3.0 < target {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                2.0 * lo.atan()
+            };
+            assert!(
+                (elem.true_anomaly().unwrap() - barker).abs() < 1e-9,
+                "{} vs Barker {barker}",
+                elem.true_anomaly().unwrap()
+            );
+        }
+    }
+
+    /// The reported anomalies and the reported position must describe the same point.
+    ///
+    /// `to_pos_vel` and `true_anomaly` both go through the Kepler solver but reach it by
+    /// different routes, and nothing else in this suite compares them: the round trip
+    /// tests convert state to elements and back, so a shared error in the anomaly path
+    /// cancels. The parabolic band is the case that matters, because it is the one where
+    /// the solver's input is not an angle and the two routes can disagree on its scale.
+    #[test]
+    fn test_true_anomaly_agrees_with_position() {
+        for ecc in [0.0, 0.5, 0.9999, 1.0, 1.0001, 1.5, 3.0] {
+            for peri_dist in [0.3, 1.0, 5.0] {
+                let elem = CometElements {
+                    desig: Desig::Empty,
+                    epoch: 2455562.5.into(),
+                    eccentricity: ecc,
+                    inclination: 0.4,
+                    lon_of_ascending: 1.1,
+                    peri_time: 2455369.7.into(),
+                    peri_arg: 2.3,
+                    peri_dist,
+                    center_id: 10,
+                    gm_sqrt: GMS_SQRT,
+                };
+                let [pos, _] = elem.to_pos_vel().unwrap();
+                let radius = Vector3::new(pos[0], pos[1], pos[2]).norm();
+
+                // The conic equation, evaluated at the reported true anomaly. Inside the
+                // parabolic band both routes use `e = 1` geometry regardless of the stored
+                // eccentricity, so the reference has to as well; comparing against the
+                // stored value there measures the width of `PARABOLIC_ECC_LIMIT` instead.
+                let ecc_used = if (ecc - 1.0).abs() <= PARABOLIC_ECC_LIMIT {
+                    1.0
+                } else {
+                    ecc
+                };
+                let nu = elem.true_anomaly().unwrap();
+                let semi_latus = peri_dist * (1.0 + ecc_used);
+                let expected = semi_latus / (1.0 + ecc_used * nu.cos());
+
+                assert!(
+                    (radius - expected).abs() / radius < 1e-8,
+                    "e={ecc} q={peri_dist}: position gives r={radius}, \
+                     true anomaly {nu} gives r={expected}",
+                );
+            }
         }
     }
 

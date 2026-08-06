@@ -50,7 +50,10 @@ pub struct GravParams {
     /// Associated NAIF id
     pub naif_id: i32,
 
-    /// Mass of the object in GMS
+    /// Gravitational parameter `GM` of the object, in AU^3 / Day^2.
+    ///
+    /// Parsed from the mass table as a fraction of the Sun's mass and scaled by
+    /// [`GMS`](crate::constants::GMS), so this is an absolute `GM` rather than a ratio.
     pub mass: f64,
 
     /// Radius of the object in AU.
@@ -303,7 +306,7 @@ impl GravParams {
     /// List of all known massive planets and the Moon.
     ///
     /// # Panics
-    /// Panic if a read lock cannot be put on [`PLANETS`].
+    /// Panic if a read lock cannot be put on the planet table.
     pub fn planets() -> crossbeam::sync::ShardedLockReadGuard<'static, Vec<Self>> {
         PLANETS.read().unwrap()
     }
@@ -311,9 +314,32 @@ impl GravParams {
     /// List of Massive planets, but merge the moon and earth together.
     ///
     /// # Panics
-    /// Panic if a read lock cannot be put on [`SIMPLIFIED_PLANETS`].
+    /// Panic if a read lock cannot be put on the simplified planet table.
     pub fn simplified_planets() -> crossbeam::sync::ShardedLockReadGuard<'static, Vec<Self>> {
         SIMPLIFIED_PLANETS.read().unwrap()
+    }
+
+    /// Gravitational parameter of the body with this NAIF id, in AU^3 / Day^2.
+    ///
+    /// An unknown id is an error rather than a fallback to the Sun. The two places this
+    /// matters are both silent when guessed: a two-body reference is only meaningful
+    /// about a gravitating body, and the solar system barycenter, NAIF 0, is not in the
+    /// mass table at all, so barycentric quantities would have been built with the Sun's
+    /// `mu` about a focus with no body at it.
+    ///
+    /// # Errors
+    /// Fails if `naif_id` has no entry in [`Self::known_masses`].
+    pub fn try_mass_from_naif_id(naif_id: i32) -> KeteResult<f64> {
+        Self::known_masses()
+            .iter()
+            .find(|p| p.naif_id == naif_id)
+            .map(|p| p.mass)
+            .ok_or_else(|| {
+                Error::ValueError(format!(
+                    "NAIF id {naif_id} has no known mass, so it has no gravitational \
+                     parameter. Note that the solar system barycenter has no body at it."
+                ))
+            })
     }
 }
 
@@ -383,8 +409,9 @@ fn j2_jacobian(d: &Vector3<f64>, radius: f64, j2: f64, mass: f64) -> Matrix3<f64
 ///
 /// `cached_states` must be the SSB-relative `(pos, vel)` of each body in
 /// `massive_obj`, in the same order. Non-gravitational contributions are not
-/// included; they are handled by the relevant [`Force`] implementation and
-/// summed at the [`ForceSet`] composition layer.
+/// included; they are handled by the relevant
+/// [`ParameterizedForce`](crate::forces::ParameterizedForce) implementation and summed at
+/// the [`Sum`](crate::forces::Sum) composition layer.
 #[must_use]
 pub fn analytical_jacobians(
     pos: &Vector3<f64>,

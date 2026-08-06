@@ -185,7 +185,10 @@ impl PyState {
     #[getter]
     pub fn elements(&mut self) -> PyCometElements {
         if self.elements.is_none() {
-            self.elements = Some(Box::new(PyCometElements::from_state(self.clone())));
+            self.elements = Some(Box::new(
+                PyCometElements::from_state(self.clone())
+                    .expect("a state with a known center has cometary elements"),
+            ));
         }
         *self.elements.clone().unwrap()
     }
@@ -226,7 +229,7 @@ impl PyState {
         self.elements().peri_dist()
     }
 
-    /// Distance of Aphelion of the orbit in au.
+    /// Distance of Aphelion of the orbit in au, infinite if the orbit is not bound.
     #[getter]
     pub fn aphelion(&mut self) -> f64 {
         self.elements().aphelion()
@@ -244,7 +247,7 @@ impl PyState {
         self.elements().mean_motion()
     }
 
-    /// Orbital Period in days, nan if non-elliptical.
+    /// Orbital Period in days, infinite if the orbit is not bound.
     #[getter]
     pub fn orbital_period(&mut self) -> f64 {
         self.elements().orbital_period()

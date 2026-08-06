@@ -28,6 +28,7 @@ mod bulirsch_stoer;
 mod gauss_jackson;
 mod picard;
 mod radau;
+mod radau_first_order;
 mod runge_kutta;
 mod util;
 mod wisdom_holman;
@@ -39,6 +40,7 @@ pub use picard::{
     dumb_picard_init_second_order,
 };
 pub use radau::RadauIntegrator;
+pub use radau_first_order::RadauFirstOrder;
 pub use runge_kutta::RK45Integrator;
 pub use wisdom_holman::{Encounter, LostParticle, LostReason, WisdomHolman};
 

@@ -340,6 +340,30 @@ mod tests {
         Vector3::new(jac[(0, col)], jac[(1, col)], jac[(2, col)])
     }
 
+    /// The other side of the `d(accel)/d(vel)` default. This model is a radiation force
+    /// depending on position and spin pole alone, so a zero velocity derivative is the
+    /// right answer, and differencing must produce it **exactly** rather than as noise:
+    /// the acceleration is bit-identical at the perturbed velocities, so the differences
+    /// cancel to zero rather than to something small.
+    ///
+    /// This is what lets the trait default difference the velocity block unconditionally
+    /// without injecting noise into the forces that do not need it.
+    #[test]
+    fn velocity_jacobian_is_exactly_zero() {
+        let f = force();
+        let params = [1.0, 0.5];
+        let (da_dr, da_dv) = f.jacobians(epoch(), &pos(), &vel(), &params).unwrap();
+        assert!(
+            da_dv.iter().all(|entry| *entry == 0.0),
+            "a velocity-independent force differenced to a nonzero velocity jacobian: \
+             {da_dv:?}"
+        );
+        assert!(
+            da_dr.norm() > 0.0,
+            "the position jacobian should not be zero"
+        );
+    }
+
     #[test]
     fn analytic_jacobian_matches_finite_difference() {
         let f = force();

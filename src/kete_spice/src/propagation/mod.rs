@@ -31,7 +31,8 @@ pub use analysis::closest_approach;
 pub use batch::{AccelVecMeta, propagate_n_body_vec, vec_accel};
 pub use kete_core::state::{
     LinearityDiagnosis, SplitConfig, mixture_sigma_point_divergence,
-    propagate_diffuse_state_adaptive, propagate_with_diagnosis, sigma_point_divergence,
+    propagate_diffuse_state_adaptive, propagate_elements_with_sensitivity, propagate_uncertain,
+    propagate_with_diagnosis, sigma_point_divergence,
 };
 pub use recenter::Recenter;
 pub use spk_n_body::{SpkNBody, SpkNonGravs};

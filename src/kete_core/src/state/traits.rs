@@ -1,10 +1,12 @@
 //! `StateLike` trait: state-shape polymorphism for propagation.
 //!
 //! A `StateLike` knows its frame and center, exposes its epoch, and
-//! advances itself under a given [`ParameterizedForce`] to a target epoch. Each
-//! state shape (`State`, `UncertainState`, `DiffuseState`, ...) provides
-//! its own `propagate_with` implementation; the propagator boundary is a
-//! single trait method rather than three separate functions.
+//! advances itself under a given [`ParameterizedForce`] to a target epoch, so the
+//! propagator boundary is a single trait method.
+//!
+//! It is implemented for the exact cartesian state shapes only. `UncertainState` and
+//! `DiffuseState` are element-native and carry a covariance; see the note at the bottom
+//! of this file for why the trait does not fit them.
 //!
 // BSD 3-Clause License
 //
@@ -38,10 +40,7 @@
 
 use nalgebra::Vector3;
 
-use super::DiffuseState;
 use super::State;
-use super::UncertainState;
-use super::propagate_with_covariance;
 use crate::errors::KeteResult;
 use crate::forces::ParameterizedForce;
 use crate::frames::{CenterBody, DynCenter, InertialFrame, Vector};
@@ -51,9 +50,7 @@ use crate::time::{TDB, Time};
 /// State-shape polymorphism for propagation.
 ///
 /// Implementors describe how their particular state shape advances under
-/// a given [`ParameterizedForce`]. Plain [`State`] does an RK loop calling `accel`;
-/// `UncertainState` adds variational integration of the augmented STM;
-/// `DiffuseState` maps over components.
+/// a given [`ParameterizedForce`]. [`State`] integrates `accel` directly.
 pub trait StateLike {
     /// Inertial frame of the state.
     type Frame: InertialFrame;
@@ -132,98 +129,19 @@ where
     }
 }
 
-impl<F: InertialFrame, C: CenterBody + 'static> StateLike for UncertainState<F, C>
-where
-    DynCenter: From<C>,
-{
-    type Frame = F;
-    type Center = C;
-
-    fn epoch(&self) -> Time<TDB> {
-        self.state.epoch
-    }
-
-    fn propagate_with<Forces>(self, forces: &Forces, to: Time<TDB>) -> KeteResult<Self>
-    where
-        Forces: ParameterizedForce<Frame = F, Center = C>,
-    {
-        // The user's ParameterizedForce is the complete dynamics. Free parameters
-        // used by the variational integrator come from the state
-        // itself, NOT from the ParameterizedForce: the covariance was sized for
-        // these parameters and any new parameters introduced by the
-        // ParameterizedForce would not have a corresponding covariance row.
-        if forces.n_free_params() != self.free_params.len() {
-            return Err(crate::errors::Error::ValueError(format!(
-                "ParameterizedForce exposes {} free parameters but UncertainState carries {}. \
-                 Construct a new UncertainState with {} free_params (one nominal \
-                 value per free ParameterizedForce parameter), or use a ParameterizedForce with no free \
-                 parameters.",
-                forces.n_free_params(),
-                self.free_params.len(),
-                forces.n_free_params(),
-            )));
-        }
-
-        let pos_init: Vector3<f64> = self.state.pos.into();
-        let vel_init: Vector3<f64> = self.state.vel.into();
-        let (pos_f, vel_f, cov_f) = propagate_with_covariance(
-            forces,
-            pos_init,
-            vel_init,
-            &self.cov_matrix,
-            &self.free_params,
-            self.state.epoch,
-            to,
-        )?;
-
-        let final_state = State {
-            desig: self.state.desig,
-            epoch: to,
-            pos: Vector::<F>::new([pos_f[0], pos_f[1], pos_f[2]]),
-            vel: Vector::<F>::new([vel_f[0], vel_f[1], vel_f[2]]),
-            center: self.state.center,
-        };
-
-        // free_params themselves are integrals of motion under
-        // propagation -- they are inputs to the dynamics, not outputs.
-        // Reuse the existing constructor for dimension validation.
-        Self::new(final_state, cov_f, self.free_params)
-    }
-}
-
-impl<F: InertialFrame, C: CenterBody + 'static> StateLike for DiffuseState<F, C>
-where
-    DynCenter: From<C>,
-{
-    type Frame = F;
-    type Center = C;
-
-    fn epoch(&self) -> Time<TDB> {
-        // All components share an epoch (enforced by `DiffuseState::new`).
-        self.components[0].state.epoch
-    }
-
-    fn propagate_with<Forces>(self, forces: &Forces, to: Time<TDB>) -> KeteResult<Self>
-    where
-        Forces: ParameterizedForce<Frame = F, Center = C>,
-    {
-        // Map propagation over each component, preserving weights.
-        // Components share structural invariants (epoch, center, cov
-        // dimension, non-grav variant) so the same ParameterizedForce applies
-        // uniformly. Sequential here for simplicity; rayon-parallel
-        // mixture propagation can be added by a separate helper if
-        // measured to matter.
-        let Self {
-            weights,
-            components,
-        } = self;
-        let propagated: KeteResult<Vec<UncertainState<F, C>>> = components
-            .into_iter()
-            .map(|c| c.propagate_with(forces, to))
-            .collect();
-        Self::new(weights, propagated?)
-    }
-}
+// `UncertainState` and `DiffuseState` deliberately do **not** implement `StateLike`.
+//
+// The trait fixes `Center` at the type level and `propagate_with` requires the force to
+// share it. That works for a bare state, whose center is both what its coordinates are
+// relative to and where the ODE is integrated. An element-native uncertain state has
+// neither property: its element center is a runtime NAIF id, and its integration center is
+// a per-call choice that need not equal it. Propagating a covariance is also basis
+// specific in a way propagating a point is not - the same distribution is far better
+// described in element coordinates than in cartesian - so a trait that makes the bases look
+// interchangeable here would be misleading rather than merely loose.
+//
+// Nothing needs them: the workspace has no functions generic over `StateLike`, and every
+// call site outside this file propagates a plain `State`.
 
 #[cfg(test)]
 mod tests {

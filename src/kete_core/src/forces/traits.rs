@@ -120,10 +120,20 @@ pub trait ParameterizedForce: Send + Sync {
     /// that derive both from a shared analysis (the N-body Jacobian, the
     /// non-grav models) compute them in one pass instead of two.
     ///
-    /// Default: forward finite differences for `d(accel)/d(pos)` and zero
-    /// for `d(accel)/d(vel)`. Most gravitational forces have no velocity
-    /// dependence; forces that do (GR correction, drag, certain non-grav
-    /// models) override.
+    /// Default: forward finite differences for **both** derivatives. Forces with cheap
+    /// analytical forms should override, and the ones that matter for performance do -
+    /// the N-body gravity and [`DustNonGrav`](super::DustNonGrav).
+    ///
+    /// A force with no velocity dependence pays only the extra evaluations: its
+    /// acceleration is bit-identical at the perturbed velocities, so the difference is
+    /// exactly zero rather than merely small.
+    ///
+    /// Differencing both blocks rather than assuming the velocity block is zero costs
+    /// three extra evaluations on forces that do not need it, and is correct on the ones
+    /// that do. Assuming zero is a silent wrong answer for any velocity-dependent force
+    /// that does not override, and it reaches every variational propagation and every
+    /// fitted covariance built with that force. A slower default is preferable to a
+    /// default that is sometimes wrong.
     ///
     /// # Errors
     /// Forwards errors from the underlying [`accel`](Self::accel) calls.
@@ -136,7 +146,9 @@ pub trait ParameterizedForce: Send + Sync {
     ) -> KeteResult<(Matrix3<f64>, Matrix3<f64>)> {
         let base: Vector3<f64> = self.accel(time, pos, vel, free_params)?.into();
         let pos_raw: Vector3<f64> = (*pos).into();
+        let vel_raw: Vector3<f64> = (*vel).into();
         let mut da_dr = Matrix3::<f64>::zeros();
+        let mut da_dv = Matrix3::<f64>::zeros();
         for axis in 0..3 {
             let h = fd_step(pos_raw[axis]);
             let mut perturbed = pos_raw;
@@ -147,8 +159,18 @@ pub trait ParameterizedForce: Send + Sync {
             da_dr[(0, axis)] = col[0];
             da_dr[(1, axis)] = col[1];
             da_dr[(2, axis)] = col[2];
+
+            let h = fd_step(vel_raw[axis]);
+            let mut perturbed = vel_raw;
+            perturbed[axis] += h;
+            let perturbed_vec = Vector::<Self::Frame>::new(perturbed.into());
+            let a: Vector3<f64> = self.accel(time, pos, &perturbed_vec, free_params)?.into();
+            let col = (a - base) / h;
+            da_dv[(0, axis)] = col[0];
+            da_dv[(1, axis)] = col[1];
+            da_dv[(2, axis)] = col[2];
         }
-        Ok((da_dr, Matrix3::zeros()))
+        Ok((da_dr, da_dv))
     }
 
     /// Parameter derivative of acceleration: `d(accel)/d(free_params)`,

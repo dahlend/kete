@@ -537,7 +537,7 @@ mod tests {
     fn stm_radiation_param_sensitivity() {
         crate::test_data::ensure_test_spk();
         // Validate parameter sensitivity columns for the FarnocchiaModel via
-        // FD of full-trajectory propagation.  This is the analogue of the
+        // FD of full-trajectory propagation.  This is the analog of the
         // existing JplComet and Dust sensitivity tests.
         let model = radiation_test_model();
         let state = test_state();

@@ -1,7 +1,10 @@
 //! Orbital analysis tools.
 //!
-//! Functions for characterizing orbits: Hill radius, sphere of influence,
-//! Tisserand parameter, and related quantities.
+//! Perturbation-regime and encounter quantities: Hill radius, sphere of influence,
+//! Tisserand parameter, specific energy, and B-plane geometry.
+//!
+//! Quantities of the two-body conic itself - semi-major axis, perihelion distance,
+//! anomalies, propagation - live in [`kepler`](crate::kepler).
 
 // Docstrings in this module use NumPy-style formatting (e.g. `param :`) so they
 // render correctly in both Rust and Python (via cfg_attr pyfunction/pyclass).
@@ -10,6 +13,7 @@
 use crate::errors::{Error, KeteResult};
 use crate::forces::GravParams;
 use crate::frames::InertialFrame;
+use crate::kepler::{compute_peri_dist, compute_semi_major};
 use crate::state::State;
 use nalgebra::Vector3;
 
@@ -59,62 +63,6 @@ pub fn sphere_of_influence(semi_major: f64, gm_body: f64, gm_central: f64) -> f6
     semi_major * (gm_body / gm_central).powf(0.4)
 }
 
-/// Osculating semi-major axis from a position and velocity about a central
-/// body, via the vis-viva relation.
-///
-///   a = 1 / (2 / r - v^2 / GM)
-///
-/// Negative for a hyperbolic orbit, infinite for an exactly parabolic one.
-///
-/// Parameters
-/// ----------
-/// pos :
-///     Position relative to the central body in AU.
-/// vel :
-///     Velocity relative to the central body in AU/Day.
-/// gm_central :
-///     Gravitational parameter of the central body (AU^3/day^2).
-///
-/// Returns
-/// -------
-/// float
-///     Semi-major axis in AU.
-#[must_use]
-pub fn semi_major_axis(pos: &Vector3<f64>, vel: &Vector3<f64>, gm_central: f64) -> f64 {
-    (2.0 / pos.norm() - vel.norm_squared() / gm_central).recip()
-}
-
-/// Perihelion distance of the osculating orbit from a position and velocity
-/// about a central body.
-///
-///   q = p / (1 + e),  p = |r x v|^2 / GM,  e^2 = 1 + 2 E p / GM
-///
-/// Valid for any conic; the squared eccentricity is clamped against roundoff
-/// below zero near circular orbits.
-///
-/// Parameters
-/// ----------
-/// pos :
-///     Position relative to the central body in AU.
-/// vel :
-///     Velocity relative to the central body in AU/Day.
-/// gm_central :
-///     Gravitational parameter of the central body (AU^3/day^2).
-///
-/// Returns
-/// -------
-/// float
-///     Perihelion distance in AU.
-#[must_use]
-pub fn perihelion_dist(pos: &Vector3<f64>, vel: &Vector3<f64>, gm_central: f64) -> f64 {
-    let semi_latus = pos.cross(vel).norm_squared() / gm_central;
-    let specific_energy = 0.5 * vel.norm_squared() - gm_central / pos.norm();
-    let ecc = (1.0 + 2.0 * specific_energy * semi_latus / gm_central)
-        .max(0.0)
-        .sqrt();
-    semi_latus / (1.0 + ecc)
-}
-
 /// Compute the Tisserand parameter relative to a perturbing body.
 ///
 ///   T = a_P / a + 2 cos(i) sqrt((a / a_P) (1 - e^2))
@@ -142,23 +90,6 @@ pub fn tisserand(semi_major: f64, eccentricity: f64, inclination: f64, a_planet:
             * ((semi_major / a_planet) * (1.0 - eccentricity * eccentricity)).sqrt()
 }
 
-/// Look up the gravitational parameter for a NAIF center ID.
-///
-/// # Errors
-/// Returns an error if the center ID is not in the known masses list.
-fn gm_for_center(center_id: i32) -> KeteResult<f64> {
-    let known = GravParams::known_masses();
-    known
-        .iter()
-        .find(|p| p.naif_id == center_id)
-        .map(|p| p.mass)
-        .ok_or_else(|| {
-            Error::ValueError(format!(
-                "Unknown center_id {center_id}: no gravitational parameter available"
-            ))
-        })
-}
-
 /// Specific orbital energy from a state.
 ///
 ///   E = v^2/2 - mu/r
@@ -170,7 +101,7 @@ fn gm_for_center(center_id: i32) -> KeteResult<f64> {
 /// Returns an error if the center body's GM is unknown.
 ///
 pub fn specific_energy<T: InertialFrame>(state: &State<T>) -> KeteResult<f64> {
-    let gm = gm_for_center(state.center_id())?;
+    let gm = GravParams::try_mass_from_naif_id(state.center_id())?;
     let r = state.pos.norm();
     let v2 = state.vel.norm_squared();
     Ok(0.5 * v2 - gm / r)
@@ -264,7 +195,7 @@ impl BPlane {
 /// # Errors
 /// Returns an error if the orbit is bound (energy < 0).
 pub fn compute_b_plane<T: InertialFrame>(state: &State<T>) -> KeteResult<BPlane> {
-    let gm = gm_for_center(state.center_id())?;
+    let gm = GravParams::try_mass_from_naif_id(state.center_id())?;
     let pos: Vector3<f64> = state.pos.into();
     let vel: Vector3<f64> = state.vel.into();
     let r = pos.norm();
@@ -286,12 +217,13 @@ pub fn compute_b_plane<T: InertialFrame>(state: &State<T>) -> KeteResult<BPlane>
     let e_vec = vel.cross(&h) / gm - pos / r;
     let ecc = e_vec.norm();
 
-    // Semi-major axis (negative for hyperbola)
-    let a = -gm / (2.0 * energy);
+    // Semi-major axis (negative for hyperbola) and periapsis, both from the shared
+    // two-body forms rather than re-derived here.
+    let a = compute_semi_major(&pos, &vel, gm);
+    let closest_approach = compute_peri_dist(&pos, &vel, gm);
 
-    // B-plane miss distance and periapsis
+    // B-plane miss distance.
     let b_mag = a.abs() * (ecc * ecc - 1.0).sqrt();
-    let closest_approach = a.abs() * (ecc - 1.0);
 
     // Incoming asymptote direction: S = (e_hat * cos(theta_inf) - p_hat * sin(theta_inf))
     // where theta_inf = acos(-1/e) is the true anomaly at infinity.

@@ -50,9 +50,11 @@
 
 use nalgebra::{DMatrix, DVector, Matrix3, Vector3};
 
+use crate::elements::EquinoctialElements;
 use crate::errors::{Error, KeteResult};
 use crate::forces::ParameterizedForce;
-use crate::frames::Vector;
+use crate::frames::{CenterBody, DynCenter, Vector};
+use crate::prelude::State;
 use crate::time::{TDB, Time};
 
 /// Propagate a state and its augmented STM under the given `forces`.
@@ -72,6 +74,9 @@ use crate::time::{TDB, Time};
 /// # Errors
 /// Propagation may fail if the integrator does not converge or if the
 /// `ParameterizedForce` impl returns an error.
+///
+/// See [`propagate_elements_with_sensitivity`] for the same quantity taken with respect
+/// to orbital elements rather than to the cartesian epoch state.
 pub fn propagate_with_stm<F: ParameterizedForce>(
     forces: &F,
     pos_init: Vector3<f64>,
@@ -186,6 +191,117 @@ pub fn propagate_with_stm<F: ParameterizedForce>(
     let pos_final = Vector3::new(pos_f[0], pos_f[1], pos_f[2]);
     let vel_final = Vector3::new(vel_f[0], vel_f[1], vel_f[2]);
     Ok((pos_final, vel_final, sens))
+}
+
+/// Propagate orbital elements and return the sensitivity of the final cartesian state to
+/// the elements.
+///
+/// Returns `(pos_final, vel_final, sensitivity)`, where `sensitivity` is 6 x (6 + Np):
+///
+/// ```text
+/// cols 0..6 : d (r_f, v_f) / d q        q = the six stored floats of EquinoctialElements
+/// cols 6+k  : d (r_f, v_f) / d p_k      unchanged from propagate_with_stm
+/// ```
+///
+/// This is the design matrix block an orbit fit needs when the fitted parameters are
+/// orbital elements rather than a cartesian epoch state. It is the chain rule
+/// `Phi(t, t_0) . K` with `K` from [`EquinoctialElements::state_jacobian`], and it carries
+/// exactly the accuracy of the underlying variational propagation - the element
+/// Jacobian is closed form and contributes only rounding.
+///
+/// ## Frames
+///
+/// Elements are stored in the Ecliptic and the force model runs in `F::Frame`, so `K` is
+/// requested in `F::Frame` and the rotation happens inside
+/// [`EquinoctialElements::state_jacobian`]. That is the only place in the crate which
+/// rotates between the element storage frame and anything else; composing a Jacobian from
+/// one frame with a transition matrix from another is silent and gives a plausible wrong
+/// answer, so it is not done at call sites.
+///
+/// The parameter columns pass through untouched, since the free parameters of the force
+/// model are not elements and the change of state coordinates does not reach them.
+///
+/// Only the input side is transformed. Nothing converts back into elements, so no
+/// inverse Jacobian is formed and no near-identity arises from canceling the Keplerian
+/// shear against itself. Expressing the *result* in elements, which an element-space
+/// covariance would need, is a separate left multiplication with its own conditioning.
+///
+/// ## Centers
+///
+/// Elements are referred to their central body while a force model is written about its
+/// own center, and for the combination this exists to serve - heliocentric elements
+/// against SSB-centered N-body gravity - those differ. `center_state` is the elements'
+/// central body as seen from `F::Center`, at the elements' epoch. Pass a zero state when
+/// the two coincide.
+///
+/// This is a change of coordinates applied **once**, to the initial condition. The
+/// integration then runs in `F::Center`, where the force model's acceleration is the
+/// correct right-hand side, and the returned final state comes back in `F::Center` too.
+///
+/// It is deliberately not [`Recenter`](../../../kete_spice/propagation/struct.Recenter.html),
+/// which shifts the point a force is *evaluated* at while passing the inner acceleration
+/// through unchanged. That is right for forces naturally written about one body but
+/// returning an inertial acceleration on another, and wrong here: it would leave the
+/// integrator stepping relative coordinates against an inertial right-hand side, silently
+/// dropping the central body's own acceleration.
+///
+/// The offset does not appear in the Jacobian. It is a function of time and not of the
+/// state, so `d(r,v)_center / d(r,v)_force` is the identity and `K` is unchanged.
+///
+/// # Errors
+/// Fails if the elements are outside the physical domain, if `center_state` is not at the
+/// elements' epoch, if a nonzero offset is supplied for centers that coincide, or if the
+/// propagation fails.
+pub fn propagate_elements_with_sensitivity<F: ParameterizedForce>(
+    forces: &F,
+    elements: &EquinoctialElements,
+    center_state: &State<F::Frame, F::Center>,
+    free_params: &[f64],
+    epoch_final: Time<TDB>,
+) -> KeteResult<(Vector3<f64>, Vector3<f64>, DMatrix<f64>)>
+where
+    DynCenter: From<F::Center>,
+{
+    // The offset is a function of time, so one taken at the wrong epoch is wrong by the
+    // central body's own motion over the difference, and nothing downstream would notice.
+    if center_state.epoch != elements.epoch {
+        return Err(Error::ValueError(format!(
+            "Center state is at epoch {} but the elements are at {}. The offset between \
+             centers is time dependent and must be evaluated at the element epoch.",
+            center_state.epoch.jd, elements.epoch.jd
+        )));
+    }
+
+    let offset_pos: Vector3<f64> = center_state.pos.into();
+    let offset_vel: Vector3<f64> = center_state.vel.into();
+
+    // A nonzero offset between centers that are the same body is a caller error, and it
+    // would otherwise propagate a state displaced by that amount without complaint.
+    if elements.center_id == F::Center::NAIF_ID
+        && (offset_pos.norm() > 0.0 || offset_vel.norm() > 0.0)
+    {
+        return Err(Error::ValueError(format!(
+            "Element center and force model center are both {}, so the offset between \
+             them must be zero.",
+            elements.center_id
+        )));
+    }
+
+    let jacobian = elements.state_jacobian::<F::Frame>()?;
+    let state: State<F::Frame> = elements.try_to_state()?.into_frame();
+    let (pos_final, vel_final, sens) = propagate_with_stm(
+        forces,
+        Vector3::from(state.pos) + offset_pos,
+        Vector3::from(state.vel) + offset_vel,
+        free_params,
+        elements.epoch,
+        epoch_final,
+    )?;
+
+    let mut out = sens;
+    let state_block = out.fixed_view::<6, 6>(0, 0) * jacobian;
+    out.fixed_view_mut::<6, 6>(0, 0).copy_from(&state_block);
+    Ok((pos_final, vel_final, out))
 }
 
 /// Update an augmented covariance under the sensitivity matrix from
@@ -304,8 +420,12 @@ pub fn propagate_state<F: ParameterizedForce>(
 mod tests {
     use super::*;
     use crate::constants::GMS;
+    use crate::desigs::Desig;
+    use crate::elements::EquinoctialElements;
     use crate::forces::ParameterizedForce;
     use crate::frames::{Equatorial, SunCenter, Vector};
+    use crate::prelude::State;
+    use nalgebra::Vector6;
 
     /// A two-body Kepler force with provided GM (no free parameters).
     /// Provides analytical position Jacobian for cross-validation.
@@ -340,9 +460,84 @@ mod tests {
             //                    = GM/r^5 (3 r r^T - r^2 I)
             let p: Vector3<f64> = (*pos).into();
             let r2 = p.norm_squared();
-            let r5 = r2 * r2.sqrt();
+            let r5 = r2 * r2 * r2.sqrt();
             let da_dr = (3.0 * p * p.transpose() - r2 * Matrix3::identity()) * (self.gm / r5);
             Ok((da_dr, Matrix3::zeros()))
+        }
+    }
+
+    /// The propagated STM must agree with two independent references at a range of
+    /// heliocentric distances.
+    ///
+    /// The variational rows are integrated but never error-controlled -
+    /// `propagate_with_stm` passes `control_dim = 3`, so only the physical acceleration
+    /// enters the step-size decision and the STM's accuracy is inherited from it. That
+    /// makes the STM a far more sensitive probe of the dynamics than the state is: the
+    /// state can sit at 1e-16 while the STM is wrong by orders of magnitude.
+    ///
+    /// Two references, because one is not enough to say which side is wrong:
+    ///   * `analytic_2_body_stm` - central differences on the closed-form Kepler solution
+    ///   * central differences on the nonlinear propagation of this same force
+    ///
+    /// Both are finite-difference at a fixed `eps = 1e-8`, so roughly `1e-9` relative is
+    /// the floor and the bound is set there.
+    ///
+    /// This is deliberately run at several `a`. A Jacobian wrong by a power of `r` - the
+    /// easiest algebra slip to make in `da_dr`, whose denominator is `r^5` - is exact at
+    /// `a = 1 AU`, where every power of `r` is 1, and wrong everywhere else. Testing at one
+    /// radius cannot catch a radius-dependent error.
+    #[test]
+    fn stm_matches_independent_references_across_distance() {
+        use crate::kepler::analytic_2_body_stm;
+
+        for (semi_major, arc) in [(1.0, 365.0), (2.5, 289.0), (2.5, 1444.0), (5.0, 4084.0)] {
+            let pos0 = Vector3::new(-semi_major, 0.0, 0.0);
+            let vel0 = Vector3::new(0.0, -(GMS / semi_major).sqrt(), 0.0);
+            let forces = TwoBody { gm: GMS };
+
+            let (_pf, _vf, variational) =
+                propagate_with_stm(&forces, pos0, vel0, &[], 0.0.into(), arc.into()).unwrap();
+            let (_rp, _rv, kepler_fd) =
+                analytic_2_body_stm(arc.into(), &pos0, &vel0, None).unwrap();
+
+            let mut nonlin_fd = DMatrix::<f64>::zeros(6, 6);
+            let eps = 1e-8;
+            for j in 0..6 {
+                let (mut pp, mut vp, mut pm, mut vm) = (pos0, vel0, pos0, vel0);
+                if j < 3 {
+                    pp[j] += eps;
+                    pm[j] -= eps;
+                } else {
+                    vp[j - 3] += eps;
+                    vm[j - 3] -= eps;
+                }
+                let (fp, fvp) =
+                    propagate_state(&forces, pp, vp, &[], 0.0.into(), arc.into()).unwrap();
+                let (fm, fvm) =
+                    propagate_state(&forces, pm, vm, &[], 0.0.into(), arc.into()).unwrap();
+                for i in 0..3 {
+                    nonlin_fd[(i, j)] = (fp[i] - fm[i]) / (2.0 * eps);
+                    nonlin_fd[(3 + i, j)] = (fvp[i] - fvm[i]) / (2.0 * eps);
+                }
+            }
+
+            let scale = nonlin_fd.norm();
+            let vs_kepler = (&variational - &kepler_fd).norm() / scale;
+            let vs_nonlin = (&variational - &nonlin_fd).norm() / scale;
+            println!(
+                "a={semi_major:5.2} arc={arc:6.0}d   vs kepler {vs_kepler:9.2e}   \
+                 vs nonlinear {vs_nonlin:9.2e}"
+            );
+            assert!(
+                vs_kepler < 1e-6,
+                "a={semi_major} arc={arc}: STM disagrees with the closed-form \
+                 two-body STM by {vs_kepler:e}",
+            );
+            assert!(
+                vs_nonlin < 1e-6,
+                "a={semi_major} arc={arc}: STM disagrees with finite differences of \
+                 the nonlinear propagation by {vs_nonlin:e}",
+            );
         }
     }
 
@@ -563,6 +758,355 @@ mod tests {
             let r3 = p.norm().powi(3);
             Ok(Vector::<Equatorial>::new((-p * (gm / r3)).into()))
         }
+    }
+
+    /// End to end certification of `propagate_elements_with_sensitivity`: every column
+    /// against a central difference taken *through the full nonlinear propagation*.
+    ///
+    /// This is the design matrix an orbit fit over elements needs, and
+    /// it is the first test in which the closed-form element Jacobian meets a variational
+    /// state transition matrix. Perturbing one element, converting to a state and
+    /// repropagating exercises the whole chain, so a wrong column ordering, a transposed
+    /// multiply or a mismatched frame all show up here rather than as a plausible wrong
+    /// answer downstream.
+    #[test]
+    fn element_sensitivity_matches_finite_difference_through_propagation() {
+        // The binding error is the variational state transition matrix's own accuracy,
+        // not the element Jacobian's. See the note beside the assertion below.
+        const TOL: f64 = 1e-5;
+
+        let gm = GMS;
+        let force = TwoBodyParametric;
+        let epoch = Time::<TDB>::new(0.0);
+        let epoch_final = Time::<TDB>::new(100.0);
+
+        // Mildly eccentric and inclined, so no column is accidentally degenerate.
+        let speed = gm.sqrt();
+        let pos = Vector3::new(1.0, 0.0, 0.0);
+        let vel = Vector3::new(0.05 * speed, 0.88 * speed, 0.24 * speed);
+        let state = State::<Equatorial>::new(Desig::Empty, epoch, pos, vel, 10);
+        let elem = EquinoctialElements::from_state(&state.into_frame()).unwrap();
+
+        let (_, _, sens) = propagate_elements_with_sensitivity(
+            &force,
+            &elem,
+            &State::<Equatorial, SunCenter>::new(
+                Desig::Empty,
+                epoch,
+                [0.0; 3],
+                [0.0; 3],
+                SunCenter,
+            ),
+            &[gm],
+            epoch_final,
+        )
+        .unwrap();
+        assert_eq!(sens.nrows(), 6);
+        assert_eq!(sens.ncols(), 7);
+
+        // Step scales follow the coordinates' units, as in the elements suite. The
+        // semi-latus rectum column is scaled by its own size; the shape and phase columns
+        // carry the orbit equation `p / r` in their denominators.
+        let orbit_eq = elem.semi_latus / elem.epoch_distance();
+        let steps = [
+            1e-5 * elem.semi_latus,
+            1e-5 * orbit_eq,
+            1e-5 * orbit_eq,
+            1e-5,
+            1e-5,
+            1e-5 * orbit_eq,
+        ];
+
+        let mut worst = 0.0_f64;
+        let mut worst_col = 0;
+        for (col, step) in steps.iter().copied().enumerate() {
+            let mut delta = Vector6::zeros();
+            delta[col] = step;
+            // The sensitivity's rows are in the force model's frame, so the differenced
+            // states must be too.
+            let plus: State<Equatorial> = elem
+                .displaced_by(&delta)
+                .try_to_state()
+                .unwrap()
+                .into_frame();
+            delta[col] = -step;
+            let minus: State<Equatorial> = elem
+                .displaced_by(&delta)
+                .try_to_state()
+                .unwrap()
+                .into_frame();
+
+            let (p_pos, p_vel, _) = propagate_with_stm(
+                &force,
+                plus.pos.into(),
+                plus.vel.into(),
+                &[gm],
+                epoch,
+                epoch_final,
+            )
+            .unwrap();
+            let (m_pos, m_vel, _) = propagate_with_stm(
+                &force,
+                minus.pos.into(),
+                minus.vel.into(),
+                &[gm],
+                epoch,
+                epoch_final,
+            )
+            .unwrap();
+
+            let mut fd = Vector6::zeros();
+            for row in 0..3 {
+                fd[row] = (p_pos[row] - m_pos[row]) / (2.0 * step);
+                fd[row + 3] = (p_vel[row] - m_vel[row]) / (2.0 * step);
+            }
+            let analytic = sens.column(col);
+            let rel = (fd - analytic).norm() / analytic.norm();
+            if rel > worst {
+                worst = rel;
+                worst_col = col;
+            }
+        }
+        // The same measurement on the cartesian sensitivity, on the same problem and the
+        // same arc. `propagate_elements_with_sensitivity` is `Phi . K` with `K` exact to
+        // rounding, so the two disagreements should be the same size: that is the claim
+        // that the change of coordinates costs nothing.
+        let recovered = elem.try_to_state().unwrap();
+        let (_, _, cart_sens) = propagate_with_stm(
+            &force,
+            recovered.pos.into(),
+            recovered.vel.into(),
+            &[gm],
+            epoch,
+            epoch_final,
+        )
+        .unwrap();
+        let base = [pos[0], pos[1], pos[2], vel[0], vel[1], vel[2]];
+        let mut worst_cart = 0.0_f64;
+        for col in 0..6 {
+            let step = 1e-6 * if col < 3 { pos.norm() } else { vel.norm() };
+            let mut shifted = base;
+            shifted[col] += step;
+            let (p_pos, p_vel, _) = propagate_with_stm(
+                &force,
+                Vector3::new(shifted[0], shifted[1], shifted[2]),
+                Vector3::new(shifted[3], shifted[4], shifted[5]),
+                &[gm],
+                epoch,
+                epoch_final,
+            )
+            .unwrap();
+            shifted = base;
+            shifted[col] -= step;
+            let (m_pos, m_vel, _) = propagate_with_stm(
+                &force,
+                Vector3::new(shifted[0], shifted[1], shifted[2]),
+                Vector3::new(shifted[3], shifted[4], shifted[5]),
+                &[gm],
+                epoch,
+                epoch_final,
+            )
+            .unwrap();
+            let mut fd = Vector6::zeros();
+            for row in 0..3 {
+                fd[row] = (p_pos[row] - m_pos[row]) / (2.0 * step);
+                fd[row + 3] = (p_vel[row] - m_vel[row]) / (2.0 * step);
+            }
+            let analytic = cart_sens.column(col);
+            worst_cart = worst_cart.max((fd - analytic).norm() / analytic.norm());
+        }
+
+        println!(
+            "vs FD through propagation: element {worst:e} (col {worst_col}), \
+             cartesian {worst_cart:e}"
+        );
+
+        // The binding error is the variational state transition matrix's own accuracy,
+        // not the element Jacobian's. `propagate_with_stm` integrates the STM rows with
+        // `control_dim = 3`, so the step is chosen for the physical acceleration and the
+        // STM entries get whatever accuracy follows; the pre-existing tests in this
+        // module bound that at `1e-6` against a Kepler reference and `1e-4` against a
+        // nonlinear difference. The element path is held to the same bar, and separately
+        // to the requirement that it be no worse than the cartesian path it is built on.
+        assert!(
+            worst < TOL,
+            "element sensitivity {worst:e} exceeded {TOL:e}"
+        );
+        assert!(
+            worst < 10.0 * worst_cart.max(1e-9),
+            "element sensitivity {worst:e} is worse than the cartesian STM it composes, \
+             {worst_cart:e}"
+        );
+    }
+
+    /// Diagnostic for the design matrix's differencing floor. Sweeps the step on the
+    /// worst column and prints the relative discrepancy alongside the two scalings that
+    /// would explain it: truncation falls as `step^2`, while noise from differencing two
+    /// independent adaptive propagations grows as `1 / step`.
+    ///
+    /// Run with `cargo test -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "diagnostic, prints a table"]
+    fn element_sensitivity_step_sweep() {
+        let gm = GMS;
+        let force = TwoBodyParametric;
+        let epoch = Time::<TDB>::new(0.0);
+        let epoch_final = Time::<TDB>::new(100.0);
+        let speed = gm.sqrt();
+        let pos = Vector3::new(1.0, 0.0, 0.0);
+        let vel = Vector3::new(0.05 * speed, 0.88 * speed, 0.24 * speed);
+        let state = State::<Equatorial>::new(Desig::Empty, epoch, pos, vel, 10);
+        let elem = EquinoctialElements::from_state(&state.into_frame()).unwrap();
+        let (_, _, sens) = propagate_elements_with_sensitivity(
+            &force,
+            &elem,
+            &State::<Equatorial, SunCenter>::new(
+                Desig::Empty,
+                epoch,
+                [0.0; 3],
+                [0.0; 3],
+                SunCenter,
+            ),
+            &[gm],
+            epoch_final,
+        )
+        .unwrap();
+
+        for col in [3_usize, 4] {
+            println!("column {col}");
+            println!(
+                "{:>10}  {:>12}  {:>12}  {:>12}",
+                "step", "rel err", "err / step^2", "err * step"
+            );
+            for exponent in 3..9 {
+                let step = 10.0_f64.powi(-exponent);
+                let mut delta = Vector6::zeros();
+                delta[col] = step;
+                let plus: State<Equatorial> = elem
+                    .displaced_by(&delta)
+                    .try_to_state()
+                    .unwrap()
+                    .into_frame();
+                delta[col] = -step;
+                let minus: State<Equatorial> = elem
+                    .displaced_by(&delta)
+                    .try_to_state()
+                    .unwrap()
+                    .into_frame();
+                let (p_pos, p_vel, _) = propagate_with_stm(
+                    &force,
+                    plus.pos.into(),
+                    plus.vel.into(),
+                    &[gm],
+                    epoch,
+                    epoch_final,
+                )
+                .unwrap();
+                let (m_pos, m_vel, _) = propagate_with_stm(
+                    &force,
+                    minus.pos.into(),
+                    minus.vel.into(),
+                    &[gm],
+                    epoch,
+                    epoch_final,
+                )
+                .unwrap();
+                let mut fd = Vector6::zeros();
+                for row in 0..3 {
+                    fd[row] = (p_pos[row] - m_pos[row]) / (2.0 * step);
+                    fd[row + 3] = (p_vel[row] - m_vel[row]) / (2.0 * step);
+                }
+                let analytic = sens.column(col);
+                let rel = (fd - analytic).norm() / analytic.norm();
+                println!(
+                    "{step:>10.1e}  {rel:>12.3e}  {:>12.3e}  {:>12.3e}",
+                    rel / step.powi(2),
+                    rel * step
+                );
+            }
+        }
+    }
+
+    /// The parameter columns must survive the change of state coordinates untouched: the
+    /// force model's free parameters are not elements.
+    #[test]
+    fn element_sensitivity_leaves_parameter_columns_alone() {
+        let gm = GMS;
+        let force = TwoBodyParametric;
+        let epoch = Time::<TDB>::new(0.0);
+        let epoch_final = Time::<TDB>::new(60.0);
+        let speed = gm.sqrt();
+        let pos = Vector3::new(1.0, 0.0, 0.0);
+        let vel = Vector3::new(0.05 * speed, 0.88 * speed, 0.24 * speed);
+
+        let state = State::<Equatorial>::new(Desig::Empty, epoch, pos, vel, 10);
+        let elem = EquinoctialElements::from_state(&state.into_frame()).unwrap();
+
+        let (elem_pos, elem_vel, elem_sens) = propagate_elements_with_sensitivity(
+            &force,
+            &elem,
+            &State::<Equatorial, SunCenter>::new(
+                Desig::Empty,
+                epoch,
+                [0.0; 3],
+                [0.0; 3],
+                SunCenter,
+            ),
+            &[gm],
+            epoch_final,
+        )
+        .unwrap();
+        let recovered: State<Equatorial> = elem.try_to_state().unwrap().into_frame();
+        let (cart_pos, cart_vel, cart_sens) = propagate_with_stm(
+            &force,
+            recovered.pos.into(),
+            recovered.vel.into(),
+            &[gm],
+            epoch,
+            epoch_final,
+        )
+        .unwrap();
+
+        assert!((elem_pos - cart_pos).norm() < 1e-15);
+        assert!((elem_vel - cart_vel).norm() < 1e-15);
+        let param_diff = (elem_sens.column(6) - cart_sens.column(6)).norm();
+        assert!(
+            param_diff == 0.0,
+            "parameter column changed by {param_diff:e}"
+        );
+    }
+
+    /// The center guard. A nonzero offset between centers that are the same body would
+    /// otherwise propagate a state displaced by that amount without complaint.
+    #[test]
+    fn element_sensitivity_rejects_offset_between_identical_centers() {
+        let gm = GMS;
+        let speed = gm.sqrt();
+        let epoch = Time::<TDB>::new(0.0);
+        let state = State::<Equatorial>::new(
+            Desig::Empty,
+            epoch,
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, speed, 0.0),
+            10,
+        );
+        let elem = EquinoctialElements::from_state(&state.into_frame()).unwrap();
+
+        // `TwoBodyParametric` has `Center = SunCenter`, NAIF 10, matching the elements.
+        let result = propagate_elements_with_sensitivity(
+            &TwoBodyParametric,
+            &elem,
+            &State::<Equatorial, SunCenter>::new(
+                Desig::Empty,
+                epoch,
+                [0.003, 0.0, 0.0],
+                [0.0; 3],
+                SunCenter,
+            ),
+            &[gm],
+            Time::<TDB>::new(10.0),
+        );
+        assert!(result.is_err());
     }
 
     /// Parameter sensitivity: propagate with a parametric force and

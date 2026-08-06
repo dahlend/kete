@@ -271,7 +271,7 @@ mod tests {
     #[test]
     fn test_spitzer_from_corners() {
         let observer = make_observer();
-        // Build a small square centred near [1,0,0]
+        // Build a small square centered near [1,0,0]
         let d = 0.0005_f64; // half-width ~0.03 deg, well within IRAC FOV
         let corners: [Vector<Equatorial>; 4] = [
             [1.0, -d, -d].into(),

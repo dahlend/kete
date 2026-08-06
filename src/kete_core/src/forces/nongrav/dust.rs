@@ -105,9 +105,9 @@ impl ParameterizedForce for DustNonGrav {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::semi_major_axis;
     use crate::constants::C_AU_PER_DAY;
     use crate::integrators::RadauIntegrator;
+    use crate::kepler::compute_semi_major;
     use crate::time::Time;
     use nalgebra::DVector;
     use std::f64::consts::TAU;
@@ -183,7 +183,7 @@ mod tests {
             let p = Vector3::new(pos[0], pos[1], pos[2]);
             let v = Vector3::new(vel[0], vel[1], vel[2]);
             // Osculating semi-major axis under the reduced gravity.
-            let a = semi_major_axis(&p, &v, mu_eff);
+            let a = compute_semi_major(&p, &v, mu_eff);
             times.push(f64::from(k) * period);
             a_sq.push(a * a);
             if k == n_orbits {

@@ -13,7 +13,7 @@ use std::f64::consts::TAU;
 use nalgebra::{DVector, Vector3};
 
 use super::{EMB_QUAD_J2R2, LostReason, SUN_RADIUS_AU, WisdomHolman};
-use crate::analysis::{hill_radius, semi_major_axis};
+use crate::analysis::hill_radius;
 use crate::constants::{F0_OVER_C_AU_DAY2, GMS, SUN_J2};
 use crate::desigs::Desig;
 use crate::forces::{
@@ -23,6 +23,7 @@ use crate::forces::{
 use crate::frames::{Ecliptic, Equatorial, SSB, Vector};
 use crate::integrators::RadauIntegrator;
 use crate::kepler::analytic_2_body;
+use crate::kepler::compute_semi_major;
 use crate::state::State;
 use crate::time::{TDB, Time};
 
@@ -990,7 +991,7 @@ fn measure_drift(sim: &mut WisdomHolman<Ecliptic>, n_samples: usize, steps_per_s
         let particle = &sim.test_particle_states()[0];
         let (pos, vel) = heliocentric(particle, &massive[0]);
         times.push(sim.epoch().jd - J2000);
-        axes.push(semi_major_axis(&pos, &vel, GMS));
+        axes.push(compute_semi_major(&pos, &vel, GMS));
         sim.integrate_n_steps(steps_per_sample).unwrap();
     }
     linear_slope(&times, &axes)
@@ -1502,7 +1503,7 @@ fn dust_pr_inspiral_rate() {
         let g = &sim.test_particle_states()[0];
         let (pos, vel) = heliocentric(g, sun_state);
         times.push(sim.epoch().jd - J2000);
-        a_sq.push(semi_major_axis(&pos, &vel, mu_eff).powi(2));
+        a_sq.push(compute_semi_major(&pos, &vel, mu_eff).powi(2));
         sim.integrate_n_steps(u64::from(steps_per_orbit)).unwrap();
     }
     let slope = linear_slope(&times, &a_sq);
@@ -1922,7 +1923,7 @@ fn outer_ss_1myr(use_correctors: bool, amp_budget: f64, drift_factor: f64) {
     let mut a_start = Vec::new();
     for state in &start_states[1..] {
         let (pos, vel) = heliocentric(state, &start_states[0]);
-        a_start.push(semi_major_axis(&pos, &vel, GMS));
+        a_start.push(compute_semi_major(&pos, &vel, GMS));
     }
     let ang_mom0 = sim.angular_momentum();
 
@@ -1941,7 +1942,7 @@ fn outer_ss_1myr(use_correctors: bool, amp_budget: f64, drift_factor: f64) {
         let states = sim.massive_states();
         for (idx, state) in states[1..].iter().enumerate() {
             let (pos, vel) = heliocentric(state, &states[0]);
-            let a = semi_major_axis(&pos, &vel, GMS);
+            let a = compute_semi_major(&pos, &vel, GMS);
             a_lo[idx] = a_lo[idx].min(a);
             a_hi[idx] = a_hi[idx].max(a);
         }

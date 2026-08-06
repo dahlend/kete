@@ -169,6 +169,21 @@ impl std::fmt::Debug for OrbitFit {
     }
 }
 
+///
+/// An element-native uncertain state reports its state about its **element** center, which
+/// for a minor planet is the Sun. Most of the fitting machinery works barycentrically, so
+/// this is the conversion between them. The two differ by up to about 0.01 AU - the Sun's
+/// excursion about the barycenter - which is large enough to fail an orbit comparison
+/// outright rather than degrade one.
+///
+/// # Errors
+/// Fails if the elements are outside their domain or the SPK lookup fails.
+pub(crate) fn ssb_state(uncertain: &UncertainState) -> KeteResult<State<Equatorial, SSB>> {
+    let mut state = uncertain.state()?;
+    LOADED_SPK.try_read()?.try_change_center(&mut state, 0)?;
+    State::<Equatorial, SSB>::try_from(state)
+}
+
 /// Fit an orbit to observations using iterative least squares.
 ///
 /// Refines an initial orbital state guess to best match the observations,
@@ -215,6 +230,7 @@ impl std::fmt::Debug for OrbitFit {
 ///
 /// # Errors
 /// Fails if any internal propagation or solve fails.
+/// The best-fit state of an [`UncertainState`], referred to the solar system barycenter.
 pub fn fit_orbit(
     initial_state: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
@@ -308,8 +324,7 @@ pub fn fit_orbit(
             tol,
             chi2_threshold,
             max_reject_passes,
-        ) && let Ok(candidate) =
-            State::<Equatorial, SSB>::try_from(result.uncertain_state.state.clone())
+        ) && let Ok(candidate) = ssb_state(&result.uncertain_state)
         {
             // Re-score the candidate on the FULL window (ignoring any
             // outlier rejections inside solve_with_rejection) for an
@@ -459,7 +474,7 @@ fn fit_orbit_raw(
         );
     };
 
-    let grav_state = State::<Equatorial, SSB>::try_from(grav_fit.uncertain_state.state.clone())?;
+    let grav_state = ssb_state(&grav_fit.uncertain_state)?;
 
     iterate_to_convergence(
         &grav_state,
@@ -532,7 +547,7 @@ fn solve_with_rejection(
         // so that currently rejected observations also receive z-scores
         // and can be recovered.  stm_sweep emits one StmObs per included
         // observation in time-sorted order.
-        let sweep_state: State<Equatorial, SSB> = fit.uncertain_state.state.clone().try_into()?;
+        let sweep_state = ssb_state(&fit.uncertain_state)?;
         let sweep_ng_values = fit.uncertain_state.free_params.clone();
         let sweep = stm_sweep(
             &sweep_state,
@@ -635,7 +650,7 @@ fn solve_with_rejection(
 
         current_included = new_included;
 
-        let iter_state: State<Equatorial, SSB> = fit.uncertain_state.state.clone().try_into()?;
+        let iter_state = ssb_state(&fit.uncertain_state)?;
         fit = iterate_to_convergence(
             &iter_state,
             sorted_obs,
@@ -957,8 +972,16 @@ fn iterate_to_convergence(
                     // `fit_orbit` boundary; see `rescale_covariance_danby`.
                     let covariance = raw_cov;
                     let free_params = ng_values.clone();
+                    // The fit solves in cartesian parameters about the barycenter; the
+                    // state is re-centered on the Sun and the covariance crosses into the
+                    // element coordinates at this boundary. The covariance needs no
+                    // adjustment
+                    // for the re-centering: that offset is a function of time, not of the
+                    // state, so it drops out of the Jacobian.
+                    let mut helio = State::<Equatorial>::from(state_epoch);
+                    LOADED_SPK.try_read()?.try_change_center(&mut helio, 10)?;
                     let uncertain_state =
-                        UncertainState::new(state_epoch.into(), covariance, free_params)?;
+                        UncertainState::from_state(&helio, &covariance, free_params)?;
                     let non_grav = mask.map(|m| m.freeze_inner(&ng_values)).transpose()?;
                     return Ok(OrbitFit {
                         uncertain_state,
@@ -1045,8 +1068,14 @@ fn make_non_converged_result(
 
     // Dimensions are correct by construction -- `new` cannot fail.
     let free_params = ng_values.to_vec();
-    let uncertain_state = UncertainState::new(state.clone().into(), covariance, free_params)
-        .expect("dimension mismatch");
+    let mut helio = State::<Equatorial>::from(state.clone());
+    LOADED_SPK
+        .try_read()
+        .expect("SPK lock")
+        .try_change_center(&mut helio, 10)
+        .expect("the fitted state can be referred to the Sun");
+    let uncertain_state = UncertainState::from_state(&helio, &covariance, free_params)
+        .expect("the fitted state is a valid orbit with matching covariance dimensions");
 
     #[allow(clippy::missing_panics_doc, reason = "wont panic by construction")]
     let non_grav = mask
@@ -1501,7 +1530,7 @@ fn accumulate_from_sweep(
 /// Solve `(N + lambda * diag(N)) * dx = b` via SVD with column scaling.
 ///
 /// When `lambda > 0` the diagonal of N is augmented, pulling the solution
-/// toward a steepest-descent step and stabilising poorly-constrained
+/// toward a steepest-descent step and stabilizing poorly-constrained
 /// directions.
 ///
 /// Column scaling is essential when the parameters span very different
@@ -1899,8 +1928,8 @@ mod tests {
         let fit = fit_orbit(&perturbed, &observations, false, None, 20, 1e-8, 9.0, 0).unwrap();
 
         // Check that the fit converged near the true state.
-        let pos_err = (fit.uncertain_state.state.pos - true_state.pos).norm();
-        let vel_err = (fit.uncertain_state.state.vel - true_state.vel).norm();
+        let pos_err = (ssb_state(&fit.uncertain_state).unwrap().pos - true_state.pos).norm();
+        let vel_err = (ssb_state(&fit.uncertain_state).unwrap().vel - true_state.vel).norm();
 
         // Should recover position to < 1e-4 AU and velocity to < 1e-5 AU/day.
         assert!(pos_err < 1e-4, "Position error {pos_err:.6e} too large");
@@ -1942,7 +1971,7 @@ mod tests {
 
         let fit = fit_orbit(&perturbed, &observations, false, None, 20, 1e-8, 9.0, 0).unwrap();
 
-        let pos_err = (fit.uncertain_state.state.pos - true_state.pos).norm();
+        let pos_err = (ssb_state(&fit.uncertain_state).unwrap().pos - true_state.pos).norm();
 
         assert!(
             pos_err < 1e-3,
@@ -2133,7 +2162,7 @@ mod tests {
 
         let fit = fit_orbit(&perturbed, &observations, false, None, 50, 1e-8, 9.0, 3).unwrap();
 
-        let pos_err = (fit.uncertain_state.state.pos - true_state.pos).norm();
+        let pos_err = (ssb_state(&fit.uncertain_state).unwrap().pos - true_state.pos).norm();
         assert!(
             pos_err < 1e-3,
             "Gradual long-arc: pos error {pos_err:.6e} too large"
@@ -2180,7 +2209,7 @@ mod tests {
         );
 
         // Orbit should still be good.
-        let pos_err = (fit.uncertain_state.state.pos - true_state.pos).norm();
+        let pos_err = (ssb_state(&fit.uncertain_state).unwrap().pos - true_state.pos).norm();
         assert!(
             pos_err < 1e-3,
             "Rejection re-inclusion: pos error {pos_err:.6e} too large"
@@ -2441,15 +2470,22 @@ mod tests {
         let fit = fit_orbit(&true_state, &observations, false, None, 20, 1e-10, 9.0, 0).unwrap();
 
         // Evaluate normal equations at the converged state.
-        let fit_state: State<Equatorial, SSB> =
-            fit.uncertain_state.state.clone().try_into().unwrap();
+        let fit_state = ssb_state(&fit.uncertain_state).unwrap();
         let (_n_mat, _b_vec, loss) =
             accumulate_normal_equations(&fit_state, &observations, &included, false, None, &[])
                 .unwrap();
 
-        // Compute chi^2 from the fit's residuals directly.
+        // Residuals recomputed at the *same* state the loss was evaluated at. The stored
+        // `fit.residuals` belong to the fitter's internal cartesian state, and the state
+        // reported now round trips through the element coordinates, so the two are no
+        // longer bit
+        // identical. At a converged fit the loss sits at the 1e-11 noise floor, where even
+        // a rounding-level difference in the state moves it by tens of percent - so
+        // comparing quantities from two different states measures the round trip rather
+        // than the identity this test is about.
+        let residuals = compute_residuals(&fit_state, &observations, false, None, &[]).unwrap();
         let mut chi2 = 0.0_f64;
-        for (i, res) in fit.residuals.iter().enumerate() {
+        for (i, res) in residuals.iter().enumerate() {
             if !fit.included[i] {
                 continue;
             }
@@ -2590,17 +2626,23 @@ mod tests {
         );
 
         // Reconstruct the raw Fisher inverse at the fit state.
-        let fit_state: State<Equatorial, SSB> =
-            fit.uncertain_state.state.clone().try_into().unwrap();
+        let fit_state = ssb_state(&fit.uncertain_state).unwrap();
         let (info_mat, _, _) =
             accumulate_normal_equations(&fit_state, &observations, &fit.included, false, None, &[])
                 .unwrap();
         let raw_cov = scaled_pseudo_inverse(&info_mat).unwrap();
 
-        // Reported covariance must equal raw * rms^2 on every diagonal.
+        // Reported covariance must equal raw * rms^2 on every diagonal. The stored
+        // covariance is in element coordinates now, so it is converted back to
+        // cartesian to
+        // be compared against a cartesian Fisher inverse.
+        let reported_cov = fit
+            .uncertain_state
+            .cartesian_covariance::<Equatorial>()
+            .unwrap();
         let sigma_sq = fit.rms * fit.rms;
         for i in 0..6 {
-            let reported = fit.uncertain_state.cov_matrix[(i, i)];
+            let reported = reported_cov[(i, i)];
             let expected = raw_cov[(i, i)] * sigma_sq;
             let rel_err = (reported - expected).abs() / expected.abs().max(1e-30);
             assert!(
@@ -2665,8 +2707,9 @@ mod tests {
         let fit_corr = fit_orbit(&true_state, &obs_corr, false, None, 20, 1e-10, 9.0, 0).unwrap();
 
         // The states should agree (injected residuals are zero in both).
-        let pos_diff =
-            (fit_uncorr.uncertain_state.state.pos - fit_corr.uncertain_state.state.pos).norm();
+        let pos_diff = (ssb_state(&fit_uncorr.uncertain_state).unwrap().pos
+            - ssb_state(&fit_corr.uncertain_state).unwrap().pos)
+            .norm();
         assert!(
             pos_diff < 1e-8,
             "State should barely change with correlation, got pos_diff = {pos_diff:.3e}"

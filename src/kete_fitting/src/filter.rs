@@ -639,12 +639,15 @@ fn build_result(
     result_state.epoch = sorted[0].epoch();
 
     let free_params = ng_values.clone();
-    let uncertain = UncertainState {
-        state: result_state.into(),
-        cov_matrix: final_p.clone(),
-        free_params,
-        max_unresolved_divergence: 0.0,
-    };
+    // The filter solves in cartesian parameters and converts its covariance into element
+    // coordinates at the boundary.
+    // Elements are defined about a gravitating body, and the fit works barycentrically, so
+    // the state is re-centered on the Sun before the covariance crosses into element coordinates. The
+    // covariance itself needs no adjustment: the offset between centers is a function of
+    // time, not of the state, so it drops out of the Jacobian.
+    let mut helio = State::<Equatorial>::from(result_state);
+    LOADED_SPK.try_read()?.try_change_center(&mut helio, 10)?;
+    let uncertain = UncertainState::from_state(&helio, final_p, free_params)?;
 
     // -- Compute final residuals from smoothed states --------------
     let mut residuals: Vec<DVector<f64>> = Vec::with_capacity(n_obs);
@@ -843,8 +846,16 @@ mod tests {
         let n_accepted = fit.included.iter().filter(|&&v| v).count();
 
         // Should recover the orbit well.
-        let pos_err = (fit.uncertain_state.state.pos - true_state.pos).norm();
-        let vel_err = (fit.uncertain_state.state.vel - true_state.vel).norm();
+        let pos_err = (crate::orbit_fitting::ssb_state(&fit.uncertain_state)
+            .unwrap()
+            .pos
+            - true_state.pos)
+            .norm();
+        let vel_err = (crate::orbit_fitting::ssb_state(&fit.uncertain_state)
+            .unwrap()
+            .vel
+            - true_state.vel)
+            .norm();
 
         assert!(pos_err < 1e-3, "Position error {pos_err:.6e} too large");
         assert!(vel_err < 1e-4, "Velocity error {vel_err:.6e} too large");
@@ -892,7 +903,11 @@ mod tests {
         )
         .unwrap();
 
-        let pos_err = (fit.uncertain_state.state.pos - true_state.pos).norm();
+        let pos_err = (crate::orbit_fitting::ssb_state(&fit.uncertain_state)
+            .unwrap()
+            .pos
+            - true_state.pos)
+            .norm();
 
         assert!(
             pos_err < 1e-2,

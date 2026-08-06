@@ -15,11 +15,11 @@ use crate::{frame::PyFrames, vector::VectorLike};
 /// Parameters
 /// ----------
 /// fluxes :
-///     Total fluxes per band in units of Jy / Steradian.
+///     Total fluxes per band in units of Jy.
 /// thermal_fluxes :
-///     Black body specific fluxes per band in units of Jy / Steradian.
+///     Black body specific fluxes per band in units of Jy.
 /// hg_fluxes :
-///     Reflected light specific fluxes per band in units of Jy / Steradian.
+///     Reflected light specific fluxes per band in units of Jy.
 /// v_band_magnitude :
 ///     Expected magnitude in the V-band using the HG model.
 /// v_band_flux :
@@ -61,7 +61,7 @@ impl PyModelResults {
         .into()
     }
 
-    /// Total fluxes per band in units of Jy / Steradian.
+    /// Total fluxes per band in units of Jy.
     #[getter]
     pub fn fluxes(&self) -> Vec<f64> {
         self.0.fluxes.clone()
@@ -73,13 +73,13 @@ impl PyModelResults {
         self.0.magnitudes.clone()
     }
 
-    /// Black body specific fluxes per band in units of Jy / Steradian.
+    /// Black body specific fluxes per band in units of Jy.
     #[getter]
     pub fn thermal_fluxes(&self) -> Vec<f64> {
         self.0.thermal_fluxes.clone()
     }
 
-    /// Reflected light specific fluxes per band in units of Jy / Steradian.
+    /// Reflected light specific fluxes per band in units of Jy.
     #[getter]
     pub fn hg_fluxes(&self) -> Vec<f64> {
         self.0.hg_fluxes.clone()
@@ -513,7 +513,7 @@ pub fn roughness_mean_slope_to_rms_py(mean_slope: f64) -> PyResult<f64> {
 /// Build a band list from either explicit wavelengths or a preset group name.
 ///
 /// ``bands`` accepts ``"wise"``, ``"neos"``, ``"irac"``, ``"mips"``, ``"irs_pu"``,
-/// or a single band name recognised by [`BandInfo::from_name`].
+/// or a single band name recognized by [`BandInfo::from_name`].
 /// ``band_wavelengths`` accepts a list of wavelengths in nm (with optional
 /// ``zero_mags``); ``solar_correction`` and color correction are not set.
 fn resolve_bands(

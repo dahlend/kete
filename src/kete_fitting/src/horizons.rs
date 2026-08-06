@@ -610,7 +610,7 @@ fn build_uncertain_state(
         let free_params = non_grav
             .as_ref()
             .map_or_else(Vec::new, |m| m.values.clone());
-        UncertainState::new(state, mat, free_params)
+        UncertainState::from_state(&state, &mat, free_params)
     }
 }
 

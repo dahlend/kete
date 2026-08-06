@@ -202,7 +202,7 @@ impl BandInfo {
 
     /// Convenience: resolve a band name to calibration data.
     ///
-    /// Returns `None` for unrecognised names. Equivalent to
+    /// Returns `None` for unrecognized names. Equivalent to
     /// `Band::from_name(s).calibration()`.
     #[must_use]
     pub fn from_name(s: &str) -> Option<Self> {
@@ -350,9 +350,9 @@ impl Band {
     ///
     /// Matching is **case-sensitive** and trims whitespace.
     /// Case distinguishes photometric systems: `"r"` = SDSS r, `"R"` = Cousins R.
-    /// Unrecognised names produce `Band::Unknown(...)`.
+    /// Unrecognized names produce `Band::Unknown(...)`.
     ///
-    /// Recognised names -- Johnson-Cousins: `V`, `U`, `B`, `R`, `I`;
+    /// Recognized names -- Johnson-Cousins: `V`, `U`, `B`, `R`, `I`;
     /// 2MASS: `J`, `H`, `Ks` (also `K`); Y band: `Y`;
     /// SDSS: `g`, `r`, `i`, `z`;
     /// Pan-STARRS: `w`, `y`; ATLAS: `o`, `c`;

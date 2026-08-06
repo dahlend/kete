@@ -193,6 +193,75 @@ mod tests {
         f.accel(epoch(), &pos(), &vel(), params).unwrap().into()
     }
 
+    /// The velocity derivative must be real, and must be the right one.
+    ///
+    /// This force builds its radial-transverse-normal basis from the velocity, so
+    /// `d(accel)/d(vel)` is nonzero, and a zero block there would reach every variational
+    /// propagation and every fitted covariance built with this force.
+    ///
+    /// The reference is closed form, derived rather than differenced. With no `dt` lag
+    /// neither `g(r)` nor the radial direction depends on velocity, and a velocity
+    /// perturbation only tilts the transverse and normal directions about the radial axis:
+    ///
+    /// ```text
+    /// w         = vel - r_hat (vel . r_hat)        transverse velocity
+    /// d t_hat   = n_hat n_hat^T / |w|
+    /// d n_hat   = -t_hat n_hat^T / |w|
+    /// d accel   = g (a2 n_hat - a3 t_hat) n_hat^T / |w|
+    /// ```
+    ///
+    /// Rank one, and orthogonal to the radial direction - a velocity change along `r_hat`
+    /// leaves the basis alone, which the test checks separately.
+    #[test]
+    fn velocity_jacobian_matches_closed_form() {
+        let force = JplCometNonGrav::standard_comet();
+        assert_eq!(force.dt, 0.0, "the closed form below assumes no lag");
+        let params = [1e-8, -3e-9, 5e-10];
+        let (_, da_dv) = force.jacobians(epoch(), &pos(), &vel(), &params).unwrap();
+
+        let pos_v: Vector3<f64> = pos().into();
+        let vel_v: Vector3<f64> = vel().into();
+        let (r_hat, t_hat, n_hat) = rtn_dirs(&pos_v, &vel_v);
+        let transverse = (vel_v - r_hat * vel_v.dot(&r_hat)).norm();
+        let scale = force.g_of_r(pos_v.norm());
+        let expected =
+            (n_hat * params[1] - t_hat * params[2]) * n_hat.transpose() * (scale / transverse);
+
+        // The library differences forward at `sqrt(eps)` scaled steps, so the comparison
+        // is held to that rather than to rounding.
+        let relative = (da_dv - expected).norm() / expected.norm();
+        println!("d(accel)/d(vel) vs closed form: {relative:e}");
+        assert!(
+            relative < 1e-6,
+            "velocity jacobian {relative:e} does not match the closed form"
+        );
+
+        // The block must be non-zero at all, which is the failure a wrong default gives.
+        assert!(
+            da_dv.norm() > 0.0,
+            "velocity jacobian is zero; this force depends on the velocity"
+        );
+
+        // A velocity change along the radial direction does not move the basis.
+        let radial_response = da_dv * r_hat;
+        assert!(
+            radial_response.norm() < 1e-6 * da_dv.norm(),
+            "radial velocity perturbation should not tilt the basis"
+        );
+    }
+
+    /// The lag branch also has a velocity derivative, through the two-body
+    /// back-propagation inside `g(r)`, and differencing picks it up without needing that
+    /// propagation differentiated.
+    #[test]
+    fn velocity_jacobian_is_nonzero_with_lag() {
+        let mut force = JplCometNonGrav::standard_comet();
+        force.dt = 30.0;
+        let params = [1e-8, -3e-9, 5e-10];
+        let (_, da_dv) = force.jacobians(epoch(), &pos(), &vel(), &params).unwrap();
+        assert!(da_dv.norm() > 0.0, "velocity jacobian is zero with a lag");
+    }
+
     #[test]
     fn analytic_jacobian_matches_finite_difference() {
         // With and without the dt back-propagation branch.

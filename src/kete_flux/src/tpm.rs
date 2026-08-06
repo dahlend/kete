@@ -1672,7 +1672,7 @@ pub fn tpm_total_flux_cached(
 /// Compute the TPM thermal flux for each band with surface roughness (beaming).
 ///
 /// `roughness_angle` is the crater opening half-angle in radians (a proxy for RMS
-/// slope), in `(0, pi/2]`. This solves a [`Crater`] per latitude band on the fly --
+/// slope), in `(0, pi/2]`. This solves a crater model per latitude band on the fly --
 /// it is correct but far slower than the smooth path (no cache), and has no cached or
 /// fitting variant yet.
 ///
@@ -2762,7 +2762,7 @@ mod tests {
     fn test_roughness_correction_interpolation() {
         // mechanics only (no renders): a 2x2x2x2 single-band table over
         // (theta, gamma, phase, t_ss); check that grid nodes return the stored value
-        // and the cube centre multilinearly interpolates to the mean of the corners.
+        // and the cube center multilinearly interpolates to the mean of the corners.
         let thetas = [1.0, 10.0];
         let gammas = [0.2, 0.8];
         let phases = [0.0, FRAC_PI_2];
@@ -2784,7 +2784,7 @@ mod tests {
         // clamping below/above every axis
         assert!((rc.factor(0.01, 0.2, 0.0, 50.0, 0) - factors[0]).abs() < 1e-12);
         assert!((rc.factor(1e6, 0.8, FRAC_PI_2, 1e4, 0) - factors[15]).abs() < 1e-12);
-        // centre of the 4-cube = mean of the 16 corners
+        // center of the 4-cube = mean of the 16 corners
         let mid = rc.factor((1.0_f64 * 10.0).sqrt(), 0.5, FRAC_PI_4, 300.0, 0);
         let mean = factors.iter().sum::<f64>() / 16.0;
         assert!((mid - mean).abs() < 1e-9, "mid {mid} vs mean {mean}");

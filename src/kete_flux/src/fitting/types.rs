@@ -840,7 +840,7 @@ impl Model {
             if self.fits_roughness() {
                 lp += priors.roughness.log_prob(params.roughness);
             }
-            // Fitted shape/phase extras are signalled by a finite value (NaN otherwise).
+            // Fitted shape/phase extras are signaled by a finite value (NaN otherwise).
             if params.c_a.is_finite() {
                 lp += priors.c_a.log_prob(params.c_a);
             }

@@ -1,6 +1,6 @@
 //! SPK Segment Type 21 - Extended Modified Difference Arrays.
 //!
-//! Type 21 is the variable-coefficient generalisation of Type 1, supporting
+//! Type 21 is the variable-coefficient generalization of Type 1, supporting
 //! arbitrary numbers of coefficients per record.
 //!
 //! <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/spk.html#Type%2021:%20Extended%20Modified%20Difference%20Arrays>

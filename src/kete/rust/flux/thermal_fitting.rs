@@ -13,7 +13,7 @@ use kete_stats::prelude::Data;
 use nalgebra::UnitVector3;
 use pyo3::prelude::*;
 
-/// Resolve a band argument -- either a recognised name or a wavelength in nm.
+/// Resolve a band argument -- either a recognized name or a wavelength in nm.
 ///
 /// Accepted names: ``"W1"``-``"W4"``, ``"NEOS1"``, ``"NEOS2"``, ``"V"``,
 /// ``"IRAC1"``-``"IRAC4"``, ``"MIPS24"``, ``"MIPS70"``, ``"MIPS160"``,

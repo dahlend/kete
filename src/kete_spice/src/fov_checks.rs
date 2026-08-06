@@ -341,7 +341,7 @@ mod tests {
             );
         }
 
-        // Sun Fov check was previously failing due to it being co-located at itself
+        // The Sun is co-located with itself in a Sun-centered FOV check
         let sun_fov = OmniDirectional::new(observer.clone());
         let sun_check = &check_spks(&sun_fov, &[10])[0];
         assert!(sun_check.is_some());

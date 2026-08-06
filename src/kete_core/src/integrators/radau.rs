@@ -41,7 +41,7 @@ use nalgebra::{DefaultAllocator, Dim, OMatrix, OVector, RowSVector, SMatrix, U1,
 /// Integrator will return a result of this type.
 type RadauResult<MType, D> = KeteResult<(OVector<f64, D>, OVector<f64, D>, MType)>;
 
-const GAUSS_RADAU_SPACINGS: [f64; 8] = [
+pub(crate) const GAUSS_RADAU_SPACINGS: [f64; 8] = [
     0.0,
     0.05626256053692215,
     0.18024069173689236,
@@ -62,7 +62,7 @@ static W_VEC: std::sync::LazyLock<RowSVector<f64, 7>> = std::sync::LazyLock::new
 });
 
 // initialize U
-static U_VEC: std::sync::LazyLock<RowSVector<f64, 7>> = std::sync::LazyLock::new(|| {
+pub(crate) static U_VEC: std::sync::LazyLock<RowSVector<f64, 7>> = std::sync::LazyLock::new(|| {
     let mut u = RowSVector::<f64, 7>::zeros();
     for (idx, e) in u.iter_mut().enumerate() {
         *e = ((idx + 2) as f64).recip();
@@ -71,7 +71,7 @@ static U_VEC: std::sync::LazyLock<RowSVector<f64, 7>> = std::sync::LazyLock::new
 });
 
 // initialize C
-static C_MAT: std::sync::LazyLock<SMatrix<f64, 7, 7>> = std::sync::LazyLock::new(|| {
+pub(crate) static C_MAT: std::sync::LazyLock<SMatrix<f64, 7, 7>> = std::sync::LazyLock::new(|| {
     let mut c = SMatrix::<f64, 7, 7>::identity();
     for idx in 0..7 {
         if idx > 0 {
@@ -101,22 +101,23 @@ static W_POW_TABLE: std::sync::LazyLock<[RowSVector<f64, 7>; 7]> = std::sync::La
     table
 });
 
-static U_POW_TABLE: std::sync::LazyLock<[RowSVector<f64, 7>; 7]> = std::sync::LazyLock::new(|| {
-    let u = &*U_VEC;
-    let mut table = [RowSVector::<f64, 7>::zeros(); 7];
-    for (j, h) in GAUSS_RADAU_SPACINGS.iter().enumerate().skip(1) {
-        let mut hp = *h;
-        for k in 0..7 {
-            table[j - 1][k] = hp * u[k];
-            hp *= h;
+pub(crate) static U_POW_TABLE: std::sync::LazyLock<[RowSVector<f64, 7>; 7]> =
+    std::sync::LazyLock::new(|| {
+        let u = &*U_VEC;
+        let mut table = [RowSVector::<f64, 7>::zeros(); 7];
+        for (j, h) in GAUSS_RADAU_SPACINGS.iter().enumerate().skip(1) {
+            let mut hp = *h;
+            for k in 0..7 {
+                table[j - 1][k] = hp * u[k];
+                hp *= h;
+            }
         }
-    }
-    table
-});
+        table
+    });
 
-const MIN_RATIO: f64 = 0.25;
-const EPSILON: f64 = 1e-6;
-const MIN_STEP: f64 = 0.00005;
+pub(crate) const MIN_RATIO: f64 = 0.25;
+pub(crate) const EPSILON: f64 = 1e-6;
+pub(crate) const MIN_STEP: f64 = 0.00005;
 
 /// Gauss-Radau Spacing Numerical Integrator
 /// This solves a second-order initial value problem.
@@ -138,6 +139,19 @@ const MIN_STEP: f64 = 0.00005;
 ///
 /// Compensated (Kahan) summation is used for the state update to reduce
 /// roundoff accumulation from O(N) to approximately O(sqrt(N)).
+///
+/// # Error control
+///
+/// Convergence and step size are driven by `max(|b6_i| / scale_i)` over the first
+/// `control_dim` components, where `scale_i` is that component's own magnitude, taken as
+/// the larger of the two right-hand side evaluations bracketing the step. The criterion
+/// is therefore relative and dimensionless.
+///
+/// The scale is purely multiplicative, with no additive floor. An additive term would be
+/// absolute, in AU/day^2, and the solar monopole falls below any such floor at a finite
+/// heliocentric distance - `sqrt(GMS / 1e-6) = 17.2 AU` for a floor of `1e-6` - past which
+/// the control would stop being relative and the step would grow unchecked. See
+/// `accuracy_is_independent_of_heliocentric_distance`.
 #[allow(missing_debug_implementations, reason = "No debug impl needed")]
 pub struct RadauIntegrator<'a, MType, D: Dim>
 where
@@ -428,23 +442,51 @@ where
                 });
             }
 
-            // Update B from G via the C matrix, then check relative
-            // convergence: B has converged when max(|delta_b| / |a|) < 1e-14.
+            // Update B from G via the C matrix.
             self.g_scratch.mul_to(&C_MAT, &mut self.cur_b);
-            let b_diff = (self.cur_b.column(6) - &self.b_scratch).abs();
-            let func_eval_max = self.eval_scratch.abs().add_scalar(1e-6);
 
             // Convergence and step-size control use only the first
             // `control_dim` components.  For variational propagation this
             // restricts the norms to the physical accelerations, preventing
             // large STM elements from artificially shrinking the step.
             let cd = self.control_dim;
-            let b_diff_ctrl = b_diff.rows(0, cd);
-            let func_ctrl = func_eval_max.rows(0, cd);
+
+            // Per-component scale, taken from the two right-hand side evaluations that
+            // bracket this step: `cur_state_der_der` at its start and `eval_scratch` at
+            // the last Gauss-Radau node.  Dividing by the component's own magnitude
+            // keeps the criterion relative and dimensionless whatever the units.
+            //
+            // The scale carries no additive floor.  Such a floor is absolute, in
+            // AU/day^2, and is negligible for a heliocentric object inside a few AU but
+            // exceeds the solar monopole itself beyond `sqrt(GMS/f)` - 17.2 AU for
+            // `f = 1e-6` - at which point the control stops being relative and the step
+            // grows without bound.  See
+            // `accuracy_is_independent_of_heliocentric_distance`.
+            //
+            // A component whose right-hand side vanishes at both ends contributes
+            // nothing: its divided differences, and so its `b`, are exactly zero, and
+            // `0 / MIN_POSITIVE` is zero rather than a NaN.
+            //
+            // Both ratios are accumulated in one pass, before the state update, since
+            // the update overwrites `cur_state_der_der`.  Everything here is scalar so
+            // no per-sweep temporaries are allocated.
+            let mut sweep_ratio = 0.0_f64;
+            let mut error_ratio = 0.0_f64;
+            {
+                let b6 = self.cur_b.column(6);
+                for idx in 0..cd {
+                    let scale = self.eval_scratch[idx]
+                        .abs()
+                        .max(self.cur_state_der_der[idx].abs())
+                        .max(f64::MIN_POSITIVE);
+                    sweep_ratio = sweep_ratio.max((b6[idx] - self.b_scratch[idx]).abs() / scale);
+                    error_ratio = error_ratio.max(b6[idx].abs() / scale);
+                }
+            }
 
             // This is using the convergence criterion as defined in
             // https://arxiv.org/pdf/1409.4779.pdf  equation (8)
-            if b_diff_ctrl.component_div(&func_ctrl).max() < 1e-14 {
+            if sweep_ratio < 1e-14 {
                 let ss = step_size * step_size;
                 for idx in 0..self.cur_state.len() {
                     unsafe {
@@ -476,15 +518,9 @@ where
                     &mut self.metadata,
                     true,
                 )?;
-                // Step-size controller: component-wise ratio max(|b6_i|/|a_i|)
-                // ensures the worst-resolved component drives the step size.
-                let error_ratio = self
-                    .cur_b
-                    .column(6)
-                    .rows(0, cd)
-                    .abs()
-                    .component_div(&func_ctrl)
-                    .max();
+                // Step-size controller: the component-wise ratio computed above,
+                // max(|b6_i| / scale_i), lets the worst-resolved component drive the
+                // step size.
                 return Ok(step_size
                     * (EPSILON / error_ratio)
                         .powf(1.0 / 7.0)
@@ -521,5 +557,65 @@ mod tests {
         assert!((vel[0] - 0.006887328686018099).abs() < 1e-8);
         assert!((vel[1] + 0.01576315407302832).abs() < 1e-8);
         assert_eq!(vel[2], 0.0);
+    }
+
+    /// Accuracy must not depend on heliocentric distance.
+    ///
+    /// An additive floor in the error-control denominator is absolute, in AU/day^2, and
+    /// the solar monopole falls below one of `1e-6` at `sqrt(GMS / 1e-6) = 17.2 AU`. Beyond
+    /// that the denominator would stop tracking the acceleration and the control would
+    /// become absolute, so a distant orbit would come back far outside the tolerance the
+    /// same integrator holds at 1 AU while using *fewer* evaluations, the step having grown
+    /// unchecked. This is the row that would catch it.
+    ///
+    /// Each row integrates exactly one period from aphelion, where the initial state is
+    /// its own exact reference. The inclined rows are there because a per-component
+    /// denominator could in principle over-tighten on a near-zero `a_z`; they cost the
+    /// same as the `i = 10 deg` row, so it does not.
+    #[test]
+    fn accuracy_is_independent_of_heliocentric_distance() {
+        use crate::constants::GMS;
+        let cases: [(f64, f64, f64); 9] = [
+            (1.0, 0.0, 0.0),
+            (5.0, 0.0, 0.0),
+            (30.0, 0.0, 0.0),
+            (100.0, 0.0, 0.0),
+            (5.0, 0.8, 0.0),
+            (30.0, 0.967, 0.0),
+            (1.0, 0.0, 0.001),
+            (2.5, 0.1, 10.0),
+            (2.5, 0.1, 0.01),
+        ];
+        for (semi_major, ecc, incl) in cases {
+            let period = std::f64::consts::TAU * (semi_major.powi(3) / GMS).sqrt();
+            let r_aph = semi_major * (1.0 + ecc);
+            let p = semi_major * (1.0 - ecc * ecc);
+            let (ci, si) = (incl.to_radians().cos(), incl.to_radians().sin());
+            let pos0 = Vector3::new(-r_aph, 0.0, 0.0);
+            let vy = -(GMS / p).sqrt() * (1.0 - ecc);
+            let vel0 = Vector3::new(0.0, vy * ci, vy * si);
+
+            let (pos, _vel, meta) = RadauIntegrator::integrate(
+                &central_accel,
+                pos0,
+                vel0,
+                0.0.into(),
+                period.into(),
+                CentralAccelMeta::default(),
+                Some(3),
+            )
+            .unwrap();
+
+            let err = (pos - pos0).norm() / r_aph;
+            println!(
+                "a={semi_major:6.1} e={ecc:5.3} i={incl:6.3}   {:8} evals   {err:9.2e}",
+                meta.eval_count,
+            );
+            assert!(
+                err < 1e-12,
+                "a={semi_major} e={ecc} i={incl}: one-period return error {err:e} \
+                 exceeds 1e-12; error control is degrading with distance",
+            );
+        }
     }
 }

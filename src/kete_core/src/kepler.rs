@@ -133,7 +133,11 @@ pub fn compute_true_anomaly(ecc: f64, mean_anom: f64, peri_dist: f64) -> KeteRes
 /// # Errors
 /// Fails when eccentricity is not between 0 and 1, or peri dist is negative, or mean
 /// anomaly is between 0 and 2 pi.
-pub fn eccentric_anomaly_from_true(ecc: f64, true_anom: f64, peri_dist: f64) -> KeteResult<f64> {
+pub fn compute_eccentric_anomaly_from_true(
+    ecc: f64,
+    true_anom: f64,
+    peri_dist: f64,
+) -> KeteResult<f64> {
     let ecc_anom = match ecc {
         ecc if !ecc.is_finite() => Err(Error::ValueError(
             "Eccentricity must be a finite value".into(),
@@ -154,6 +158,54 @@ pub fn eccentric_anomaly_from_true(ecc: f64, true_anom: f64, peri_dist: f64) -> 
         }
     };
     Ok(ecc_anom.rem_euclid(TAU))
+}
+
+/// Osculating semi-major axis from a position and velocity about a central body, via the
+/// vis-viva relation.
+///
+///   a = 1 / (2 / r - v^2 / GM)
+///
+/// Negative for a hyperbolic orbit, infinite for an exactly parabolic one.
+///
+/// This is the cheap scalar form, taking `mu` explicitly and returning without an error
+/// path or an allocation, so it is usable inside an integrator's inner loop.
+/// [`CometElements`] and [`EquinoctialElements`](crate::elements::EquinoctialElements)
+/// expose the same quantity as a method when a full element set is wanted.
+///
+/// # Arguments
+///
+/// * `pos` - Position relative to the central body in AU.
+/// * `vel` - Velocity relative to the central body in AU/Day.
+/// * `mu` - Gravitational parameter of the central body in AU^3/day^2.
+#[must_use]
+pub fn compute_semi_major(pos: &Vector3<f64>, vel: &Vector3<f64>, mu: f64) -> f64 {
+    (2.0 / pos.norm() - vel.norm_squared() / mu).recip()
+}
+
+/// Perihelion distance of the osculating orbit from a position and velocity about a
+/// central body.
+///
+///   q = p / (1 + e),  p = |r x v|^2 / GM,  e^2 = 1 + 2 E p / GM
+///
+/// Valid for any conic. The squared eccentricity is formed by a difference which cancels
+/// to zero on a circular orbit, so it is clamped against rounding below zero;
+/// [`EquinoctialElements::peri_dist`](crate::elements::EquinoctialElements::peri_dist)
+/// reaches the same number without that cancellation and is the better choice where the
+/// element set already exists.
+///
+/// # Arguments
+///
+/// * `pos` - Position relative to the central body in AU.
+/// * `vel` - Velocity relative to the central body in AU/Day.
+/// * `mu` - Gravitational parameter of the central body in AU^3/day^2.
+#[must_use]
+pub fn compute_peri_dist(pos: &Vector3<f64>, vel: &Vector3<f64>, mu: f64) -> f64 {
+    let semi_latus = pos.cross(vel).norm_squared() / mu;
+    let specific_energy = 0.5 * vel.norm_squared() - mu / pos.norm();
+    let ecc = (1.0 + 2.0 * specific_energy * semi_latus / mu)
+        .max(0.0)
+        .sqrt();
+    semi_latus / (1.0 + ecc)
 }
 
 // Beta value used below to define a parabolic orbit.
@@ -541,9 +593,9 @@ pub fn moid<T: InertialFrame>(
 ) -> KeteResult<f64> {
     const N_STEPS: i32 = 50;
 
-    let elements_a = CometElements::from_state(&state_a.clone().into_frame());
+    let elements_a = CometElements::from_state(&state_a.clone().into_frame())?;
     state_a = propagate_two_body(&state_a, elements_a.peri_time)?;
-    let elements_b = CometElements::from_state(&state_b.clone().into_frame());
+    let elements_b = CometElements::from_state(&state_b.clone().into_frame())?;
     state_b = propagate_two_body(&state_b, elements_b.peri_time)?;
 
     let state_a_step_size = match elements_a.orbital_period() {
@@ -662,7 +714,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_eccentric_anom_hyperbolic() {
+    fn test_compute_eccentric_anomaly_hyperbolic() {
         for mean_anom in -100..100 {
             let mean_anom = f64::from(mean_anom);
             assert!(
@@ -713,7 +765,7 @@ mod tests {
         assert!((a - b).abs() < 1e-11);
 
         let ecc_anom = compute_eccentric_anomaly(0.5, 3.211, 0.1).unwrap();
-        let c = eccentric_anomaly_from_true(0.5, a, 0.1).unwrap();
+        let c = compute_eccentric_anomaly_from_true(0.5, a, 0.1).unwrap();
         assert!((c - ecc_anom).abs() < 1e-11);
 
         let a = compute_true_anomaly(0.0, 3.211, 0.1).unwrap();
@@ -721,17 +773,17 @@ mod tests {
         assert!((a - b).abs() < 1e-11);
 
         let ecc_anom = compute_eccentric_anomaly(0.0, 3.211, 0.1).unwrap();
-        let c = eccentric_anomaly_from_true(0.0, a, 0.1).unwrap();
+        let c = compute_eccentric_anomaly_from_true(0.0, a, 0.1).unwrap();
         assert!((c - ecc_anom).abs() < 1e-11);
 
         let a = compute_true_anomaly(1.0, 3.211, 0.1).unwrap();
         let ecc_anom = compute_eccentric_anomaly(1.0, 3.211, 0.1).unwrap();
-        let c = eccentric_anomaly_from_true(1.0, a, 0.1).unwrap();
+        let c = compute_eccentric_anomaly_from_true(1.0, a, 0.1).unwrap();
         assert!((c - ecc_anom).abs() < 1e-11);
 
         let a = compute_true_anomaly(1.5, 3.211, 0.1).unwrap();
         let ecc_anom = compute_eccentric_anomaly(1.5, 3.211, 0.1).unwrap();
-        let c = eccentric_anomaly_from_true(1.5, a, 0.1).unwrap();
+        let c = compute_eccentric_anomaly_from_true(1.5, a, 0.1).unwrap();
         assert!((c - ecc_anom).abs() < 1e-11);
     }
 

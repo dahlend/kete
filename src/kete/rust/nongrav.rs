@@ -24,6 +24,19 @@ use pyo3::{PyResult, exceptions::PyValueError, pyclass, pyfunction, pymethods};
 use crate::frame::PyFrames;
 use crate::vector::VectorLike;
 
+/// Radiation-pressure coefficient in kg/m^2, the constant in the
+/// Burns, Lamy & Soter (1979) form of beta:
+///
+/// ```text
+/// beta = C_PR * q_pr / (density * diameter)
+/// ```
+///
+/// Shared by [`PyNonGravModel::new_dust`] and [`PyNonGravModel::diameter`],
+/// which are inverses of one another, so that their defaults cannot drift
+/// apart. With the default density of 1000 kg/m^3 and `q_pr = 1`, `beta = 1`
+/// falls at a diameter of about 1.2 um.
+const C_PR: f64 = 1.19e-3;
+
 /// Per-variant data stored on the Python wrapper.
 #[derive(Debug, Clone)]
 enum NonGravData {
@@ -279,8 +292,13 @@ impl PyNonGravModel {
     /// q_pr:
     ///     Scattering efficiency for radiation pressure, defaults to 1.0
     ///     1.0 is a good estimate for particles larger than 1um (Burns, Lamy & Soter 1979)
+    ///
+    /// See Also
+    /// ========
+    /// :py:meth:`NonGravModel.diameter` - the inverse conversion, which shares
+    /// these defaults, so ``new_dust(diameter=d).diameter() == d``.
     #[staticmethod]
-    #[pyo3(signature=(beta=None, diameter=None, density=1000.0, c_pr=1.19e-3, q_pr=1.0))]
+    #[pyo3(signature=(beta=None, diameter=None, density=1000.0, c_pr=C_PR, q_pr=1.0))]
     pub fn new_dust(
         beta: Option<f64>,
         diameter: Option<f64>,
@@ -310,6 +328,13 @@ impl PyNonGravModel {
 
     /// Estimate the diameter of the dust particle in meters.
     ///
+    /// This inverts the beta relation used by
+    /// :py:meth:`NonGravModel.new_dust` and takes the same defaults, so a
+    /// diameter passed to that constructor is returned unchanged here. Since
+    /// only beta is stored, the density, `c_pr` and `q_pr` used to build the
+    /// model are not recovered with it and must be supplied again to get back
+    /// the same diameter.
+    ///
     /// Only works for dust models, returns NaN for asteroid/comet models.
     ///
     /// Parameters
@@ -317,11 +342,11 @@ impl PyNonGravModel {
     /// density:
     ///     Density in kg/m^3, defaults to 1000 kg/m^3
     /// c_pr:
-    ///     Radiation pressure coefficient, defaults to 1.19 kg/m^2
+    ///     Radiation pressure coefficient, defaults to 1.19e-3 kg/m^2
     /// q_pr:
     ///     Scattering efficiency for radiation pressure, defaults to 1.0
     ///     1.0 is a good estimate for particles larger than 1um (Burns, Lamy & Soter 1979)
-    #[pyo3(signature=(density=1000.0, c_pr=1.19, q_pr=1.0))]
+    #[pyo3(signature=(density=1000.0, c_pr=C_PR, q_pr=1.0))]
     pub fn diameter(&self, density: f64, c_pr: f64, q_pr: f64) -> f64 {
         match self.0 {
             NonGravData::Dust { beta } => (c_pr * q_pr) / (beta * density),

@@ -55,7 +55,7 @@
 //! them.
 //!
 //! Note that `kete_spice` implements a number of additional forces, including
-//! the primary one needed for efficient n-body orbit propagation: [`SpkNBody`].
+//! the primary one needed for efficient n-body orbit propagation, `SpkNBody`.
 
 mod frozen;
 mod gravity;

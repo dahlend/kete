@@ -33,7 +33,7 @@
 // CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-use crate::analysis::{hill_radius, perihelion_dist, semi_major_axis};
+use crate::analysis::hill_radius;
 use crate::constants::{C_AU_PER_DAY, C_AU_PER_DAY_INV_SQUARED, GMS, SUN_J2};
 use crate::desigs::Desig;
 use crate::errors::{Error, KeteResult};
@@ -43,6 +43,7 @@ use crate::forces::{
 };
 use crate::frames::{Ecliptic, InertialFrame, SSB, Vector};
 use crate::kepler::analytic_2_body_delta;
+use crate::kepler::{compute_peri_dist, compute_semi_major};
 use crate::state::State;
 use crate::time::{TDB, Time};
 use nalgebra::Vector3;
@@ -105,11 +106,9 @@ const PARALLEL_THRESHOLD: usize = 32;
 ///
 /// The per-particle work in a sub-flow is small (a Kepler solve, a few
 /// pairwise accelerations, a compensated add), so the rayon fork-join has to
-/// be amortized over enough particles to pay for itself. Measured on a 14-core
-/// machine, the parallel path only overtakes a serial one past roughly 500
-/// particles; below that the coordination costs more than it saves (up to
-/// ~1.7x slower near 200 particles, the scale of a collisional family study).
-/// Below this count a sub-flow runs on a single chunk; at or above it the
+/// be amortized over enough particles to pay for itself. Below this count the
+/// coordination costs more than it saves, including at the scale of a typical
+/// collisional family study, so a sub-flow runs on a single chunk; at or above it the
 /// per-sub-flow chunk floors take over and the work splits across all cores.
 /// The threshold is deliberately above `2 x` the largest chunk floor so the
 /// serial-to-parallel transition skips the region where only two or three
@@ -471,7 +470,7 @@ impl<T: InertialFrame> WisdomHolman<T> {
     /// massive body is not the Sun, epochs disagree, any GM is non-positive,
     /// any state is non-finite, `non_gravs` is non-empty with a length other
     /// than `test_particles`, any non-grav entry fails the checks of
-    /// [`bind_non_grav`] (wrong frozen-value count, non-finite or
+    /// binding the non-gravitational force (wrong frozen-value count, non-finite or
     /// out-of-range values, invalid surface description, or an unsupported
     /// kind), or `dt` is zero or non-finite.
     #[allow(
@@ -793,7 +792,7 @@ impl<T: InertialFrame> WisdomHolman<T> {
         let mut min_period = f64::INFINITY;
         for (pos, vel) in self.q.iter().zip(&self.v) {
             let v_helio = vel.val - sun_vel;
-            let semi_major = semi_major_axis(&pos.val, &v_helio, GMS);
+            let semi_major = compute_semi_major(&pos.val, &v_helio, GMS);
             if semi_major.is_finite() && semi_major > 0.0 {
                 min_period = min_period.min(TAU * (semi_major.powi(3) / GMS).sqrt());
             }
@@ -1459,7 +1458,7 @@ fn drift(dt: f64, pos: &mut CompVec3, vel: &mut CompVec3, mu: f64) -> Option<Los
         }
         // A solver failure on an orbit whose perihelion is inside the Sun is an
         // impact, not a numerical mystery.
-        Err(_) if perihelion_dist(&pos.val, &vel.val, mu) < *SUN_RADIUS_AU => {
+        Err(_) if compute_peri_dist(&pos.val, &vel.val, mu) < *SUN_RADIUS_AU => {
             Some(LostReason::SunImpact)
         }
         Err(_) => Some(LostReason::KeplerFailure),
@@ -1520,7 +1519,7 @@ fn hit_the_sun(dt: f64, rv_before: f64, pos: &Vector3<f64>, vel: &Vector3<f64>, 
     } else {
         (rv_after, rv_before)
     };
-    rv_in < 0.0 && rv_out > 0.0 && perihelion_dist(pos, vel, mu) < sun_radius
+    rv_in < 0.0 && rv_out > 0.0 && compute_peri_dist(pos, vel, mu) < sun_radius
 }
 
 /// Keep only the entries of `values` where `flags` is [`None`].

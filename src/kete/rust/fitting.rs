@@ -548,9 +548,9 @@ impl PyOrbitFit {
     /// Convenience shortcut for ``self.uncertain_state.state``.
     #[getter]
     fn state(&self) -> PyResult<PyState> {
-        let st = self.inner.uncertain_state.state.clone();
-        let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-        let st: State<Equatorial> = spk.try_to_sun(st)?.into();
+        // The elements are already referred to the Sun, so this is a direct read rather
+        // than a re-centering.
+        let st = self.inner.uncertain_state.state::<Equatorial>()?;
         Ok(st.into())
     }
 
@@ -648,7 +648,7 @@ impl PyOrbitFit {
             n_included,
             n_total,
             self.inner.converged,
-            self.inner.uncertain_state.state.epoch.jd,
+            self.inner.uncertain_state.elements.epoch.jd,
         )
     }
 }

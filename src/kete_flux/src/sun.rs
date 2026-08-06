@@ -47,7 +47,8 @@ use crate::black_body_flux;
 ///
 /// If query is outside of the range of data, then [`None`] is returned.
 ///
-/// Returned values are units Janskys / steradian.
+/// Returned values are flux densities in units of Janskys, scaled by
+/// `1 / dist^2` from the tabulated 1 au spectrum.
 ///
 /// # Arguments
 ///
@@ -72,7 +73,7 @@ pub fn solar_flux(dist: f64, wavelength: f64) -> Option<f64> {
     let w_frac = (wavelength - low[0]) / (high[0] - low[0]);
     let val = w_frac * (high[1] - low[1]) + low[1];
 
-    // convert from Watts / m^2 / micron to Jy / Steradian
+    // convert from Watts / m^2 / micron to Janskys
     Some(val * 1e20 * wavelength.powi(2) / C_M_PER_S / dist.powi(2))
 }
 
@@ -82,7 +83,7 @@ pub fn solar_flux(dist: f64, wavelength: f64) -> Option<f64> {
 /// This is an approximation which breaks down when the object gets within a few solar
 /// radii.
 ///
-/// This returns the flux at the object in Jy / steradian per unit frequency.
+/// This returns the flux density at the object in Janskys.
 ///
 /// # Arguments
 ///

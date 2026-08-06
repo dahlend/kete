@@ -10,6 +10,12 @@ use crate::{
 pub(crate) type FirstOrderODE<'a, MType, const DIM: usize> =
     &'a dyn Fn(Time<TDB>, &SVector<f64, DIM>, &mut MType, bool) -> KeteResult<SVector<f64, DIM>>;
 
+/// Function will be of the form y' = F(time, y, metadata, bool)
+/// This is the first-order IVP solver input for integrators whose dimension is only
+/// known at runtime, as opposed to the const-generic [`FirstOrderODE`] above.
+pub(crate) type FirstOrderODEDyn<'a, MType, D> =
+    &'a dyn Fn(Time<TDB>, &OVector<f64, D>, &mut MType, bool) -> KeteResult<OVector<f64, D>>;
+
 /// Function will be of the form y'' = F(time, y, y', metadata, bool)
 /// This is the input for a second-order general IVP solver.
 pub(crate) type SecondOrderODE<'a, MType, D> = &'a dyn Fn(

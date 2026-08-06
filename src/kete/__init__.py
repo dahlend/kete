@@ -73,6 +73,7 @@ from .time import Time
 from .vector import (
     CometElements,
     DiffuseState,
+    EquinoctialElements,
     Frames,
     SimultaneousStates,
     State,
@@ -97,6 +98,7 @@ __all__ = [
     "covariance",
     "Data",
     "DiffuseState",
+    "EquinoctialElements",
     "flux",
     "flux_to_mag",
     "fov",

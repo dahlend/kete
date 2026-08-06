@@ -316,7 +316,7 @@ def resolve_artifact_url(uri: str, file_type: str = "bcd") -> str:
         url = uri
     else:
         raise ValueError(
-            f"Unrecognised artifact URI scheme in {uri!r}. "
+            f"Unrecognized artifact URI scheme in {uri!r}. "
             "Expected CAOM HTTPS, 'ibe://data/', or 'https://'."
         )
 
