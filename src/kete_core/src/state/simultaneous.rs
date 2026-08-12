@@ -201,6 +201,14 @@ impl SimultaneousStates {
                 "Expected a single SimultaneousStates, but found a vector of length {}.",
                 v.len()
             ))),
+            crate::io::binary::KeteFileType::Uncertain(_)
+            | crate::io::binary::KeteFileType::UncertainVec(_) => Err(Error::ValueError(
+                "Expected a SimultaneousStates, but the file holds UncertainStates.".into(),
+            )),
+            crate::io::binary::KeteFileType::Diffuse(_)
+            | crate::io::binary::KeteFileType::DiffuseVec(_) => Err(Error::ValueError(
+                "Expected a SimultaneousStates, but the file holds DiffuseStates.".into(),
+            )),
         }
     }
 
@@ -233,6 +241,14 @@ impl SimultaneousStates {
         match crate::io::binary::read_kete_file(&mut f)? {
             crate::io::binary::KeteFileType::Single(s) => Ok(vec![*s]),
             crate::io::binary::KeteFileType::Vec(v) => Ok(v),
+            crate::io::binary::KeteFileType::Uncertain(_)
+            | crate::io::binary::KeteFileType::UncertainVec(_) => Err(Error::ValueError(
+                "Expected SimultaneousStates, but the file holds UncertainStates.".into(),
+            )),
+            crate::io::binary::KeteFileType::Diffuse(_)
+            | crate::io::binary::KeteFileType::DiffuseVec(_) => Err(Error::ValueError(
+                "Expected SimultaneousStates, but the file holds DiffuseStates.".into(),
+            )),
         }
     }
 }

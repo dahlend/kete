@@ -335,6 +335,17 @@ where
                     next_step_size = s;
                     if (integrator.cur_time - integrator.final_time).elapsed.abs() < convergence_tol
                     {
+                        // Taylor the state onto the target epoch. Returning it at
+                        // whatever sub-tolerance time the loop stopped at costs a meter
+                        // of along-track position.
+                        let dt = integrator.final_time.jd - integrator.cur_time.jd
+                            + integrator.comp_time;
+                        for idx in 0..integrator.cur_state.len() {
+                            let der = integrator.cur_state_der[idx];
+                            let der_der = integrator.cur_state_der_der[idx];
+                            integrator.cur_state[idx] += der * dt + 0.5 * der_der * dt * dt;
+                            integrator.cur_state_der[idx] += der_der * dt;
+                        }
                         return Ok((
                             integrator.cur_state,
                             integrator.cur_state_der,
@@ -369,7 +380,6 @@ where
     /// Returns the recommended next step size on success.  Failure can occur
     /// if the step size is too large for convergence, or if the ODE function
     /// itself returns an error.
-    ///
     fn step(&mut self, step_size: f64) -> KeteResult<f64> {
         self.g_scratch.fill(0.0);
         self.state_scratch.fill(0.0);
@@ -615,6 +625,64 @@ mod tests {
                 err < 1e-12,
                 "a={semi_major} e={ecc} i={incl}: one-period return error {err:e} \
                  exceeds 1e-12; error control is degrading with distance",
+            );
+        }
+    }
+
+    /// Two neighboring trajectories separate by what the dynamics says, not by a
+    /// fixed floor set by where each happened to stop in time.
+    ///
+    /// The loop terminates once `cur_time` is within `convergence_tol` of the
+    /// target and then reports the state at the target epoch. Without
+    /// the epoch correction the leftover sub-ULP time offset - a Julian date near
+    /// 2.45e6 has an ULP of about 40 microseconds - becomes an along-track
+    /// position error of `velocity * dt`, roughly a meter at 30 km/s. Two
+    /// trajectories that reached the target through different step sequences get
+    /// different offsets, so differencing them cancels the dynamics but not the
+    /// timing, and the difference floors.
+    ///
+    /// That floor is what made the sigma-point residual unmeasurable for tight
+    /// covariances. It was invariant under four decades of `EPSILON` and 99%
+    /// along-velocity, which is how it was told apart from truncation.
+    ///
+    /// The check: the response to a tiny offset must stay proportional to that
+    /// offset. A floor shows up as the ratio blowing up for the smallest ones.
+
+    #[test]
+    fn nearby_trajectories_separate_proportionally() {
+        let pos = Vector3::new(1.0, 0.0, 0.0);
+        let vel = Vector3::new(0.0, 0.01720209895, 0.0);
+        // Epoch chosen at a realistic Julian date: the effect scales with the ULP
+        // of the time variable, so it is invisible near JD 0.
+        let (t0, t1) = (2451545.0, 2451745.0);
+
+        let run = |offset: f64| {
+            let (p, _v, _m) = RadauIntegrator::integrate(
+                &central_accel,
+                Vector3::new(pos[0] + offset, pos[1], pos[2]),
+                vel,
+                t0.into(),
+                t1.into(),
+                CentralAccelMeta::default(),
+                None,
+            )
+            .unwrap();
+            p
+        };
+
+        let base = run(0.0);
+        // Reference slope from an offset large enough to be well resolved.
+        let big = 1e-8;
+        let slope = (run(big) - base).norm() / big;
+
+        for k in 1..=8_u32 {
+            let offset = f64::from(k) * 1e-14;
+            let ratio = (run(offset) - base).norm() / (slope * offset);
+            println!("offset {offset:e} AU: separation is {ratio:.2}x the linear response");
+            assert!(
+                ratio < 5.0,
+                "offset {offset:e} separated {ratio:.1}x the linear response, \
+                 which means a fixed floor dominates rather than the dynamics"
             );
         }
     }

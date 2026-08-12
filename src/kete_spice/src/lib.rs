@@ -36,9 +36,8 @@ pub mod prelude {
     pub use crate::fov_checks::{check_n_body, check_spks, check_visible};
     pub use crate::frame_ext::rotations_to_equatorial_full;
     pub use crate::propagation::{
-        LinearityDiagnosis, Recenter, SpkNBody, SplitConfig, compute_state_transition,
-        mixture_sigma_point_divergence, propagate_diffuse_state_adaptive, propagate_with_diagnosis,
-        sigma_point_divergence,
+        Recenter, SpkNBody, SplitConfig, StepReport, Termination, compute_state_transition,
+        propagate_diffuse_state, step_diffuse_state,
     };
 }
 

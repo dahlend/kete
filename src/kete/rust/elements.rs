@@ -266,14 +266,14 @@ impl PyCometElements {
 /// ``ecc_g``         ``g``  ``e * sin(peri_arg + lon_of_ascending)``
 /// ``pole_h``        ``h``  ``tan(i / 2) * cos(lon_of_ascending)``
 /// ``pole_k``        ``k``  ``tan(i / 2) * sin(lon_of_ascending)``
-/// ``true_lon``      ``L``  true longitude at the epoch, in RADIANS
+/// ``true_lon``      ``L``  true longitude at the epoch, in degrees
 /// ================ ======= ==================================================
 ///
-/// ``true_lon`` is in radians rather than degrees, unlike every angle
-/// :class:`CometElements` reports -- these six are the stored representation itself,
-/// matching :attr:`~kete.UncertainState.cov_matrix`, not a classical angle derived
-/// from it. The derived quantities below (:attr:`inclination`, :attr:`true_anomaly`,
-/// etc.) follow :class:`CometElements` and are in degrees.
+/// Every angle here is in degrees, as everywhere else in the Python interface.
+/// :attr:`~kete.UncertainState.cov_matrix` follows the same convention, so its
+/// ``L`` row and column are in degrees and degrees squared and line up with these
+/// six directly. The Rust core stores and works in radians throughout; the
+/// conversion happens at this boundary.
 ///
 /// Zero eccentricity and zero inclination are ordinary points, with no perihelion or
 /// ascending node needed to measure an angle from. The one singularity is the
@@ -297,7 +297,7 @@ impl PyCometElements {
 /// pole_k:
 ///     Pole component ``k``.
 /// true_lon:
-///     True longitude at the epoch, in radians.
+///     True longitude at the epoch, in degrees.
 /// center_id:
 ///     NAIF ID of the central body, defaults to 10 (Sun).
 #[pyclass(module = "kete", frozen, name = "EquinoctialElements", from_py_object)]
@@ -327,7 +327,7 @@ impl PyEquinoctialElements {
     /// pole_k: float
     ///     Pole component ``k``.
     /// true_lon: float
-    ///     True longitude at the epoch, in radians.
+    ///     True longitude at the epoch, in degrees.
     /// center_id: int
     ///     NAIF ID of the central body (default 10 = Sun).
     #[new]
@@ -352,7 +352,7 @@ impl PyEquinoctialElements {
             ecc_g,
             pole_h,
             pole_k,
-            true_lon,
+            true_lon: true_lon.to_radians(),
             center_id,
             gm_sqrt: gm_sqrt_for(center_id),
         })
@@ -424,15 +424,14 @@ impl PyEquinoctialElements {
         self.0.pole_k
     }
 
-    /// True longitude at the epoch, in RADIANS.
+    /// True longitude at the epoch, in degrees.
     ///
-    /// Unlike every other angle on this class and on :class:`CometElements`, this is
-    /// in radians -- it is the stored coordinate itself, matching row/column 5 of
-    /// :attr:`~kete.UncertainState.cov_matrix`. It wraps; use :meth:`offset_to` rather
-    /// than subtracting two values directly.
+    /// Matches row/column 5 of :attr:`~kete.UncertainState.cov_matrix`, which is in
+    /// degrees for the same reason. It wraps; use :meth:`offset_to` rather than
+    /// subtracting two values directly.
     #[getter]
     pub fn true_lon(&self) -> f64 {
-        self.0.true_lon
+        self.0.true_lon.to_degrees()
     }
 
     /// Eccentricity.
@@ -539,8 +538,8 @@ impl PyEquinoctialElements {
     /// ----------
     /// delta : list[float]
     ///     Length-6 offset, in the order ``[p, f, g, h, k, L]`` -- the same order as
-    ///     :attr:`~kete.UncertainState.cov_matrix`. ``true_lon`` is not reduced by
-    ///     this; see :meth:`offset_to`.
+    ///     :attr:`~kete.UncertainState.cov_matrix`, with ``L`` in degrees.
+    ///     ``true_lon`` is not reduced by this; see :meth:`offset_to`.
     pub fn displaced_by(&self, delta: Vec<f64>) -> PyResult<Self> {
         if delta.len() != 6 {
             return Err(kete_core::errors::Error::ValueError(format!(
@@ -549,7 +548,8 @@ impl PyEquinoctialElements {
             ))
             .into());
         }
-        let delta = Vector6::from_row_slice(delta.as_slice());
+        let mut delta = Vector6::from_row_slice(delta.as_slice());
+        delta[5] = delta[5].to_radians();
         Ok(Self(self.0.displaced_by(&delta)))
     }
 
@@ -557,12 +557,15 @@ impl PyEquinoctialElements {
     ///
     /// Five coordinates are a plain difference; ``true_lon`` is reduced to the
     /// shortest signed angle, so two orbits a whole turn apart read as coincident.
+    /// That last entry is in degrees.
     ///
     /// Parameters
     /// ----------
     /// other : EquinoctialElements
     pub fn offset_to(&self, other: &Self) -> Vec<f64> {
-        self.0.offset_to(&other.0).as_slice().to_vec()
+        let mut offset = self.0.offset_to(&other.0);
+        offset[5] = offset[5].to_degrees();
+        offset.as_slice().to_vec()
     }
 
     fn __repr__(&self) -> String {

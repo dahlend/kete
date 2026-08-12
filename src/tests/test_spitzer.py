@@ -29,7 +29,7 @@ def test_parse_poly_roundtrip():
         assert -90 <= eq.dec <= 90
 
 
-def test_parse_poly_normalises_negative_ra():
+def test_parse_poly_normalizes_negative_ra():
     # Longitude in [-180, 0) must be normalized to [180, 360)
     import struct
 
@@ -199,7 +199,7 @@ def test_resolve_passthrough_https():
 
 
 def test_resolve_unknown_scheme():
-    with pytest.raises(ValueError, match="Unrecognised"):
+    with pytest.raises(ValueError, match="Unrecognized"):
         resolve_artifact_url("ftp://example.com/file.fits")
 
 

@@ -18,26 +18,28 @@
 mod adaptive;
 mod cartesian;
 mod diffuse;
+mod probes;
+pub(crate) use probes::ProbeSet;
 mod simultaneous;
 mod stm;
 mod traits;
 mod uncertain;
 
 pub use adaptive::{
-    CenterResolver, LinearityDiagnosis, SplitConfig, minimum_components_for_divergence,
-    mixture_sigma_point_divergence, propagate_diffuse_state_adaptive, propagate_uncertain,
-    propagate_with_diagnosis, sigma_point_divergence,
+    CenterResolver, DEFAULT_STEP_DAYS, SplitConfig, StepReport, Termination,
+    propagate_diffuse_state, propagate_uncertain, step_diffuse_state,
 };
 pub use cartesian::State;
 pub use diffuse::{
     DiffuseState, K3_SPLIT_MEANS, K3_SPLIT_SIGMA, K3_SPLIT_WEIGHTS, WEIGHT_SUM_TOL,
-    split_for_propagation,
+    split_axial_k3_along,
 };
 pub use simultaneous::SimultaneousStates;
 pub use stm::{
     covariance_update, propagate_elements_with_sensitivity, propagate_state,
     propagate_with_covariance, propagate_with_stm,
 };
+
 pub use traits::StateLike;
 pub use uncertain::{
     UncertainState, covariance_from_equinoctial, covariance_to_equinoctial,

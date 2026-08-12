@@ -32,6 +32,7 @@
 
 use core::f64;
 
+use crate::forces::{NonGravMask, ParameterizedForce};
 use crate::frames::InertialFrame;
 #[cfg(test)]
 use crate::prelude::Desig;
@@ -188,62 +189,40 @@ pub const K3_SPLIT_SIGMA: f64 = f64::consts::FRAC_1_SQRT_2;
 ///
 /// # When a split is triggered
 ///
-/// Splitting is decided by the sigma-point divergence diagnostic.  Before
-/// propagating a component, the integrator tests whether the component's
-/// uncertainty region is small enough that linear propagation (via the
-/// state transition matrix, STM) is a reliable approximation.
+/// Splitting is decided one propagation leg at a time.  Over each leg the flow is
+/// probed along every direction the component's covariance carries, and the probe's
+/// departure from the linear (state transition matrix) prediction is read off in
+/// sigma of a propagated position distribution - the component's own until it splits, and
+/// its parent's from then on, so the threshold means one thing at every split depth, see
+/// [`UncertainState::whitening_cov`].  A component whose worst
+/// probe misses by more than `SplitConfig::split_threshold` is rolled back to the
+/// start of its leg, split along that probe's direction, and the leg is redone with
+/// the children.  Deciding this locally, leg by leg, is what places a split at the
+/// time the flow actually stopped being linear rather than smearing it across the
+/// whole arc.
 ///
-/// The test works as follows.  Take the dominant eigenvectors of the
-/// covariance (the axes of largest uncertainty), and for each one perturb
-/// the mean orbit by +/- `sigma_factor` * sqrt(lambda) along that axis
-/// (i.e. place a "sigma point" one standard deviation away from the mean
-/// in that direction).  Propagate each perturbed orbit via the full N-body
-/// integrator to the target epoch.  The STM predicts where those points
-/// should have moved under a linearized model; compare the two predictions.
-/// The divergence score is a Mahalanobis distance -- the linear
-/// prediction error normalized by the propagated element covariance:
+/// The threshold is an accuracy/cost dial: tightening it splits earlier and more
+/// often, tracking the true density more faithfully at a higher component count,
+/// and `SplitConfig::max_components` bounds what a tight setting may spend.  In
+/// practice a well-observed main-belt asteroid rarely needs splitting even over
+/// years of propagation, while a dispersing dust cloud may consume whatever budget
+/// it is given.
 ///
-/// ```text
-/// d = max_k  sqrt( (delta_full_k - delta_lin_k)^T P_f^-1 (delta_full_k - delta_lin_k) )
-/// ```
-///
-/// where `delta_full_k` is the displacement of the nonlinearly propagated
-/// sigma point from the propagated mean, `delta_lin_k` is the STM (linear)
-/// prediction of that displacement, and `P_f` is the propagated element
-/// covariance, floored per coordinate so near-null directions do not
-/// dominate.  `d` answers "how many sigma off is
-/// the linear answer, relative to its own predicted uncertainty?"  For
-/// samples drawn from the predicted distribution it follows a 6-D chi
-/// distribution, whose mean and high-containment quantiles are both of order a
-/// few.  A value below the
-/// split threshold (`SplitConfig::split_threshold`) means the
-/// component may be propagated as a single Gaussian; above it, the banana
-/// distortion is significant and the component is split into narrower
-/// sub-components first.  In addition to these sigma-shell probes, each
-/// dominant axis contributes a fixed-scale pure-position probe
-/// (`SplitConfig::position_spacing_au`) that catches nonlinearity
-/// localized near the mean, such as a nearby perturbing planet.
-///
-/// In practice a well-observed main-belt asteroid rarely needs splitting
-/// even over months of propagation, while a poorly-constrained near-Earth
-/// object on a close-approach trajectory may need several splits to keep
-/// the mixture accurate.
-///
-/// Splitting stops when the total number of components reaches
-/// `SplitConfig::max_components` (default 1024), when a component has been
-/// split `SplitConfig::max_split_depth` times (default 10), or when a split
-/// stops meaningfully reducing the divergence
-/// (`SplitConfig::min_split_improvement`).  In each case the component is
-/// propagated linearly as-is and its `max_unresolved_divergence` records the
-/// divergence at which it settled.  The caps exist to bound runtime; if they
-/// are frequently hit, raise the threshold or the caps.
+/// Splitting a component stops when it falls under `SplitConfig::split_threshold`, when
+/// `SplitConfig::max_components` refuses the next split, or when nothing is left over
+/// threshold that carries a direction to split along.  Which of these fired is reported by
+/// the step that made the decision, in
+/// [`StepReport`](crate::state::StepReport); the nonlinearity each component is still
+/// holding stays on the component, in [`UncertainState::eta`].
 ///
 /// # Usage
 ///
 /// Use [`DiffuseState::from_uncertain`] to wrap a single [`UncertainState`] and
-/// [`DiffuseState::new`] for explicit multi-component construction. Adaptive propagation
-/// (repeated split-then-propagate) is handled by
-/// `kete_spice::propagation::propagate_diffuse_state_adaptive`.
+/// [`DiffuseState::new`] for explicit multi-component construction.
+/// [`step_diffuse_state`](crate::state::step_diffuse_state) advances the mixture one leg,
+/// and [`propagate_diffuse_state`](crate::state::propagate_diffuse_state)
+/// folds that over a whole arc.  Marching by hand and marching in one call measure the
+/// same thing, because each component carries its own probes.
 ///
 /// # Component independence
 ///
@@ -265,7 +244,19 @@ pub struct DiffuseState {
 
     /// The mixture components, each with its own mean orbit, covariance and free
     /// parameter values. All share an epoch, a central body and a parameter count.
+    ///
+    /// Each also carries its own probes and the nonlinearity they last reported, which is
+    /// what lets a caller march the mixture one leg at a time and get the same measurement
+    /// as a single call. See [`UncertainState::probes`].
     pub components: Vec<UncertainState>,
+
+    /// Whether the largest asteroids perturb this mixture.
+    ///
+    /// Held on the mixture rather than passed per call, so every leg of a march runs
+    /// under one force model. The components carry probes integrated under that model,
+    /// and a leg taken under a different one would measure them against a flow they
+    /// never saw.
+    pub include_asteroids: bool,
 }
 
 impl DiffuseState {
@@ -279,6 +270,18 @@ impl DiffuseState {
         let first = components.first().ok_or_else(|| {
             Error::ValueError("DiffuseState must have at least one component".into())
         })?;
+        // Same check the Python layer used to make: the components have to be
+        // describing one force model, or their free parameters do not mean the
+        // same thing and the mixture is not a single density.
+        let model = first.non_grav.as_ref().map(NonGravMask::free_param_names);
+        if components
+            .iter()
+            .any(|c| c.non_grav.as_ref().map(NonGravMask::free_param_names) != model)
+        {
+            return Err(Error::ValueError(
+                "All components must share the same non-gravitational model".into(),
+            ));
+        }
         if weights.len() != components.len() {
             return Err(Error::ValueError(format!(
                 "weights ({}) and components ({}) must have equal length",
@@ -327,6 +330,7 @@ impl DiffuseState {
         Ok(Self {
             weights,
             components,
+            include_asteroids: false,
         })
     }
 
@@ -336,6 +340,7 @@ impl DiffuseState {
         Self {
             weights: vec![1.0],
             components: vec![state],
+            include_asteroids: false,
         }
     }
 
@@ -371,7 +376,11 @@ impl DiffuseState {
     /// use and essentially never be noticed when it was.
     ///
     /// The reduction is correct for any mixture spanning less than half a turn in true
-    /// longitude, which every mixture produced by splitting does by a wide margin.
+    /// longitude. Splitting keeps *adjacent* components close, but that does not bound
+    /// the span of the mixture: a phase-spread cloud propagated for an orbit reaches
+    /// component separations at the half-turn limit while every neighboring pair is
+    /// still tightly packed. Nothing here detects the crossing, so past it the moments
+    /// are formed about a longitude no component is near and are returned anyway.
     ///
     /// # Errors
     /// Fails if the mean leaves the elements' physical domain.
@@ -418,34 +427,69 @@ impl DiffuseState {
         let free_params: Vec<f64> = (0..n_params)
             .map(|i| reference.free_params[i] + mean_offset[6 + i])
             .collect();
-        let mean = UncertainState::new(elements, total.clone(), free_params)?;
+        let mut mean = UncertainState::new(elements, total.clone(), free_params)?;
+        mean.non_grav.clone_from(&self.components[0].non_grav);
         Ok((mean, total))
     }
 
-    /// Total weight of components whose peak divergence exceeds `threshold`.
+    /// Largest nonlinearity any component is carrying, in sigma of the propagated position
+    /// distribution that component is whitened against - its own until it splits, its
+    /// parent's afterwards, see [`UncertainState::whitening_cov`].
     ///
-    /// A component that hit the `max_components` budget before it could be split keeps the
-    /// divergence that would have triggered the split, so this answers whether a component
-    /// count is convergence or saturation: a large value means the mixture stopped
-    /// splitting because it ran out of budget, not because it had resolved the
-    /// distribution.
+    /// Read off the components themselves ([`UncertainState::eta`]), so it describes the
+    /// mixture in hand rather than the call that produced it. This is a statement about
+    /// what the controller did, not an error bound on the represented density. A value
+    /// above the `split_threshold` used at propagation time means at least one component
+    /// was still failing the test when the march stopped;
+    /// [`StepReport::termination`](crate::state::StepReport::termination) says why the last
+    /// leg stopped splitting.
+    ///
+    /// Returns `None` if any component has never been marched, which is a different
+    /// statement from zero: the largest value over a mixture is unknown when one member is
+    /// unmeasured.
     #[must_use]
-    pub fn unresolved_weight(&self, threshold: f64) -> f64 {
+    pub fn max_eta(&self) -> Option<f64> {
         self.components
             .iter()
-            .zip(self.weights.iter())
-            .filter(|(component, _)| component.max_unresolved_divergence > threshold)
-            .map(|(_, weight)| *weight)
-            .sum()
+            .try_fold(0.0_f64, |worst, c| Some(worst.max(c.eta?)))
     }
 
-    /// Peak sigma-point divergence recorded anywhere in the mixture.
+    /// Worst residual behind those numbers, as a cartesian position offset in meters.
+    ///
+    /// Read with [`Self::max_eta`]: the propagator places a position to roughly a meter,
+    /// so `eta 0.003` on a residual of `1.2` m is numerical noise rather than curvature,
+    /// with no estimator in the library and no second run.
+    ///
+    /// Returns `None` if any component has never been marched.
     #[must_use]
-    pub fn max_unresolved_divergence(&self) -> f64 {
+    pub fn residual_meters(&self) -> Option<f64> {
         self.components
             .iter()
-            .map(|c| c.max_unresolved_divergence)
-            .fold(0.0_f64, f64::max)
+            .try_fold(0.0_f64, |worst, c| Some(worst.max(c.residual_meters?)))
+    }
+
+    /// Total weight of components whose nonlinearity exceeds `threshold`.
+    ///
+    /// Pass the `split_threshold` used at propagation time to read how much of the
+    /// distribution finished under-resolved. This is the measure a starved low-weight tail
+    /// shows up in: the count of components says nothing about where the weight sits.
+    ///
+    /// Returns `None` if any component has never been marched.
+    #[must_use]
+    pub fn weight_above_eta(&self, threshold: f64) -> Option<f64> {
+        self.components.iter().zip(self.weights.iter()).try_fold(
+            0.0_f64,
+            |total, (component, weight)| {
+                Some(
+                    total
+                        + if component.eta? > threshold {
+                            *weight
+                        } else {
+                            0.0
+                        },
+                )
+            },
+        )
     }
 
     /// Common epoch of the mixture.
@@ -531,117 +575,6 @@ impl DiffuseState {
 
         Ok(results)
     }
-
-    /// Recursively K=3 split every component along its dominant covariance
-    /// eigenvector, `depth` times.
-    ///
-    /// Each level multiplies the component count by 3.  Between levels the
-    /// dominant eigenvector is recomputed on each child's updated
-    /// covariance, so subsequent splits target the next-most-uncertain
-    /// direction.  Useful as a static pre-split before propagation when
-    /// the initial mixture is too coarse to capture later nonlinearity.
-    ///
-    /// `depth == 0` returns a clone.
-    ///
-    /// # Errors
-    /// Returns the first error from the underlying axial split -- typically
-    /// a degenerate covariance or non-positive variance along the chosen
-    /// direction.
-    pub fn split_all(&self, depth: u32) -> KeteResult<Self> {
-        let mut current_weights = self.weights.clone();
-        let mut current_components = self.components.clone();
-        for _ in 0..depth {
-            let mut next_weights = Vec::with_capacity(current_weights.len() * 3);
-            let mut next_components = Vec::with_capacity(current_components.len() * 3);
-            for (w, c) in current_weights.iter().zip(current_components.iter()) {
-                let dir = dominant_eigenvector(&c.cov_matrix)?;
-                let parts = split_axial_k3_along(c, &dir)?;
-                for (w_split, c_split) in parts {
-                    next_weights.push(w * w_split);
-                    next_components.push(c_split);
-                }
-            }
-            current_weights = next_weights;
-            current_components = next_components;
-        }
-        Self::new(current_weights, current_components)
-    }
-
-    /// Split component `idx` along its dominant covariance eigenvector into a K=3
-    /// sub-mixture, leaving the other components untouched.
-    ///
-    /// # Errors
-    /// Fails if `idx` is out of range, or if the split fails - typically a degenerate
-    /// covariance or a non-positive variance along the chosen direction.
-    pub fn split_component(&self, idx: usize) -> KeteResult<Self> {
-        let target = self.component(idx)?;
-        let parts = split_axial_k3_along(&target, &dominant_eigenvector(&target.cov_matrix)?)?;
-
-        let mut weights = Vec::with_capacity(self.n_components() + 2);
-        let mut components = Vec::with_capacity(self.n_components() + 2);
-        for (i, (w, c)) in self.weights.iter().zip(self.components.iter()).enumerate() {
-            if i != idx {
-                weights.push(*w);
-                components.push(c.clone());
-            }
-        }
-        for (w_split, c_split) in parts {
-            weights.push(self.weights[idx] * w_split);
-            components.push(c_split);
-        }
-        Self::new(weights, components)
-    }
-}
-
-/// Split a component for adaptive propagation.
-///
-/// Prefers a dynamics-aware direction: finds the dominant eigenvector
-/// `v_f` of `prop_cov` (the propagated covariance) and splits the marginal
-/// of the functional `a = v_f^T x_f`, whose pullback to the initial epoch
-/// is `u = augmented_stm^T v_f` (a covector pulls back through the
-/// transpose, not the inverse).  With the regression-form split the
-/// children's initial-space displacement is then `P u / sigma`, which the
-/// STM carries onto `sqrt(lambda_f) * v_f` at the final epoch -- the
-/// propagated mixture is exactly the dominant-eigenvector split of the
-/// propagated covariance.
-///
-/// Falls back to splitting along the dominant eigenvector of the
-/// component's own covariance if `prop_cov` has no positive eigenvalue or
-/// the mapped direction carries no variance.
-///
-/// # Errors
-/// Returns an error only if both the dynamics-aware split and the fallback
-/// fail (e.g. the component has zero covariance).
-pub fn split_for_propagation(
-    component: &UncertainState,
-    prop_cov: &DMatrix<f64>,
-    augmented_stm: &DMatrix<f64>,
-) -> KeteResult<Vec<(f64, UncertainState)>> {
-    if let Ok(v_f) = dominant_eigenvector(prop_cov)
-        && let Ok(parts) = split_axial_k3_along(component, &(augmented_stm.transpose() * v_f))
-    {
-        return Ok(parts);
-    }
-
-    let fallback_dir = dominant_eigenvector(&component.cov_matrix)?;
-    split_axial_k3_along(component, &fallback_dir)
-}
-
-/// Dominant eigenvector of a symmetric positive-semi-definite matrix.
-fn dominant_eigenvector(cov: &DMatrix<f64>) -> KeteResult<DVector<f64>> {
-    let sym = SymmetricEigen::new(cov.clone());
-    let (max_idx, &max_lambda) = sym
-        .eigenvalues
-        .iter()
-        .enumerate()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Less))
-        .expect("eigenvalues is non-empty");
-    if !max_lambda.is_finite() || max_lambda <= 0.0 {
-        return Err(Error::ValueError(
-            "covariance has no positive eigenvalue".into(),
-        ));
-    }
-    Ok(sym.eigenvectors.column(max_idx).into_owned())
 }
 
 /// Split a single [`UncertainState`] into a K=3 sub-mixture of the
@@ -653,28 +586,26 @@ fn dominant_eigenvector(cov: &DMatrix<f64>) -> KeteResult<DVector<f64>> {
 /// marginal is replaced by the K=3 mixture, while the conditional of the
 /// remaining coordinates given `a` is kept exact.  The children are
 /// therefore displaced along the regression vector `P u / sigma` -- the
-/// ridge of the parent density -- not along `u` itself, and the mixture
+/// ridge of the parent density - not along `u` itself, and the mixture
 /// approximates the parent with the one-dimensional Huber fidelity for
 /// any direction.  Mean and total covariance are preserved exactly, and
 /// the reduced covariance is positive semi-definite by construction.
 ///
-/// The motivating use case is dynamics-aware splitting for adaptive
-/// cloud propagation: the calling layer computes the dominant
-/// eigenvector of the *propagated* covariance and pulls it back through
-/// the transpose of the augmented STM, picking out the initial-state
-/// functional that most amplifies under the dynamics.  For an isotropic
-/// initial covariance the eigenvalue decomposition is degenerate and
-/// naive dominant-eigenvector splitting picks an arbitrary axis; this
-/// entry point lets callers pick a meaningful one instead.
+/// The motivating use case is adaptive cloud propagation, where the
+/// calling layer supplies the direction whose curvature it measured over
+/// the leg about to be redone - the direction the split is meant to
+/// remove.  Taking a direction rather than deriving one also handles the
+/// isotropic covariance, where the eigenvalue decomposition is degenerate
+/// and picking a dominant eigenvector picks an arbitrary axis.
 ///
 /// # Errors
 /// Returns an error if `direction` has the wrong length, is zero
 /// (or non-finite), or if the variance of the component along
 /// `direction` is non-positive.
-fn split_axial_k3_along(
+pub fn split_axial_k3_along(
     component: &UncertainState,
     direction: &DVector<f64>,
-) -> KeteResult<Vec<(f64, UncertainState)>> {
+) -> KeteResult<[(f64, UncertainState); 3]> {
     let dim = component.cov_matrix.nrows();
     if direction.len() != dim {
         return Err(Error::ValueError(format!(
@@ -734,13 +665,14 @@ fn split_axial_k3_along(
         cov_new
     };
 
-    let mut result = Vec::with_capacity(3);
-    for k in 0..3 {
+    let child = |k: usize| -> KeteResult<(f64, UncertainState)> {
         let delta = &r * K3_SPLIT_MEANS[k];
-        let new_uncertain = build_split_component(component, &delta, cov_new.clone())?;
-        result.push((K3_SPLIT_WEIGHTS[k], new_uncertain));
-    }
-    Ok(result)
+        Ok((
+            K3_SPLIT_WEIGHTS[k],
+            build_split_component(component, &delta, cov_new.clone())?,
+        ))
+    };
+    Ok([child(0)?, child(1)?, child(2)?])
 }
 
 /// Build a new [`UncertainState`] by shifting `base`'s mean by `delta`
@@ -763,12 +695,98 @@ fn build_split_component(
         .map(|i| base.free_params[i] + delta[6 + i])
         .collect();
 
-    let mut new_uncertain = UncertainState::new(new_elements, new_cov, new_params)?;
-    // Children inherit the parent's accumulated linear-approximation
-    // history.  Their own future diagnoses will update the field
-    // independently as they evolve.
-    new_uncertain.max_unresolved_divergence = base.max_unresolved_divergence;
-    Ok(new_uncertain)
+    let mut child = UncertainState::new(new_elements, new_cov, new_params)?;
+    // The model interprets the free parameters the child inherited, so it has to
+    // come with them.
+    child.non_grav.clone_from(&base.non_grav);
+    Ok(child)
+}
+
+impl DiffuseState {
+    /// Save into a binary file.
+    ///
+    /// # Errors
+    /// Saving is fallible due to filesystem calls.
+    pub fn save(&self, filename: String) -> KeteResult<()> {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use std::fs::File;
+        use std::io::BufWriter;
+        let f = BufWriter::new(File::create(filename)?);
+        let mut gz = GzEncoder::new(f, Compression::default());
+        crate::io::binary::write_diffuse_kete_file(self, &mut gz)?;
+        let _ = gz.finish()?;
+        Ok(())
+    }
+
+    /// Load from a binary file.
+    ///
+    /// # Errors
+    /// Loading is fallible due to filesystem calls, and the file must hold a
+    /// single mixture rather than a collection or another type.
+    pub fn load(filename: String) -> KeteResult<Self> {
+        match Self::read(filename)? {
+            crate::io::binary::KeteFileType::Diffuse(mixture) => Ok(*mixture),
+            crate::io::binary::KeteFileType::DiffuseVec(v) => Err(Error::ValueError(format!(
+                "Expected a single DiffuseState, but found a vector of length {}.",
+                v.len()
+            ))),
+            crate::io::binary::KeteFileType::Single(_)
+            | crate::io::binary::KeteFileType::Vec(_) => Err(Error::ValueError(
+                "Expected a DiffuseState, but the file holds SimultaneousStates.".into(),
+            )),
+            crate::io::binary::KeteFileType::Uncertain(_)
+            | crate::io::binary::KeteFileType::UncertainVec(_) => Err(Error::ValueError(
+                "Expected a DiffuseState, but the file holds UncertainStates.".into(),
+            )),
+        }
+    }
+
+    /// Save a vector of `DiffuseState` into a binary file.
+    ///
+    /// # Errors
+    /// Saving is fallible due to filesystem calls.
+    pub fn save_vec(vec: &[Self], filename: String) -> KeteResult<()> {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use std::fs::File;
+        use std::io::BufWriter;
+        let f = BufWriter::new(File::create(filename)?);
+        let mut gz = GzEncoder::new(f, Compression::default());
+        crate::io::binary::write_diffuse_vec_kete_file(vec, &mut gz)?;
+        let _ = gz.finish()?;
+        Ok(())
+    }
+
+    /// Load a vector of `DiffuseState` from a binary file.
+    ///
+    /// A file holding a single mixture reads back as a collection of one.
+    ///
+    /// # Errors
+    /// Loading is fallible due to filesystem calls, and the file must hold
+    /// mixtures rather than another type.
+    pub fn load_vec(filename: String) -> KeteResult<Vec<Self>> {
+        match Self::read(filename)? {
+            crate::io::binary::KeteFileType::DiffuseVec(v) => Ok(v),
+            crate::io::binary::KeteFileType::Diffuse(mixture) => Ok(vec![*mixture]),
+            crate::io::binary::KeteFileType::Single(_)
+            | crate::io::binary::KeteFileType::Vec(_) => Err(Error::ValueError(
+                "Expected DiffuseStates, but the file holds SimultaneousStates.".into(),
+            )),
+            crate::io::binary::KeteFileType::Uncertain(_)
+            | crate::io::binary::KeteFileType::UncertainVec(_) => Err(Error::ValueError(
+                "Expected DiffuseStates, but the file holds UncertainStates.".into(),
+            )),
+        }
+    }
+
+    fn read(filename: String) -> KeteResult<crate::io::binary::KeteFileType> {
+        use flate2::read::GzDecoder;
+        use std::fs::File;
+        use std::io::BufReader;
+        let mut f = BufReader::new(GzDecoder::new(File::open(filename)?));
+        crate::io::binary::read_kete_file(&mut f)
+    }
 }
 
 #[cfg(test)]
@@ -1138,17 +1156,14 @@ mod tests {
         );
     }
 
-    /// Splitting a component preserves the total weight (with K=3
-    /// sub-weights summing to the original component's weight) and
-    /// produces 2 additional components (1 -> 3).
+    /// A split produces three components carrying the K=3 weights, which sum to the
+    /// parent's.
     #[test]
-    fn test_split_component_basic() {
+    fn test_split_weights_are_the_k3_table() {
         let mut a = small_uncertain("A");
-        // Inflate covariance so the dominant eigenvalue is well-defined and large enough
-        // that the split delta is non-trivial - but keep it physical. The cartesian
-        // version of this test used a 1 AU standard deviation on a 1 AU orbit, which is a
-        // 100 percent positional uncertainty; harmless as arithmetic, but a one sigma step
-        // in element coordinates drives the orbit outside its own domain and is rejected.
+        // Physical, and anisotropic enough that the split delta is non-trivial. A one
+        // sigma step in element coordinates at AU scale drives the orbit outside its own
+        // domain, so the covariance stays small.
         let mut cov = DMatrix::<f64>::zeros(6, 6);
         cov[(0, 0)] = 1e-6;
         cov[(1, 1)] = 1e-10;
@@ -1158,84 +1173,22 @@ mod tests {
         }
         a.cov_matrix = cov;
 
-        let d = DiffuseState::from_uncertain(a);
-        let split = d.split_component(0).unwrap();
-        assert_eq!(split.n_components(), 3);
-        let total_w: f64 = split.weights.iter().sum();
-        assert!((total_w - 1.0).abs() < 1e-15);
-
-        // Each sub-weight should equal K3_SPLIT_WEIGHTS[k] (since
-        // original weight was 1.0).
-        for (got, &want) in split.weights.iter().zip(K3_SPLIT_WEIGHTS.iter()) {
+        let mut direction = DVector::<f64>::zeros(6);
+        direction[0] = 1.0;
+        let parts = split_axial_k3_along(&a, &direction).unwrap();
+        let total: f64 = parts.iter().map(|(w, _)| w).sum();
+        assert!((total - 1.0).abs() < 1e-15);
+        for ((got, _), &want) in parts.iter().zip(K3_SPLIT_WEIGHTS.iter()) {
             assert!((got - want).abs() < 1e-15);
         }
     }
 
-    /// Splitting must preserve the mixture's mean and total covariance
-    /// (law of total covariance).  The dominant axis variance shrinks
-    /// per-component but the BETWEEN-component spread compensates.
+    /// Splitting along a free-parameter direction disperses that parameter across the
+    /// children, which is what makes a beta-spread cloud expressible as a split mixture.
     #[test]
-    fn test_split_component_preserves_moments() {
+    fn test_split_along_a_parameter_axis() {
         let st = test_state("A");
-        // Scaled to a physical orbit uncertainty. The cartesian version of this test used
-        // AU-scale position sigmas and velocity sigmas several times the orbital speed;
-        // harmless as arithmetic, but not a distribution any orbit representation
-        // describes.
-        // Anisotropic covariance -- dominant axis is x.
-        let mut cov = DMatrix::<f64>::zeros(6, 6);
-        cov[(0, 0)] = 4e-8;
-        cov[(1, 1)] = 1e-8;
-        cov[(2, 2)] = 1e-8;
-        for i in 3..6 {
-            cov[(i, i)] = 1e-14;
-        }
-        let a = UncertainState::from_state(&st.clone(), &cov.clone(), vec![]).unwrap();
-        let element_cov = a.cov_matrix.clone();
-        let parent_elements = a.elements.clone();
-        let d = DiffuseState::from_uncertain(a);
-
-        let split = d.split_component(0).unwrap();
-        let (split_mean, split_cov) = split.mean_and_covariance().unwrap();
-
-        // The moments are asserted **in element coordinates**, which is where the K3
-        // construction does its arithmetic. The cartesian weighted mean of the children is
-        // deliberately not preserved: the map from elements to a state is nonlinear, and
-        // that curvature is the whole reason the element representation exists. Requiring
-        // it here would be requiring the mixture to be a worse description than it is.
-        //
-        // Displacement and differencing are exact vector arithmetic on the stored floats,
-        // so the mean returns to the parent at rounding rather than at any solver floor.
-        let moved = parent_elements.offset_to(&split_mean.elements);
-        for i in 0..6 {
-            assert!(
-                moved[i].abs() < 1e-14 * element_cov[(i, i)].sqrt().max(1e-12),
-                "element mean {i} moved to {}",
-                moved[i]
-            );
-        }
-        for r in 0..6 {
-            for c in 0..6 {
-                let diff = (split_cov[(r, c)] - element_cov[(r, c)]).abs();
-                let scale = element_cov[(r, r)].sqrt() * element_cov[(c, c)].sqrt();
-                assert!(
-                    diff / scale < 1e-8,
-                    "cov[{r},{c}] changed: {} vs {}, rel_err={}",
-                    split_cov[(r, c)],
-                    element_cov[(r, c)],
-                    diff / scale
-                );
-            }
-        }
-    }
-
-    /// Splitting a parameter-dispersed component shifts the
-    /// free-parameter values of the sub-components (since the dominant
-    /// eigenvector is along the parameter axis when the position
-    /// covariance is small relative to the parameter variance).
-    #[test]
-    fn test_split_component_param_axis() {
-        let st = test_state("A");
-        // 7x7 cov: tiny in (r,v), large in the free param.
+        // 7x7 cov: tiny in the elements, large in the free param.
         let mut cov = DMatrix::<f64>::zeros(7, 7);
         for i in 0..3 {
             cov[(i, i)] = 1e-12;
@@ -1246,37 +1199,29 @@ mod tests {
         cov[(6, 6)] = 1e-4;
 
         let a = UncertainState::from_state(&st, &cov, vec![0.01]).unwrap();
-        let d = DiffuseState::from_uncertain(a);
+        let mut direction = DVector::<f64>::zeros(7);
+        direction[6] = 1.0;
+        let parts = split_axial_k3_along(&a, &direction).unwrap();
 
-        let split = d.split_component(0).unwrap();
-        assert_eq!(split.n_components(), 3);
-
-        // Each sub-component should have a different free-param value
-        // (sub means shifted by K3_SPLIT_MEANS[k] * sqrt(1e-4) from the original 0.01).
+        // Means shifted by K3_SPLIT_MEANS[k] * sqrt(1e-4) from the original 0.01.
         let offset = K3_SPLIT_MEANS[2] * 1e-4_f64.sqrt(); // sqrt(3/2) * 0.01
-        let mut params: Vec<f64> = (0..split.n_components())
-            .map(|i| split.component(i).unwrap().free_params[0])
-            .collect();
+        let mut params: Vec<f64> = parts.iter().map(|(_, c)| c.free_params[0]).collect();
         params.sort_by(f64::total_cmp);
         assert!((params[0] - (0.01 - offset)).abs() < 1e-10);
         assert!((params[1] - 0.01).abs() < 1e-10);
         assert!((params[2] - (0.01 + offset)).abs() < 1e-10);
     }
 
+    /// A covariance with no extent has no marginal to replace, so the split is refused
+    /// rather than producing three copies of the parent.
     #[test]
-    fn test_split_component_rejects_zero_covariance() {
+    fn test_split_rejects_zero_covariance() {
         let st = test_state("A");
         let cov = DMatrix::<f64>::zeros(6, 6);
         let a = UncertainState::from_state(&st, &cov, vec![]).unwrap();
-        let d = DiffuseState::from_uncertain(a);
-        assert!(d.split_component(0).is_err());
-    }
-
-    #[test]
-    fn test_split_component_rejects_out_of_range() {
-        let a = small_uncertain("A");
-        let d = DiffuseState::from_uncertain(a);
-        assert!(d.split_component(7).is_err());
+        let mut direction = DVector::<f64>::zeros(6);
+        direction[0] = 1.0;
+        assert!(split_axial_k3_along(&a, &direction).is_err());
     }
 
     /// `split_axial_k3_along` must preserve the mixture's total mean
@@ -1314,9 +1259,11 @@ mod tests {
         let comps: Vec<UncertainState> = parts.into_iter().map(|(_, c)| c).collect();
         let mixture = DiffuseState::new(weights, comps).unwrap();
 
-        // Asserted in element coordinates, where the split arithmetic lives. See
-        // `test_split_component_preserves_moments` for why the cartesian mean is not the
-        // invariant here.
+        // Asserted in element coordinates, where the split arithmetic lives. The
+        // cartesian weighted mean of the children is deliberately not preserved: the map
+        // from elements to a state is nonlinear, and that curvature is the whole reason
+        // the element representation exists. Requiring it here would be requiring the
+        // mixture to be a worse description than it is.
         let element_cov = component.cov_matrix.clone();
         let (mean, cov_total) = mixture.mean_and_covariance().unwrap();
         let m = base.offset_to(&mean.elements);

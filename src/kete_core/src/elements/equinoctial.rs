@@ -460,7 +460,7 @@ impl EquinoctialElements {
     /// Fails if the motion is rectilinear, where the angular momentum vanishes and the
     /// orbit plane is undefined; if the orbit is exactly retrograde, where the pole sits
     /// on the seam and `(h, k)` is unbounded; or if the input contains non-finite values.
-    pub(super) fn from_pos_vel(
+    pub(crate) fn from_pos_vel(
         desig: Desig,
         epoch: Time<TDB>,
         pos: &Vector3<f64>,

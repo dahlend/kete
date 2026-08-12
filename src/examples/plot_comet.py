@@ -70,7 +70,7 @@ def plot_vector(wcs, vec_a, vec_b, label, x=0.2, y=0.2, c="w", length=0.1, **kwa
     kwargs["width"] = kwargs.get("width", 20)
     plt.arrow(x, y, *diff_dir * length, color=c, **kwargs)
     plt.text(*(diff_dir * 1.5 * length + [x, y]), label, c=c, ha="center", va="center")
-    plt.scatter(x, y, c="grey", s=5)
+    plt.scatter(x, y, c="gray", s=5)
 
 
 def plot_vectors(wcs, state, fov, x=0.2, y=0.2):
@@ -92,8 +92,8 @@ def plot_vectors(wcs, state, fov, x=0.2, y=0.2):
 
     plot_vector(wcs, vec, past_vec, r"-$v$", x=x, y=y, c="r")
     plot_vector(wcs, vec, sun_vec, r"r$_\odot$", x=x, y=y, c=(0, 0.5, 1))
-    plot_vector(wcs, vec, north_vec, r"N", c="grey", x=x, y=y, ls="--", lw=0.1)
-    plot_vector(wcs, vec, east_vec, r"E", c="grey", x=x, y=y, ls="--", lw=0.1)
+    plot_vector(wcs, vec, north_vec, r"N", c="gray", x=x, y=y, ls="--", lw=0.1)
+    plot_vector(wcs, vec, east_vec, r"E", c="gray", x=x, y=y, ls="--", lw=0.1)
 
 
 def plot_syndyne(wcs, state, fov, beta, back_days=90, day_step=1, **kwargs):

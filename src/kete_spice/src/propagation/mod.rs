@@ -10,7 +10,7 @@
 //!   input pos/vel before delegating to an inner `ParameterizedForce`.
 //! - [`compute_state_transition`]: state transition matrix between two epochs
 //!   under SPK gravity.
-//! - [`propagate_diffuse_state_adaptive`]: variational propagation of
+//! - [`propagate_diffuse_state`]: variational propagation of
 //!   [`DiffuseState`](kete_core::state::DiffuseState) mixtures with adaptive
 //!   sigma-point splitting.
 //! - [`propagate_n_body_vec`] / [`closest_approach`]: batch propagation and
@@ -30,9 +30,8 @@ mod jacobian;
 pub use analysis::closest_approach;
 pub use batch::{AccelVecMeta, propagate_n_body_vec, vec_accel};
 pub use kete_core::state::{
-    LinearityDiagnosis, SplitConfig, mixture_sigma_point_divergence,
-    propagate_diffuse_state_adaptive, propagate_elements_with_sensitivity, propagate_uncertain,
-    propagate_with_diagnosis, sigma_point_divergence,
+    DEFAULT_STEP_DAYS, SplitConfig, StepReport, Termination, propagate_diffuse_state,
+    propagate_elements_with_sensitivity, propagate_uncertain, step_diffuse_state,
 };
 pub use recenter::Recenter;
 pub use spk_n_body::{SpkNBody, SpkNonGravs};

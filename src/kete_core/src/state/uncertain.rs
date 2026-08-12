@@ -36,8 +36,10 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use crate::elements::{CometElements, EquinoctialElements};
+use crate::forces::NonGravMask;
 use crate::frames::{CenterBody, DynCenter, Ecliptic, InertialFrame};
 use crate::prelude::{Desig, Error, KeteResult, State};
+use crate::state::ProbeSet;
 use crate::time::{TDB, Time};
 use nalgebra::{DMatrix, Matrix6, Vector3, Vector6};
 use rand::SeedableRng;
@@ -81,20 +83,68 @@ pub struct UncertainState {
     /// pure orbit-determination state.
     pub free_params: Vec<f64>,
 
-    /// Peak sigma-point Mahalanobis divergence ever recorded for this
-    /// trajectory during adaptive propagation, never reset.  The metric
-    /// measures the linear (STM-based) prediction error as a
-    /// sigma-equivalent distance in the propagated covariance -- see
-    /// [`sigma_point_divergence`](crate::state::sigma_point_divergence)
-    /// for the full definition.
+    /// Non-gravitational model the free parameters belong to, or `None` for a state
+    /// under gravity alone.
     ///
-    /// `0.0` means the state has never been propagated through adaptive
-    /// diagnosis, or every diagnosis returned a clean linear result.
-    /// A value above the adaptive `split_threshold` indicates the
-    /// linear representation of this component lost accuracy during its
-    /// history and could not be split further (e.g. due to a
-    /// `max_components` budget cap).  Inherited by split children.
-    pub max_unresolved_divergence: f64,
+    /// [`Self::free_params`] holds parameter *values*; this holds the model that gives
+    /// them meaning, and which of its parameters are free. A state carrying values
+    /// without a model does not describe something that can be propagated, so the two
+    /// travel together rather than being paired up by a caller.
+    pub non_grav: Option<NonGravMask>,
+
+    /// Probes carried since this component was last seeded, or `None` for a component
+    /// that has never been marched.
+    ///
+    /// See [`ProbeSet`]. The probes measure this covariance's departure from linearity
+    /// under one force model, so they belong to this component and are dropped by any
+    /// constructor that builds a new one - a split child, a mixture mean, a fitted state.
+    /// `None` means [`step_diffuse_state`](crate::state::step_diffuse_state) seeds fresh,
+    /// which restarts the measurement.
+    ///
+    /// The probes themselves are the controller's own machinery and are not reachable
+    /// from outside the crate. What a caller can do is ask whether they are there, with
+    /// [`Self::has_probes`], and drop them, with [`Self::clear_probes`].
+    pub(crate) probes: Option<ProbeSet>,
+
+    /// Covariance whose position image whitens [`Self::eta`], `(6 + Np) x (6 + Np)` in the
+    /// same element coordinates as [`Self::cov_matrix`], or `None` for a component that has
+    /// never been marched.
+    ///
+    /// **This is not the component's own covariance once it has split.** A component that
+    /// has never split carries its own, so the two are equal and `eta` reads in sigma of
+    /// the component itself. A split child inherits its parent's and carries it onward, so
+    /// `eta` keeps reading against the width the density had before the split rather than
+    /// against the narrower width the split produced.
+    ///
+    /// The reason is that a yardstick which shrinks with every split makes the threshold
+    /// mean something different at every depth: the residual falls when a component is
+    /// split, but so does its own covariance, so their ratio barely moves and the
+    /// controller cannot tell a resolved cascade from a stalled one. Holding the reference
+    /// fixed across a split makes `eta` fall when a split helps, which is what
+    /// `split_threshold` is thresholding on.
+    ///
+    /// The cost is that a deep child reports how much its error matters to the mixture,
+    /// not how well it describes its own local density; those are the same number only
+    /// until the first split. [`Self::residual_meters`] is unwhitened and answers the
+    /// second question at any depth.
+    pub whitening_cov: Option<DMatrix<f64>>,
+
+    /// Departure from linearity this component was carrying at its epoch, in sigma of the
+    /// position distribution [`Self::whitening_cov`] describes, or `None` if it has never
+    /// been marched.
+    ///
+    /// Measured against probes carried since the component last split, so it says how far
+    /// the component is from linear now rather than what the last leg added. Read it with
+    /// [`Self::residual_meters`]: against the propagator's own resolution the pair
+    /// separates curvature from numerical noise.
+    pub eta: Option<f64>,
+
+    /// The residual behind [`Self::eta`], as a cartesian position offset in meters, or
+    /// `None` if this component has never been marched.
+    ///
+    /// The propagator places a position to roughly a meter, so `eta 0.003` standing on a
+    /// residual of `1.2` m is numerical noise rather than a curved flow.
+    pub residual_meters: Option<f64>,
 }
 
 impl UncertainState {
@@ -123,7 +173,22 @@ impl UncertainState {
             elements,
             cov_matrix,
             free_params,
-            max_unresolved_divergence: 0.0,
+            // A newly built component has no march behind it. Every other constructor
+            // routes through here, so a split child, a mixture mean or a fitted state all
+            // start with the measurement unstarted rather than inheriting one taken
+            // against a covariance that no longer exists.
+            //
+            // The whitening reference starts unset for the same reason, and the controller
+            // seeds it to this covariance on the first leg. A split child is the one case
+            // where it must survive rather than restart, so the splitter writes the
+            // parent's onto the children after building them here.
+            // The model is set by whoever knows it: a constructor that was given
+            // one, or the splitter and the propagator carrying the parent's forward.
+            non_grav: None,
+            probes: None,
+            whitening_cov: None,
+            eta: None,
+            residual_meters: None,
         })
     }
 
@@ -170,6 +235,27 @@ impl UncertainState {
     /// Fails if the elements are outside their physical domain, or too close to the seam.
     pub fn cartesian_covariance<F: InertialFrame>(&self) -> KeteResult<DMatrix<f64>> {
         covariance_from_equinoctial::<F>(&self.elements, &self.cov_matrix)
+    }
+
+    /// Whether this state carries probes, and so continues a measurement rather than
+    /// restarting one.
+    ///
+    /// A state without them is seeded on the next leg, which restarts `eta` from zero.
+    /// [`StepReport::seeded`](crate::state::StepReport::seeded) counts that when it
+    /// happens; this answers it in advance.
+    #[must_use]
+    pub fn has_probes(&self) -> bool {
+        self.probes.is_some()
+    }
+
+    /// Drop the probes, so the next leg seeds fresh ones.
+    ///
+    /// Use this when a state is being reused rather than marched onward: its probes were
+    /// integrated under one force model from one anchor, and against any other they
+    /// measure a flow that was never propagated. The cost is a restarted `eta`, which the
+    /// next step reports.
+    pub fn clear_probes(&mut self) {
+        self.probes = None;
     }
 
     /// Epoch of the best-fit orbit.
@@ -413,15 +499,15 @@ pub fn covariance_from_equinoctial<F: InertialFrame>(
 /// the mean. This measures what it discards, which grows as the square of the input's
 /// width and is invisible to any comparison of the matrices alone.
 ///
-/// The returned value is on the same scale as
-/// [`sigma_point_divergence`](crate::state::sigma_point_divergence): how many sigma the
-/// exact answer sits from the linear one, inside the converted Gaussian. A value well
-/// below a splitting threshold (about 3) means the element Gaussian is a faithful
-/// description of the input and any structure that develops later comes from the
-/// dynamics, not from the entry conversion. A larger value means the input is already too
-/// wide for a single Gaussian in element coordinates and should be split or sampled
-/// rather than converted whole. Infinity is returned when a probe point has no element
-/// representation at all.
+/// The returned value reads as "how many sigma the exact answer sits from the linear
+/// one, inside the converted Gaussian". A value well below one means the element
+/// Gaussian is a faithful description of the input and any structure that develops
+/// later comes from the dynamics, not from the entry conversion. A larger value means
+/// the input is already too wide for a single Gaussian in element coordinates and
+/// should be split or sampled rather than converted whole. Infinity is returned when a
+/// probe point has no element representation at all. This measures the conversion in
+/// full element space, which is a different question from the position-space `eta` the
+/// adaptive splitter thresholds on; the two are not on a shared scale.
 ///
 /// The probes are placed at `+/- sigma_factor` standard deviations along each eigenvector
 /// of the leading `6 x 6` block of `cov`, in frame `F`. Rows and columns beyond the sixth
@@ -666,6 +752,92 @@ fn perturb_element(elements: &CometElements, col: usize, delta: f64) -> CometEle
         _ => unreachable!("column index must be 0..6"),
     }
     e
+}
+
+impl UncertainState {
+    /// Save into a binary file.
+    ///
+    /// # Errors
+    /// Returns an error if the file cannot be created or written.
+    pub fn save(&self, filename: String) -> KeteResult<()> {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use std::fs::File;
+        use std::io::BufWriter;
+        let f = BufWriter::new(File::create(filename)?);
+        let mut gz = GzEncoder::new(f, Compression::default());
+        crate::io::binary::write_uncertain_kete_file(self, &mut gz)?;
+        let _ = gz.finish()?;
+        Ok(())
+    }
+
+    /// Save a vector of `UncertainState` into a binary file.
+    ///
+    /// # Errors
+    /// Returns an error if the file cannot be created or written.
+    pub fn save_vec(vec: &[Self], filename: String) -> KeteResult<()> {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use std::fs::File;
+        use std::io::BufWriter;
+        let f = BufWriter::new(File::create(filename)?);
+        let mut gz = GzEncoder::new(f, Compression::default());
+        crate::io::binary::write_uncertain_vec_kete_file(vec, &mut gz)?;
+        let _ = gz.finish()?;
+        Ok(())
+    }
+
+    /// Load from a binary file.
+    ///
+    /// # Errors
+    /// Returns an error if the file cannot be read, or if it holds a collection
+    /// or a different type rather than a single state.
+    pub fn load(filename: String) -> KeteResult<Self> {
+        match Self::load_file(filename)? {
+            crate::io::binary::KeteFileType::Uncertain(state) => Ok(*state),
+            crate::io::binary::KeteFileType::UncertainVec(v) => Err(Error::ValueError(format!(
+                "Expected a single UncertainState, but found a vector of length {}.",
+                v.len()
+            ))),
+            crate::io::binary::KeteFileType::Single(_)
+            | crate::io::binary::KeteFileType::Vec(_) => Err(Error::ValueError(
+                "Expected an UncertainState, but the file holds SimultaneousStates.".into(),
+            )),
+            crate::io::binary::KeteFileType::Diffuse(_)
+            | crate::io::binary::KeteFileType::DiffuseVec(_) => Err(Error::ValueError(
+                "Expected an UncertainState, but the file holds DiffuseStates.".into(),
+            )),
+        }
+    }
+
+    /// Load a vector of `UncertainState` from a binary file.
+    ///
+    /// A file holding a single state reads back as a collection of one.
+    ///
+    /// # Errors
+    /// Returns an error if the file cannot be read, or holds a different type.
+    pub fn load_vec(filename: String) -> KeteResult<Vec<Self>> {
+        match Self::load_file(filename)? {
+            crate::io::binary::KeteFileType::UncertainVec(states) => Ok(states),
+            crate::io::binary::KeteFileType::Uncertain(state) => Ok(vec![*state]),
+            crate::io::binary::KeteFileType::Single(_)
+            | crate::io::binary::KeteFileType::Vec(_) => Err(Error::ValueError(
+                "Expected UncertainStates, but the file holds SimultaneousStates.".into(),
+            )),
+            crate::io::binary::KeteFileType::Diffuse(_)
+            | crate::io::binary::KeteFileType::DiffuseVec(_) => Err(Error::ValueError(
+                "Expected UncertainStates, but the file holds DiffuseStates.".into(),
+            )),
+        }
+    }
+
+    fn load_file(filename: String) -> KeteResult<crate::io::binary::KeteFileType> {
+        use flate2::read::GzDecoder;
+        use std::fs::File;
+        use std::io::BufReader;
+        let mut f = BufReader::new(GzDecoder::new(File::open(filename)?));
+        crate::io::binary::read_kete_file(&mut f)
+    }
 }
 
 #[cfg(test)]
@@ -1193,7 +1365,7 @@ mod tests {
                 .unwrap();
 
             // Tolerance is set from the column's own scale rather than from each entry:
-            // an entry a thousand times smaller than its neighbours is not determined to
+            // an entry a thousand times smaller than its neighbors is not determined to
             // the same relative accuracy and requiring it to be is not a real check.
             let scale: f64 = (0..6).map(|r| jac[(r, col)].powi(2)).sum::<f64>().sqrt();
             for row in 0..6 {

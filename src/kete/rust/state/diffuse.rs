@@ -7,13 +7,69 @@ use kete_core::forces::NonGravMask;
 use kete_core::forces::ParameterizedForce;
 use kete_core::frames::Equatorial;
 use kete_core::prelude::*;
+use kete_core::state::{DEFAULT_STEP_DAYS, StepReport, Termination};
 use kete_spice::propagation::SpkNonGravs;
-use kete_spice::propagation::{
-    SplitConfig, mixture_sigma_point_divergence, propagate_diffuse_state_adaptive,
-};
+use kete_spice::propagation::{SplitConfig, propagate_diffuse_state, step_diffuse_state};
 use kete_spice::spk::LOADED_SPK;
 use nalgebra::Vector3;
 use pyo3::prelude::*;
+
+/// What one leg of an adaptive march decided.
+///
+/// Returned alongside the mixture by :meth:`kete.DiffuseState.step` and
+/// :meth:`kete.DiffuseState.propagate`.  Everything about the *state* a leg produced -
+/// per-component ``eta``, the residual behind it - is on the mixture itself; this holds
+/// only what the mixture cannot say.
+#[pyclass(
+    frozen,
+    module = "kete",
+    name = "StepReport",
+    get_all,
+    skip_from_py_object
+)]
+#[derive(Clone, Copy, Debug)]
+pub struct PyStepReport {
+    /// Why splitting stopped: ``"converged"``, ``"component_cap"`` or
+    /// ``"no_split_direction"``.
+    ///
+    /// ``"converged"`` means every component finished the leg under ``split_threshold``.
+    /// ``"component_cap"`` means a component was still over it and ``max_components``
+    /// refused the split, so raising the budget would change the answer.
+    /// ``"no_split_direction"`` means a component was still over it but its covariance
+    /// carried no direction to split along, so no budget would have helped.
+    pub termination: &'static str,
+
+    /// How many components were given fresh probes on this leg.
+    ///
+    /// Seeding restarts a component's measurement from zero.  That is correct for a new
+    /// mixture and for the children of a split; for a component rebuilt mid-march it is a
+    /// silent loss of accumulated history, which is why it is counted rather than left to
+    /// be inferred.
+    pub seeded: usize,
+}
+
+impl From<StepReport> for PyStepReport {
+    fn from(report: StepReport) -> Self {
+        Self {
+            termination: match report.termination {
+                Termination::Converged => "converged",
+                Termination::ComponentCap => "component_cap",
+                Termination::NoSplitDirection => "no_split_direction",
+            },
+            seeded: report.seeded,
+        }
+    }
+}
+
+#[pymethods]
+impl PyStepReport {
+    fn __repr__(&self) -> String {
+        format!(
+            "StepReport(termination={:?}, seeded={})",
+            self.termination, self.seeded
+        )
+    }
+}
 
 /// A weighted mixture of :class:`~kete.UncertainState` components,
 /// representing a diffuse cloud of states.
@@ -25,33 +81,38 @@ use pyo3::prelude::*;
 #[pyclass(frozen, module = "kete", name = "DiffuseState", from_py_object)]
 #[derive(Clone)]
 pub struct PyDiffuseState {
-    /// Underlying weighted mixture of states.
+    /// Underlying weighted mixture, carrying its components, the model their
+    /// free parameters belong to, and its perturber set.
     pub mixture: DiffuseState,
-    /// All-`None` parameter mask over the non-grav ParameterizedForce template.
-    /// Free-parameter values are stored per-component in each component's
-    /// `free_params`; the mask itself holds no frozen values.
-    pub non_grav: Option<NonGravMask>,
 }
 
 impl std::fmt::Debug for PyDiffuseState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PyDiffuseState")
             .field("mixture", &self.mixture)
-            .field("non_grav_present", &self.non_grav.is_some())
+            .field(
+                "non_grav_present",
+                &self.mixture.components[0].non_grav.is_some(),
+            )
+            .field("include_asteroids", &self.mixture.include_asteroids)
             .finish()
     }
 }
 
 impl PyDiffuseState {
-    fn build_forces<'a>(
-        &self,
-        spk: &'a kete_spice::spk::SpkCollection,
-        include_extended: bool,
-    ) -> SpkNonGravs<'a> {
-        if let Some(ref ng) = self.non_grav {
-            SpkNonGravs::with_non_grav_mask(spk, include_extended, ng.clone())
+    /// The model this mixture's free parameters belong to.
+    ///
+    /// Every component carries it and `DiffuseState::new` checks they agree, so
+    /// reading the first is reading all of them.
+    fn mask(&self) -> Option<&NonGravMask> {
+        self.mixture.components.first()?.non_grav.as_ref()
+    }
+
+    fn build_forces<'a>(&self, spk: &'a kete_spice::spk::SpkCollection) -> SpkNonGravs<'a> {
+        if let Some(ng) = self.mask() {
+            SpkNonGravs::with_non_grav_mask(spk, self.mixture.include_asteroids, ng.clone())
         } else {
-            SpkNonGravs::gravity(spk, include_extended)
+            SpkNonGravs::gravity(spk, self.mixture.include_asteroids)
         }
     }
 
@@ -74,12 +135,23 @@ impl PyDiffuseState {
 impl PyDiffuseState {
     /// Wrap a single :class:`~kete.UncertainState` as a one-component
     /// mixture with weight ``1.0``.
+    ///
+    /// Parameters
+    /// ----------
+    /// state : :class:`~kete.UncertainState`
+    ///     The component to wrap.
+    /// include_asteroids : bool
+    ///     Whether the largest asteroids perturb this mixture.  Fixed here rather than
+    ///     supplied per call, so that every leg of a march runs under one force model -
+    ///     see :attr:`include_asteroids`.
     #[staticmethod]
-    fn from_uncertain(state: PyUncertainState) -> Self {
-        Self {
-            mixture: DiffuseState::from_uncertain(state.state),
-            non_grav: state.non_grav,
-        }
+    #[pyo3(signature = (state, include_asteroids=false))]
+    fn from_uncertain(state: PyUncertainState, include_asteroids: bool) -> Self {
+        let mut component = state.state;
+        component.clear_probes();
+        let mut mixture = DiffuseState::from_uncertain(component);
+        mixture.include_asteroids = include_asteroids;
+        Self { mixture }
     }
 
     /// Construct a mixture from explicit weights and components.
@@ -87,33 +159,55 @@ impl PyDiffuseState {
     /// All components must share the same NonGravModel template
     /// (variant + fixed coefficients); only their free-parameter values
     /// may differ.
+    ///
+    /// Parameters
+    /// ----------
+    /// weights : list[float]
+    ///     Mixture weights, non-negative and summing to one.
+    /// components : list[:class:`~kete.UncertainState`]
+    ///     The components, sharing an epoch, center and covariance dimension.
+    /// include_asteroids : bool
+    ///     Whether the largest asteroids perturb this mixture - see
+    ///     :attr:`include_asteroids`.
     #[staticmethod]
-    fn new(weights: Vec<f64>, components: Vec<PyUncertainState>) -> PyResult<Self> {
-        if components.is_empty() {
-            return Err(
-                Error::ValueError("DiffuseState must have at least one component".into()).into(),
-            );
-        }
-        // Verify all components share the same non_grav template.
-        let first_ng = components[0].non_grav.clone();
-        for (i, c) in components.iter().enumerate().skip(1) {
-            let same = match (&first_ng, &c.non_grav) {
-                (None, None) => true,
-                (Some(a), Some(b)) => a.free_param_names() == b.free_param_names(),
-                _ => false,
-            };
-            if !same {
-                return Err(Error::ValueError(format!(
-                    "component {i} non_grav variant does not match component 0"
-                ))
-                .into());
-            }
-        }
-        let raw: Vec<UncertainState> = components.into_iter().map(|c| c.state).collect();
-        Ok(Self {
-            mixture: DiffuseState::new(weights, raw)?,
-            non_grav: first_ng,
-        })
+    #[pyo3(signature = (weights, components, include_asteroids=false))]
+    fn new(
+        weights: Vec<f64>,
+        components: Vec<PyUncertainState>,
+        include_asteroids: bool,
+    ) -> PyResult<Self> {
+        // The components must agree on a force model, which `DiffuseState::new`
+        // checks, along with the weights and the shared epoch.
+        //
+        // Building a mixture is not continuing a march. The components can come from
+        // anywhere - another mixture, another force model, a different arc - and the
+        // probes they carry were integrated under whatever model produced them, which
+        // this call is free to contradict. Dropping them costs a reseed on the next step,
+        // reported through ``StepReport.seeded``; keeping them would measure the new
+        // mixture's flow against the old one's, and say nothing about it.
+        let raw: Vec<UncertainState> = components
+            .into_iter()
+            .map(|c| {
+                let mut state = c.state;
+                state.clear_probes();
+                state
+            })
+            .collect();
+        let mut mixture = DiffuseState::new(weights, raw)?;
+        mixture.include_asteroids = include_asteroids;
+        Ok(Self { mixture })
+    }
+
+    /// Whether the largest asteroids perturb this mixture.
+    ///
+    /// With :attr:`non_grav` this is the whole force model, fixed when the mixture is
+    /// built.  Pinning it here rather than taking it per call is what lets a march be
+    /// driven one leg at a time: the components carry probes integrated under this model,
+    /// and a model that changed between legs would leave them measuring a flow that is no
+    /// longer the one being propagated.
+    #[getter]
+    fn include_asteroids(&self) -> bool {
+        self.mixture.include_asteroids
     }
 
     /// Mixture weights (a copy of the underlying vector).
@@ -125,13 +219,9 @@ impl PyDiffuseState {
     /// Mixture components as a list of :class:`~kete.UncertainState`.
     #[getter]
     fn components(&self) -> Vec<PyUncertainState> {
-        let template = self.non_grav.clone();
         (0..self.mixture.n_components())
             .filter_map(|i| self.mixture.component(i).ok())
-            .map(|us| PyUncertainState {
-                state: us,
-                non_grav: template.clone(),
-            })
+            .map(|state| PyUncertainState { state })
             .collect()
     }
 
@@ -147,30 +237,85 @@ impl PyDiffuseState {
         self.mixture.n_components()
     }
 
-    /// Maximum ``max_unresolved_divergence`` across all components.
+    /// Largest nonlinearity any component is carrying, in sigma of the propagated position
+    /// distribution that component is measured against.
     ///
-    /// This is the peak STM-linearization error recorded anywhere in
-    /// the mixture's history.  See
-    /// :attr:`~kete.UncertainState.max_unresolved_divergence` for the
-    /// per-component metric definition.  Values above the adaptive
-    /// ``split_threshold`` used during propagation indicate at least
-    /// one component is under-resolved -- typically because the
-    /// ``max_components`` budget was full or the chaos has driven the
-    /// covariance past the linear regime.
+    /// ``0.1`` means the linear model landed a tenth of a cloud width away from where the
+    /// probes went.  The width is the component's own until it splits; a split child keeps
+    /// measuring against the width its parent had, so that a split which removes curvature
+    /// lowers the number rather than having the gain cancelled by the narrower covariance
+    /// the split produced.  The value therefore means the same thing at every split depth,
+    /// and a deep component reports how much its error matters to the mixture rather than
+    /// how well it describes its own local density -
+    /// :attr:`component_residual_meters` answers the second question at any depth.
+    ///
+    /// This is a statement about what the splitter did, not an
+    /// error bound on the represented density: a value above the ``split_threshold`` used
+    /// at propagation time means at least one component was still failing the test when
+    /// the march stopped, and the :class:`StepReport` returned by the last step says why
+    /// it stopped splitting.
+    ///
+    /// Read off the components themselves, so it describes the mixture in hand rather
+    /// than the call that produced it.  ``None`` if any component has never been marched,
+    /// which is a different statement from zero.
     #[getter]
-    fn max_unresolved_divergence(&self) -> f64 {
-        self.mixture.max_unresolved_divergence()
+    fn max_eta(&self) -> Option<f64> {
+        self.mixture.max_eta()
     }
 
-    /// Total weight of components whose ``max_unresolved_divergence``
-    /// exceeds ``threshold``.
+    /// Per-component nonlinearity at this epoch, in mixture order, or ``None`` if any
+    /// component has never been marched.
     ///
-    /// Useful to ask "how much of the distribution is under-resolved
-    /// past my tolerance?"  Pass the same ``split_threshold`` used at
-    /// propagation time to get a probability-mass measure of
-    /// under-resolution.
-    fn unresolved_weight(&self, threshold: f64) -> f64 {
-        self.mixture.unresolved_weight(threshold)
+    /// Each is measured against probes carried since that component last split, so it says
+    /// how far the component is from linear now rather than what the last leg added.
+    ///
+    /// Publishing these is what lets a starved tail be seen.  Splitting yields weights
+    /// ``w/6, 2w/3, w/6`` and the splitter serves components in order of
+    /// ``weight * eta``, so a low-weight component can be left badly represented while
+    /// the mixture as a whole looks resolved.  Work that cares about exactly that tail -
+    /// impact probability is the motivating case - should read these, and build a
+    /// :class:`DiffuseState` over the tail region and propagate it directly rather than
+    /// expecting the ranking to reach it.
+    #[getter]
+    fn component_eta(&self) -> Option<Vec<f64>> {
+        self.mixture.components.iter().map(|c| c.eta).collect()
+    }
+
+    /// Worst residual behind :attr:`max_eta`, as a cartesian position offset in
+    /// meters, or ``None`` if any component has never been marched.
+    ///
+    /// This is what makes the metric's own resolution legible.  The propagator has an
+    /// absolute position resolution of roughly a meter, so ``max_eta`` of ``0.003``
+    /// standing on a residual of ``1.2`` m says the number is numerical noise rather than
+    /// a curved flow - a covariance direction narrower than the propagator resolves -
+    /// with no second run and no estimator in the library.
+    #[getter]
+    fn residual_meters(&self) -> Option<f64> {
+        self.mixture.residual_meters()
+    }
+
+    /// Per-component residual in meters, in mixture order, or ``None`` if any component
+    /// has never been marched.
+    ///
+    /// The partner of :attr:`component_eta`: the two are read together, since a large
+    /// ``eta`` standing on a residual at the propagator's resolution is numerics rather
+    /// than curvature.
+    #[getter]
+    fn component_residual_meters(&self) -> Option<Vec<f64>> {
+        self.mixture
+            .components
+            .iter()
+            .map(|c| c.residual_meters)
+            .collect()
+    }
+
+    /// Total weight of components whose nonlinearity exceeds ``threshold``.
+    ///
+    /// Pass the ``split_threshold`` used at propagation time to read how much of the
+    /// distribution finished under-resolved.  The component count says nothing about
+    /// where the weight sits, which is what this answers.
+    fn weight_above_eta(&self, threshold: f64) -> Option<f64> {
+        self.mixture.weight_above_eta(threshold)
     }
 
     /// Number of free parameters per component.
@@ -189,8 +334,8 @@ impl PyDiffuseState {
     /// row/column order.
     ///
     /// Always starts with ``["p", "f", "g", "h", "k", "L"]``, the modified equinoctial
-    /// elements described on :attr:`kete.UncertainState.cov_matrix`, followed by any
-    /// non-gravitational parameter names.  Identical for every component (all components
+    /// elements described on :attr:`kete.UncertainState.cov_matrix`, with ``L`` in
+    /// degrees, followed by any non-gravitational parameter names.  Identical for every component (all components
     /// share the same covariance layout).
     #[getter]
     fn param_names(&self) -> Vec<String> {
@@ -198,7 +343,7 @@ impl PyDiffuseState {
             .iter()
             .map(|s| String::from(*s))
             .collect();
-        if let Some(ref ng) = self.non_grav {
+        if let Some(ng) = self.mask() {
             names.extend(ng.free_param_names().into_iter().map(String::from));
         }
         names
@@ -209,7 +354,7 @@ impl PyDiffuseState {
     /// Parameter values are taken from the first component's `free_params`.
     #[getter]
     fn non_grav(&self) -> Option<PyNonGravModel> {
-        let mask = self.non_grav.as_ref()?;
+        let mask = self.mask()?;
         let values = self.mixture.free_params();
         let full = mask.merge(values).ok()?;
         PyNonGravModel::from_force(&mask.inner, &full)
@@ -231,7 +376,7 @@ impl PyDiffuseState {
                 spk.try_change_center(&mut st, 10)?;
             }
             states.push(st.into());
-            let ng = self.non_grav.as_ref().and_then(|mask| {
+            let ng = self.mask().and_then(|mask| {
                 let raw = if sampled_params.is_empty() {
                     self.mixture.free_params()
                 } else {
@@ -245,125 +390,225 @@ impl PyDiffuseState {
         Ok((states, non_gravs))
     }
 
-    /// Recursively K=3 split every component along its dominant covariance
-    /// eigenvector, ``depth`` times.
+    /// Propagate to ``jd``, splitting components where the flow stops being linear over
+    /// their own covariance.
     ///
-    /// Each level multiplies the component count by 3 and recomputes the
-    /// dominant eigenvector on each child's updated covariance, so
-    /// successive levels target the next-most-uncertain direction.  Use
-    /// before propagation as a static pre-split when the initial mixture
-    /// is too coarse to capture later nonlinearity.
+    /// Every component is probed along every direction its covariance carries, at twice
+    /// that direction's own width.  The probes are integrated along with the component and
+    /// never re-placed, and their departure from the linear prediction is read off in sigma
+    /// of the propagated cloud, so what is measured is how far the component has drifted
+    /// from linear since it last split rather than what one leg added.  Re-placing the
+    /// probes each leg would hide nonlinearity that arrives gradually.
+    ///
+    /// The arc is cut into legs of ``step_days`` and marched.  A component that exceeds
+    /// ``split_threshold`` is rolled back to the start of the leg, split three ways along
+    /// its worst probe's direction, and the leg is redone with the children on fresh
+    /// probes.  Checking at every leg boundary is what places a split near the time the
+    /// flow actually stops being linear.
+    ///
+    /// This is :meth:`step` folded over that grid, and nothing more: the probes ride on
+    /// the components, so driving the same legs by hand measures the same thing.
+    ///
+    /// Returns ``(mixture, report)``.  The mixture reports where the test was still
+    /// failing through :attr:`max_eta`, :attr:`component_eta` and
+    /// :attr:`residual_meters`; the :class:`StepReport` says why the final leg stopped
+    /// splitting.  Those describe what the splitter did; none of them is an error bound on
+    /// the represented density.
     ///
     /// Parameters
     /// ----------
-    /// depth : int
-    ///     Number of recursive split levels.  ``0`` returns a copy.
-    #[pyo3(signature = (depth=1))]
-    fn split_all(&self, depth: u32) -> PyResult<Self> {
-        let mixture = self.mixture.split_all(depth)?;
-        Ok(Self {
-            mixture,
-            non_grav: self.non_grav.clone(),
-        })
-    }
-
-    /// Adaptively split nonlinear components, then propagate.
-    ///
-    /// ``split_threshold`` is a Mahalanobis-distance threshold in the
-    /// propagated covariance (element coordinates, floored against
-    /// near-null directions); see
-    /// :attr:`~kete.UncertainState.max_unresolved_divergence` for the
-    /// metric definition.  The default ``0.1`` is the density
-    /// calibration: it keeps the represented probability density
-    /// faithful, since probes off by a few tenths of a sigma already
-    /// distort the distribution's shape.  Pass ``3.0``-``4.0`` when only
-    /// the mean and covariance matter (the state-estimation calibration:
-    /// 3.0 is ~90% containment for samples drawn from the predicted
-    /// Gaussian), at far fewer components.
+    /// jd :
+    ///     Target epoch.  May be earlier than the mixture's own epoch.
+    /// split_threshold :
+    ///     The accuracy/cost dial.  A component is split when a probe at twice its own
+    ///     width lands more than this many sigma of a predicted position distribution
+    ///     away from the linear model - see :attr:`max_eta` for which distribution, which
+    ///     is what makes the setting mean the same thing at every split depth.
+    ///     Tightening it splits earlier and
+    ///     more often: the mixture tracks the true density more faithfully and the run
+    ///     costs more components and more time.  That trade is the setting's entire
+    ///     meaning.
+    /// max_components :
+    ///     Hard cap on the returned component count - the brake on what a tight
+    ///     threshold may spend.  Splits are three-way, so powers of three avoid
+    ///     truncating a cascade mid-generation.  When it binds, the returned report
+    ///     says ``"component_cap"``.
+    /// step_days :
+    ///     Length of one leg of the time grid, in days.  Equal steps of time, so every
+    ///     component reaches the same leg boundaries whatever its orbit.  This sets the
+    ///     time resolution a split is placed at rather than the accuracy of the result -
+    ///     composing the propagation across legs is exact, so subdividing an arc changes
+    ///     neither the propagated covariance nor the reported nonlinearity, which means
+    ///     ``split_threshold`` is the same demand at any step.  Deep encounters do not
+    ///     need a shorter step: a split placed anywhere in the pre-encounter linear
+    ///     window is equivalent, since the children are narrow enough to propagate
+    ///     linearly to the encounter from any lead.  Lengthen it on arcs of many
+    ///     millennia, where the cost is ``arc / step_days`` legs and nothing caps that
+    ///     on your behalf.  The arc's remainder is taken as a shorter first leg, so
+    ///     every leg after it is the step you asked for rather than the arc divided
+    ///     into equal parts near that length.
     #[pyo3(signature = (
         jd,
-        split_threshold=0.1,
-        max_components=1024,
-        max_split_depth=10,
-        n_axes=3,
-        sigma_factor=1.0,
-        position_spacing_au=Some(0.001),
-        min_split_improvement=0.1,
-        include_asteroids=false,
+        split_threshold=0.15,
+        max_components=729,
+        step_days=DEFAULT_STEP_DAYS,
     ))]
-    #[allow(clippy::too_many_arguments)]
     fn propagate(
         &self,
         py: Python<'_>,
         jd: PyTime,
         split_threshold: f64,
         max_components: usize,
-        max_split_depth: u32,
-        n_axes: usize,
-        sigma_factor: f64,
-        position_spacing_au: Option<f64>,
-        min_split_improvement: f64,
-        include_asteroids: bool,
-    ) -> PyResult<Self> {
+        step_days: f64,
+    ) -> PyResult<(Self, PyStepReport)> {
         let cfg = SplitConfig {
             split_threshold,
             max_components,
-            max_split_depth,
-            n_axes,
-            sigma_factor,
-            position_spacing_au,
-            min_split_improvement,
         };
         let target: Time<TDB> = jd.into();
         py.detach(|| {
             let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-            let forces = self.build_forces(&spk, include_asteroids);
-            let propagated = propagate_diffuse_state_adaptive(
+            let forces = self.build_forces(&spk);
+            let (propagated, report) = propagate_diffuse_state(
+                &self.mixture,
+                &forces,
+                target,
+                &cfg,
+                step_days,
+                &Self::sun_resolver(&spk),
+            )?;
+            Ok((
+                Self {
+                    mixture: propagated,
+                },
+                report.into(),
+            ))
+        })
+    }
+
+    /// Advance one leg to ``jd``, splitting components where the flow stops being linear.
+    ///
+    /// The unit :meth:`propagate` is built from, exposed so a march can be driven by the
+    /// caller::
+    ///
+    ///     for t in times:
+    ///         mixture, report = mixture.step(t)
+    ///
+    /// Stepping by hand and propagating in one call are the same measurement.  Each
+    /// component carries its own probes, so ``eta`` keeps accumulating across calls
+    /// exactly as it does across the legs of a single call - it is the departure from
+    /// linearity since that component last split either way.
+    ///
+    /// A component with no probes yet - a new mixture, the children of a split, or one
+    /// rebuilt from its parts - is seeded here, which restarts its measurement.  The
+    /// returned report counts those, so a march that lost its history says so.
+    ///
+    /// Returns ``(mixture, report)``.
+    ///
+    /// Parameters
+    /// ----------
+    /// jd :
+    ///     Epoch to advance to.  May be earlier than the mixture's own epoch.
+    /// split_threshold :
+    ///     As :meth:`propagate`.  Passed per call rather than held, so changing it partway
+    ///     through a march is visible where it happens.
+    /// max_components :
+    ///     As :meth:`propagate`.
+    #[pyo3(signature = (jd, split_threshold=0.15, max_components=729))]
+    fn step(
+        &self,
+        py: Python<'_>,
+        jd: PyTime,
+        split_threshold: f64,
+        max_components: usize,
+    ) -> PyResult<(Self, PyStepReport)> {
+        let cfg = SplitConfig {
+            split_threshold,
+            max_components,
+        };
+        let target: Time<TDB> = jd.into();
+        py.detach(|| {
+            let spk = LOADED_SPK.try_read().map_err(Error::from)?;
+            let forces = self.build_forces(&spk);
+            let (stepped, report) = step_diffuse_state(
                 &self.mixture,
                 &forces,
                 target,
                 &cfg,
                 &Self::sun_resolver(&spk),
             )?;
-            Ok(Self {
-                mixture: propagated,
-                non_grav: self.non_grav.clone(),
-            })
+            Ok((Self { mixture: stepped }, report.into()))
         })
     }
 
-    /// Per-component sigma-point divergence between linear and nonlinear
-    /// propagation to ``jd``.
-    #[pyo3(signature = (
-        jd,
-        n_axes=3,
-        sigma_factor=1.0,
-        position_spacing_au=Some(0.001),
-        include_asteroids=false,
-    ))]
-    fn sigma_point_divergence(
-        &self,
-        py: Python<'_>,
-        jd: PyTime,
-        n_axes: usize,
-        sigma_factor: f64,
-        position_spacing_au: Option<f64>,
-        include_asteroids: bool,
-    ) -> PyResult<Vec<f64>> {
-        let target: Time<TDB> = jd.into();
-        py.detach(|| {
-            let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-            let forces = self.build_forces(&spk, include_asteroids);
-            Ok(mixture_sigma_point_divergence(
-                &self.mixture,
-                &forces,
-                target,
-                n_axes,
-                sigma_factor,
-                position_spacing_au,
-                &Self::sun_resolver(&spk),
-            )?)
+    /// Save this mixture to a file.
+    ///
+    /// The file keeps the weights, every component with its covariance and free
+    /// parameters, the non-gravitational model those parameters belong to,
+    /// :attr:`include_asteroids`, and any probes the components were carrying. A
+    /// mixture loaded back is the mixture that was saved, so a march can continue
+    /// from it without restarting its ``eta``.
+    ///
+    /// Use :meth:`save_list` when saving more than one. A directory of
+    /// single-mixture files costs a file and a header for each.
+    ///
+    /// Parameters
+    /// ----------
+    /// filename :
+    ///     Path to write. The format is the gzipped kete binary format.
+    fn save(&self, filename: String) -> PyResult<()> {
+        self.mixture.save(filename)?;
+        Ok(())
+    }
+
+    /// Load a single mixture from a file.
+    ///
+    /// Parameters
+    /// ----------
+    /// filename :
+    ///     Path to read.
+    ///
+    /// Raises
+    /// ------
+    /// ValueError
+    ///     If the file holds several mixtures, or a different type. Use
+    ///     :meth:`load_list` for a file holding several.
+    #[staticmethod]
+    fn load(filename: String) -> PyResult<Self> {
+        Ok(Self {
+            mixture: DiffuseState::load(filename)?,
         })
+    }
+
+    /// Save many mixtures to one file.
+    ///
+    /// Parameters
+    /// ----------
+    /// mixtures :
+    ///     Mixtures to save. They do not have to share an epoch or a model.
+    /// filename :
+    ///     Path to write.
+    #[staticmethod]
+    fn save_list(mixtures: Vec<Self>, filename: String) -> PyResult<()> {
+        let mixtures: Vec<DiffuseState> = mixtures.into_iter().map(|m| m.mixture).collect();
+        DiffuseState::save_vec(&mixtures, filename)?;
+        Ok(())
+    }
+
+    /// Load many mixtures from a file.
+    ///
+    /// A file holding a single mixture reads back as a list of one.
+    ///
+    /// Parameters
+    /// ----------
+    /// filename :
+    ///     Path to read.
+    #[staticmethod]
+    fn load_list(filename: String) -> PyResult<Vec<Self>> {
+        Ok(DiffuseState::load_vec(filename)?
+            .into_iter()
+            .map(|mixture| Self { mixture })
+            .collect())
     }
 
     /// Number of mixture components.
@@ -391,20 +636,25 @@ impl PyDiffuseState {
         let i = idx as usize;
         let component = PyUncertainState {
             state: self.mixture.component(i)?,
-            non_grav: self.non_grav.clone(),
         };
         Ok((self.mixture.weights[i], component))
     }
 
     /// String representation.
     fn __repr__(&self) -> String {
-        let max_div = self.max_unresolved_divergence();
-        format!(
-            "DiffuseState(n_components={}, cov_dim={}, epoch={:.6}, max_unresolved_divergence={:.4})",
-            self.mixture.n_components(),
-            self.mixture.cov_dim(),
-            self.mixture.epoch().jd,
-            max_div,
-        )
+        match self.max_eta() {
+            Some(eta) => format!(
+                "DiffuseState(n_components={}, cov_dim={}, epoch={:.6}, max_eta={eta:.4})",
+                self.mixture.n_components(),
+                self.mixture.cov_dim(),
+                self.mixture.epoch().jd,
+            ),
+            None => format!(
+                "DiffuseState(n_components={}, cov_dim={}, epoch={:.6})",
+                self.mixture.n_components(),
+                self.mixture.cov_dim(),
+                self.mixture.epoch().jd,
+            ),
+        }
     }
 }

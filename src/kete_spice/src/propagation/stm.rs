@@ -121,15 +121,13 @@ where
 mod tests {
     use super::*;
     use kete_core::desigs::Desig;
-    use kete_core::elements::{CometElements, EquinoctialElements};
+    use kete_core::elements::EquinoctialElements;
     use kete_core::forces::JplCometNonGrav;
-    use kete_core::frames::Ecliptic;
 
     use kete_core::prelude::UncertainState;
     use kete_core::state::{
-        DiffuseState, SplitConfig, minimum_components_for_divergence,
-        propagate_diffuse_state_adaptive, propagate_elements_with_sensitivity, propagate_state,
-        propagate_with_diagnosis, sigma_point_divergence, split_for_propagation,
+        DEFAULT_STEP_DAYS, DiffuseState, SplitConfig, propagate_diffuse_state,
+        propagate_elements_with_sensitivity, propagate_state, step_diffuse_state,
     };
     use nalgebra::{Matrix6, Vector3, Vector6};
 
@@ -700,113 +698,61 @@ mod tests {
         );
     }
 
-    /// Sigma-point divergence in equinoctial coordinates on a quiet main-belt arc,
-    /// against the threshold above which the adaptive mixture splits.
+    /// Per-leg nonlinearity on a quiet main-belt arc, against the threshold above which
+    /// the adaptive mixture splits.
     ///
-    /// Sigma points are placed on the one-sigma shell along the three dominant
-    /// eigenvectors of the equinoctial covariance, propagated through the true nonlinear
-    /// flow, and scored as a Mahalanobis distance in the propagated covariance - the same
-    /// metric the adaptive splitter uses. The whole arc is taken in one shot.
+    /// The whole arc is taken as a single leg, which is the pessimistic reading: the
+    /// controller cuts an arc onto a grid and measures each leg over a much shorter span,
+    /// so an arc that reads below threshold in one shot reads below it there too.
     ///
     /// Run with `cargo test -- --ignored --nocapture`.
     #[test]
-    #[ignore = "measurement, propagates sigma points"]
-    fn equinoctial_sigma_point_divergence_on_a_quiet_arc() {
-        let (elem, sun_ssb, epoch) = setup();
+    #[ignore = "measurement, propagates probes"]
+    fn leg_nonlinearity_on_a_quiet_arc() {
+        let (elem, _sun_ssb, epoch) = setup();
         let spk = LOADED_SPK.try_read().unwrap();
         let force = SpkNBody::new(&spk, false);
+        let resolver = |time: Time<TDB>| {
+            let sun = spk.try_get_state_with_center::<Equatorial>(10, time, 0)?;
+            Ok((Vector3::from(sun.pos), Vector3::from(sun.vel)))
+        };
         let config = SplitConfig::default();
 
         let sigma = well_observed_sigma(&elem);
-        let jac = elem.state_jacobian::<Equatorial>().unwrap();
-        let cov_cart = jac * Matrix6::from_diagonal(&sigma.map(|s| s * s)) * jac.transpose();
-
-        let nominal: State<Equatorial> = elem.try_to_state().unwrap().into_frame();
-        let sun_pos = Vector3::from(sun_ssb.pos);
-        let sun_vel = Vector3::from(sun_ssb.vel);
-        let pos_0 = Vector3::from(nominal.pos) + sun_pos;
-        let vel_0 = Vector3::from(nominal.vel) + sun_vel;
-
-        let equi_0 = equinoctial_at(epoch, nominal.pos.into(), nominal.vel.into());
-        let jac_0 = equi_0.state_jacobian::<Equatorial>().unwrap();
-        let inv_0 = equi_0.state_jacobian_inverse::<Equatorial>().unwrap();
-        let cov_equi_0 = inv_0 * cov_cart * inv_0.transpose();
-
-        let eigen = cov_equi_0.symmetric_eigen();
-        let mut order: Vec<usize> = (0..6).collect();
-        order.sort_by(|&a, &b| eigen.eigenvalues[b].total_cmp(&eigen.eigenvalues[a]));
+        let mut cov = DMatrix::<f64>::zeros(6, 6);
+        for (i, s) in sigma.iter().enumerate() {
+            cov[(i, i)] = s * s;
+        }
+        let component = UncertainState::new(elem.clone(), cov, vec![]).unwrap();
+        let mixture = DiffuseState::from_uncertain(component);
+        // Measured, not acted on: the threshold is set out of reach so the leg reports the
+        // nonlinearity it found rather than splitting to remove it.
+        let measure_only = SplitConfig {
+            split_threshold: 1e30,
+            max_components: 1,
+        };
 
         println!(
-            "42 Isis, main belt, period {:.0} d. Equinoctial sigma-point divergence, \
-             split threshold {:.1}.",
+            "42 Isis, main belt, period {:.0} d. Split threshold {:.1}.",
             elem.orbital_period(),
             config.split_threshold
         );
         println!(
-            "{:>9}  {:>8}  {:>13}  {:>9}",
-            "arc (d)", "orbits", "divergence", "verdict"
+            "{:>9}  {:>8}  {:>11}  {:>13}  {:>8}",
+            "arc (d)", "orbits", "eta", "residual (m)", "verdict"
         );
 
         for arc in [400.0_f64, 1600.0, 6400.0, 12800.0] {
-            let epoch_final = Time::<TDB>::new(epoch.jd + arc);
-            let (pos_f, vel_f, phi_full) =
-                propagate_with_stm(&force, pos_0, vel_0, &[], epoch, epoch_final).unwrap();
-            let phi: Matrix6<f64> = phi_full.fixed_view::<6, 6>(0, 0).into();
-            let sun_f = spk
-                .try_get_state_with_center::<Equatorial>(10, epoch_final, 0)
-                .unwrap();
-            let sun_f_pos = Vector3::from(sun_f.pos);
-            let sun_f_vel = Vector3::from(sun_f.vel);
-
-            let equi_f = equinoctial_at(epoch_final, pos_f - sun_f_pos, vel_f - sun_f_vel);
-            let inv_f = equi_f.state_jacobian_inverse::<Equatorial>().unwrap();
-            let phi_equi = inv_f * phi * jac_0;
-
-            // The propagated covariance, regularized the way the splitter regularizes it.
-            let mut cov_f = phi_equi * cov_equi_0 * phi_equi.transpose();
-            let reg = (cov_f.trace() * 1e-12).max(1e-30);
-            for i in 0..6 {
-                cov_f[(i, i)] += reg;
-            }
-            let inv_cov_f = cov_f.try_inverse().unwrap();
-
-            let mut divergence = 0.0_f64;
-            for &axis in order.iter().take(config.n_axes) {
-                let lambda = eigen.eigenvalues[axis];
-                if !lambda.is_finite() || lambda <= 0.0 {
-                    continue;
-                }
-                let direction = eigen.eigenvectors.column(axis).into_owned();
-                for sign in [1.0_f64, -1.0] {
-                    let step = direction * (sign * config.sigma_factor * lambda.sqrt());
-                    let start: State<Equatorial> = equi_0
-                        .displaced_by(&step)
-                        .try_to_state()
-                        .unwrap()
-                        .into_frame();
-                    let (truth_pos, truth_vel) = propagate_state(
-                        &force,
-                        Vector3::from(start.pos) + sun_pos,
-                        Vector3::from(start.vel) + sun_vel,
-                        &[],
-                        epoch,
-                        epoch_final,
-                    )
-                    .unwrap();
-                    let truth =
-                        equinoctial_at(epoch_final, truth_pos - sun_f_pos, truth_vel - sun_f_vel);
-                    let diff = equi_f.offset_to(&truth) - phi_equi * step;
-                    divergence = divergence.max(
-                        (diff.transpose() * inv_cov_f * diff)[(0, 0)]
-                            .max(0.0)
-                            .sqrt(),
-                    );
-                }
-            }
+            let target = Time::<TDB>::new(epoch.jd + arc);
+            let (stepped, _) =
+                step_diffuse_state(&mixture, &force, target, &measure_only, &resolver).unwrap();
+            let eta = stepped.max_eta().unwrap();
             println!(
-                "{arc:>9.0}  {:>8.2}  {divergence:>13.3e}  {:>9}",
+                "{arc:>9.0}  {:>8.2}  {:>11.3e}  {:>13.3e}  {:>8}",
                 arc / elem.orbital_period(),
-                if divergence < config.split_threshold {
+                eta,
+                stepped.residual_meters().unwrap(),
+                if eta < config.split_threshold {
                     "1 comp"
                 } else {
                     "SPLITS"
@@ -974,90 +920,6 @@ mod tests {
         );
     }
 
-    /// **The operational claim the element migration exists to deliver**: adaptive
-    /// splitting should fire at encounters and essentially nowhere else.
-    ///
-    /// The linearity horizon measures the gain: large on a quiet arc, and gone through a
-    /// deep encounter. The adaptive splitter's divergence is computed in element
-    /// coordinates, so that gain should show up directly as components not being created.
-    /// This counts them.
-    ///
-    /// Run with `cargo test -- --ignored --nocapture`.
-    #[test]
-    #[ignore = "measurement, propagates mixtures"]
-    fn splitting_frequency_quiet_versus_encounter() {
-        let (elem, sun_ssb, epoch) = setup();
-        let spk = LOADED_SPK.try_read().unwrap();
-        let force = SpkNBody::new(&spk, false);
-        let resolver = |time: Time<TDB>| {
-            let sun = spk.try_get_state_with_center::<Equatorial>(10, time, 0)?;
-            Ok((Vector3::from(sun.pos), Vector3::from(sun.vel)))
-        };
-        let _ = sun_ssb;
-
-        // A well observed orbit, written in element coordinates where an orbit uncertainty is
-        // naturally close to diagonal.
-        let sigma = well_observed_sigma(&elem);
-        let mut cov = DMatrix::<f64>::zeros(6, 6);
-        for (i, s) in sigma.iter().enumerate() {
-            cov[(i, i)] = s * s;
-        }
-        let component = UncertainState::new(elem.clone(), cov, vec![]).unwrap();
-        let mixture = DiffuseState::from_uncertain(component);
-        let config = SplitConfig::default();
-
-        println!("42 Isis, main belt. Components after adaptive propagation:");
-        println!("{:>9}  {:>8}  {:>12}", "arc (d)", "orbits", "components");
-        let period = elem.orbital_period();
-        for arc in [400.0_f64, 1600.0, 6400.0, 12800.0] {
-            let target = Time::<TDB>::new(epoch.jd + arc);
-            let out =
-                propagate_diffuse_state_adaptive(&mixture, &force, target, &config, &resolver)
-                    .unwrap();
-            println!(
-                "{arc:>9.0}  {:>8.2}  {:>12}",
-                arc / period,
-                out.n_components()
-            );
-        }
-
-        // The other half: the same question through a close planetary encounter, where the
-        // linearity gain vanishes and splitting is the only remaining tool.
-        let (neo, neo_epoch) = encounter_neo(&spk, &force);
-        let neo_component = {
-            let mut cov = DMatrix::<f64>::zeros(6, 6);
-            for (i, s) in sigma.iter().enumerate() {
-                cov[(i, i)] = s * s;
-            }
-            UncertainState::new(neo.clone(), cov, vec![]).unwrap()
-        };
-        let neo_mixture = DiffuseState::from_uncertain(neo_component);
-
-        println!();
-        println!("Constructed NEO, closest approach at epoch + 200 d:");
-        println!("{:>9}  {:>12}", "arc (d)", "components");
-        for arc in [100.0_f64, 195.0, 205.0, 400.0] {
-            let target = Time::<TDB>::new(neo_epoch.jd + arc);
-            let count =
-                propagate_diffuse_state_adaptive(&neo_mixture, &force, target, &config, &resolver)
-                    .map_or_else(
-                        |e| format!("failed: {e}"),
-                        |m| {
-                            // Whether the count is convergence or saturation is the question. A
-                            // component that could not be split further keeps its peak divergence,
-                            // so the weight above the split threshold measures how much of the
-                            // distribution the mixture failed to resolve.
-                            format!(
-                                "{:>6}   unresolved weight {:.3}",
-                                m.n_components(),
-                                m.unresolved_weight(config.split_threshold)
-                            )
-                        },
-                    );
-            println!("{arc:>9.0}  {count}");
-        }
-    }
-
     /// The adaptive splitter must respect `max_components`.
     ///
     /// A component count above the cap means either a budget that does not bind or a count
@@ -1090,18 +952,19 @@ mod tests {
                 max_components: cap,
                 ..SplitConfig::default()
             };
-            let out = propagate_diffuse_state_adaptive(
+            let (out, _) = propagate_diffuse_state(
                 &mixture,
                 &force,
                 Time::<TDB>::new(epoch.jd + 205.0),
                 &config,
+                DEFAULT_STEP_DAYS,
                 &resolver,
             )
             .unwrap();
             println!(
                 "cap {cap:>4} -> {:>4} components, unresolved weight {:.3}",
                 out.n_components(),
-                out.unresolved_weight(config.split_threshold)
+                out.weight_above_eta(config.split_threshold).unwrap_or(0.0)
             );
             assert!(
                 out.n_components() <= cap,
@@ -1111,23 +974,22 @@ mod tests {
         }
     }
 
-    /// **Does splitting actually reduce the divergence?**
+    /// **Does splitting actually reduce the nonlinearity it was chosen to remove?**
     ///
-    /// The adaptive loop assumes it does: a component whose linear prediction is bad gets
-    /// subdivided so each child spans a narrower region where the flow is more linear. If
-    /// that assumption fails the loop cannot converge - it splits until the budget runs out
-    /// and every component stays unresolved, which is exactly what the encounter case does.
-    /// Distinguishing "this encounter is genuinely unresolvable" from "we are splitting
-    /// along a useless direction" needs the mechanism measured directly.
+    /// The controller assumes it does: a component whose linear prediction is bad is
+    /// subdivided so each child spans a narrower region where the flow is more linear.
+    /// The stopped-helping termination is the test of that assumption at run time, and
+    /// this measures the same thing directly, which is what distinguishes "this encounter
+    /// is genuinely unresolvable" from "the split direction is useless".
     ///
-    /// The divergence should fall roughly linearly with the spread: the nonlinear error
-    /// grows as the square of the perturbation while the normalizing sigma grows linearly,
-    /// so a three-way split ought to buy a factor of order two.
+    /// `eta` should fall roughly linearly with the spread: the residual grows as the
+    /// square of the perturbation while the normalizing sigma grows linearly, so a
+    /// three-way split ought to buy a factor of order two.
     ///
     /// Run with `cargo test -- --ignored --nocapture`.
     #[test]
     #[ignore = "measurement, prints a table"]
-    fn does_splitting_reduce_divergence() {
+    fn does_splitting_reduce_eta() {
         crate::test_data::ensure_test_spk();
         let spk = LOADED_SPK.try_read().unwrap();
         let force = SpkNBody::new(&spk, false);
@@ -1142,760 +1004,48 @@ mod tests {
         for (i, s) in sigma.iter().enumerate() {
             cov[(i, i)] = s * s;
         }
-        let base = UncertainState::new(neo, cov, vec![]).unwrap();
-        let config = SplitConfig::default();
+        let base = DiffuseState::from_uncertain(UncertainState::new(neo, cov, vec![]).unwrap());
+        // The same leg taken twice: once with the threshold out of reach, so the parent
+        // reports what it found, and once with it at zero and the budget at exactly one
+        // split, so the children report what a single split bought. The controller picks
+        // the direction either way, which is the thing being measured.
+        let unsplit = SplitConfig {
+            split_threshold: 1e30,
+            max_components: 1,
+        };
+        let one_split = SplitConfig {
+            split_threshold: 0.0,
+            max_components: 3,
+        };
 
         println!(
             "{:>8}  {:>12}  {:>12}  {:>8}",
-            "arc (d)", "parent div", "worst child", "ratio"
+            "arc (d)", "parent eta", "worst child", "ratio"
         );
         for arc in [195.0_f64, 200.0, 205.0, 400.0] {
             let target = Time::<TDB>::new(neo_epoch.jd + arc);
-            let Ok(diag) = propagate_with_diagnosis(
-                &base,
-                &force,
-                target,
-                config.n_axes,
-                config.sigma_factor,
-                config.position_spacing_au,
-                &resolver,
-            ) else {
+            let Ok((parent, _)) = step_diffuse_state(&base, &force, target, &unsplit, &resolver)
+            else {
                 println!("{arc:>8.0}  parent propagation failed");
                 continue;
             };
+            let eta = parent.max_eta().unwrap();
 
-            let Ok(parts) =
-                split_for_propagation(&base, &diag.propagated.cov_matrix, &diag.augmented_stm)
+            let Ok((children, _)) =
+                step_diffuse_state(&base, &force, target, &one_split, &resolver)
             else {
-                println!("{arc:>8.0}  {:>12.3e}  split failed", diag.divergence);
+                println!("{arc:>8.0}  {eta:>12.3e}  split failed");
                 continue;
             };
-
-            let mut worst_child = 0.0_f64;
-            for (_, child) in &parts {
-                match propagate_with_diagnosis(
-                    child,
-                    &force,
-                    target,
-                    config.n_axes,
-                    config.sigma_factor,
-                    config.position_spacing_au,
-                    &resolver,
-                ) {
-                    Ok(d) => worst_child = worst_child.max(d.divergence),
-                    Err(_) => worst_child = f64::INFINITY,
-                }
+            if children.n_components() == 1 {
+                println!("{arc:>8.0}  {eta:>12.3e}  no direction carried width");
+                continue;
             }
+            let worst_child = children.max_eta().unwrap();
             println!(
-                "{arc:>8.0}  {:>12.3e}  {worst_child:>12.3e}  {:>8.2}",
-                diag.divergence,
-                diag.divergence / worst_child
+                "{arc:>8.0}  {eta:>12.3e}  {worst_child:>12.3e}  {:>8.2}",
+                eta / worst_child
             );
-        }
-    }
-
-    /// Where is the boundary between "splitting can resolve this" and "it cannot"?
-    ///
-    /// A three-way split narrows each child along the split axis, so the component count
-    /// needed to reach the split threshold grows exponentially in the divergence. The
-    /// growth rate depends on how nonlinear the encounter is, which varies, so this
-    /// reports the parameter-free lower bound from
-    /// [`minimum_components_for_divergence`] rather than an extrapolation. This sweeps
-    /// the two knobs a caller actually has, the encounter depth and how well the orbit is
-    /// known, and reports where the requirement comes back inside a practical budget.
-    ///
-    /// Divergence only, no adaptive propagation: one diagnosis per cell is far cheaper than
-    /// running the splitter to saturation.
-    ///
-    /// Run with `cargo test -- --ignored --nocapture`.
-    #[test]
-    #[ignore = "measurement, prints a table"]
-    fn splitting_tractability_boundary() {
-        crate::test_data::ensure_test_spk();
-        let spk = LOADED_SPK.try_read().unwrap();
-        let force = SpkNBody::new(&spk, false);
-        let resolver = |time: Time<TDB>| {
-            let sun = spk.try_get_state_with_center::<Equatorial>(10, time, 0)?;
-            Ok((Vector3::from(sun.pos), Vector3::from(sun.vel)))
-        };
-        let config = SplitConfig::default();
-
-        println!(
-            "Lower bound on components needed to reach a divergence of {:.1}, at 5 days \
-             past closest approach.",
-            config.split_threshold
-        );
-        println!(
-            "{:>10}  {:>8}  {:>12}  {:>12}  {:>12}",
-            "miss (AU)", "lunar", "sigma scale", "divergence", "min comps"
-        );
-
-        for miss in [0.003_f64, 0.01, 0.03, 0.1] {
-            let (neo, epoch) = encounter_neo_at(&spk, &force, miss, false);
-            let target = Time::<TDB>::new(epoch.jd + 205.0);
-            let sigma = well_observed_sigma(&neo);
-            for scale in [1.0_f64, 0.1, 0.01] {
-                let mut cov = DMatrix::<f64>::zeros(6, 6);
-                for (i, s) in sigma.iter().enumerate() {
-                    cov[(i, i)] = (s * scale) * (s * scale);
-                }
-                let component = UncertainState::new(neo.clone(), cov, vec![]).unwrap();
-                let text = match propagate_with_diagnosis(
-                    &component,
-                    &force,
-                    target,
-                    config.n_axes,
-                    config.sigma_factor,
-                    config.position_spacing_au,
-                    &resolver,
-                ) {
-                    Ok(diag) if diag.divergence <= config.split_threshold => {
-                        format!("{:>12.3e}  {:>12}", diag.divergence, 1)
-                    }
-                    Ok(diag) if diag.divergence.is_finite() => format!(
-                        "{:>12.3e}  {:>12.2e}",
-                        diag.divergence,
-                        minimum_components_for_divergence(diag.divergence, config.split_threshold)
-                    ),
-                    Ok(diag) => format!("{:>12.3e}  {:>12}", diag.divergence, "unbounded"),
-                    Err(_) => format!("{:>12}  {:>12}", "failed", "-"),
-                };
-                println!(
-                    "{miss:>10.3}  {:>8.1}  {scale:>12.2}  {text}",
-                    miss / 0.00257
-                );
-            }
-        }
-    }
-
-    /// Can a small enough covariance survive a deep encounter intact?
-    ///
-    /// `splitting_tractability_boundary` shows the divergence is linear in the covariance
-    /// scale, and the component count exponential in the divergence, so shrinking the
-    /// uncertainty should buy back tractability very fast even well inside the Hill sphere.
-    /// This runs the adaptive propagation itself rather than inferring a count, at a miss
-    /// distance of 1.2 lunar distances - roughly a third of Earth's Hill radius.
-    ///
-    /// Run with `cargo test -- --ignored --nocapture`.
-    #[test]
-    #[ignore = "measurement, propagates mixtures"]
-    fn small_covariance_survives_the_encounter() {
-        crate::test_data::ensure_test_spk();
-        let spk = LOADED_SPK.try_read().unwrap();
-        let force = SpkNBody::new(&spk, false);
-        let resolver = |time: Time<TDB>| {
-            let sun = spk.try_get_state_with_center::<Equatorial>(10, time, 0)?;
-            Ok((Vector3::from(sun.pos), Vector3::from(sun.vel)))
-        };
-
-        let (neo, epoch) = encounter_neo_at(&spk, &force, 0.003, false);
-        let target = Time::<TDB>::new(epoch.jd + 205.0);
-        let config = SplitConfig::default();
-
-        println!("Miss distance 0.003 AU (1.2 lunar distances), 5 days past closest approach.");
-        println!(
-            "{:>12}  {:>12}  {:>10}  {:>12}  {:>12}  {:>10}",
-            "sigma scale", "divergence", "bound", "components", "unresolved", "verdict"
-        );
-        let sigma = well_observed_sigma(&neo);
-        for scale in [0.1_f64, 0.03, 0.01, 0.003, 0.001] {
-            let mut cov = DMatrix::<f64>::zeros(6, 6);
-            for (i, s) in sigma.iter().enumerate() {
-                cov[(i, i)] = (s * scale) * (s * scale);
-            }
-            let component = UncertainState::new(neo.clone(), cov, vec![]).unwrap();
-
-            // The bound is computed from the divergence of the single unsplit component --
-            // exactly what a caller has in hand before deciding whether to attempt a cascade.
-            let divergence = sigma_point_divergence(
-                &component,
-                &force,
-                target,
-                config.n_axes,
-                config.sigma_factor,
-                config.position_spacing_au,
-                &resolver,
-            )
-            .unwrap();
-            let bound = minimum_components_for_divergence(divergence, config.split_threshold);
-
-            let mixture = DiffuseState::from_uncertain(component);
-            match propagate_diffuse_state_adaptive(&mixture, &force, target, &config, &resolver) {
-                Ok(out) => {
-                    let unresolved = out.unresolved_weight(config.split_threshold);
-                    let verdict = if unresolved > 1e-9 {
-                        "saturated"
-                    } else {
-                        "resolved"
-                    };
-                    let actual = out.n_components();
-                    println!(
-                        "{scale:>12.3}  {divergence:>12.2}  {bound:>10.1}  {actual:>12}  \
-                         {unresolved:>12.3}  {verdict:>10}"
-                    );
-                    // The whole point of the bound is that it never overstates the cost.
-                    // Only meaningful where the cascade actually converged; a saturated run
-                    // stopped at the budget rather than at the requirement.
-                    if unresolved <= 1e-9 {
-                        assert!(
-                            bound <= actual as f64,
-                            "bound {bound} exceeded the {actual} components actually needed \
-                             at scale {scale}"
-                        );
-                    }
-                }
-                Err(e) => println!("{scale:>12.3}  failed: {e}"),
-            }
-        }
-    }
-
-    /// Cost of running the numerics-floor regime with the diminishing-returns check
-    /// disabled: component count, wall time and settled divergence, against the same
-    /// cascade with the check at its default.
-    ///
-    /// The check is an economics device, not a correctness one - splits preserve the
-    /// mixture moments - so whether `min_split_improvement` needs a different default
-    /// (or any companion mechanism) reduces to what the floor regime wastes without
-    /// it. The floor case here is the one measured by `cascade_divergence_trace`:
-    /// covariance scale 0.001 through the 0.003 AU encounter stalls at divergence
-    /// 0.12-0.16 against the 0.1 density threshold.
-    ///
-    /// Run with `cargo test -- --ignored --nocapture`.
-    #[test]
-    #[ignore = "measurement, prints a table"]
-    fn floor_churn_cost_without_improvement_check() {
-        crate::test_data::ensure_test_spk();
-        let spk = LOADED_SPK.try_read().unwrap();
-        let force = SpkNBody::new(&spk, false);
-        let resolver = |time: Time<TDB>| {
-            let sun = spk.try_get_state_with_center::<Equatorial>(10, time, 0)?;
-            Ok((Vector3::from(sun.pos), Vector3::from(sun.vel)))
-        };
-        let (neo, epoch) = encounter_neo_at(&spk, &force, 0.003, false);
-        let target = Time::<TDB>::new(epoch.jd + 205.0);
-        let sigma = well_observed_sigma(&neo);
-        let mut cov = DMatrix::<f64>::zeros(6, 6);
-        for (i, s) in sigma.iter().enumerate() {
-            cov[(i, i)] = (s * 0.001) * (s * 0.001);
-        }
-        let component = UncertainState::new(neo, cov, vec![]).unwrap();
-        let mixture = DiffuseState::from_uncertain(component);
-
-        println!(
-            "{:>12} {:>10} {:>8} {:>7} {:>12} {:>10} {:>10} {:>8}",
-            "improvement", "budget", "depth", "n_axes", "components", "max_div", "unresolved", "secs"
-        );
-        // The big-budget row is opt-in: in the floor regime nothing resolves, so it
-        // pays a full diagnosis for every component of every generation and its cost
-        // is the point of measuring it - run with KETE_FLOOR_BIG=1 and patience.
-        let mut configs = vec![
-            (0.1_f64, 50_000_usize, 10_u32, 3_usize),
-            (0.1, 50_000, 10, 6),
-        ];
-        if std::env::var("KETE_FLOOR_BIG").is_ok() {
-            configs.push((0.0, 100_000, 25, 3));
-        }
-        for (improvement, budget, depth, n_axes) in configs {
-            let config = SplitConfig {
-                split_threshold: 0.1,
-                max_components: budget,
-                max_split_depth: depth,
-                min_split_improvement: improvement,
-                n_axes,
-                ..SplitConfig::default()
-            };
-            let start = std::time::Instant::now();
-            match propagate_diffuse_state_adaptive(&mixture, &force, target, &config, &resolver) {
-                Ok(out) => println!(
-                    "{improvement:>12.2} {budget:>10} {depth:>8} {n_axes:>7} {:>12} {:>10.3} {:>10.3} {:>8.1}",
-                    out.n_components(),
-                    out.max_unresolved_divergence(),
-                    out.unresolved_weight(config.split_threshold),
-                    start.elapsed().as_secs_f64()
-                ),
-                Err(e) => println!("{improvement:>12.1} {budget:>10} {depth:>8} failed: {e}"),
-            }
-        }
-    }
-
-    /// TEMPORARY EVALUATION: residual scaling exponent as the settle discriminator.
-    ///
-    /// At each level of a worst-lineage walk, the top covariance axis is probed at
-    /// the full one-sigma amplitude and at half that amplitude, and the whitened
-    /// residual norms are compared.  A residual produced by smooth dynamics is a
-    /// second-order Taylor term: half the probe gives a quarter the residual
-    /// (ratio ~ 4, exponent ~ 2).  A residual at the measurement floor does not
-    /// respond to probe amplitude (ratio ~ 1, exponent ~ 0).  The exponent is the
-    /// settle criterion: structure that scales is resolvable by splitting,
-    /// structure that does not is not.  The dichotomy is derived (Taylor order),
-    /// not tuned.
-    ///
-    /// Run with `cargo test -- --ignored --nocapture`.
-    #[test]
-    #[ignore = "measurement, prints a table"]
-    fn residual_scaling_probe() {
-        use nalgebra::{DVector, SymmetricEigen};
-
-        crate::test_data::ensure_test_spk();
-        let spk = LOADED_SPK.try_read().unwrap();
-        let force = SpkNBody::new(&spk, false);
-        let resolver = |time: Time<TDB>| {
-            let sun = spk.try_get_state_with_center::<Equatorial>(10, time, 0)?;
-            Ok((Vector3::from(sun.pos), Vector3::from(sun.vel)))
-        };
-
-        // Scenario A: the numerics floor.
-        let (neo, epoch) = encounter_neo_at(&spk, &force, 0.003, false);
-        let sigma = well_observed_sigma(&neo);
-        let mut cov = DMatrix::<f64>::zeros(6, 6);
-        for (i, s) in sigma.iter().enumerate() {
-            cov[(i, i)] = (s * 0.001) * (s * 0.001);
-        }
-        let floor = UncertainState::new(neo, cov, vec![]).unwrap();
-        let floor_target = Time::<TDB>::new(epoch.jd + 205.0);
-
-        // Scenario B: the JFC trail flyby valley.
-        let t_enc = Time::<TDB>::new(2_461_000.0);
-        let jup = spk
-            .try_get_state_with_center::<Ecliptic>(5, t_enc, 10)
-            .unwrap();
-        let jpos = Vector3::from(jup.pos);
-        let p_enc = jpos * (1.0 - 0.25 / jpos.norm());
-        let r = p_enc.norm();
-        let a = r / 1.55;
-        let speed = (kete_core::constants::GMS * (2.0 / r - 1.0 / a)).sqrt();
-        let tangent = Vector3::z().cross(&p_enc).normalize();
-        let member: State<Equatorial> =
-            State::<Ecliptic>::new(Desig::Empty, t_enc, p_enc, tangent * speed, 10).into_frame();
-        let t0 = Time::<TDB>::new(t_enc.jd - 900.0);
-        let (sp, sv) = resolver(t_enc).unwrap();
-        let (p0, v0) = propagate_state(
-            &force,
-            Vector3::from(member.pos) + sp,
-            Vector3::from(member.vel) + sv,
-            &[],
-            t_enc,
-            t0,
-        )
-        .unwrap();
-        let (s0p, s0v) = resolver(t0).unwrap();
-        let helio_t0 = State::<Equatorial>::new(Desig::Empty, t0, p0 - s0p, v0 - s0v, 10);
-        let mut elem = CometElements::from_state(&helio_t0.into_frame()).unwrap();
-        elem.peri_time = (elem.peri_time.jd + 190.0).into();
-        let mut tcov = DMatrix::<f64>::zeros(6, 6);
-        for (i, s) in [2e-4, 5e-4, 95.0, 2e-5, 2e-5, 2e-5].iter().enumerate() {
-            tcov[(i, i)] = s * s;
-        }
-        let valley = UncertainState::from_cometary(&elem, &tcov, vec![]).unwrap();
-        let valley_target = Time::<TDB>::new(t_enc.jd + 300.0);
-
-        for (label, start, target) in [
-            ("floor", floor, floor_target),
-            ("valley", valley, valley_target),
-        ] {
-            println!("{label}:");
-            println!(
-                "{:>3} {:>10} {:>10} {:>10} {:>7} {:>9}",
-                "lvl", "d_own", "|r(d)|", "|r(d/2)|", "ratio", "exponent"
-            );
-            let mut current = start;
-            for level in 0..10 {
-                let diag = propagate_with_diagnosis(
-                    &current, &force, target, 3, 1.0, Some(0.001), &resolver,
-                )
-                .unwrap();
-                let pf = &diag.propagated.cov_matrix;
-                let marg: Vec<f64> = (0..6).map(|i| pf[(i, i)].sqrt().max(1e-300)).collect();
-
-                let sym = SymmetricEigen::new(current.cov_matrix.clone());
-                let top = (0..6)
-                    .max_by(|&x, &y| {
-                        sym.eigenvalues[x].partial_cmp(&sym.eigenvalues[y]).unwrap()
-                    })
-                    .unwrap();
-                let lam = sym.eigenvalues[top];
-                let dir = sym.eigenvectors.column(top).clone_owned();
-                let epoch_c = current.elements.epoch;
-                let (e0p, e0v) = resolver(epoch_c).unwrap();
-                let (efp, efv) = resolver(target).unwrap();
-
-                let mut norms = [0.0_f64; 2];
-                for (slot, amp) in [1.0_f64, 0.5].iter().enumerate() {
-                    for sign in [1.0_f64, -1.0] {
-                        let delta = &dir * (sign * amp * lam.sqrt());
-                        let step = Vector6::from_iterator(delta.iter().copied());
-                        let start_state: State<Equatorial> = current
-                            .elements
-                            .displaced_by(&step)
-                            .try_to_state()
-                            .unwrap()
-                            .into_frame();
-                        let (pf_, vf_) = propagate_state(
-                            &force,
-                            Vector3::from(start_state.pos) + e0p,
-                            Vector3::from(start_state.vel) + e0v,
-                            &[],
-                            epoch_c,
-                            target,
-                        )
-                        .unwrap();
-                        let fin = equinoctial_at(target, pf_ - efp, vf_ - efv);
-                        let nonlin = diag.propagated.elements.offset_to(&fin);
-                        let lin = &diag.augmented_stm * &delta;
-                        let w = DVector::from_iterator(
-                            6,
-                            (0..6).map(|i| (nonlin[i] - lin[i]) / marg[i]),
-                        );
-                        norms[slot] = norms[slot].max(w.norm());
-                    }
-                }
-                let ratio = norms[0] / norms[1].max(1e-300);
-                println!(
-                    "{level:>3} {:>10.2} {:>10.3e} {:>10.3e} {ratio:>7.2} {:>9.2}",
-                    diag.divergence,
-                    norms[0],
-                    norms[1],
-                    ratio.log2()
-                );
-
-                let parts = split_for_propagation(
-                    &current,
-                    &diag.propagated.cov_matrix,
-                    &diag.augmented_stm,
-                )
-                .unwrap();
-                let mut best: Option<(f64, UncertainState)> = None;
-                for (_, child) in parts {
-                    let cd = propagate_with_diagnosis(
-                        &child, &force, target, 3, 1.0, Some(0.001), &resolver,
-                    )
-                    .unwrap();
-                    if best.as_ref().is_none_or(|(d, _)| cd.edge_divergence > *d) {
-                        best = Some((cd.edge_divergence, child));
-                    }
-                }
-                current = best.unwrap().1;
-            }
-        }
-    }
-
-    /// Does the adaptive split narrow the axis that carries the divergence?
-    ///
-    /// Walks the worst lineage of the JFC-trail flyby valley (the trail scenario from
-    /// analysis/apophis_validation, rebuilt here), and per level prints each probed
-    /// axis's measured divergence next to the fraction of that axis's variance the
-    /// chosen split direction removes.  A stalled level whose worst-divergence axis
-    /// receives no variance reduction is a direction mismatch, and choosing the split
-    /// direction from the worst probe residual would help; the worst axis already
-    /// being narrowed means the valley is genuine sub-component structure that no
-    /// direction choice can shorten.
-    ///
-    /// Run with `cargo test -- --ignored --nocapture`.
-    #[test]
-    #[ignore = "measurement, prints a table"]
-    fn valley_split_axis_alignment() {
-        use nalgebra::{DVector, SymmetricEigen};
-
-        crate::test_data::ensure_test_spk();
-        let spk = LOADED_SPK.try_read().unwrap();
-        let force = SpkNBody::new(&spk, false);
-        let resolver = |time: Time<TDB>| {
-            let sun = spk.try_get_state_with_center::<Equatorial>(10, time, 0)?;
-            Ok((Vector3::from(sun.pos), Vector3::from(sun.vel)))
-        };
-
-        // The JFC trail from the analysis scripts, rebuilt: aphelion parked just
-        // inside Jupiter's distance, trail = emission-time spread whose leading end
-        // sweeps 0.18-0.35 AU from Jupiter while the mean stays ~0.9 AU clear.
-        let t_enc = Time::<TDB>::new(2_461_000.0);
-        let jup = spk
-            .try_get_state_with_center::<Ecliptic>(5, t_enc, 10)
-            .unwrap();
-        let jpos = Vector3::from(jup.pos);
-        let p_enc = jpos * (1.0 - 0.25 / jpos.norm());
-        let r = p_enc.norm();
-        let a = r / 1.55;
-        let speed = (kete_core::constants::GMS * (2.0 / r - 1.0 / a)).sqrt();
-        let tangent = Vector3::z().cross(&p_enc).normalize();
-        let member: State<Equatorial> =
-            State::<Ecliptic>::new(Desig::Empty, t_enc, p_enc, tangent * speed, 10).into_frame();
-
-        let t0 = Time::<TDB>::new(t_enc.jd - 900.0);
-        let (sp, sv) = resolver(t_enc).unwrap();
-        let (p0, v0) = propagate_state(
-            &force,
-            Vector3::from(member.pos) + sp,
-            Vector3::from(member.vel) + sv,
-            &[],
-            t_enc,
-            t0,
-        )
-        .unwrap();
-        let (s0p, s0v) = resolver(t0).unwrap();
-        let helio_t0 = State::<Equatorial>::new(Desig::Empty, t0, p0 - s0p, v0 - s0v, 10);
-        let mut elem = CometElements::from_state(&helio_t0.into_frame()).unwrap();
-        // The mean lags the encountering member; the member sits at ~2 sigma of the
-        // emission-time spread, matching the python scenario.
-        elem.peri_time = (elem.peri_time.jd + 190.0).into();
-        let mut cov = DMatrix::<f64>::zeros(6, 6);
-        for (i, s) in [2e-4, 5e-4, 95.0, 2e-5, 2e-5, 2e-5].iter().enumerate() {
-            cov[(i, i)] = s * s;
-        }
-        let trail = UncertainState::from_cometary(&elem, &cov, vec![]).unwrap();
-        let t_final = Time::<TDB>::new(t_enc.jd + 300.0);
-
-        println!(
-            "Per level: divergence d and split variance-reduction fraction f, per\n\
-             covariance axis ranked widest first (the loop probes the top 3).\n"
-        );
-        println!(
-            "{:>3} {:>9}  {:>44}  {:>44}  {:>7} {:>7}",
-            "lvl", "max_div", "d per axis (widest..)", "f per axis", "worst_d", "split_f"
-        );
-        let mut current = trail;
-        for level in 0..12 {
-            let diag =
-                propagate_with_diagnosis(&current, &force, t_final, 3, 1.0, Some(0.001), &resolver)
-                    .unwrap();
-
-            // Regularized inverse of the propagated covariance, correlation form,
-            // matching the metric in kete_core.
-            let pf = &diag.propagated.cov_matrix;
-            let marg: Vec<f64> = (0..6).map(|i| pf[(i, i)].sqrt()).collect();
-            let mut corr = pf.clone();
-            for row in 0..6 {
-                for col in 0..6 {
-                    corr[(row, col)] /= marg[row] * marg[col];
-                }
-            }
-            for i in 0..6 {
-                corr[(i, i)] += 1e-6;
-            }
-            let inv_corr = corr.try_inverse().unwrap();
-            let mahal = |diff: &DVector<f64>| -> f64 {
-                let w = DVector::from_iterator(6, (0..6).map(|i| diff[i] / marg[i]));
-                (w.transpose() * &inv_corr * &w)[(0, 0)].max(0.0).sqrt()
-            };
-
-            // Per-axis probe divergences, all six axes ranked widest first.
-            let sym = SymmetricEigen::new(current.cov_matrix.clone());
-            let mut order: Vec<usize> = (0..6).collect();
-            order.sort_by(|&x, &y| sym.eigenvalues[y].partial_cmp(&sym.eigenvalues[x]).unwrap());
-            let epoch = current.elements.epoch;
-            let (e0p, e0v) = resolver(epoch).unwrap();
-            let (efp, efv) = resolver(t_final).unwrap();
-            let mut d_axis = [0.0_f64; 6];
-            for (rank, &ax) in order.iter().enumerate() {
-                let lam = sym.eigenvalues[ax];
-                if lam <= 0.0 {
-                    continue;
-                }
-                let dir = sym.eigenvectors.column(ax).clone_owned();
-                for sign in [1.0_f64, -1.0] {
-                    let delta = &dir * (sign * lam.sqrt());
-                    let step = Vector6::from_iterator(delta.iter().copied());
-                    let start: State<Equatorial> = current
-                        .elements
-                        .displaced_by(&step)
-                        .try_to_state()
-                        .unwrap()
-                        .into_frame();
-                    let (pf_, vf_) = propagate_state(
-                        &force,
-                        Vector3::from(start.pos) + e0p,
-                        Vector3::from(start.vel) + e0v,
-                        &[],
-                        epoch,
-                        t_final,
-                    )
-                    .unwrap();
-                    let fin = equinoctial_at(t_final, pf_ - efp, vf_ - efv);
-                    let nonlin = diag.propagated.elements.offset_to(&fin);
-                    let lin = &diag.augmented_stm * &delta;
-                    let diff = DVector::from_iterator(6, (0..6).map(|i| nonlin[i] - lin[i]));
-                    d_axis[rank] = d_axis[rank].max(mahal(&diff));
-                }
-            }
-
-            // The split the loop would choose, and the variance fraction it removes
-            // from each axis: f_k = (e_k . r)^2 / (2 lambda_k).
-            let symf = SymmetricEigen::new(diag.propagated.cov_matrix.clone());
-            let fmax = (0..6)
-                .max_by(|&x, &y| {
-                    symf.eigenvalues[x]
-                        .partial_cmp(&symf.eigenvalues[y])
-                        .unwrap()
-                })
-                .unwrap();
-            let u = diag.augmented_stm.transpose() * symf.eigenvectors.column(fmax);
-            let u_hat = &u / u.norm();
-            let sig_u = (u_hat.transpose() * &current.cov_matrix * &u_hat)[(0, 0)].sqrt();
-            let r_vec = (&current.cov_matrix * &u_hat) / sig_u;
-            let mut f_axis = [0.0_f64; 6];
-            for (rank, &ax) in order.iter().enumerate() {
-                let lam = sym.eigenvalues[ax].max(1e-300);
-                let proj = sym.eigenvectors.column(ax).dot(&r_vec);
-                f_axis[rank] = 0.5 * proj * proj / lam;
-            }
-
-            let fmt = |vals: &[f64; 6]| -> String {
-                vals.iter()
-                    .map(|v| format!("{v:>6.2}"))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            };
-            let worst_d = (0..6)
-                .max_by(|&x, &y| d_axis[x].total_cmp(&d_axis[y]))
-                .unwrap();
-            println!(
-                "{level:>3} {:>9.1}  {}  {}  {worst_d:>7} {:>7.2}",
-                diag.divergence,
-                fmt(&d_axis),
-                fmt(&f_axis),
-                f_axis[worst_d]
-            );
-
-            // Descend into the worst child, as the trace does.
-            let parts =
-                split_for_propagation(&current, &diag.propagated.cov_matrix, &diag.augmented_stm)
-                    .unwrap();
-            let mut best: Option<(f64, UncertainState)> = None;
-            for (_, child) in parts {
-                let cd = propagate_with_diagnosis(
-                    &child,
-                    &force,
-                    t_final,
-                    3,
-                    1.0,
-                    Some(0.001),
-                    &resolver,
-                )
-                .unwrap();
-                if best.as_ref().is_none_or(|(d, _)| cd.edge_divergence > *d) {
-                    best = Some((cd.edge_divergence, child));
-                }
-            }
-            current = best.unwrap().1;
-        }
-    }
-
-    /// Trace the worst-divergence lineage of a splitting cascade, one K=3 split per
-    /// level, printing every child's edge divergence and which settle rule would fire.
-    ///
-    /// Exists to diagnose cascade stalls that the aggregate `unresolved_weight` of a
-    /// full adaptive run cannot localize: it shows whether the divergence per level
-    /// falls (healthy), stalls above the threshold (`no_improvement` settles it), or
-    /// grows (a probe family or numerics floor artifact).
-    ///
-    /// Run with `cargo test -- --ignored --nocapture`.
-    #[test]
-    #[ignore = "measurement, prints a table"]
-    fn cascade_divergence_trace() {
-        crate::test_data::ensure_test_spk();
-        let spk = LOADED_SPK.try_read().unwrap();
-        let force = SpkNBody::new(&spk, false);
-        let resolver = |time: Time<TDB>| {
-            let sun = spk.try_get_state_with_center::<Equatorial>(10, time, 0)?;
-            Ok((Vector3::from(sun.pos), Vector3::from(sun.vel)))
-        };
-
-        let (neo, epoch) = encounter_neo_at(&spk, &force, 0.003, false);
-        let target = Time::<TDB>::new(epoch.jd + 205.0);
-        let config = SplitConfig::default();
-        let sigma = well_observed_sigma(&neo);
-
-        println!(
-            "Worst-lineage trace, 0.003 AU miss. threshold {}, min improvement {}",
-            config.split_threshold, config.min_split_improvement
-        );
-        for scale in [0.003_f64, 0.001, 3e-4] {
-            let mut cov = DMatrix::<f64>::zeros(6, 6);
-            for (i, s) in sigma.iter().enumerate() {
-                cov[(i, i)] = (s * scale) * (s * scale);
-            }
-            let mut current = UncertainState::new(neo.clone(), cov, vec![]).unwrap();
-            let mut parent_edge: Option<f64> = None;
-            println!("sigma scale {scale}:");
-            println!(
-                "  {:>5}  {:>32}  {:>10}",
-                "level", "child edge divergences", "worst rule"
-            );
-            for level in 0..8 {
-                let diag = propagate_with_diagnosis(
-                    &current,
-                    &force,
-                    target,
-                    config.n_axes,
-                    config.sigma_factor,
-                    config.position_spacing_au,
-                    &resolver,
-                )
-                .unwrap();
-                let rule = if diag.divergence <= config.split_threshold {
-                    "resolved"
-                } else if parent_edge.is_some_and(|pd| {
-                    pd > config.split_threshold
-                        && diag.edge_divergence >= pd * (1.0 - config.min_split_improvement)
-                }) {
-                    "no improvement"
-                } else {
-                    "splits"
-                };
-                if level == 0 {
-                    println!("  {level:>5}  {:>32.4}  {rule:>10}", diag.edge_divergence);
-                }
-                if rule != "splits" {
-                    break;
-                }
-
-                // Split, diagnose all three children, follow the worst.
-                let parts = split_for_propagation(
-                    &current,
-                    &diag.propagated.cov_matrix,
-                    &diag.augmented_stm,
-                )
-                .unwrap();
-                let child_diags: Vec<_> = parts
-                    .iter()
-                    .map(|(_, child)| {
-                        propagate_with_diagnosis(
-                            child,
-                            &force,
-                            target,
-                            config.n_axes,
-                            config.sigma_factor,
-                            config.position_spacing_au,
-                            &resolver,
-                        )
-                        .unwrap()
-                    })
-                    .collect();
-                let edges: Vec<f64> = child_diags.iter().map(|d| d.edge_divergence).collect();
-                let worst = edges
-                    .iter()
-                    .enumerate()
-                    .max_by(|(_, a), (_, b)| a.total_cmp(b))
-                    .map(|(i, _)| i)
-                    .unwrap();
-                let worst_rule = if edges[worst] <= config.split_threshold {
-                    "resolved"
-                } else if edges[worst]
-                    >= diag.edge_divergence * (1.0 - config.min_split_improvement)
-                {
-                    "no improvement"
-                } else {
-                    "splits"
-                };
-                println!(
-                    "  {:>5}  {:>10.4} {:>10.4} {:>10.4}  {worst_rule:>10}",
-                    level + 1,
-                    edges[0],
-                    edges[1],
-                    edges[2]
-                );
-                parent_edge = Some(diag.edge_divergence);
-                current = parts[worst].1.clone();
-            }
         }
     }
 
@@ -1948,11 +1098,12 @@ mod tests {
 
         // The two models: the adaptive mixture, and the same component propagated as a
         // single Gaussian with no splitting.
-        let mixture = propagate_diffuse_state_adaptive(
+        let (mixture, _) = propagate_diffuse_state(
             &DiffuseState::from_uncertain(component.clone()),
             force,
             target,
             config,
+            DEFAULT_STEP_DAYS,
             &resolver,
         )
         .unwrap();
@@ -2074,7 +1225,9 @@ mod tests {
         println!(
             "  components {:>5}   unresolved weight {:.3e}   clones {n_clones}",
             mixture.n_components(),
-            mixture.unresolved_weight(config.split_threshold)
+            mixture
+                .weight_above_eta(config.split_threshold)
+                .unwrap_or(0.0)
         );
         println!("  {:>28}  {:>10}  {:>10}", "", "mixture", "unsplit");
         println!(
@@ -2179,13 +1332,11 @@ mod tests {
              ({enc_unsplit}) through the encounter"
         );
 
-        // Stall regime: the same encounter at a covariance scale where the divergence
-        // metric hits its trajectory-numerics floor and the improvement check settles
-        // the cascade above the density threshold (`cascade_divergence_trace` shows
-        // the stall; the settled components carry max_unresolved_divergence just
-        // above 0.1, and unresolved_weight reads most of the mixture).  This scenario
-        // answers whether that alarm reflects real density error: the settled mixture
-        // must still match the ensemble, and beat the unsplit Gaussian.
+        // Noise-floor regime: the same encounter at a covariance scale so small that
+        // the probe residuals sit at the propagator's own resolution.  This scenario
+        // answers whether readings at that scale reflect real density error: the
+        // mixture must still match the ensemble, and be no worse than the unsplit
+        // Gaussian.
         let mut stall_cov = DMatrix::<f64>::zeros(6, 6);
         for (i, s) in neo_sigma.iter().enumerate() {
             stall_cov[(i, i)] = (s * 0.001) * (s * 0.001);

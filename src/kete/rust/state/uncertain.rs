@@ -1,29 +1,34 @@
 //! Python wrapper for [`kete_core::state::UncertainState`].
 //!
-//! Bridges between the Rust state shape (`free_params: Vec<f64>`, no
-//! force-model state) and the Python user-facing shape (a `non_grav`
-//! property that returns a `NonGravModel`). The wrapper stores both:
-//! - `state`: the kete_core `UncertainState` carrying covariance and
-//!   `free_params`.
-//! - `non_grav`: the optional model template (variant + fixed
-//!   coefficients) needed to build a `ParameterizedForce` for propagation.
+//! Bridges between the Rust state shape and the Python user-facing shape,
+//! whose `non_grav` property returns a `NonGravModel` rather than the mask the
+//! core stores. The wrapper holds nothing of its own: the covariance, the
+//! `free_params` and the model they belong to all live on the core state.
 
 use super::PyState;
 use crate::elements::{PyCometElements, PyEquinoctialElements};
 use crate::nongrav::PyNonGravModel;
 use crate::time::PyTime;
-use kete_core::forces::NonGravMask;
 use kete_core::forces::ParameterizedForce;
 use kete_core::frames::{Ecliptic, Equatorial};
 use kete_core::prelude::*;
 use kete_spice::propagation::SpkNonGravs;
-use kete_spice::propagation::{
-    propagate_uncertain, propagate_with_diagnosis, sigma_point_divergence,
-};
+use kete_spice::propagation::propagate_uncertain;
 use kete_spice::spk::LOADED_SPK;
 use nalgebra::DMatrix;
 use nalgebra::Vector3;
 use pyo3::prelude::*;
+use std::f64::consts::PI;
+
+/// Row and column of the true longitude in the element covariance.
+///
+/// The Python interface reports angles in degrees and the core works in radians, so
+/// this is the one row of the element covariance that is rescaled at the boundary.
+const TRUE_LON_ROW: usize = 5;
+
+/// Rows of the cometary element covariance that hold an angle: the longitude of the
+/// ascending node, the argument of perihelion, and the inclination.
+const COMETARY_ANGLE_ROWS: [usize; 3] = [3, 4, 5];
 
 /// Uncertain orbit state: a best-fit orbit together with a covariance matrix
 /// spanning that orbit's six coordinates and any fitted non-gravitational
@@ -36,24 +41,22 @@ use pyo3::prelude::*;
 /// :class:`~kete.State`, and :attr:`cartesian_cov_matrix` for the covariance in
 /// position and velocity.
 ///
-/// The `non_grav` field stores an all-`None` [`ParameterMask`] wrapping
-/// the typed ParameterizedForce template; free-parameter values live in
+/// `state.non_grav` stores an all-`None` [`ParameterMask`] wrapping the typed
+/// ParameterizedForce template; free-parameter values live in
 /// `state.free_params`, not in the mask.
 #[pyclass(frozen, module = "kete", name = "UncertainState", from_py_object)]
 #[derive(Clone)]
 pub struct PyUncertainState {
-    /// Underlying state with covariance and free-parameter values.
+    /// Underlying state with its covariance, free-parameter values and the model
+    /// those parameters belong to.
     pub state: UncertainState,
-    /// All-`None` parameter mask over the non-grav ParameterizedForce template.
-    /// Free-parameter values are stored on `state.free_params`.
-    pub non_grav: Option<NonGravMask>,
 }
 
 impl std::fmt::Debug for PyUncertainState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PyUncertainState")
             .field("state", &self.state)
-            .field("non_grav_present", &self.non_grav.is_some())
+            .field("non_grav_present", &self.state.non_grav.is_some())
             .finish()
     }
 }
@@ -102,7 +105,7 @@ impl PyUncertainState {
         spk: &'a kete_spice::spk::SpkCollection,
         include_extended: bool,
     ) -> SpkNonGravs<'a> {
-        if let Some(ref ng) = self.non_grav {
+        if let Some(ref ng) = self.state.non_grav {
             SpkNonGravs::with_non_grav_mask(spk, include_extended, ng.clone())
         } else {
             SpkNonGravs::gravity(spk, include_extended)
@@ -221,11 +224,9 @@ impl PyUncertainState {
                 None => 1e-30,
             };
         }
-        let us = UncertainState::from_state(&eq_state, &cov, free_params)?;
-        Ok(Self {
-            state: us,
-            non_grav: ng_mask,
-        })
+        let mut us = UncertainState::from_state(&eq_state, &cov, free_params)?;
+        us.non_grav = ng_mask;
+        Ok(Self { state: us })
     }
 
     /// Build an ``UncertainState`` from a state and a full cartesian covariance
@@ -292,11 +293,9 @@ impl PyUncertainState {
 
         let ng_mask = non_grav.as_ref().map(|m| m.to_mask());
         let free_params = resolve_free_params(&non_grav, free_params)?;
-        let us = UncertainState::from_state(&ecl_state, &mat, free_params)?;
-        Ok(Self {
-            state: us,
-            non_grav: ng_mask,
-        })
+        let mut us = UncertainState::from_state(&ecl_state, &mat, free_params)?;
+        us.non_grav = ng_mask;
+        Ok(Self { state: us })
     }
 
     /// Build an ``UncertainState`` from cometary orbital elements and
@@ -311,7 +310,10 @@ impl PyUncertainState {
     ///     Cometary orbital elements (with desig and epoch).
     /// cov_matrix : list[list[float]]
     ///     Covariance matrix in element space, (6+Np)x(6+Np).
-    ///     Element order: ``[e, q, tp, node, w, i, <nongrav...>]``.
+    ///     Element order: ``[e, q, tp, node, w, i, <nongrav...>]``, with ``node``,
+    ///     ``w`` and ``i`` in degrees to match :class:`~kete.CometElements`. Their
+    ///     variances are therefore in degrees squared and their cross terms in
+    ///     degrees.
     /// non_grav : :class:`~kete.propagation.NonGravModel`, optional
     ///     Non-gravitational model template.
     /// free_params : list[float], optional
@@ -335,14 +337,23 @@ impl PyUncertainState {
                 .into());
             }
         }
-        let mat = DMatrix::from_fn(n, n, |r, c| cov_matrix[r][c]);
+        // The angle rows arrive in degrees, matching `CometElements` itself, and the
+        // core works in radians.
+        let to_radians = |i: usize| {
+            if COMETARY_ANGLE_ROWS.contains(&i) {
+                PI / 180.0
+            } else {
+                1.0
+            }
+        };
+        let mat = DMatrix::from_fn(n, n, |r, c| {
+            cov_matrix[r][c] * to_radians(r) * to_radians(c)
+        });
         let ng_mask = non_grav.as_ref().map(|m| m.to_mask());
         let free_params = resolve_free_params(&non_grav, free_params)?;
-        let us = UncertainState::from_cometary(&elements.0, &mat, free_params)?;
-        Ok(Self {
-            state: us,
-            non_grav: ng_mask,
-        })
+        let mut us = UncertainState::from_cometary(&elements.0, &mat, free_params)?;
+        us.non_grav = ng_mask;
+        Ok(Self { state: us })
     }
 
     /// How faithfully the stored covariance and its cartesian image describe the same
@@ -354,14 +365,17 @@ impl PyUncertainState {
     /// ``sigma_factor`` standard deviations out along the cartesian covariance's
     /// principal axes are carried through the exact nonlinear change of coordinates
     /// and compared against the linear image; the result is how many sigma the
-    /// exact answer sits from the linear one, on the same scale as the divergence
-    /// reported by :meth:`propagate_with_diagnosis`.
+    /// exact answer sits from the linear one.
+    ///
+    /// This asks a different question from :meth:`nonlinearity`, which measures the
+    /// propagation rather than the coordinate change, and the two are not on a common
+    /// scale: this one probes at ``sigma_factor`` on the cartesian principal axes, and
+    /// the propagation metric probes every element direction on its own width.
     ///
     /// Call this immediately after building the state from a fitted or catalog
     /// covariance to bound the loss of the entry conversion itself. A value well
-    /// below the splitting threshold (about 3) means the initial Gaussian is
-    /// faithful, so structure that develops during propagation is dynamical rather
-    /// than an entry artifact. A larger value means the uncertainty is already too
+    /// below 1 means the initial Gaussian is faithful, so structure that develops
+    /// during propagation is dynamical rather than an entry artifact. A larger value means the uncertainty is already too
     /// wide for a single Gaussian and should be split or sampled instead. Infinity
     /// means it reaches configurations orbital elements cannot represent at all.
     ///
@@ -404,10 +418,15 @@ impl PyUncertainState {
     /// semi-latus rectum ``p`` in AU, the two eccentricity components
     /// ``f = e cos(w + node)`` and ``g = e sin(w + node)``, the two pole components
     /// ``h = tan(i/2) cos(node)`` and ``k = tan(i/2) sin(node)``, and the true
-    /// longitude at the epoch ``L = node + w + nu`` in radians. All six are
-    /// dimensionless except the first, in AU, and the last, in radians. Rows 6 onward
+    /// longitude at the epoch ``L = node + w + nu`` in degrees. All six are
+    /// dimensionless except the first, in AU, and the last, in degrees. Rows 6 onward
     /// are the fitted force parameters, unchanged in meaning and in the order given by
     /// :attr:`param_names`.
+    ///
+    /// The ``L`` row and column are reported in degrees to match
+    /// :attr:`~kete.EquinoctialElements.true_lon` and every other angle in the Python
+    /// interface, so the variance there is in degrees squared and its cross terms in
+    /// degrees. The Rust core holds the same matrix in radians.
     ///
     /// The covariance is stored this way because a cartesian covariance stops
     /// describing the distribution within a fraction of an orbit, as the distribution
@@ -420,8 +439,16 @@ impl PyUncertainState {
     fn cov_matrix(&self) -> Vec<Vec<f64>> {
         let n = self.state.cov_matrix.nrows();
         let m = self.state.cov_matrix.ncols();
+        // The core holds `L` in radians. Rescaling the row and the column carries
+        // the variance to degrees squared and every cross term to degrees, which is
+        // the same matrix in the units the Python interface states.
+        let scale = |i: usize| if i == TRUE_LON_ROW { 180.0 / PI } else { 1.0 };
         (0..n)
-            .map(|r| (0..m).map(|c| self.state.cov_matrix[(r, c)]).collect())
+            .map(|r| {
+                (0..m)
+                    .map(|c| self.state.cov_matrix[(r, c)] * scale(r) * scale(c))
+                    .collect()
+            })
             .collect()
     }
 
@@ -459,7 +486,7 @@ impl PyUncertainState {
     /// merged here to reconstruct the full model.
     #[getter]
     fn non_grav(&self) -> Option<PyNonGravModel> {
-        self.non_grav.as_ref().and_then(|mask| {
+        self.state.non_grav.as_ref().and_then(|mask| {
             let full = mask.merge(&self.state.free_params).ok()?;
             PyNonGravModel::from_force(&mask.inner, &full)
         })
@@ -477,63 +504,41 @@ impl PyUncertainState {
         self.state.elements.epoch.jd.into()
     }
 
-    /// Peak sigma-point Mahalanobis divergence ever recorded for this
-    /// component during adaptive propagation.
+    /// Departure from linearity this component is carrying, in sigma of its own
+    /// propagated position distribution, or ``None`` if it has never been marched.
     ///
-    /// The metric measures the linear (STM-based) prediction error in
-    /// units of the predicted uncertainty -- a Mahalanobis distance in
-    /// the propagated element covariance, floored so that directions
-    /// narrower than about 1e-3 of the component's overall spread do
-    /// not dominate::
-    ///
-    ///     d = sqrt( (delta_full - delta_lin)^T * P_f^-1 * (delta_full - delta_lin) )
-    ///
-    /// "How many sigma off is the linear answer, relative to its own
-    /// predicted uncertainty?"  For samples drawn from the predicted
-    /// Gaussian, `d` follows a chi distribution in 6 dimensions:
-    /// expected value ~ 2.4, 90% containment ~ 3.0, 95% ~ 3.55, 99% ~ 4.1.
-    ///
-    /// Practical interpretation:
-    ///
-    /// * ``< 0.1`` (the default ``split_threshold``): probes stay within
-    ///   a tenth of a sigma of the linear prediction.  The represented
-    ///   density is faithful.
-    /// * ``0.1 - 3.0``: the state estimate is fine but the density shape
-    ///   is distorting -- a probe half a sigma off is a large shape
-    ///   error even though it is well inside the predicted ellipsoid.
-    /// * ``3.0 - 5.0``: prediction at the edge of the predicted spread.
-    /// * ``> 5.0``: prediction is many sigma outside the predicted
-    ///   distribution.  The linear approximation is broken in this
-    ///   region; raise ``max_components``, lower ``sigma_factor``, or
-    ///   shorten the propagation arc between adaptive steps.
-    ///
-    /// This is a per-component statement about the propagation's local
-    /// linearity, in units of the component's own spread.  It is not a
-    /// mixture accuracy measure: errors that are small fractions of the
-    /// total extent, or confined to near-null directions under the
-    /// metric's floor, do not register at any threshold.
-    ///
-    /// ``0.0`` means the component has never been adaptively diagnosed,
-    /// or every step returned a clean linear result.  Inherited by split
-    /// children so the full lineage history is preserved.
+    /// Set by :meth:`kete.DiffuseState.step` and :meth:`kete.DiffuseState.propagate`, and
+    /// measured against probes carried since this component last split - so it says how
+    /// far the component is from linear now, not what the last leg added.  Read it with
+    /// :attr:`residual_meters`.
     #[getter]
-    fn max_unresolved_divergence(&self) -> f64 {
-        self.state.max_unresolved_divergence
+    fn eta(&self) -> Option<f64> {
+        self.state.eta
+    }
+
+    /// The residual behind :attr:`eta`, as a cartesian position offset in meters, or
+    /// ``None`` if this component has never been marched.
+    ///
+    /// The propagator places a position to roughly a meter, so an ``eta`` of ``0.003``
+    /// standing on a residual of ``1.2`` m is numerical noise rather than curvature.
+    #[getter]
+    fn residual_meters(&self) -> Option<f64> {
+        self.state.residual_meters
     }
 
     /// Names of all parameters in the covariance matrix, in row/column
     /// order.
     ///
     /// Always starts with ``["p", "f", "g", "h", "k", "L"]``, the modified equinoctial
-    /// elements described on :attr:`cov_matrix`, followed by any non-gravitational
-    /// parameter names.
+    /// elements described on :attr:`cov_matrix`, with ``L`` in degrees, followed by
+    /// any non-gravitational parameter names.
     #[getter]
     fn param_names(&self) -> Vec<String> {
         let mut names: Vec<String> = vec!["p", "f", "g", "h", "k", "L"]
             .into_iter()
             .map(String::from)
             .collect();
-        if let Some(ref ng) = self.non_grav {
+        if let Some(ref ng) = self.state.non_grav {
             names.extend(ng.free_param_names().into_iter().map(String::from));
         }
         names
@@ -569,7 +574,7 @@ impl PyUncertainState {
             let py_st: PyState = st.into();
             states.push(py_st);
             // Reconstruct a NonGravModel from the mask + sampled params.
-            let ng = self.non_grav.as_ref().and_then(|mask| {
+            let ng = self.state.non_grav.as_ref().and_then(|mask| {
                 let raw = if sampled_params.is_empty() {
                     &self.state.free_params
                 } else {
@@ -605,88 +610,77 @@ impl PyUncertainState {
             let forces = self.build_forces(&spk, include_asteroids);
             let result =
                 propagate_uncertain(&self.state, &forces, target, &Self::sun_resolver(&spk))?;
-            Ok(Self {
-                state: result,
-                non_grav: self.non_grav.clone(),
-            })
+            Ok(Self { state: result })
         })
     }
 
-    /// Propagate this :class:`~kete.UncertainState` linearly *and*
-    /// compute its sigma-point divergence in a single variational
-    /// integration.
-    #[pyo3(signature = (
-        jd,
-        n_axes=3,
-        sigma_factor=1.0,
-        position_spacing_au=Some(0.001),
-        include_asteroids=false,
-    ))]
-    fn propagate_with_diagnosis(
-        &self,
-        py: Python<'_>,
-        jd: PyTime,
-        n_axes: usize,
-        sigma_factor: f64,
-        position_spacing_au: Option<f64>,
-        include_asteroids: bool,
-    ) -> PyResult<(Self, f64)> {
-        let target: Time<TDB> = jd.into();
-        py.detach(|| {
-            let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-            let forces = self.build_forces(&spk, include_asteroids);
-            let diag = propagate_with_diagnosis(
-                &self.state,
-                &forces,
-                target,
-                n_axes,
-                sigma_factor,
-                position_spacing_au,
-                &Self::sun_resolver(&spk),
-            )?;
-            Ok((
-                Self {
-                    state: diag.propagated,
-                    non_grav: self.non_grav.clone(),
-                },
-                diag.divergence,
-            ))
+    /// Save this state to a file.
+    ///
+    /// The file keeps the covariance, the free-parameter values, the
+    /// non-gravitational model those parameters belong to, and any probes the
+    /// state was carrying. A state loaded back is the state that was saved, so
+    /// a march can continue from it without restarting its ``eta``.
+    ///
+    /// Use :meth:`save_list` when saving more than one. A directory of
+    /// single-state files costs a file and a header for each.
+    ///
+    /// Parameters
+    /// ----------
+    /// filename :
+    ///     Path to write. The format is the gzipped kete binary format.
+    fn save(&self, filename: String) -> PyResult<()> {
+        self.state.save(filename)?;
+        Ok(())
+    }
+
+    /// Load a single state from a file.
+    ///
+    /// Parameters
+    /// ----------
+    /// filename :
+    ///     Path to read.
+    ///
+    /// Raises
+    /// ------
+    /// ValueError
+    ///     If the file holds several states, or a different type. Use
+    ///     :meth:`load_list` for a file holding several.
+    #[staticmethod]
+    fn load(filename: String) -> PyResult<Self> {
+        Ok(Self {
+            state: UncertainState::load(filename)?,
         })
     }
 
-    /// Sigma-point divergence: a relative measure of how much the
-    /// linear (STM-based) propagation deviates from full nonlinear
-    /// propagation along the dominant eigenvectors of the covariance.
-    #[pyo3(signature = (
-        jd,
-        n_axes=3,
-        sigma_factor=1.0,
-        position_spacing_au=Some(0.001),
-        include_asteroids=false,
-    ))]
-    fn sigma_point_divergence(
-        &self,
-        py: Python<'_>,
-        jd: PyTime,
-        n_axes: usize,
-        sigma_factor: f64,
-        position_spacing_au: Option<f64>,
-        include_asteroids: bool,
-    ) -> PyResult<f64> {
-        let target: Time<TDB> = jd.into();
-        py.detach(|| {
-            let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-            let forces = self.build_forces(&spk, include_asteroids);
-            Ok(sigma_point_divergence(
-                &self.state,
-                &forces,
-                target,
-                n_axes,
-                sigma_factor,
-                position_spacing_au,
-                &Self::sun_resolver(&spk),
-            )?)
-        })
+    /// Save many states to one file.
+    ///
+    /// Parameters
+    /// ----------
+    /// states :
+    ///     States to save. They do not have to share an epoch or a model.
+    /// filename :
+    ///     Path to write.
+    #[staticmethod]
+    fn save_list(states: Vec<Self>, filename: String) -> PyResult<()> {
+        let states: Vec<UncertainState> = states.into_iter().map(|s| s.state).collect();
+        UncertainState::save_vec(&states, filename)?;
+        Ok(())
+    }
+
+    /// Load many states from a file.
+    ///
+    /// A file holding a single state reads back as a list of one.
+    ///
+    /// Parameters
+    /// ----------
+    /// filename :
+    ///     Path to read.
+    #[staticmethod]
+    fn load_list(filename: String) -> PyResult<Vec<Self>> {
+        Ok(UncertainState::load_vec(filename)?
+            .into_iter()
+            .map(|state| Self { state })
+            .collect())
     }
 
     /// String representation.

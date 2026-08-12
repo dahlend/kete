@@ -34,15 +34,20 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use crate::desigs::Desig;
+use crate::elements::EquinoctialElements;
 use crate::errors::{Error, KeteResult};
+use crate::forces::{
+    DustNonGrav, FarnocchiaNonGrav, JplCometNonGrav, NonGravKind, ParameterMask, ParameterizedForce,
+};
 use crate::fov::{
     FOV, GenericCone, GenericRectangle, NeosCmos, NeosVisit, OmniDirectional, OnSkyRectangle,
     PTFFilter, PtfCcd, PtfField, SpherexCmos, SpherexField, SphericalCone, SpitzerBand,
     SpitzerFrame, WiseCmos, ZtfCcdQuad, ZtfField,
 };
 use crate::frames::{Equatorial, Vector};
-use crate::state::{SimultaneousStates, State};
+use crate::state::{DiffuseState, ProbeSet, SimultaneousStates, State, UncertainState};
 use crate::time::{TDB, Time};
+use nalgebra::{DMatrix, DVector, Vector3};
 use std::io::{self, Cursor, Read, Write};
 
 // ---------------------------------------------------------------------------
@@ -53,16 +58,30 @@ const MAGIC: &[u8; 4] = b"KETE";
 const VERSION: u16 = 1;
 const CONTENT_TYPE_SINGLE: u8 = 0;
 const CONTENT_TYPE_VEC: u8 = 1;
+const CONTENT_TYPE_UNCERTAIN: u8 = 2;
+const CONTENT_TYPE_UNCERTAIN_VEC: u8 = 3;
+const CONTENT_TYPE_DIFFUSE: u8 = 4;
+const CONTENT_TYPE_DIFFUSE_VEC: u8 = 5;
 
 /// The payload read from a kete binary file.
 ///
 /// The content type in the file header determines which variant is returned.
+/// New content types are added rather than changing the version, so a reader
+/// keeps accepting every file an older writer produced.
 #[derive(Debug, Clone)]
 pub enum KeteFileType {
     /// A single [`SimultaneousStates`] (content type 0).
     Single(Box<SimultaneousStates>),
     /// A collection of [`SimultaneousStates`] (content type 1).
     Vec(Vec<SimultaneousStates>),
+    /// A single [`UncertainState`] (content type 2).
+    Uncertain(Box<UncertainState>),
+    /// A collection of [`UncertainState`] (content type 3).
+    UncertainVec(Vec<UncertainState>),
+    /// A single [`DiffuseState`] (content type 4).
+    Diffuse(Box<DiffuseState>),
+    /// A collection of [`DiffuseState`] (content type 5).
+    DiffuseVec(Vec<DiffuseState>),
 }
 
 // ---------------------------------------------------------------------------
@@ -208,6 +227,55 @@ impl<T: KeteRead> KeteRead for Vec<T> {
         }
         Ok(vec)
     }
+}
+
+// ---------------------------------------------------------------------------
+// DMatrix<f64>, Vector3<f64>
+// ---------------------------------------------------------------------------
+
+// These are written by plain functions rather than through `KeteWrite`.
+// Implementing the traits for nalgebra's own types would make every matrix in
+// the ecosystem serializable in kete's format, which is a far broader promise
+// than the few fields below need, and one this format would then owe forever.
+
+/// Write a dense matrix as its shape and then its entries, column major.
+fn write_matrix<W: Write>(matrix: &DMatrix<f64>, w: &mut W) -> io::Result<()> {
+    (matrix.nrows() as u32).write_to(w)?;
+    (matrix.ncols() as u32).write_to(w)?;
+    for v in matrix.iter() {
+        v.write_to(w)?;
+    }
+    Ok(())
+}
+
+/// Read a dense matrix written by [`write_matrix`].
+fn read_matrix<R: Read>(r: &mut R) -> KeteResult<DMatrix<f64>> {
+    let rows = u32::read_from(r)? as usize;
+    let cols = u32::read_from(r)? as usize;
+    let count = rows
+        .checked_mul(cols)
+        .ok_or_else(|| Error::IOError(format!("Matrix dimensions {rows}x{cols} overflow")))?;
+    let mut data = Vec::with_capacity(count);
+    for _ in 0..count {
+        data.push(f64::read_from(r)?);
+    }
+    Ok(DMatrix::from_vec(rows, cols, data))
+}
+
+/// Write three components of a cartesian vector.
+fn write_xyz<W: Write>(vector: &Vector3<f64>, w: &mut W) -> io::Result<()> {
+    for v in vector.iter() {
+        v.write_to(w)?;
+    }
+    Ok(())
+}
+
+/// Read a vector written by [`write_xyz`].
+fn read_xyz<R: Read>(r: &mut R) -> KeteResult<Vector3<f64>> {
+    let x = f64::read_from(r)?;
+    let y = f64::read_from(r)?;
+    let z = f64::read_from(r)?;
+    Ok(Vector3::new(x, y, z))
 }
 
 // ---------------------------------------------------------------------------
@@ -890,6 +958,291 @@ impl KeteRead for SimultaneousStates {
 }
 
 // ---------------------------------------------------------------------------
+// ProbeSet
+// ---------------------------------------------------------------------------
+
+/// Write the probes a component was carrying.
+fn write_probes<W: Write>(probes: &ProbeSet, w: &mut W) -> io::Result<()> {
+    // One count for all four arrays, which the reader checks against, since they
+    // are one per probe pair by construction.
+    (probes.directions.len() as u32).write_to(w)?;
+    for direction in &probes.directions {
+        (direction.len() as u32).write_to(w)?;
+        for v in direction.iter() {
+            v.write_to(w)?;
+        }
+    }
+    probes.displacements.write_to(w)?;
+
+    // A pair is either both probes alive, written as four vectors, or dead,
+    // which is the tag alone. A dead pair reports infinite nonlinearity for the
+    // rest of the run, so the distinction has to survive the trip.
+    for pair in &probes.states {
+        match pair {
+            Some([(plus_pos, plus_vel), (minus_pos, minus_vel)]) => {
+                1_u8.write_to(w)?;
+                write_xyz(plus_pos, w)?;
+                write_xyz(plus_vel, w)?;
+                write_xyz(minus_pos, w)?;
+                write_xyz(minus_vel, w)?;
+            }
+            None => 0_u8.write_to(w)?,
+        }
+    }
+
+    for [plus, minus] in &probes.params {
+        plus.write_to(w)?;
+        minus.write_to(w)?;
+    }
+
+    write_matrix(&probes.stm, w)?;
+    probes.epoch.write_to(w)
+}
+
+/// Read the probes written by [`write_probes`].
+fn read_probes<R: Read>(r: &mut R) -> KeteResult<ProbeSet> {
+    let pairs = u32::read_from(r)? as usize;
+    let mut directions = Vec::with_capacity(pairs);
+    for _ in 0..pairs {
+        let len = u32::read_from(r)? as usize;
+        let mut entries = Vec::with_capacity(len);
+        for _ in 0..len {
+            entries.push(f64::read_from(r)?);
+        }
+        directions.push(DVector::from_vec(entries));
+    }
+
+    let displacements = Vec::<f64>::read_from(r)?;
+    if displacements.len() != pairs {
+        return Err(Error::IOError(
+            "ProbeSet displacements disagree with the number of probe pairs".into(),
+        ));
+    }
+
+    let mut states = Vec::with_capacity(pairs);
+    for _ in 0..pairs {
+        states.push(match u8::read_from(r)? {
+            0 => None,
+            1 => {
+                let plus = (read_xyz(r)?, read_xyz(r)?);
+                let minus = (read_xyz(r)?, read_xyz(r)?);
+                Some([plus, minus])
+            }
+            t => return Err(Error::IOError(format!("Invalid probe pair tag: {t}"))),
+        });
+    }
+
+    let mut params = Vec::with_capacity(pairs);
+    for _ in 0..pairs {
+        let plus = Vec::<f64>::read_from(r)?;
+        let minus = Vec::<f64>::read_from(r)?;
+        params.push([plus, minus]);
+    }
+
+    Ok(ProbeSet {
+        directions,
+        displacements,
+        states,
+        params,
+        stm: read_matrix(r)?,
+        epoch: Time::read_from(r)?,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// NonGravKind
+// ---------------------------------------------------------------------------
+
+const NONGRAV_DUST: u8 = 0;
+const NONGRAV_JPL_COMET: u8 = 1;
+const NONGRAV_FARNOCCHIA: u8 = 2;
+
+/// Write a non-gravitational model and which of its parameters are free.
+fn write_non_grav<W: Write>(mask: &ParameterMask<NonGravKind>, w: &mut W) -> io::Result<()> {
+    match &mask.inner {
+        NonGravKind::Dust(_) => NONGRAV_DUST.write_to(w)?,
+        NonGravKind::JplComet(model) => {
+            NONGRAV_JPL_COMET.write_to(w)?;
+            model.alpha.write_to(w)?;
+            model.r_0.write_to(w)?;
+            model.m.write_to(w)?;
+            model.n.write_to(w)?;
+            model.k.write_to(w)?;
+            model.dt.write_to(w)?;
+        }
+        NonGravKind::Farnocchia(model) => {
+            NONGRAV_FARNOCCHIA.write_to(w)?;
+            model.albedo.write_to(w)?;
+            model.absorptivity.write_to(w)?;
+            model.flattening.write_to(w)?;
+            model.spin_pole.write_to(w)?;
+        }
+    }
+    mask.mask.write_to(w)
+}
+
+/// Read a model written by [`write_non_grav`].
+fn read_non_grav<R: Read>(r: &mut R) -> KeteResult<ParameterMask<NonGravKind>> {
+    let inner = match u8::read_from(r)? {
+        NONGRAV_DUST => NonGravKind::Dust(DustNonGrav),
+        NONGRAV_JPL_COMET => NonGravKind::JplComet(JplCometNonGrav::new(
+            f64::read_from(r)?,
+            f64::read_from(r)?,
+            f64::read_from(r)?,
+            f64::read_from(r)?,
+            f64::read_from(r)?,
+            f64::read_from(r)?,
+        )),
+        NONGRAV_FARNOCCHIA => NonGravKind::Farnocchia(FarnocchiaNonGrav::new(
+            f64::read_from(r)?,
+            f64::read_from(r)?,
+            f64::read_from(r)?,
+            Vector::read_from(r)?,
+        )?),
+        t => return Err(Error::IOError(format!("Invalid non-grav model tag: {t}"))),
+    };
+    let mask = Vec::<Option<f64>>::read_from(r)?;
+    Ok(ParameterMask { inner, mask })
+}
+
+// ---------------------------------------------------------------------------
+// UncertainState
+// ---------------------------------------------------------------------------
+
+// Matrices and vectors are written by these helpers rather than through
+// `KeteWrite`. Implementing the traits for nalgebra's types would make every
+// matrix in the ecosystem serializable in kete's format, which is a far broader
+// promise than the three fields below need, and one this format would then owe
+// forever.
+
+impl KeteWrite for UncertainState {
+    fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let elements = &self.elements;
+        elements.desig.write_to(w)?;
+        elements.epoch.write_to(w)?;
+        elements.semi_latus.write_to(w)?;
+        elements.ecc_f.write_to(w)?;
+        elements.ecc_g.write_to(w)?;
+        elements.pole_h.write_to(w)?;
+        elements.pole_k.write_to(w)?;
+        elements.true_lon.write_to(w)?;
+        elements.center_id.write_to(w)?;
+        elements.gm_sqrt.write_to(w)?;
+
+        write_matrix(&self.cov_matrix, w)?;
+        self.free_params.write_to(w)?;
+
+        // The measurement travels with the state. Dropping the probes would
+        // silently restart `eta` on the next leg, which is the one way a march
+        // can lose its history without saying so.
+        match &self.probes {
+            Some(probes) => {
+                1_u8.write_to(w)?;
+                write_probes(probes, w)?;
+            }
+            None => 0_u8.write_to(w)?,
+        }
+        match &self.whitening_cov {
+            Some(reference) => {
+                1_u8.write_to(w)?;
+                write_matrix(reference, w)?;
+            }
+            None => 0_u8.write_to(w)?,
+        }
+        match &self.non_grav {
+            Some(mask) => {
+                1_u8.write_to(w)?;
+                write_non_grav(mask, w)?;
+            }
+            None => 0_u8.write_to(w)?,
+        }
+        self.eta.write_to(w)?;
+        self.residual_meters.write_to(w)
+    }
+}
+
+impl KeteRead for UncertainState {
+    fn read_from<R: Read>(r: &mut R) -> KeteResult<Self> {
+        let elements = EquinoctialElements {
+            desig: Desig::read_from(r)?,
+            epoch: Time::read_from(r)?,
+            semi_latus: f64::read_from(r)?,
+            ecc_f: f64::read_from(r)?,
+            ecc_g: f64::read_from(r)?,
+            pole_h: f64::read_from(r)?,
+            pole_k: f64::read_from(r)?,
+            true_lon: f64::read_from(r)?,
+            center_id: i32::read_from(r)?,
+            gm_sqrt: f64::read_from(r)?,
+        };
+        let cov_matrix = read_matrix(r)?;
+        let free_params = Vec::<f64>::read_from(r)?;
+        let mut state = Self::new(elements, cov_matrix, free_params)?;
+
+        state.probes = match u8::read_from(r)? {
+            0 => None,
+            1 => Some(read_probes(r)?),
+            t => return Err(Error::IOError(format!("Invalid probe set tag: {t}"))),
+        };
+        state.whitening_cov = match u8::read_from(r)? {
+            0 => None,
+            1 => Some(read_matrix(r)?),
+            t => return Err(Error::IOError(format!("Invalid whitening tag: {t}"))),
+        };
+        state.non_grav = match u8::read_from(r)? {
+            0 => None,
+            1 => Some(read_non_grav(r)?),
+            t => return Err(Error::IOError(format!("Invalid non-grav tag: {t}"))),
+        };
+        if let Some(mask) = &state.non_grav {
+            let free = mask.free_param_names().len();
+            if free != state.free_params.len() {
+                return Err(Error::IOError(format!(
+                    "force model leaves {free} parameters free, but the state carries {}",
+                    state.free_params.len()
+                )));
+            }
+        }
+        state.eta = Option::<f64>::read_from(r)?;
+        state.residual_meters = Option::<f64>::read_from(r)?;
+        Ok(state)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DiffuseState
+// ---------------------------------------------------------------------------
+
+impl KeteWrite for DiffuseState {
+    fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let mut payload = Vec::new();
+        self.weights.write_to(&mut payload)?;
+        self.components.write_to(&mut payload)?;
+        self.include_asteroids.write_to(&mut payload)?;
+        (payload.len() as u32).write_to(w)?;
+        w.write_all(&payload)
+    }
+}
+
+impl KeteRead for DiffuseState {
+    fn read_from<R: Read>(r: &mut R) -> KeteResult<Self> {
+        let entry_len = u32::read_from(r)? as usize;
+        let mut payload = vec![0_u8; entry_len];
+        r.read_exact(&mut payload)?;
+        let mut cursor = Cursor::new(&payload);
+
+        let weights = Vec::<f64>::read_from(&mut cursor)?;
+        let components = Vec::<UncertainState>::read_from(&mut cursor)?;
+        // `new` re-checks the weights against the components and the components
+        // against each other, so a corrupt file fails here rather than producing
+        // a mixture that does not describe a density.
+        let mut mixture = Self::new(weights, components)?;
+        mixture.include_asteroids = bool::read_from(&mut cursor)?;
+        Ok(mixture)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // File-level functions
 // ---------------------------------------------------------------------------
 
@@ -943,10 +1296,69 @@ pub fn write_vec_kete_file<W: Write>(entries: &[SimultaneousStates], w: &mut W) 
     Ok(())
 }
 
-/// Read [`SimultaneousStates`] from a kete binary file.
+/// Write a single [`UncertainState`] to a kete binary file.
+///
+/// # Errors
+/// Returns an error if writing to the stream fails.
+pub fn write_uncertain_kete_file<W: Write>(entry: &UncertainState, w: &mut W) -> KeteResult<()> {
+    write_header(w, CONTENT_TYPE_UNCERTAIN)?;
+    entry.write_to(w)?;
+    Ok(())
+}
+
+/// Write a collection of [`UncertainState`] entries to a kete binary file.
+///
+/// One file holding many records is the intended shape for a set of states that
+/// belong together, since a directory of one-record files costs a file handle
+/// and a header per state.
+///
+/// # Errors
+/// Returns an error if writing to the stream fails.
+pub fn write_uncertain_vec_kete_file<W: Write>(
+    entries: &[UncertainState],
+    w: &mut W,
+) -> KeteResult<()> {
+    write_header(w, CONTENT_TYPE_UNCERTAIN_VEC)?;
+    (entries.len() as u32).write_to(w)?;
+    for entry in entries {
+        entry.write_to(w)?;
+    }
+    Ok(())
+}
+
+/// Write a single [`DiffuseState`] to a kete binary file.
+///
+/// # Errors
+/// Returns an error if writing to the stream fails.
+pub fn write_diffuse_kete_file<W: Write>(entry: &DiffuseState, w: &mut W) -> KeteResult<()> {
+    write_header(w, CONTENT_TYPE_DIFFUSE)?;
+    entry.write_to(w)?;
+    Ok(())
+}
+
+/// Write a collection of [`DiffuseState`] entries to a kete binary file.
+///
+/// One file holding many mixtures is the intended shape for a set that belongs
+/// together, such as the cells of one dust simulation.
+///
+/// # Errors
+/// Returns an error if writing to the stream fails.
+pub fn write_diffuse_vec_kete_file<W: Write>(
+    entries: &[DiffuseState],
+    w: &mut W,
+) -> KeteResult<()> {
+    write_header(w, CONTENT_TYPE_DIFFUSE_VEC)?;
+    (entries.len() as u32).write_to(w)?;
+    for entry in entries {
+        entry.write_to(w)?;
+    }
+    Ok(())
+}
+
+/// Read the contents of a kete binary file.
 ///
 /// Returns a [`KeteFileType`] enum whose variant reflects what the file
-/// header declares: a single entry or a collection.
+/// header declares: which type it holds, and whether it holds one or many.
 ///
 /// # Errors
 /// Returns an error if the stream cannot be read, has invalid magic bytes,
@@ -965,6 +1377,26 @@ pub fn read_kete_file<R: Read>(r: &mut R) -> KeteResult<KeteFileType> {
             }
             Ok(KeteFileType::Vec(entries))
         }
+        CONTENT_TYPE_UNCERTAIN => Ok(KeteFileType::Uncertain(Box::new(
+            UncertainState::read_from(r)?,
+        ))),
+        CONTENT_TYPE_UNCERTAIN_VEC => {
+            let n_entries = u32::read_from(r)? as usize;
+            let mut entries = Vec::with_capacity(n_entries);
+            for _ in 0..n_entries {
+                entries.push(UncertainState::read_from(r)?);
+            }
+            Ok(KeteFileType::UncertainVec(entries))
+        }
+        CONTENT_TYPE_DIFFUSE => Ok(KeteFileType::Diffuse(Box::new(DiffuseState::read_from(r)?))),
+        CONTENT_TYPE_DIFFUSE_VEC => {
+            let n_entries = u32::read_from(r)? as usize;
+            let mut entries = Vec::with_capacity(n_entries);
+            for _ in 0..n_entries {
+                entries.push(DiffuseState::read_from(r)?);
+            }
+            Ok(KeteFileType::DiffuseVec(entries))
+        }
         _ => Err(Error::IOError(format!(
             "Unsupported content type: {content_type}"
         ))),
@@ -978,6 +1410,7 @@ pub fn read_kete_file<R: Read>(r: &mut R) -> KeteResult<KeteFileType> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::DiffuseState;
 
     /// Round-trip helper: write then read, assert equality.
     fn round_trip_write_read<T: KeteWrite + KeteRead + std::fmt::Debug + PartialEq>(val: &T) {
@@ -1071,6 +1504,169 @@ mod tests {
             Vector::new([0.0, 1.0, 0.0]),
             10,
         )
+    }
+
+    /// An uncertain state carrying probes, which is what a marched component
+    /// looks like and therefore what has to survive a file.
+    fn sample_uncertain() -> UncertainState {
+        let ecliptic = sample_state().into_frame::<crate::frames::Ecliptic>();
+        let elements = EquinoctialElements::from_state(&ecliptic).unwrap();
+        let mut cov = DMatrix::<f64>::zeros(7, 7);
+        for i in 0..6 {
+            cov[(i, i)] = 1e-12 * f64::from(i as u32 + 1);
+        }
+        cov[(6, 6)] = 1e-6;
+        let mut state = UncertainState::new(elements, cov, vec![0.01]).unwrap();
+        // The elements' center and the force center coincide here, so the
+        // resolver is zero and no ephemeris is needed.
+        let resolver = |_: Time<TDB>| Ok((Vector3::zeros(), Vector3::zeros()));
+        state.non_grav = Some(ParameterMask {
+            inner: NonGravKind::Dust(DustNonGrav),
+            mask: vec![None],
+        });
+        state.probes = Some(ProbeSet::seed(&state, &resolver).unwrap());
+        state.whitening_cov = Some(state.cov_matrix.clone());
+        state.eta = Some(0.0123);
+        state.residual_meters = Some(45.6);
+        state
+    }
+
+    /// A state, its covariance, its probes and its reported numbers all come
+    /// back. The probes are the part that matters: a reloaded component without
+    /// them silently restarts its `eta` on the next leg.
+    #[test]
+    fn test_uncertain_state_round_trip() {
+        let original = sample_uncertain();
+
+        let mut buf = Vec::new();
+        write_uncertain_kete_file(&original, &mut buf).unwrap();
+        let mut cursor = Cursor::new(&buf);
+        let KeteFileType::Uncertain(recovered) = read_kete_file(&mut cursor).unwrap() else {
+            panic!("expected an Uncertain variant");
+        };
+
+        let got = &*recovered;
+        assert_eq!(got.elements.epoch, original.elements.epoch);
+        assert_eq!(got.elements.center_id, original.elements.center_id);
+        assert!((got.elements.semi_latus - original.elements.semi_latus).abs() < 1e-15);
+        assert_eq!(got.cov_matrix, original.cov_matrix);
+        assert_eq!(got.free_params, original.free_params);
+        assert_eq!(got.eta, original.eta);
+        assert_eq!(got.residual_meters, original.residual_meters);
+        assert_eq!(got.whitening_cov, original.whitening_cov);
+
+        let (before, after) = (original.probes.unwrap(), got.probes.clone().unwrap());
+        assert_eq!(before.directions.len(), after.directions.len());
+        assert_eq!(before.cov_dim(), after.cov_dim());
+        assert_eq!(before.epoch(), after.epoch());
+        assert_eq!(before.stm, after.stm);
+        assert_eq!(before.directions, after.directions);
+        assert_eq!(before.displacements, after.displacements);
+        assert_eq!(before.params, after.params);
+        assert_eq!(
+            before.states.iter().filter(|s| s.is_some()).count(),
+            after.states.iter().filter(|s| s.is_some()).count()
+        );
+
+        assert!(got.non_grav.is_some());
+    }
+
+    /// Many records in one file, which is the shape a set of states that belong
+    /// together needs. A file holding one reads back as a collection of one.
+    #[test]
+    fn test_uncertain_state_vec_round_trip() {
+        let records: Vec<UncertainState> = (0..3).map(|_| sample_uncertain()).collect();
+
+        let mut buf = Vec::new();
+        write_uncertain_vec_kete_file(&records, &mut buf).unwrap();
+        let mut cursor = Cursor::new(&buf);
+        let KeteFileType::UncertainVec(recovered) = read_kete_file(&mut cursor).unwrap() else {
+            panic!("expected an UncertainVec variant");
+        };
+        assert_eq!(recovered.len(), 3);
+        assert!(recovered.iter().all(|r| r.non_grav.is_some()));
+        assert!(recovered.iter().all(|r| r.probes.is_some()));
+    }
+
+    /// A model whose free parameter count disagrees with the state it is stored
+    /// beside is a corrupt file rather than a state to be propagated wrongly.
+    #[test]
+    fn test_uncertain_state_rejects_mismatched_model() {
+        let mut state = sample_uncertain();
+        state.non_grav = Some(ParameterMask {
+            inner: NonGravKind::Dust(DustNonGrav),
+            // Frozen rather than free, so the model exposes no parameters while
+            // the state carries one.
+            mask: vec![Some(0.01)],
+        });
+        let mut buf = Vec::new();
+        state.write_to(&mut buf).unwrap();
+        let mut cursor = Cursor::new(&buf);
+        assert!(UncertainState::read_from(&mut cursor).is_err());
+    }
+
+    /// A mixture, its components' probes, and the model it was propagated under
+    /// all come back.
+    #[test]
+    fn test_diffuse_state_round_trip() {
+        let mixture = DiffuseState::new(
+            vec![0.25, 0.75],
+            vec![sample_uncertain(), sample_uncertain()],
+        )
+        .unwrap();
+        let mut record = mixture;
+        record.include_asteroids = true;
+
+        let mut buf = Vec::new();
+        write_diffuse_kete_file(&record, &mut buf).unwrap();
+        let mut cursor = Cursor::new(&buf);
+        let KeteFileType::Diffuse(recovered) = read_kete_file(&mut cursor).unwrap() else {
+            panic!("expected a Diffuse variant");
+        };
+
+        assert_eq!(recovered.weights, record.weights);
+        assert_eq!(recovered.n_components(), 2);
+        assert!(recovered.include_asteroids);
+        for (got, want) in recovered.components.iter().zip(&record.components) {
+            assert_eq!(got.cov_matrix, want.cov_matrix);
+            assert_eq!(got.eta, want.eta);
+            assert_eq!(got.free_params, want.free_params);
+            assert!(got.probes.is_some());
+            assert!(got.non_grav.is_some());
+        }
+    }
+
+    /// Many mixtures in one file, which is the shape a dust cell set needs.
+    #[test]
+    fn test_diffuse_state_vec_round_trip() {
+        let records: Vec<DiffuseState> = (0..3)
+            .map(|_| DiffuseState::from_uncertain(sample_uncertain()))
+            .collect();
+
+        let mut buf = Vec::new();
+        write_diffuse_vec_kete_file(&records, &mut buf).unwrap();
+        let mut cursor = Cursor::new(&buf);
+        let KeteFileType::DiffuseVec(recovered) = read_kete_file(&mut cursor).unwrap() else {
+            panic!("expected a DiffuseVec variant");
+        };
+        assert_eq!(recovered.len(), 3);
+        assert!(recovered.iter().all(|r| !r.include_asteroids));
+    }
+
+    /// Weights that do not describe the components are a corrupt file, caught by
+    /// the same check that guards the constructor.
+    #[test]
+    fn test_diffuse_state_rejects_bad_weights() {
+        let mut buf = Vec::new();
+        // Two weights against one component, written past the constructor.
+        let mut payload = Vec::new();
+        vec![0.5_f64, 0.5].write_to(&mut payload).unwrap();
+        vec![sample_uncertain()].write_to(&mut payload).unwrap();
+        false.write_to(&mut payload).unwrap();
+        (payload.len() as u32).write_to(&mut buf).unwrap();
+        buf.extend_from_slice(&payload);
+        let mut cursor = Cursor::new(&buf);
+        assert!(DiffuseState::read_from(&mut cursor).is_err());
     }
 
     #[test]
@@ -1450,7 +2046,11 @@ mod tests {
                 assert_eq!(entry.states.len(), recovered.states.len());
                 assert!(recovered.fov.is_some());
             }
-            KeteFileType::Vec(_) => panic!("expected Single variant"),
+            KeteFileType::Vec(_)
+            | KeteFileType::Uncertain(_)
+            | KeteFileType::UncertainVec(_)
+            | KeteFileType::Diffuse(_)
+            | KeteFileType::DiffuseVec(_) => panic!("expected Single variant"),
         }
     }
 
@@ -1496,7 +2096,11 @@ mod tests {
                     assert_eq!(orig.states.len(), rec.states.len());
                 }
             }
-            KeteFileType::Single(_) => panic!("expected Vec variant"),
+            KeteFileType::Single(_)
+            | KeteFileType::Uncertain(_)
+            | KeteFileType::UncertainVec(_)
+            | KeteFileType::Diffuse(_)
+            | KeteFileType::DiffuseVec(_) => panic!("expected Vec variant"),
         }
     }
 

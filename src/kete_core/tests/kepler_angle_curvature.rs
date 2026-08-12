@@ -88,13 +88,8 @@ fn propagate(elem: &EquinoctialElements, dt: f64) -> EquinoctialElements {
         None,
     )
     .expect("two body must converge");
-    let final_state = State::<Ecliptic>::new(
-        elem.desig.clone(),
-        EPOCH + dt,
-        pos,
-        vel,
-        elem.center_id,
-    );
+    let final_state =
+        State::<Ecliptic>::new(elem.desig.clone(), EPOCH + dt, pos, vel, elem.center_id);
     EquinoctialElements::from_state(&final_state).expect("state must encode")
 }
 
@@ -256,7 +251,6 @@ fn wrap(x: f64) -> f64 {
     x - std::f64::consts::TAU * (x / std::f64::consts::TAU).round()
 }
 
-
 /// Elements at a given mean anomaly on the planar conic of [`base_orbit`].
 fn at_mean_anomaly(q: f64, e: f64, m: f64) -> Option<EquinoctialElements> {
     let nu = kete_core::kepler::compute_true_anomaly(e, m, q).ok()?;
@@ -293,7 +287,11 @@ fn true_longitude_vs_mean_anomaly_probes() {
     let mut worst_m = 0.0_f64;
     for &ecc in &[0.1, 0.5, 0.9, 0.99] {
         let per = period(peri_q, ecc);
-        for &(label, m0) in &[("peri", 0.0), ("quad", std::f64::consts::FRAC_PI_2), ("apo", std::f64::consts::PI)] {
+        for &(label, m0) in &[
+            ("peri", 0.0),
+            ("quad", std::f64::consts::FRAC_PI_2),
+            ("apo", std::f64::consts::PI),
+        ] {
             let Some(base) = at_mean_anomaly(peri_q, ecc, m0) else {
                 continue;
             };
@@ -334,9 +332,11 @@ fn true_longitude_vs_mean_anomaly_probes() {
                     ) else {
                         continue;
                     };
-                    let (Some(base_m), Some(plus_m), Some(minus_m)) =
-                        (mean_anomaly(&bf), mean_anomaly(&m_plus), mean_anomaly(&m_minus))
-                    else {
+                    let (Some(base_m), Some(plus_m), Some(minus_m)) = (
+                        mean_anomaly(&bf),
+                        mean_anomaly(&m_plus),
+                        mean_anomaly(&m_minus),
+                    ) else {
                         continue;
                     };
                     let (ep, em) = (wrap(plus_m - base_m), wrap(minus_m - base_m));

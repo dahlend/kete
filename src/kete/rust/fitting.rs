@@ -537,10 +537,9 @@ impl PyOrbitFit {
             let n = f.inner.n_free_params();
             ParameterMask::new(f.inner.clone(), vec![None; n]).ok()
         });
-        PyUncertainState {
-            state: self.inner.uncertain_state.clone(),
-            non_grav: mask,
-        }
+        let mut state = self.inner.uncertain_state.clone();
+        state.non_grav = mask;
+        PyUncertainState { state }
     }
 
     /// Best-fit state at the reference epoch (Sun-centered, Ecliptic).

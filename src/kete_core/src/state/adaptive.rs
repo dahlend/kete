@@ -15,14 +15,21 @@
 //! The bottom block is `[0 | I]` because free parameters are inputs to
 //! the dynamics, not propagated quantities.
 //!
-//! The sigma-point diagnostic measures how far the linear (STM-based)
-//! propagation deviates from a fully nonlinear propagation along the
-//! dominant covariance eigenvectors.  The deviation is reported as a
-//! Mahalanobis distance in the propagated element covariance -- the
-//! prediction error in sigma-equivalent units of the predicted
-//! Gaussian, floored so near-null directions do not dominate.  Large divergence flags components that benefit
-//! from a Gaussian-mixture split before propagation; see
-//! [`SplitConfig::split_threshold`] for typical thresholds.
+//! Nonlinearity is measured with probes under integration. Every direction the
+//! component's covariance carries is probed at two times that direction's
+//! width, the probes are carried forward leg by leg rather than re-placed, and their
+//! departure from the linear prediction is read off in sigma of the position distribution
+//! the component's whitening reference describes - its own until it splits, its parent's
+//! afterwards, see [`UncertainState::whitening_cov`]. That miss decides whether the
+//! component is split before a
+//! leg is accepted. See [`step_diffuse_state`] for one leg of the controller, metric
+//! included, and [`propagate_diffuse_state`] for the fold that marches it across a whole
+//! arc.
+//!
+//! The probes ride on the component they measure (`UncertainState::probes`), so a caller
+//! can take one leg at a time and get the same answer as a single call: what the probes
+//! report is the departure accumulated since a component last split, whoever drove the
+//! legs, and the reported number does not depend on how the arc was cut.
 //!
 //! All entry points take a generic [`ParameterizedForce<Frame = Equatorial, Center = SSB>`]
 //! and an SSB-centered state. Callers compose their own gravity +
@@ -32,23 +39,52 @@
 use crate::elements::EquinoctialElements;
 use crate::errors::Error;
 use crate::forces::ParameterizedForce;
-use crate::frames::{Equatorial, SSB};
-use crate::prelude::{KeteResult, State, UncertainState};
+use crate::frames::{Ecliptic, Equatorial, InertialFrame, SSB};
+use crate::prelude::{Desig, KeteResult, UncertainState};
 use crate::state::{
-    DiffuseState, covariance_update, propagate_state, propagate_with_stm, split_for_propagation,
+    DiffuseState, ProbeSet, covariance_update, propagate_state, propagate_with_stm,
+    split_axial_k3_along,
 };
 use crate::time::{TDB, Time};
-use nalgebra::{DMatrix, DVector, SymmetricEigen, Vector3, Vector6};
+use nalgebra::{DMatrix, DVector, Matrix6, SymmetricEigen, Vector3, Vector6};
 use rayon::prelude::*;
 
-struct SigmaPoint {
-    delta_initial: DVector<f64>,
-    lin_pred: DVector<f64>,
-    /// `true` for the fixed-scale interior (pure position) probes, `false` for the
-    /// sigma-shell edge probes.  The two families scale differently under splitting -
-    /// see [`LinearityDiagnosis::edge_divergence`] - so their maxima are tracked apart.
-    interior: bool,
-}
+/// Absolute position resolution of the propagator, in AU (about one meter).
+///
+/// Two trajectories integrated to the same epoch by different step sequences differ by
+/// roughly this much, so a residual at or below it carries no dynamical information.
+/// It enters the metric only through [`POSITION_NOISE_FLOOR_AU`], the floor on the
+/// whitening covariance, so an error in it changes which directions are treated as
+/// resolved rather than any reported number directly.
+const PROPAGATOR_RESOLUTION_AU: f64 = 1.0 / 1.495_978_707e11;
+
+/// Meters per AU, for reporting a residual in physical units.
+const M_PER_AU: f64 = 1.495_978_707e11;
+
+/// Floor on the whitening position covariance used to scale the probe residual, in AU.
+///
+/// The residual is measured in sigma of a propagated position distribution. A direction of
+/// that distribution narrower than the propagation can place two states
+/// carries no measurable information, so the floor keeps such directions from dominating
+/// the answer. Ten propagator resolutions covers the spread measured between propagation
+/// paths taking different step sequences over multi-year arcs.
+///
+/// It bites less often on a component that has split, whose whitening reference is the
+/// wider pre-split one - which is the intended direction: the floor exists to keep an
+/// unmeasurable width out of the denominator, and a width the density actually had is not
+/// one of those.
+const POSITION_NOISE_FLOOR_AU: f64 = 10.0 * PROPAGATOR_RESOLUTION_AU;
+
+/// Default leg length on the common time grid, in days.
+///
+/// A quarter of a year is short against the orbital periods kete is used on and long
+/// against the cost of restarting the integrator, and it places splits to within a
+/// season of where the flow stops being linear. It is a default rather than a constant
+/// because an arc of many millennia wants a longer step or it does nothing but pay for
+/// legs. Encounters do not need a shorter one: a split placed anywhere in the
+/// pre-encounter linear window is equivalent, since the children are narrow enough to
+/// propagate linearly to the encounter from any lead.
+pub const DEFAULT_STEP_DAYS: f64 = 90.0;
 
 /// Resolves the elements' central body relative to the force model's center, at a time.
 ///
@@ -62,23 +98,47 @@ struct SigmaPoint {
 pub type CenterResolver<'a> =
     &'a (dyn Fn(Time<TDB>) -> KeteResult<(Vector3<f64>, Vector3<f64>)> + Sync);
 
-/// Push a +/- pair of sigma points along `unit_eigvec` at `scale`.
-fn push_sigma_pair(
-    points: &mut Vec<SigmaPoint>,
-    unit_eigvec: &DVector<f64>,
-    scale: f64,
-    sens: &DMatrix<f64>,
-    interior: bool,
-) {
-    let delta = unit_eigvec * scale;
-    let lin = sens * &delta;
-    for &sign in &[1.0_f64, -1.0] {
-        points.push(SigmaPoint {
-            delta_initial: sign * &delta,
-            lin_pred: sign * &lin,
-            interior,
-        });
-    }
+/// Why a leg stopped splitting.
+///
+/// A caller has to be able to tell a resolved leg from one that ran out of budget, or from
+/// one holding a component nothing could split, without re-running. Recorded by the step
+/// that made the decision rather than inferred afterwards from the component `eta` values,
+/// which cannot distinguish the last two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Termination {
+    /// Every component finished the leg under `split_threshold`.
+    Converged,
+
+    /// A component was still over threshold and `max_components` refused the split.
+    ComponentCap,
+
+    /// A component was still over threshold and its covariance carried no direction to
+    /// split along, so no split could have helped. Raising `max_components` will not
+    /// change this leg.
+    NoSplitDirection,
+}
+
+/// What one leg of the march decided.
+///
+/// Everything about the *state* the leg produced - per-component `eta`, the residual
+/// behind it - lives on the components themselves. This holds only what the returned
+/// mixture cannot say: the decisions the step made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StepReport {
+    /// Why splitting stopped on this leg.
+    ///
+    /// [`Termination::ComponentCap`] takes precedence over
+    /// [`Termination::NoSplitDirection`] when both fired, since the budget is the one a
+    /// caller can act on.
+    pub termination: Termination,
+
+    /// How many components were given fresh probes on this leg.
+    ///
+    /// A component with no carried probes is seeded, which restarts its measurement from
+    /// zero. That is correct for a new mixture and for the children of a split, and it is
+    /// a silent loss of history for a component rebuilt mid-march, so it is counted rather
+    /// than left to be inferred.
+    pub seeded: usize,
 }
 
 struct PropagationStep {
@@ -121,14 +181,18 @@ where
         jd,
     )?;
 
+    // Back to the elements' own center and storage frame, encoded directly rather than
+    // through a named intermediate `State`.
     let (final_offset_pos, final_offset_vel) = center_at(jd)?;
-    let final_centered = State::<Equatorial>::new(
+    let to_ecliptic = Equatorial::rotation_to_frame::<Ecliptic>();
+    let final_elements = EquinoctialElements::from_pos_vel(
         component.elements.desig.clone(),
         jd,
-        pos_f - final_offset_pos,
-        vel_f - final_offset_vel,
+        &(to_ecliptic * (pos_f - final_offset_pos)),
+        &(to_ecliptic * (vel_f - final_offset_vel)),
         component.elements.center_id,
-    );
+        component.elements.gm_sqrt,
+    )?;
 
     // The covariance lives in element coordinates, so the sensitivity has to be expressed
     // element-to-element rather than cartesian-to-cartesian:
@@ -138,7 +202,6 @@ where
     // with `K` the element-to-state Jacobian at the start and `J` its inverse at the end,
     // both requested in the frame the force model integrates in. The parameter columns are
     // untouched by both, since the force model's free parameters are not elements.
-    let final_elements = EquinoctialElements::from_state(&final_centered.into_frame())?;
     let start_jacobian = component.elements.state_jacobian::<Equatorial>()?;
     let final_inverse = final_elements.state_jacobian_inverse::<Equatorial>()?;
 
@@ -155,7 +218,7 @@ where
     let new_cov = covariance_update(&sens_local, &component.cov_matrix);
     let mut propagated =
         UncertainState::new(final_elements, new_cov, component.free_params.clone())?;
-    propagated.max_unresolved_divergence = component.max_unresolved_divergence;
+    propagated.non_grav.clone_from(&component.non_grav);
 
     Ok(PropagationStep {
         augmented_stm: phi_aug,
@@ -166,9 +229,12 @@ where
 /// Propagate an [`UncertainState`] and its covariance, without the sigma-point diagnosis.
 ///
 /// The mean is propagated nonlinearly and the covariance through the element-coordinate state
-/// transition matrix, `J(t_f) . Phi . K(t_0)`. Use [`propagate_with_diagnosis`] instead
-/// when the linearity of that step also matters; this is the cheap path for callers that
-/// only want the propagated state.
+/// transition matrix, `J(t_f) . Phi . K(t_0)`. Use [`step_diffuse_state`] on a
+/// one-component mixture when the linearity of that step also matters; this is the cheap
+/// path for callers that only want the propagated state.
+///
+/// Any probes the input carried are dropped rather than advanced, since this path does not
+/// measure them; the result reports no `eta`.
 ///
 /// `center_at` resolves the elements' central body against the force model's center - see
 /// [`CenterResolver`].
@@ -188,934 +254,779 @@ where
     Ok(propagate_step(component, forces, center_at, jd)?.propagated)
 }
 
-/// Result of [`propagate_with_diagnosis`]: the linearly-propagated
-/// component plus its sigma-point divergence at the same target epoch.
+/// Nonlinearity carried at the end of a propagation leg, and the propagated component it
+/// belongs to.
 ///
-/// Sharing one variational integration between the propagation and the
-/// diagnosis is the entire point of this struct -- callers that need
-/// both should never compute them separately.
+/// Sharing one variational integration between the propagation and the probes is the
+/// point of this struct: callers that need both should never compute them separately.
+///
+/// The measurement spans everything since the probes were seeded, which is everything
+/// since the component last split under [`step_diffuse_state`].
+///
+/// Internal: `eta` and the residual reach a caller on the propagated component, and the
+/// split direction is consumed by the controller that asked for it.
 #[derive(Debug, Clone)]
-pub struct LinearityDiagnosis {
-    /// Linearly propagated [`UncertainState`].
-    pub propagated: UncertainState,
-    /// Maximum sigma-point Mahalanobis divergence across the tested
-    /// axes, edge and interior probes together.  See
-    /// [`sigma_point_divergence`] for the metric definition.
-    pub divergence: f64,
-    /// Maximum divergence across the sigma-shell (edge) probes alone,
-    /// excluding the fixed-scale interior probes.
+struct LegDiagnosis {
+    /// Linearly propagated component at the end of the leg, carrying the advanced probes,
+    /// `eta` and the residual behind it.
+    propagated: UncertainState,
+
+    /// Worst whitened position miss of any probe against the linear model: the
+    /// two-sigma probe landed off by this many sigma
+    /// of the position distribution the component's whitening reference describes, floored
+    /// at ten propagator resolutions.
     ///
-    /// The two families scale differently under splitting.  An edge
-    /// probe rides the covariance: splitting narrows the component and
-    /// the probe's residual falls with it.  An interior probe sits at a
-    /// fixed spatial scale while the normalizing covariance narrows, so
-    /// its divergence *grows* under splitting until the component is
-    /// narrower than the probe scale and the probe switches off.  A
-    /// diminishing-returns comparison across generations is therefore
-    /// only meaningful within the edge family; this field is what the
-    /// adaptive loop's `min_split_improvement` check reads.
-    pub edge_divergence: f64,
-    /// Augmented `(6 + Np) x (6 + Np)` state transition matrix from
-    /// initial to final epoch. Top 6 rows are the sensitivity matrix
-    /// returned by the variational integrator; bottom Np rows are
-    /// `[0 | I_Np]`.
-    pub augmented_stm: DMatrix<f64>,
+    /// Also stored on `propagated`, which is where a caller reads it; kept here because
+    /// the controller ranks and thresholds on it while the leg is still provisional.
+    ///
+    /// The residual behind it - the same miss as a cartesian position offset in meters,
+    /// before whitening - is only on `propagated`, since nothing in the controller
+    /// decides on it.
+    eta: f64,
+
+    /// Direction carrying the miss that `eta` measured, and the direction a split
+    /// removes it along.  Expressed against the component this leg started from, so it
+    /// applies to the state a caller would roll back to rather than to the anchor the probe
+    /// was placed at.  Not normalized.  `None` when no direction carried width, or when the
+    /// propagation left the probed direction with no extent to split.
+    split_direction: Option<DVector<f64>>,
+
+    /// Whether this leg placed fresh probes rather than advancing carried ones.
+    seeded: bool,
 }
 
-/// Propagate a single [`UncertainState`] linearly *and* compute the
-/// sigma-point divergence between the linear and nonlinear results,
-/// sharing a single variational integration between the two.
+/// What one `+/-` pair contributes: where both probes now are, the worse whitened
+/// position miss of the two, and that miss in meters.  A pair that could not be
+/// propagated has no states and infinite nonlinearity.
+type PairMeasurement = (Option<[(Vector3<f64>, Vector3<f64>); 2]>, f64, f64);
+
+/// Advance a component and its probes across one leg, and measure how far the flow has
+/// departed from its linear model on every direction the covariance carries.
 ///
-/// `n_axes` is capped at the covariance dimension `(6 + Np)`.
-/// Eigenvectors with non-positive eigenvalues are skipped; if every
-/// selected axis is degenerate, `divergence` is reported as `0.0`.
+/// For each eigen-direction `v_i` of the anchor covariance with `lambda_i > 0`, a `+/-`
+/// probe pair at two widths:
+///
+/// ```text
+/// r_+/- = offset(phi(m +/- d v_i), phi(m)) -/+ Phi d v_i
+/// eta   = max over probes of ||W (J r)_pos||
+/// ```
+///
+/// with `Phi` the accumulated state transition matrix from the anchor, `J` the
+/// element-to-cartesian Jacobian at the end of the leg, and `W` the whitening by the
+/// *position* image of [`UncertainState::whitening_cov`], floored at
+/// [`POSITION_NOISE_FLOOR_AU`].  `eta` answers
+/// "the probe's position landed off by this many sigma of the position distribution the
+/// component was predicting", where the distribution referred to is the component's own
+/// until its first split and its parent's after one.  The model and the residual live in
+/// element coordinates,
+/// where the flow is nearly linear; the norm is taken on the residual's position image,
+/// which is where a metric and a statable noise floor exist.  A covariance direction
+/// narrower than the floor cannot dominate the answer, so nonlinearity confined to
+/// sub-resolution directions reads as no error rather than as amplified noise.  The pair
+/// reports its worse side, so one-sided bending is not averaged away.
+///
+/// The probes are integrated from wherever the previous leg left them, so nothing here is
+/// re-placed and nothing is re-linearized: the residual is against the accumulated
+/// transition matrix from the anchor, not against this leg's.
+///
+/// The returned diagnosis carries the advanced probes on its propagated component.  A
+/// caller that accepts the leg keeps that component; a caller that splits it discards it
+/// and works from the component the leg started at, whose children carry no probes.
 ///
 /// # Errors
-/// Returns an error if `n_axes == 0`, if `sigma_factor` is non-finite
-/// or non-positive, or if integration fails.
-pub fn propagate_with_diagnosis<F>(
+/// Fails if the force model's free-parameter count disagrees with the component's, or if
+/// the elements leave their physical domain.  A probe that cannot be propagated reports
+/// infinite `eta` rather than failing the call, since the component is genuinely
+/// unrepresentable at that scale and the controller should act on it rather than abandon
+/// the whole mixture.
+fn advance_leg<F>(
     component: &UncertainState,
+    carried: &ProbeSet,
+    seeded: bool,
     forces: &F,
-    jd: Time<TDB>,
-    n_axes: usize,
-    sigma_factor: f64,
-    position_spacing_au: Option<f64>,
     center_at: CenterResolver<'_>,
-) -> KeteResult<LinearityDiagnosis>
+    jd: Time<TDB>,
+) -> KeteResult<LegDiagnosis>
 where
     F: ParameterizedForce<Frame = Equatorial, Center = SSB>,
 {
-    if n_axes == 0 {
-        return Err(Error::ValueError("n_axes must be at least 1".into()));
-    }
-    if !sigma_factor.is_finite() || sigma_factor <= 0.0 {
-        return Err(Error::ValueError(
-            "sigma_factor must be finite and positive".into(),
-        ));
-    }
-    if let Some(s) = position_spacing_au
-        && (!s.is_finite() || s <= 0.0)
-    {
-        return Err(Error::ValueError(
-            "position_spacing_au must be finite and positive".into(),
-        ));
-    }
-
     let step = propagate_step(component, forces, center_at, jd)?;
-
     let np = component.free_params.len();
-    let n_dim = 6 + np;
-    let n_axes = n_axes.min(n_dim);
+    let n = 6 + np;
 
-    let sym = SymmetricEigen::new(component.cov_matrix.clone());
-    let mut order: Vec<usize> = (0..n_dim).collect();
-    order.sort_by(|&a, &b| {
-        sym.eigenvalues[b]
-            .partial_cmp(&sym.eigenvalues[a])
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let axes: Vec<usize> = order.into_iter().take(n_axes).collect();
+    let mut advanced = carried.clone();
+    advanced.stm = &step.augmented_stm * &carried.stm;
+    advanced.epoch = jd;
 
-    // Each axis may contribute up to two probes (edge + interior), each
-    // with two signs.
-    //
-    // - Edge probe: perturbs along the full eigenvector at sigma-shell
-    //   scale.  Tests STM accuracy at the natural covariance extent.
-    //
-    // - Interior probe: a pure spatial displacement of `position_spacing_au`
-    //   along the eigenvector's position image.  Tests whether a small
-    //   spatial shift gives a linear response -- catches position-localized
-    //   nonlinearity (planets near the mean, resonances) that the
-    //   sigma-shell test misses when the covariance has grown large.
-    //
-    //   The eigenvector lives in element coordinates, where no subset of
-    //   rows is a position, so the probe crosses through the element-state
-    //   Jacobian: the eigenvector's cartesian image selects the spatial
-    //   direction, a `position_spacing_au` displacement along it (velocity
-    //   untouched) maps back through the inverse Jacobian to the element
-    //   displacement actually applied.
-    //
-    //   The interior probe is only added when the edge probe's spatial
-    //   extent already exceeds `position_spacing_au` -- otherwise the edge
-    //   probe is naturally finer and the interior probe would only test at
-    //   a coarser scale.
-    let elem_to_state = component.elements.state_jacobian::<Equatorial>()?;
-    let state_to_elem = component.elements.state_jacobian_inverse::<Equatorial>()?;
-    let mut points: Vec<SigmaPoint> = Vec::with_capacity(4 * axes.len());
-    for &axis in &axes {
-        let lambda = sym.eigenvalues[axis];
-        if !lambda.is_finite() || lambda <= 0.0 {
-            continue;
-        }
-        let eigenvec = sym.eigenvectors.column(axis).clone_owned();
-        let edge_scale = sigma_factor * lambda.sqrt();
-
-        // Edge probe (sigma-shell, mixed element/params).
-        push_sigma_pair(
-            &mut points,
-            &eigenvec,
-            edge_scale,
-            &step.augmented_stm,
-            false,
-        );
-
-        // Interior probe (pure position perturbation).
-        if let Some(pos_cap_au) = position_spacing_au {
-            let elem_part = Vector6::from_iterator(eigenvec.iter().take(6).copied());
-            let cart_image = elem_to_state * elem_part;
-            let pos_norm = cart_image.rows(0, 3).norm();
-            let edge_position_extent_au = edge_scale * pos_norm;
-            if pos_norm > 0.0 && edge_position_extent_au > pos_cap_au * 0.99 {
-                let mut cart_probe = Vector6::<f64>::zeros();
-                for i in 0..3 {
-                    cart_probe[i] = cart_image[i] / pos_norm * pos_cap_au;
-                }
-                let elem_probe = state_to_elem * cart_probe;
-                let mut dir = DVector::<f64>::zeros(n_dim);
-                for i in 0..6 {
-                    dir[i] = elem_probe[i];
-                }
-                push_sigma_pair(&mut points, &dir, 1.0, &step.augmented_stm, true);
+    // The covariance `eta` is whitened against, carried across this leg by the same
+    // transition matrix as the component's own.  A component that has never split carries
+    // its own covariance here, so the two stay equal; a split child carries the parent's,
+    // which is what keeps the threshold meaning one thing at every split depth.  See
+    // `UncertainState::whitening_cov`.
+    let reference = match &component.whitening_cov {
+        Some(existing) => {
+            if existing.nrows() != n || existing.ncols() != n {
+                return Err(Error::ValueError(format!(
+                    "component with {n} covariance dimensions carries a whitening \
+                     reference of {}x{}",
+                    existing.nrows(),
+                    existing.ncols()
+                )));
             }
+            existing.clone()
+        }
+        None => component.cov_matrix.clone(),
+    };
+    let advanced_reference = &step.augmented_stm * reference * step.augmented_stm.transpose();
+
+    let mut propagated = step.propagated;
+    if carried.directions.is_empty() {
+        propagated.probes = Some(advanced);
+        propagated.whitening_cov = Some(advanced_reference);
+        propagated.eta = Some(0.0);
+        propagated.residual_meters = Some(0.0);
+        return Ok(LegDiagnosis {
+            propagated,
+            eta: 0.0,
+            split_direction: None,
+            seeded,
+        });
+    }
+
+    // The significance norm is taken on the residual's cartesian position image.  The
+    // linear model, the covariance and the probes stay in element coordinates - that is
+    // where the flow is nearly linear and the model stays valid - but element coordinates
+    // carry no canonical metric to weigh a residual in, and a covariance pressed into that
+    // role is degenerate on exactly the thin directions fitted covariances always have.
+    // Position space has a metric, and it is the space the propagator's own resolution is
+    // stated in, so the whitening is a propagated position covariance floored at that
+    // resolution: a direction narrower than the floor cannot dominate the answer, and a
+    // direction the cloud is wide in de-weights a residual the density already covers.
+    //
+    // The covariance whitened against is the reference above, not this component's own.
+    // They are the same matrix until the component's first split.
+    //
+    // Converting the small residual at a single epoch is a local linearization; it says
+    // nothing about the shape of the propagated cloud and does not try to.
+    let final_jacobian = propagated.elements.state_jacobian::<Equatorial>()?;
+    let element_cov =
+        Matrix6::from_iterator(advanced_reference.view((0, 0), (6, 6)).iter().copied());
+    let cart_cov = final_jacobian * element_cov * final_jacobian.transpose();
+    let pos_cov = cart_cov.fixed_view::<3, 3>(0, 0).into_owned();
+    let pos_eigen = SymmetricEigen::new((pos_cov + pos_cov.transpose()) * 0.5);
+    let floor_sq = POSITION_NOISE_FLOOR_AU * POSITION_NOISE_FLOOR_AU;
+    let inv_vars = [
+        1.0 / (pos_eigen.eigenvalues[0].max(0.0) + floor_sq),
+        1.0 / (pos_eigen.eigenvalues[1].max(0.0) + floor_sq),
+        1.0 / (pos_eigen.eigenvalues[2].max(0.0) + floor_sq),
+    ];
+    let whiten_pos = |r: &Vector3<f64>| -> f64 {
+        (0..3)
+            .map(|axis| {
+                let projection = pos_eigen.eigenvectors.column(axis).dot(r);
+                projection * projection * inv_vars[axis]
+            })
+            .sum::<f64>()
+            .sqrt()
+    };
+    let (final_offset_pos, final_offset_vel) = center_at(jd)?;
+    let to_ecliptic = Equatorial::rotation_to_frame::<Ecliptic>();
+
+    let dead: PairMeasurement = (None, f64::INFINITY, f64::INFINITY);
+
+    let measured: Vec<PairMeasurement> = (0..carried.directions.len())
+        .into_par_iter()
+        .map(|i| {
+            let Some(states) = carried.states[i] else {
+                return dead;
+            };
+            let direction = &carried.directions[i];
+            let displacement = carried.displacements[i];
+
+            let mut moved = [(Vector3::zeros(), Vector3::zeros()); 2];
+            let mut residual = [DVector::<f64>::zeros(n), DVector::<f64>::zeros(n)];
+            for (slot, sign) in [1.0_f64, -1.0].into_iter().enumerate() {
+                let Ok((pos, vel)) = propagate_state(
+                    forces,
+                    states[slot].0,
+                    states[slot].1,
+                    &carried.params[i][slot],
+                    carried.epoch,
+                    jd,
+                ) else {
+                    return dead;
+                };
+                moved[slot] = (pos, vel);
+
+                // Back to the elements' own center, and read off as an element offset from
+                // the propagated base with the true longitude reduced to the shortest
+                // signed angle.  Mixing the two descriptions - an element offset added to a
+                // cartesian state, or an element covariance normalizing a cartesian
+                // residual - produces a number that means nothing, and drove the splitter
+                // straight through its component cap on a short arc.
+                let Ok(elements) = EquinoctialElements::from_pos_vel(
+                    Desig::Empty,
+                    jd,
+                    &(to_ecliptic * (pos - final_offset_pos)),
+                    &(to_ecliptic * (vel - final_offset_vel)),
+                    component.elements.center_id,
+                    component.elements.gm_sqrt,
+                ) else {
+                    return dead;
+                };
+
+                // The free-parameter rows cancel exactly: parameters are carried through as
+                // the identity, so the linear prediction along them is exact.
+                let delta = direction * (sign * displacement);
+                let local = propagated.elements.offset_to(&elements);
+                let mut nonlinear = DVector::<f64>::zeros(n);
+                for row in 0..6 {
+                    nonlinear[row] = local[row];
+                }
+                for p in 0..np {
+                    nonlinear[6 + p] = delta[6 + p];
+                }
+                residual[slot] = nonlinear - &advanced.stm * delta;
+            }
+
+            // The residual's cartesian position image at the epoch.  The free-parameter
+            // rows cancel exactly and carry no position content, so only the element rows
+            // convert.  The pair reports its worse side, so one-sided bending is not
+            // averaged away.
+            let position_of = |v: &DVector<f64>| {
+                (final_jacobian * Vector6::from_iterator(v.iter().take(6).copied()))
+                    .fixed_rows::<3>(0)
+                    .into_owned()
+            };
+            let plus = position_of(&residual[0]);
+            let minus = position_of(&residual[1]);
+            let (eta_plus, eta_minus) = (whiten_pos(&plus), whiten_pos(&minus));
+            if eta_plus >= eta_minus {
+                (Some(moved), eta_plus, plus.norm() * M_PER_AU)
+            } else {
+                (Some(moved), eta_minus, minus.norm() * M_PER_AU)
+            }
+        })
+        .collect();
+
+    let mut eta = 0.0_f64;
+    let mut residual_meters = 0.0_f64;
+    let mut worst = 0_usize;
+    for (index, &(moved, miss, meters)) in measured.iter().enumerate() {
+        advanced.states[index] = moved;
+        if miss > eta {
+            eta = miss;
+            residual_meters = meters;
+            worst = index;
         }
     }
 
-    // Per-sigma-point Mahalanobis divergences.  Integration failures on
-    // a single sigma point (typically a perturbed state landing at a
-    // gravitational singularity, producing NaN) are treated as
-    // `f64::INFINITY` rather than propagating up -- the failure indicates
-    // the component is genuinely unrepresentable at this scale and the
-    // adaptive loop should split it (or, at depth cap, record it as
-    // fully unresolved).  This preserves forward progress instead of
-    // aborting the whole mixture's propagation.
-    let (divergence, edge_divergence) = if points.is_empty() {
-        (0.0, 0.0)
-    } else {
-        // One regularized inverse of the full propagated element
-        // covariance, shared by every sigma point.  See
-        // `regularized_inverse` for the per-coordinate floor.
-        let inv_p_f = regularized_inverse(&step.propagated.cov_matrix)?;
-        let divergences: Vec<(f64, bool)> = points
-            .into_par_iter()
-            .map(|p| {
-                let d = sigma_point_divergence_one(
-                    &component.elements,
-                    &step.propagated.elements,
-                    &component.free_params,
-                    forces,
-                    center_at,
-                    &p.delta_initial,
-                    &p.lin_pred,
-                    jd,
-                    &inv_p_f,
-                )
-                .unwrap_or(f64::INFINITY);
-                (d, p.interior)
-            })
-            .collect();
-        let mut overall = 0.0_f64;
-        let mut edge = 0.0_f64;
-        for (d, interior) in divergences {
-            overall = overall.max(d);
-            if !interior {
-                edge = edge.max(d);
-            }
-        }
-        (overall, edge)
-    };
+    // The probe direction is expressed at the anchor, while the split acts on the component
+    // as it stood at the start of this leg, so it has to be carried forward: the states
+    // displaced along `v` at the anchor lie along `Phi v` by now, and splitting along `v`
+    // itself would narrow an unrelated direction.  For a freshly seeded set the accumulated
+    // matrix is the identity and this is `v` unchanged.
+    let mapped = &carried.stm * &carried.directions[worst];
+    let extent = mapped.norm();
+    let split_direction = (extent.is_finite() && extent > 0.0).then_some(mapped);
 
-    Ok(LinearityDiagnosis {
-        propagated: step.propagated,
-        divergence,
-        edge_divergence,
-        augmented_stm: step.augmented_stm,
+    propagated.probes = Some(advanced);
+    propagated.whitening_cov = Some(advanced_reference);
+    propagated.eta = Some(eta);
+    propagated.residual_meters = Some(residual_meters);
+
+    Ok(LegDiagnosis {
+        propagated,
+        eta,
+        split_direction,
+        seeded,
     })
 }
 
-/// Sigma-point Mahalanobis divergence: how far the linear (STM-based)
-/// propagation deviates from full nonlinear N-body propagation,
-/// measured as a sigma-equivalent distance in the propagated
-/// covariance.
+/// Configuration for [`step_diffuse_state`] and [`propagate_diffuse_state`].
 ///
-/// For each of the top `n_axes` eigenvectors of the component
-/// covariance, the mean state is perturbed by
-/// `+/- sigma_factor * sqrt(lambda) * v`, propagated nonlinearly to
-/// `jd`, and compared against the linear prediction `Phi * delta_x_0`.
-/// The returned value is the maximum across all sampled points of
+/// Two settings: how nonlinear a component is allowed to become, and what resolving that
+/// is allowed to cost.  Everything else the controller needs it derives from the mixture.
+/// How finely an arc is cut is not here, because it is a property of a multi-leg
+/// propagation rather than of a leg - [`propagate_diffuse_state`] takes it directly, and a
+/// caller driving legs by hand has already chosen it by choosing the epochs.
 ///
-/// ```text
-/// d = sqrt( (delta_full - delta_lin)^T * P_f^-1 * (delta_full - delta_lin) )
-/// ```
-///
-/// where `P_f` is the full propagated covariance in element
-/// coordinates, regularized so that directions narrower than about
-/// 1e-3 of their own coordinates' marginal spread do not dominate.
-/// `d` is the Mahalanobis distance of the prediction error within the
-/// predicted Gaussian -- "how many sigma off is the linear answer,
-/// relative to its own predicted uncertainty?"  The floor matters for
-/// near-singular covariances (a delta-function release position, one
-/// exquisitely determined element): without it the metric divides a
-/// constant curvature remainder by a near-null width and reports
-/// arbitrarily large values that splitting cannot reduce and that
-/// correspond to no density error a wider direction could see.  The
-/// floor is per coordinate because the element covariance mixes units;
-/// see `regularized_inverse` for the construction.
-///
-/// For samples drawn from the predicted distribution, `d` follows a
-/// chi distribution in 6 dimensions: `E[d] ~ 2.4`, 90% containment
-/// near `d ~ 3.0`, 95% near `3.55`, 99% near `4.1`.  Two threshold
-/// calibrations follow ([`SplitConfig::split_threshold`]): `0.1` keeps
-/// the represented density faithful (probes off by tenths of a sigma
-/// already distort the distribution's shape), while `3.0 - 5.0` only
-/// keeps the answer inside the predicted ellipsoid, for uses where mean
-/// and covariance are all that matter.
-///
-/// Thin wrapper around [`propagate_with_diagnosis`] that discards the
-/// propagated state. Callers that also want the propagated state
-/// should use [`propagate_with_diagnosis`] directly to avoid a second
-/// STM call.
-///
-/// # Errors
-/// Returns an error if `n_axes == 0`, if `sigma_factor` is non-finite
-/// or non-positive, or if integration fails.
-pub fn sigma_point_divergence<F>(
-    component: &UncertainState,
-    forces: &F,
-    jd: Time<TDB>,
-    n_axes: usize,
-    sigma_factor: f64,
-    position_spacing_au: Option<f64>,
-    center_at: CenterResolver<'_>,
-) -> KeteResult<f64>
-where
-    F: ParameterizedForce<Frame = Equatorial, Center = SSB>,
-{
-    propagate_with_diagnosis(
-        component,
-        forces,
-        jd,
-        n_axes,
-        sigma_factor,
-        position_spacing_au,
-        center_at,
-    )
-    .map(|d| d.divergence)
-}
-
-#[allow(
-    clippy::too_many_arguments,
-    reason = "All inputs are needed at the perturbation site"
-)]
-fn sigma_point_divergence_one<F>(
-    base: &EquinoctialElements,
-    propagated_base: &EquinoctialElements,
-    base_params: &[f64],
-    forces: &F,
-    center_at: CenterResolver<'_>,
-    delta_initial: &DVector<f64>,
-    lin_pred: &DVector<f64>,
-    jd: Time<TDB>,
-    inv_p_f: &DMatrix<f64>,
-) -> KeteResult<f64>
-where
-    F: ParameterizedForce<Frame = Equatorial, Center = SSB>,
-{
-    let np = base_params.len();
-
-    // Everything here is in element coordinates, deliberately and throughout. The
-    // perturbation displaces the stored elements rather than being added to a cartesian
-    // state; the nonlinear answer is read back as an element offset from the propagated
-    // base, with the true longitude reduced to the shortest signed angle; and the
-    // Mahalanobis norm uses the element covariance. Mixing the two - an element offset
-    // added to a cartesian state, or an element covariance normalizing a cartesian
-    // residual - produces a divergence that means nothing, and drove the adaptive splitter
-    // straight through its component cap on a short arc.
-    let step = Vector6::from_iterator(delta_initial.iter().take(6).copied());
-    let perturbed = base.displaced_by(&step);
-    let start: State<Equatorial> = perturbed.try_to_state()?.into_frame();
-    let (offset_pos, offset_vel) = center_at(base.epoch)?;
-
-    let perturbed_params: Vec<f64> = (0..np)
-        .map(|i| base_params[i] + delta_initial[6 + i])
-        .collect();
-
-    let (pos_f, vel_f) = propagate_state(
-        forces,
-        Vector3::from(start.pos) + offset_pos,
-        Vector3::from(start.vel) + offset_vel,
-        &perturbed_params,
-        base.epoch,
-        jd,
-    )?;
-
-    let (final_offset_pos, final_offset_vel) = center_at(jd)?;
-    let final_state = State::<Equatorial>::new(
-        base.desig.clone(),
-        jd,
-        pos_f - final_offset_pos,
-        vel_f - final_offset_vel,
-        base.center_id,
-    );
-    let final_elements = EquinoctialElements::from_state(&final_state.into_frame())?;
-
-    let local = propagated_base.offset_to(&final_elements);
-    let mut nonlin_dev = DVector::<f64>::zeros(6 + np);
-    for i in 0..6 {
-        nonlin_dev[i] = local[i];
-    }
-    for i in 0..np {
-        nonlin_dev[6 + i] = perturbed_params[i] - base_params[i];
-    }
-
-    let diff = &nonlin_dev - lin_pred;
-    let mahal_sq = (diff.transpose() * inv_p_f * &diff)[(0, 0)];
-    Ok(mahal_sq.max(0.0).sqrt())
-}
-
-/// Regularized inverse of a covariance, the whitening metric of the sigma-point
-/// divergence.
-///
-/// The floor exists because the metric divides by widths: without one, a near-null
-/// direction - a delta-function release position, or one exquisitely determined
-/// combination of elements - turns the probe's constant curvature remainder into an
-/// arbitrarily large "sigma" count that splitting cannot reduce and that corresponds
-/// to no density error a carrying direction could see.
-///
-/// The floor is per coordinate rather than a scalar ridge.  The element covariance
-/// mixes units - AU, dimensionless shape and pole components, radians, and free
-/// parameters - and its diagonal spans several decades for a fitted orbit, with the
-/// along-track phase widest.  A scalar ridge scaled by the trace floors every
-/// direction at a fraction of that widest spread, swallowing the well-determined
-/// directions entirely.  Scaling to correlation form first puts the ridge on each
-/// coordinate's own marginal scale:
-///
-/// ```text
-/// D = diag(sqrt(P_ii))    C = D^-1 P D^-1
-/// inv = D^-1 (C + eps I)^-1 D^-1        eps = 1e-6
-/// ```
-///
-/// so directions narrower than about `1e-3` of their own coordinates' marginal spread
-/// are floored, and everything wider is measured unchanged.  A near-null direction
-/// formed by cancellation between strongly correlated coordinates is floored at that
-/// same relative scale.  A coordinate with no extent at all (a zero diagonal entry)
-/// is given a scale of `1e-6 * sqrt(trace)`, the only scale available for it.
-///
-/// # Errors
-/// Fails if the trace is not positive and finite, or if the ridged correlation matrix
-/// is not invertible.
-fn regularized_inverse(cov: &DMatrix<f64>) -> KeteResult<DMatrix<f64>> {
-    let n = cov.nrows();
-    let trace = cov.trace();
-    if !trace.is_finite() || trace <= 0.0 {
-        return Err(Error::ValueError(
-            "regularized_inverse: covariance trace must be positive and finite".into(),
-        ));
-    }
-    // Marginal scales.  The max() floors coordinates with no extent (and clips any
-    // slightly negative diagonal rounding) so the whitening stays finite.
-    let scales: Vec<f64> = cov
-        .diagonal()
-        .iter()
-        .map(|&v| v.max(trace * 1e-12).sqrt())
-        .collect();
-
-    let mut corr = cov.clone();
-    for r in 0..n {
-        for c in 0..n {
-            corr[(r, c)] /= scales[r] * scales[c];
-        }
-    }
-    for i in 0..n {
-        corr[(i, i)] += 1e-6;
-    }
-
-    let mut inv = corr.try_inverse().ok_or_else(|| {
-        Error::ValueError(
-            "regularized_inverse: the ridged correlation matrix is not invertible".into(),
-        )
-    })?;
-    for r in 0..n {
-        for c in 0..n {
-            inv[(r, c)] /= scales[r] * scales[c];
-        }
-    }
-    Ok(inv)
-}
-
-/// `log2(3)`, the exponent relating a required sigma reduction to the
-/// component count it costs.  See [`minimum_components_for_divergence`].
-const LOG2_3: f64 = 1.584_962_500_721_156;
-
-/// Lower bound on the number of mixture components a K=3 splitting cascade
-/// needs in order to bring `divergence` down to `threshold`.
-///
-/// Each split level replaces one component with three, each narrower than its
-/// parent by `s = sqrt(1/2)` along the split axis.  If divergence scales with
-/// component spread as `sigma^q`, one level reduces it by `r = s^-q = 2^(q/2)`,
-/// so reaching the threshold costs `log(divergence / threshold) / log(r)`
-/// levels and `3^levels` components.
-///
-/// A larger `q` means a faster reduction and therefore a *smaller* count, so
-/// bounding the count from below requires bounding `q` from above.  This uses
-/// `q = 2`, which assumes the dominant nonlinearity is no worse than cubic in
-/// the perturbation.  Real trajectories reduce more slowly than that, on quiet
-/// arcs and through planetary encounters alike, so the true requirement is
-/// larger than this bound rather than smaller.  With `q = 2` the expression
-/// reduces to `(divergence / threshold)^log2(3)`.
-///
-/// `splitting_tractability_boundary` in `kete_spice` exercises the reduction
-/// this bound rests on.
-///
-/// The intended use is the give-up decision.  If the bound already exceeds
-/// [`SplitConfig::max_components`] then no cascade within that budget can
-/// converge, and the mixture should be abandoned in favor of sampling the
-/// distribution directly.  The converse does not hold: a bound below the
-/// budget is not a guarantee that splitting will converge.
-///
-/// Returns `1.0` when the divergence is already at or below the threshold,
-/// and infinity if either input is NaN or `threshold` is not positive.  The
-/// return is `f64` rather than a count because the bound is unbounded above
-/// and its magnitude is the useful part of the answer.
-#[must_use]
-pub fn minimum_components_for_divergence(divergence: f64, threshold: f64) -> f64 {
-    if divergence.is_nan() || threshold.is_nan() || threshold <= 0.0 {
-        return f64::INFINITY;
-    }
-    if divergence <= threshold {
-        return 1.0;
-    }
-    (divergence / threshold).powf(LOG2_3)
-}
-
-/// Configuration for [`propagate_diffuse_state_adaptive`].
+/// Passed to every call rather than stored on anything, so changing the threshold partway
+/// through a hand-driven march is visible at the call site.
 #[derive(Debug, Clone)]
 pub struct SplitConfig {
-    /// Mahalanobis-distance threshold above which a component is split.
+    /// Nonlinearity above which a component is split: the accuracy/cost dial.
     ///
-    /// The diagnostic measures the linear (STM-based) prediction error
-    /// as a sigma-equivalent distance in the propagated element
-    /// covariance.  The threshold selects which question the split
-    /// answers:
+    /// The controller measures `eta` over every leg - the worst whitened position miss of
+    /// a probe at two widths against the linear
+    /// model - and splits a component that exceeds this.  Tightening the threshold splits
+    /// earlier and more often: the mixture tracks the true density more faithfully and
+    /// the run costs more components and more time.  That trade is the setting's entire
+    /// meaning; `max_components` bounds what a tight setting may spend.
     ///
-    /// - Density calibration, `0.1` (the default): keep the represented
-    ///   probability density faithful.  A probe off by a few tenths of a
-    ///   sigma already distorts the distribution's shape even though the
-    ///   state estimate is fine, so density work needs the tight value.
-    /// - State-estimation calibration, `3.0`-`4.0`: keep the propagated
-    ///   state inside its predicted ellipsoid.  Values compare to a 6-D
-    ///   chi distribution: `E[d] ~ 2.4`, 90% containment ~ 3.0, 95% ~
-    ///   3.55.  Use when only the mean and covariance matter, at far
-    ///   fewer components.
+    /// The value is in sigma of a predicted position distribution, so it means the same
+    /// thing at every covariance size.  It also means the same thing at every split depth:
+    /// the distribution referred to is the one the component had before it last split, so
+    /// a split that removes curvature lowers `eta` instead of being cancelled by the
+    /// narrower covariance it produced.  See [`UncertainState::whitening_cov`].
     pub split_threshold: f64,
+
     /// Hard cap on the number of components in the propagated mixture.
-    /// Splitting stops once any further split would exceed this count.
+    ///
+    /// Splitting stops once a further split would exceed this, and the leg reports
+    /// [`Termination::ComponentCap`], so a caller can tell a saturated budget from a
+    /// converged one without re-running.
     pub max_components: usize,
-    /// Maximum recursive split depth applied to a single original
-    /// component. Prevents pathological cases where a component
-    /// remains nonlinear no matter how often it is split.
-    pub max_split_depth: u32,
-    /// Number of dominant covariance eigenvectors to test in the
-    /// sigma-point divergence diagnostic.
-    pub n_axes: usize,
-    /// Sigma-factor at which the divergence diagnostic samples sigma
-    /// points (`1.0` = 1-sigma surface).
-    pub sigma_factor: f64,
-    /// Spatial scale (AU) for an additional "interior" sigma-point
-    /// probe.  In addition to the sigma-shell test, each dominant
-    /// eigenvector with a non-trivial position component contributes a
-    /// pure-position perturbation of this magnitude along the
-    /// position-projection of the eigenvector.  Velocity and parameters
-    /// are left unchanged.  This catches position-localized nonlinearity
-    /// (planets near the mean, resonances) that the sigma-shell test
-    /// misses when the covariance becomes large (e.g. a 10 AU spread
-    /// containing Jupiter near the mean).  The probe is skipped on axes
-    /// where the sigma-shell already produces a smaller position
-    /// perturbation than this scale.  `None` disables the interior probe
-    /// entirely.  Typical value: `0.001` AU (~150,000 km).
-    pub position_spacing_au: Option<f64>,
-    /// Minimum fractional reduction in edge-probe divergence required
-    /// from parent to child before a split is allowed to continue.  After
-    /// a K=3 split, the child covariance is reduced by ~30% along the
-    /// split axis; for a well-behaved orbit this produces a similar
-    /// fractional reduction in divergence.  For chaotic orbits the
-    /// divergence does not drop -- the split does not help -- and further
-    /// cascading wastes compute.
-    ///
-    /// The comparison reads [`LinearityDiagnosis::edge_divergence`], not
-    /// the overall maximum: interior probes sit at a fixed spatial scale
-    /// and their divergence grows under splitting by construction, so
-    /// including them would read a resolving component as a stalled one.
-    /// The check is also skipped when the parent's edge divergence was
-    /// itself below `split_threshold` (an interior-driven split), where
-    /// the cascade is bounded by the interior probe's own gate, the depth
-    /// cap and the budget instead.
-    ///
-    /// A value of `0.1` means "force-settle if the edge divergence did
-    /// not drop by at least 10% from the parent that was split."  `0.0`
-    /// disables the check (cascade continues until depth or budget cap).
-    pub min_split_improvement: f64,
 }
 
 impl Default for SplitConfig {
     fn default() -> Self {
         Self {
-            split_threshold: 0.1,
-            max_components: 1024,
-            max_split_depth: 10,
-            n_axes: 3,
-            sigma_factor: 1.0,
-            position_spacing_au: Some(0.001),
-            min_split_improvement: 0.1,
+            split_threshold: 0.15,
+            // A power of three: splits are three-way, so any other cap truncates a
+            // cascade mid-generation and the returned count reports where the budget ran
+            // out rather than where the splitter converged.
+            max_components: 729,
         }
     }
 }
 
-/// Adaptively propagate a [`DiffuseState`] mixture to `jd`, splitting
-/// components in state space as needed to keep the linear approximation
-/// accurate.
+/// Advance a [`DiffuseState`] over one leg, splitting components where the flow stops
+/// being linear over their own covariance.
 ///
-/// The full arc runs in one adaptive pass; for each component pulled
-/// from the work queue one of three things happens:
+/// This is the whole controller for a single leg, and the unit a caller marches with: step
+/// to `jd`, look at what came back, step again.  Every component carries its own probes,
+/// so a march driven one leg at a time is the same measurement as a single call over the
+/// whole arc - `eta` is the departure accumulated since that component last split either
+/// way.  [`propagate_diffuse_state`] is exactly this folded over a time grid.
 ///
-/// 1. If a hypothetical split would breach `max_components`, or the
-///    component is already at `max_split_depth`, it is settled with
-///    its propagated state. `max_unresolved_divergence` is updated
-///    with the divergence at the abort point.
-/// 2. Otherwise the component is run through [`propagate_with_diagnosis`].
-///    If the divergence is below `split_threshold`, the propagated
-///    state is settled directly -- no second STM call required.
-/// 3. If the divergence is above `split_threshold`, the propagated
-///    state is discarded, the component is K=3 split at the initial
-///    epoch, and the sub-components are enqueued at `depth + 1`.
+/// A component whose `eta` clears `split_threshold` is rolled back to the start of the leg,
+/// split three ways along the worst probe's direction, and the leg is redone with the
+/// children on fresh probes.  Components are served in order of `weight * eta`, so a heavy
+/// badly-represented component is resolved before a light one.
 ///
-/// Total mixture weight is preserved by the split itself; per-component
-/// linear approximation error is bounded by the threshold (subject to
-/// the caps).
+/// A component carrying no probes - a new mixture, a split child, or one a caller
+/// rebuilt - is seeded here, which restarts its measurement.  [`StepReport::seeded`] counts
+/// them, so a march that quietly lost its history says so.
+///
+/// Splitting stops when every component falls under the threshold, when `max_components`
+/// refuses the next split, or when the only components left over threshold carry no
+/// direction to split along - the threshold is the accuracy/cost dial and the cap is the
+/// brake, and there is deliberately nothing else.  Splitting yields weights `w/6, 2w/3,
+/// w/6`, so an outer-of-outer component carries a thirty-sixth of its grandparent's weight
+/// and the ranking starves a deep tail on its own.  Work that cares about exactly that
+/// tail - impact probability is the motivating case - should read the per-component `eta`
+/// on the returned components, and build a [`DiffuseState`] over the tail region and
+/// propagate that directly rather than expecting the ranking to reach it.
+///
+/// What the returned mixture reports is where this test was still failing when the leg
+/// ended.  That is not an error bound on the represented density: certifying a mixture
+/// against the true pushforward would require knowing that density.
 ///
 /// # Errors
-/// Returns an error if any propagation, diagnosis, or split fails, or
-/// if the final mixture fails its [`DiffuseState::new`] invariant check.
-pub fn propagate_diffuse_state_adaptive<F>(
-    diffuse: &DiffuseState,
+/// Fails if `split_threshold` is not finite and non-negative, if `max_components` is below
+/// the input component count, if the weights do not describe the components, if `jd` is not
+/// finite, if a component's carried probes do not match it, or if any propagation, split or
+/// diagnosis fails.
+pub fn step_diffuse_state<F>(
+    mixture: &DiffuseState,
     forces: &F,
     jd: Time<TDB>,
     config: &SplitConfig,
     center_at: CenterResolver<'_>,
-) -> KeteResult<DiffuseState>
+) -> KeteResult<(DiffuseState, StepReport)>
 where
     F: ParameterizedForce<Frame = Equatorial, Center = SSB>,
 {
+    validate(mixture, config, jd)?;
+
+    let mut weights = mixture.weights.clone();
+    let mut components = mixture.components.clone();
+    let mut measured = measure(&components, forces, jd, center_at)?;
+    let mut seeded = measured.iter().filter(|d| d.seeded).count();
+
+    // A component whose covariance is too degenerate to yield a split direction is set
+    // aside for this leg rather than re-selected forever; the next leg asks again.
+    let mut skip = vec![false; components.len()];
+    let mut degenerate = false;
+    let mut capped = false;
+
+    loop {
+        // Priority queue keyed on `weight * eta`: a heavy badly-represented component
+        // outranks a light one.  A ranking heuristic; it is not a norm of anything.
+        // A component whose probes died reads infinite `eta` and is split like any
+        // other; its children re-seed fresh probes, which is the retry, and the cap
+        // bounds it.
+        let next = (0..components.len())
+            .filter(|&i| !skip[i] && measured[i].eta > config.split_threshold)
+            .max_by(|&a, &b| {
+                (weights[a] * measured[a].eta)
+                    .partial_cmp(&(weights[b] * measured[b].eta))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        let Some(index) = next else { break };
+
+        // A K=3 split replaces one component with three.
+        if components.len() + 2 > config.max_components {
+            capped = true;
+            break;
+        }
+
+        // Rolling back is free: nothing has been advanced yet, so `components` still
+        // holds every component as it stood at the start of this leg.
+        let Some(direction) = measured[index].split_direction.clone() else {
+            skip[index] = true;
+            degenerate = true;
+            continue;
+        };
+        let parts = split_axial_k3_along(&components[index], &direction)?;
+        // The one thing the children do inherit. Their probes are fresh, so their `eta`
+        // measures the children rather than continuing the parent's history - but the
+        // covariance that number is whitened against is the parent's, so a split that
+        // helps shows up as a smaller `eta` instead of being cancelled by the narrower
+        // denominator it created. See `UncertainState::whitening_cov`.
+        let inherited = components[index]
+            .whitening_cov
+            .clone()
+            .unwrap_or_else(|| components[index].cov_matrix.clone());
+        let offspring: Vec<UncertainState> = parts
+            .iter()
+            .map(|(_, c)| {
+                let mut child = c.clone();
+                child.whitening_cov = Some(inherited.clone());
+                child
+            })
+            .collect();
+        let children = measure(&offspring, forces, jd, center_at)?;
+        seeded += children.iter().filter(|d| d.seeded).count();
+
+        let parent = weights[index];
+        let _ = weights.remove(index);
+        let _ = components.remove(index);
+        let _ = measured.remove(index);
+        let _ = skip.remove(index);
+        for ((share, child), outcome) in parts.into_iter().zip(children) {
+            weights.push(parent * share);
+            components.push(child);
+            measured.push(outcome);
+            skip.push(false);
+        }
+    }
+
+    // Accept the leg.  Every component advances to the state its own diagnosis already
+    // propagated, carrying the probes and the numbers that diagnosis produced, whether it
+    // split on this leg or not.
+    let advanced: Vec<UncertainState> = measured.into_iter().map(|d| d.propagated).collect();
+
+    // The cap is what a caller can act on, so it wins when both fired.
+    let termination = if capped {
+        Termination::ComponentCap
+    } else if degenerate {
+        Termination::NoSplitDirection
+    } else {
+        Termination::Converged
+    };
+
+    let mut stepped = DiffuseState::new(weights, advanced)?;
+    stepped.include_asteroids = mixture.include_asteroids;
+
+    Ok((
+        stepped,
+        StepReport {
+            termination,
+            seeded,
+        },
+    ))
+}
+
+/// Adaptively propagate a [`DiffuseState`] to `jd`, splitting components where the flow
+/// stops being linear over their own covariance.
+///
+/// The arc is cut into legs of `step_days` on a common time grid, and
+/// [`step_diffuse_state`] is folded over it.  The returned report describes the final leg.
+/// Driving the same grid by hand gives the same answer, since the probes ride on the
+/// components rather than on this call.
+///
+/// `step_days` is the time resolution a split is placed at, not an accuracy setting:
+/// composing state transition matrices across legs is exact, so subdividing an arc does not
+/// change the propagated covariance, and the probes are carried rather than re-placed, so
+/// it does not change the measured nonlinearity either.  What a shorter step buys is a
+/// split landing closer to where the flow actually stopped being linear, and a component
+/// that is not yet nonlinear not being split as though it were.  `split_threshold` is
+/// therefore the same demand at any value of it.
+///
+/// [`DEFAULT_STEP_DAYS`] suits the orbital periods kete is used on.  Deep planetary
+/// encounters do not require a shorter step: split placement anywhere in the pre-encounter
+/// linear window is equivalent, because the children are narrow enough to propagate
+/// linearly to the encounter from any lead.  Lengthen it on arcs of many millennia, where
+/// the cost of the default is `arc / step_days` legs and nothing caps that on the caller's
+/// behalf.
+///
+/// An arc of no length is no work: the mixture comes back as it went in, reporting
+/// [`Termination::Converged`] and nothing seeded.
+///
+/// # Errors
+/// As [`step_diffuse_state`], and additionally if `step_days` is not finite and positive.
+pub fn propagate_diffuse_state<F>(
+    diffuse: &DiffuseState,
+    forces: &F,
+    jd: Time<TDB>,
+    config: &SplitConfig,
+    step_days: f64,
+    center_at: CenterResolver<'_>,
+) -> KeteResult<(DiffuseState, StepReport)>
+where
+    F: ParameterizedForce<Frame = Equatorial, Center = SSB>,
+{
+    validate(diffuse, config, jd)?;
+    if !step_days.is_finite() || step_days <= 0.0 {
+        return Err(Error::ValueError(
+            "step_days must be finite and positive".into(),
+        ));
+    }
+
+    let mut mixture = diffuse.clone();
+    let mut report = StepReport {
+        termination: Termination::Converged,
+        seeded: 0,
+    };
+    for target in leg_grid(step_days, diffuse.epoch(), jd) {
+        let stepped = step_diffuse_state(&mixture, forces, target, config, center_at)?;
+        mixture = stepped.0;
+        report = stepped.1;
+    }
+    Ok((mixture, report))
+}
+
+/// Shared entry checks for the two public marching paths.
+///
+/// The mixture's fields are public, so the weights are checked against the components here
+/// rather than assumed - a mixture can be taken apart and rebuilt between legs.
+fn validate(mixture: &DiffuseState, config: &SplitConfig, jd: Time<TDB>) -> KeteResult<()> {
     if !config.split_threshold.is_finite() || config.split_threshold < 0.0 {
         return Err(Error::ValueError(
             "split_threshold must be finite and non-negative".into(),
         ));
     }
-    // The round loop below only budget-checks newly created split children;
-    // components that settle directly bypass it.  An input mixture already
-    // over budget must fail fast here or the cap is silently violated.
-    if config.max_components < diffuse.n_components() {
+    if config.max_components < mixture.n_components() {
         return Err(Error::ValueError(format!(
             "max_components ({}) must be at least the input component count ({})",
             config.max_components,
-            diffuse.n_components()
+            mixture.n_components()
         )));
     }
-
-    // Round-based parallel propagation.
-    //
-    // Each round (generation) holds all current candidates.  Each item
-    // carries (weight, component, split_depth, parent_edge_divergence)
-    // where parent_edge_divergence is the *edge-probe* divergence of the
-    // parent whose split created this component: `None` for the initial
-    // generation (no parent split yet), `Some(d)` for a split child.
-    // Using `Option` rather than an
-    // `f64::INFINITY` sentinel keeps "no parent" distinct from "infinite
-    // divergence" (a sigma point that could not be propagated).  Conflating the
-    // two would let an infinite child divergence satisfy the diminishing-returns
-    // test and settle a first-generation component with zero splits.  The
-    // distinction is what detects diminishing-returns splits: if a
-    // child's divergence is close to (or exceeds) the parent's, further
-    // splitting won't help.
-    //
-    // The comparison is restricted to the edge family because interior
-    // probes grow under splitting by construction (fixed spatial scale,
-    // shrinking normalizer -- see [`LinearityDiagnosis::edge_divergence`]),
-    // so including them would read resolving components as stalled ones.
-    let components = (0..diffuse.n_components())
-        .map(|i| diffuse.component(i))
-        .collect::<KeteResult<Vec<_>>>()?;
-    let mut generation: Vec<(f64, UncertainState, u32, Option<f64>)> = diffuse
-        .weights
-        .iter()
-        .zip(components)
-        .map(|(w, c)| (*w, c, 0_u32, None::<f64>))
-        .collect();
-
-    let mut settled: Vec<(f64, UncertainState)> = Vec::with_capacity(diffuse.n_components());
-
-    while !generation.is_empty() {
-        enum GenOutcome {
-            Settled(f64, UncertainState),
-            WantsSplit {
-                weight: f64,
-                /// Already-propagated parent at epoch `jd`.  Used to settle
-                /// the component when the budget cannot accommodate the split.
-                propagated: UncertainState,
-                parts: Vec<(f64, UncertainState, u32, Option<f64>)>,
-            },
-        }
-
-        let outcomes: KeteResult<Vec<GenOutcome>> = generation
-            .into_par_iter()
-            .with_min_len(4)
-            .map(
-                |(w, c, depth, parent_edge_divergence)| -> KeteResult<GenOutcome> {
-                    let diag = propagate_with_diagnosis(
-                        &c,
-                        forces,
-                        jd,
-                        config.n_axes,
-                        config.sigma_factor,
-                        config.position_spacing_au,
-                        center_at,
-                    )?;
-                    let mut prop = diag.propagated;
-                    if diag.divergence > prop.max_unresolved_divergence {
-                        prop.max_unresolved_divergence = diag.divergence;
-                    }
-
-                    // A non-finite divergence means a sigma point could not be
-                    // propagated -- typically a perturbed state hitting a
-                    // gravitational singularity during a deep encounter.
-                    // Splitting cannot fix this: the children inherit the same
-                    // singular geometry.  Settle and let max_unresolved_divergence
-                    // (now infinite) flag the component as untrustworthy.  The
-                    // Hill-sphere boundary check is meant to route these to a
-                    // fallback before they reach here; this is the honest last
-                    // resort if one slips through.
-                    let unresolvable = !diag.divergence.is_finite();
-
-                    // Diminishing-returns check: if this split produced less
-                    // than `min_split_improvement` fractional reduction in
-                    // edge divergence, further splitting won't help (chaos is
-                    // the floor, not covariance size).  Force-settle
-                    // immediately rather than cascading.  Only meaningful
-                    // against a real, finite parent divergence; `None` marks
-                    // the initial generation, which is always allowed its
-                    // first split.
-                    //
-                    // Edge probes only, and only when the parent's own edge
-                    // divergence was above the split threshold.  A parent
-                    // split by its interior probe alone has an edge divergence
-                    // with nothing to improve on, and its cascade is instead
-                    // bounded by the interior probe's gate (the probe switches
-                    // off once the component is narrower than the probe
-                    // scale), the depth cap and the budget.
-                    let no_improvement = match parent_edge_divergence {
-                        Some(pd)
-                            if config.min_split_improvement > 0.0
-                                && pd > config.split_threshold =>
-                        {
-                            diag.edge_divergence >= pd * (1.0 - config.min_split_improvement)
-                        }
-                        _ => false,
-                    };
-
-                    if diag.divergence <= config.split_threshold
-                        || depth >= config.max_split_depth
-                        || unresolvable
-                        || no_improvement
-                    {
-                        return Ok(GenOutcome::Settled(w, prop));
-                    }
-
-                    // `unresolvable` is false here, so `diag.divergence` is
-                    // finite, and the edge maximum it bounds is too --
-                    // children carry a finite `Some(parent_edge)`.
-                    let parts = split_for_propagation(&c, &prop.cov_matrix, &diag.augmented_stm)?;
-                    let child_edge_divergence = diag.edge_divergence;
-                    let sub: Vec<_> = parts
-                        .into_iter()
-                        .map(|(ws, cs)| (w * ws, cs, depth + 1, Some(child_edge_divergence)))
-                        .collect();
-                    Ok(GenOutcome::WantsSplit {
-                        weight: w,
-                        propagated: prop,
-                        parts: sub,
-                    })
-                },
-            )
-            .collect();
-
-        let mut next_gen: Vec<(f64, UncertainState, u32, Option<f64>)> = Vec::new();
-        let mut pending_splits: Vec<(
-            f64,
-            UncertainState,
-            Vec<(f64, UncertainState, u32, Option<f64>)>,
-        )> = Vec::new();
-        for outcome in outcomes? {
-            match outcome {
-                GenOutcome::Settled(w, c) => settled.push((w, c)),
-                GenOutcome::WantsSplit {
-                    weight,
-                    propagated,
-                    parts,
-                } => pending_splits.push((weight, propagated, parts)),
-            }
-        }
-
-        // Budget check. Two things have to be counted that the obvious version misses.
-        //
-        // The parent is already out of `generation` and lands in neither `settled` nor
-        // `next_gen`, so a split adds all of `parts`, not `parts.len() - 1`.
-        //
-        // And the components still queued behind this one each contribute at least one
-        // component whether they split or settle. Ignoring them let early splits in a round
-        // consume the whole budget and the later ones overshoot it: with a cap of four, one
-        // accepted three-way split plus two components that then had to settle gives five.
-        // Unbounded, that overshoot compounds over the rounds.
-        let queued = pending_splits.len();
-        for (index, (weight, propagated, parts)) in pending_splits.into_iter().enumerate() {
-            let still_queued = queued - index - 1;
-            let projected = settled.len() + next_gen.len() + parts.len() + still_queued;
-            if projected <= config.max_components {
-                next_gen.extend(parts);
-            } else {
-                settled.push((weight, propagated));
-            }
-        }
-
-        generation = next_gen;
+    if !jd.jd.is_finite() {
+        return Err(Error::ValueError(format!(
+            "target epoch must be finite, got {}",
+            jd.jd
+        )));
     }
-
-    let (weights, components): (Vec<f64>, Vec<UncertainState>) = settled.into_iter().unzip();
-    DiffuseState::new(weights, components)
+    if mixture.weights.len() != mixture.components.len() {
+        return Err(Error::ValueError(format!(
+            "weights ({}) and components ({}) must have equal length",
+            mixture.weights.len(),
+            mixture.components.len()
+        )));
+    }
+    let sum: f64 = mixture.weights.iter().sum();
+    if (sum - 1.0).abs() > crate::state::WEIGHT_SUM_TOL {
+        return Err(Error::ValueError(format!(
+            "weights must sum to 1.0 within {}, got {sum}",
+            crate::state::WEIGHT_SUM_TOL
+        )));
+    }
+    Ok(())
 }
 
-/// Per-component sigma-point divergence for every component of a
-/// [`DiffuseState`].
+/// Cut `start -> end` into legs of `step_days`, with whatever is left over as a shorter
+/// final leg.
 ///
-/// Components are evaluated in parallel and the returned vector has
-/// the same length and ordering as `mixture.components`. See
-/// [`sigma_point_divergence`] for the metric definition.
+/// Equal steps of time, not of orbital phase: every component reaches the same leg
+/// boundaries, so the epochs a split can be placed at do not depend on which component
+/// asked for one. The step is a wall-clock duration rather than a fraction of a period, so
+/// it does not depend on which component the period is read from, and it stays defined for
+/// the hyperbolic and near-parabolic orbits whose period is infinite or far longer than any
+/// arc anyone propagates over.
 ///
-/// # Errors
-/// Returns the first error encountered across components.
-pub fn mixture_sigma_point_divergence<F>(
-    mixture: &DiffuseState,
+/// The grid does not make the reported `eta` comparable across components and is not
+/// trying to: probes are carried, so each component's `eta` spans its own history since it
+/// last split. That is the intended reading - it is a statement about how far a component
+/// is from linear now, not about what the last leg did to it - and the queue ranks current
+/// states against each other.
+///
+/// The step is the one the caller asked for. Dividing the arc into equal parts near that
+/// length instead would silently run a different step - a 200-day arc at the 90-day default
+/// would step 66.7 days - changing both the cost and the epochs a split can land on without
+/// saying so. An arc shorter than one step is a single leg.
+///
+/// The remainder is the *first* leg, not the last, so every leg after it is a full step and
+/// the grid a caller gets is the one they named apart from a single short leg at the start.
+///
+/// Endpoints are counted back from `end` in multiples of the step rather than accumulated
+/// forward, so they do not drift, and the last one is `end` itself.
+///
+/// The cost is `arc / step_days` legs and nothing bounds it, because the caller can see
+/// both numbers and a bound could only be enforced by silently running a step other than
+/// the one asked for.
+fn leg_grid(step_days: f64, start: Time<TDB>, end: Time<TDB>) -> Vec<Time<TDB>> {
+    let arc = end.jd - start.jd;
+    if arc == 0.0 || !arc.is_finite() {
+        return Vec::new();
+    }
+    let step = step_days.copysign(arc);
+
+    let mut offsets = Vec::new();
+    let mut index = 1.0_f64;
+    loop {
+        let back = step * index;
+        // Strictly inside the arc, since `end` is appended below. The slack keeps an arc
+        // that is a whole number of steps from starting with a leg a rounding error long,
+        // which would cost a full diagnosis to measure nothing.
+        if back.abs() >= arc.abs() * (1.0 - 1e-9) {
+            break;
+        }
+        offsets.push(arc - back);
+        index += 1.0;
+    }
+    offsets.reverse();
+
+    let mut grid: Vec<Time<TDB>> = offsets
+        .into_iter()
+        .map(|offset| Time::new(start.jd + offset))
+        .collect();
+    grid.push(end);
+    grid
+}
+
+/// Advance every component and its own probes over the same leg, seeding any component
+/// that carries none.
+fn measure<F>(
+    components: &[UncertainState],
     forces: &F,
     jd: Time<TDB>,
-    n_axes: usize,
-    sigma_factor: f64,
-    position_spacing_au: Option<f64>,
     center_at: CenterResolver<'_>,
-) -> KeteResult<Vec<f64>>
+) -> KeteResult<Vec<LegDiagnosis>>
 where
-    F: ParameterizedForce<Frame = Equatorial, Center = SSB> + Sync,
+    F: ParameterizedForce<Frame = Equatorial, Center = SSB>,
 {
-    let components = (0..mixture.n_components())
-        .map(|i| mixture.component(i))
-        .collect::<KeteResult<Vec<_>>>()?;
     components
         .par_iter()
-        .with_min_len(2)
-        .map(|c| {
-            sigma_point_divergence(
-                c,
-                forces,
-                jd,
-                n_axes,
-                sigma_factor,
-                position_spacing_au,
-                center_at,
-            )
+        .map(|component| {
+            let (carried, seeded) = match &component.probes {
+                Some(existing) => {
+                    check_probes(component, existing)?;
+                    (existing.clone(), false)
+                }
+                None => (ProbeSet::seed(component, center_at)?, true),
+            };
+            advance_leg(component, &carried, seeded, forces, center_at, jd)
         })
         .collect()
 }
 
+/// Reject probes that cannot belong to the component carrying them.
+///
+/// The probes were placed against a covariance at an epoch, and both are public fields, so
+/// a caller can hand back a component whose mean or dimension has moved out from under
+/// them.  A mismatched set would still produce a number, measured against an anchor that no
+/// longer exists, so it is an error rather than a silent reseed.
+fn check_probes(component: &UncertainState, probes: &ProbeSet) -> KeteResult<()> {
+    if probes.epoch() != component.elements.epoch {
+        return Err(Error::ValueError(format!(
+            "component at epoch {} carries probes at epoch {}; probes belong to the \
+             component they were seeded from",
+            component.elements.epoch.jd,
+            probes.epoch().jd
+        )));
+    }
+    let expected = 6 + component.free_params.len();
+    if probes.cov_dim() != expected {
+        return Err(Error::ValueError(format!(
+            "component with {expected} covariance dimensions carries probes of dimension {}",
+            probes.cov_dim()
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{minimum_components_for_divergence, regularized_inverse};
-    use nalgebra::{DMatrix, DVector};
+    use super::{DEFAULT_STEP_DAYS, leg_grid};
+    use crate::time::{TDB, Time};
 
-    /// A residual along a well-determined direction is measured against that
-    /// direction's own width, not against a floor set by the widest coordinate.
+    /// Leg endpoints as offsets in days from the start of the arc.
+    fn grid(step: f64, span: f64) -> Vec<f64> {
+        let start = Time::<TDB>::new(2_460_000.5);
+        leg_grid(step, start, Time::new(start.jd + span))
+            .into_iter()
+            .map(|t| t.jd - start.jd)
+            .collect()
+    }
+
+    /// Legs are equal steps of time, so twice the arc is twice the legs at the same step,
+    /// and the step does not depend on the orbit being propagated.
+    #[test]
+    fn grid_steps_equal_intervals_of_time() {
+        let short = grid(DEFAULT_STEP_DAYS, DEFAULT_STEP_DAYS * 8.0);
+        let long = grid(DEFAULT_STEP_DAYS, DEFAULT_STEP_DAYS * 16.0);
+        assert_eq!(short.len(), 8);
+        assert_eq!(long.len(), 16);
+        for (k, offset) in long.iter().enumerate() {
+            #[allow(clippy::cast_precision_loss, reason = "sixteen legs converts exactly")]
+            let expected = (k + 1) as f64 * DEFAULT_STEP_DAYS;
+            assert!((offset - expected).abs() < 1e-9, "leg {k} at {offset}");
+        }
+    }
+
+    /// An arc shorter than one step is a single leg landing on the target, not a step
+    /// past it.
+    #[test]
+    fn grid_of_a_short_arc_is_one_leg() {
+        let legs = grid(DEFAULT_STEP_DAYS, 10.0);
+        assert_eq!(legs.len(), 1);
+        assert!((legs[0] - 10.0).abs() < 1e-12);
+    }
+
+    /// A partial final leg lands exactly on the requested epoch rather than overshooting
+    /// it or accumulating a step at a time towards it.
+    #[test]
+    fn grid_lands_on_the_target() {
+        let span = DEFAULT_STEP_DAYS * 3.5;
+        let legs = grid(DEFAULT_STEP_DAYS, span);
+        assert_eq!(legs.len(), 4);
+        assert!((legs[3] - span).abs() < 1e-9);
+    }
+
+    /// The legs are the step the caller asked for. Dividing the arc into equal parts near
+    /// that length instead would run a different step - here 66.7 days rather than 90 -
+    /// against which the reported `eta` would mean something the caller never asked for.
     ///
-    /// The diagonal here spans four decades, the range a fitted orbit covariance
-    /// actually carries between its shape components and its along-track phase.  A
-    /// scalar ridge scaled by the trace floors every direction at a fraction of the
-    /// along-track spread and scores the tight-direction residual several times low.
+    /// The remainder is the first leg. `eta` is reported off the last leg, so a remainder
+    /// left there would make the headline number a function of `arc mod step_days` rather
+    /// than of the dynamics.
     #[test]
-    fn regularized_inverse_keeps_well_determined_directions() {
-        let sigmas = [1e-8_f64, 1e-8, 1e-8, 1e-8, 1e-8, 1e-4];
-        let mut cov = DMatrix::<f64>::zeros(6, 6);
-        for (i, s) in sigmas.iter().enumerate() {
-            cov[(i, i)] = s * s;
-        }
-        let inv = regularized_inverse(&cov).unwrap();
+    fn grid_puts_the_remainder_in_the_first_leg() {
+        let legs = grid(DEFAULT_STEP_DAYS, 200.0);
+        assert_eq!(legs, vec![20.0, 110.0, 200.0]);
 
-        for (i, s) in sigmas.iter().enumerate() {
-            let mut residual = DVector::<f64>::zeros(6);
-            residual[i] = 2.0 * s;
-            let mahal = (residual.transpose() * &inv * &residual)[(0, 0)].sqrt();
-            assert!(
-                (mahal - 2.0).abs() < 1e-3,
-                "a 2-sigma residual along coordinate {i} scored {mahal}"
-            );
-        }
+        // Shifting the target by a day moves the short leg, not the last one.
+        let shifted = grid(DEFAULT_STEP_DAYS, 201.0);
+        assert_eq!(shifted, vec![21.0, 111.0, 201.0]);
     }
 
-    /// A direction with essentially no width - formed here by near-perfect
-    /// correlation between two coordinates - is floored at about 1e-3 of the
-    /// marginal scales rather than diverging.
+    /// Backward propagation is the same grid with the sign carried through.
     #[test]
-    fn regularized_inverse_floors_near_null_directions() {
-        let (s0, s1) = (1e-6_f64, 2e-6_f64);
-        let rho = 1.0 - 1e-12;
-        let mut cov = DMatrix::<f64>::zeros(2, 2);
-        cov[(0, 0)] = s0 * s0;
-        cov[(1, 1)] = s1 * s1;
-        cov[(0, 1)] = rho * s0 * s1;
-        cov[(1, 0)] = cov[(0, 1)];
-        let inv = regularized_inverse(&cov).unwrap();
-
-        // The anti-correlated direction carries a variance of ~1e-12 in correlation
-        // form; unfloored, this residual would score ~1.4e3.  The floor holds it at
-        // the residual's size relative to the 1e-3 marginal floor instead.
-        let residual = DVector::from_column_slice(&[s0 * 1e-3, -s1 * 1e-3]);
-        let mahal = (residual.transpose() * &inv * &residual)[(0, 0)].sqrt();
-        assert!(
-            mahal < 2.0,
-            "the near-null direction was not floored: scored {mahal}"
-        );
-        assert!(
-            mahal > 1.0,
-            "the floor is wider than its own 1e-3 scale: scored {mahal}"
-        );
+    fn grid_runs_backwards() {
+        let span = -DEFAULT_STEP_DAYS * 4.0;
+        let back = grid(DEFAULT_STEP_DAYS, span);
+        assert_eq!(back.len(), 4);
+        assert!(back.iter().all(|&offset| offset < 0.0));
+        assert!((back[3] - span).abs() < 1e-9);
     }
 
-    /// For a well-conditioned covariance the regularization is a perturbation at the
-    /// ridge's own 1e-6 level and the result is the plain inverse.
+    /// An arc of no length has no legs; the mixture comes back as it went in.
     #[test]
-    fn regularized_inverse_matches_plain_inverse_when_well_conditioned() {
-        let mut cov = DMatrix::<f64>::identity(3, 3) * 4.0;
-        cov[(0, 1)] = 1.0;
-        cov[(1, 0)] = 1.0;
-        let inv = regularized_inverse(&cov).unwrap();
-        let plain = cov.try_inverse().unwrap();
-        let relative = (&inv - &plain).norm() / plain.norm();
-        assert!(
-            relative < 1e-5,
-            "diverged from the plain inverse: {relative:e}"
-        );
-    }
-
-    /// A covariance with no extent at all cannot define the metric.
-    #[test]
-    fn regularized_inverse_rejects_zero_covariance() {
-        assert!(regularized_inverse(&DMatrix::<f64>::zeros(3, 3)).is_err());
-    }
-
-    #[test]
-    fn bound_is_one_below_the_threshold() {
-        assert!((minimum_components_for_divergence(1.0, 3.0) - 1.0).abs() < 1e-12);
-        assert!((minimum_components_for_divergence(3.0, 3.0) - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn bound_grows_with_divergence() {
-        // One K=3 level at the assumed q = 2 halves the divergence, so a
-        // ratio of 2 must cost exactly one level, i.e. 3 components.
-        assert!((minimum_components_for_divergence(6.0, 3.0) - 3.0).abs() < 1e-9);
-        assert!((minimum_components_for_divergence(12.0, 3.0) - 9.0).abs() < 1e-9);
-        assert!((minimum_components_for_divergence(24.0, 3.0) - 27.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn bound_rejects_degenerate_input() {
-        assert!(minimum_components_for_divergence(10.0, 0.0).is_infinite());
-        assert!(minimum_components_for_divergence(10.0, -1.0).is_infinite());
-        assert!(minimum_components_for_divergence(f64::NAN, 3.0).is_infinite());
-        assert!(minimum_components_for_divergence(10.0, f64::NAN).is_infinite());
-    }
-
-    #[test]
-    fn bound_is_below_the_measured_requirement() {
-        // Divergence / component pairs measured by
-        // `small_covariance_survives_the_encounter` in kete_spice at a
-        // 0.003 AU encounter.  The bound must sit at or below every one.
-        for (divergence, measured) in [
-            (82.06, 729.0),
-            (24.62, 81.0),
-            (8.21, 9.0),
-            (2.46, 1.0),
-            (1.10, 1.0),
-        ] {
-            let bound = minimum_components_for_divergence(divergence, 3.0);
-            assert!(
-                bound <= measured,
-                "bound {bound} exceeded the measured {measured} components"
-            );
-        }
+    fn grid_of_a_zero_arc_is_empty() {
+        assert!(grid(DEFAULT_STEP_DAYS, 0.0).is_empty());
     }
 }

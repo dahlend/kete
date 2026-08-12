@@ -180,10 +180,9 @@ impl PyHorizonsProperties {
                 let n = f.inner.n_free_params();
                 ParameterMask::new(f.inner.clone(), vec![None; n]).expect("valid")
             });
-            PyUncertainState {
-                state: us,
-                non_grav: mask,
-            }
+            let mut state = us;
+            state.non_grav = mask;
+            PyUncertainState { state }
         })
     }
 

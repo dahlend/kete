@@ -77,6 +77,7 @@ from .vector import (
     Frames,
     SimultaneousStates,
     State,
+    StepReport,
     UncertainState,
     Vector,
 )
@@ -140,6 +141,7 @@ __all__ = [
     "spitzer",
     "SpitzerFrame",
     "State",
+    "StepReport",
     "state_transition",
     "tap",
     "Time",
