@@ -130,12 +130,20 @@ Approximate width of a WISE chip FOV, this slightly over-estimates the true FOV.
 This is 47 arc-minutes.
 """
 
-DN_TO_JY = [1.9350e-06, 2.7048e-06, 2.9045e-06, 5.2269e-05]
+DN_TO_JY = [1.9350e-06, 2.7048e-06, 1.8326e-06, 5.2269e-05]
 """
 Convert directly from DN to Jy using this Jy/DN conversion factor.
 
-These values came from:
-https://wise2.ipac.caltech.edu/docs/release/prelim/expsup/sec2_3f.html
+NOTE: In practice if you are wanting to use these values you probably actually
+should be using the per-frame MAGZP that is contained within the header of each image.
+The conversion values drifted over time, and the ones above were just the
+values computed for the stacked Atlas images, and are not globally accurate.
+
+See this for more detail:
+https://irsa.ipac.caltech.edu/data/WISE/docs/release/NEOWISE/expsup/sec3_3.html#conv
+
+These values came from the AllWISE Explanatory Supplement, section IV.3.a:
+https://irsa.ipac.caltech.edu/data/WISE/docs/release/AllWISE/expsup/sec4_3a.html
 """
 
 
