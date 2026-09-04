@@ -306,7 +306,10 @@ pub struct FitResult {
     /// Model fluxes at the MAP point, one per observation.
     pub best_fit_fluxes: Vec<f64>,
 
-    /// Standardized residuals at the MAP point: `(obs - model) / (f_sigma * sigma_i)`.
+    /// Standardized residuals at the MAP point: `(obs - model) / (f_sigma * sigma_i)`
+    /// using the residual side's sigma. 0.0 where undefined: bounds-only
+    /// constraints, and one-sided limits whose model flux sits on the
+    /// unconstrained side (e.g. below an upper-limit threshold).
     pub best_fit_residuals: Vec<f64>,
 
     /// Reflected-light fraction at the MAP point, one per observation.
@@ -624,14 +627,15 @@ pub fn fit_mcmc(
         let mut n = 0_usize;
         let mut residuals = Vec::with_capacity(obs.len());
         for (i, ob) in obs.iter().enumerate() {
-            let sigma = params.f_sigma * ob.sigma;
-            let r = if sigma > 0.0 {
-                (ob.flux - fwd.model_fluxes[i]) / sigma
-            } else {
-                0.0
-            };
+            // Standardized residual matches the likelihood's effective sigma.
+            // Reported as 0 when undefined: bounds-only constraints (no point
+            // estimate) and one-sided limits whose model flux sits on the
+            // unconstrained side (e.g. below an upper-limit threshold).
+            let r = ob
+                .standardized_residual(fwd.model_fluxes[i], params.f_sigma)
+                .unwrap_or(0.0);
             residuals.push(r);
-            if !ob.is_upper_limit {
+            if ob.is_detection() {
                 chi2 += r * r;
                 n += 1;
             }
