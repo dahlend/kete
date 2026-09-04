@@ -59,7 +59,7 @@ pub fn golden_section_search(
 
     for _ in 0..200 {
         if (hi - lo).abs() <= atol {
-            return Ok(0.5 * (lo + hi));
+            return Ok(f64::midpoint(lo, hi));
         }
 
         let fc = func(c);

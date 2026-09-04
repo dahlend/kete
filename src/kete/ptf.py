@@ -120,7 +120,7 @@ def fetch_fovs(year: int):
     # Sort the fovs by ccdid and make PTF Fields
     final_fovs = []
     for value in grouped.values():
-        value = sorted(value, key=lambda x: (x.ccdid))
+        value = sorted(value, key=lambda x: x.ccdid)
         fov = PtfField(value)
         final_fovs.append(fov)
 
