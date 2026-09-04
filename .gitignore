@@ -27,6 +27,8 @@ build
 # Mac files
 .DS_Store
 
+analysis
+
 # Ignore built library
 *.so
 *.mod
