@@ -25,7 +25,7 @@ kete_core = {version = "*", path = "../kete_core"}
 kete_spice = {version = "*", path = "../kete_spice"}
 kete_stats = {version = "*", path = "../kete_stats"}
 nalgebra = {version = "^0.34.2", features = ["rayon"]}
-nuts-rs = "0.17"
+nuts-rs = "0.18"
 rand = "^0.10.0"
 rand_distr = "^0.6.0"
 rayon = "^1.11.0"

@@ -345,9 +345,9 @@ mod tests {
 
         let pos: [f64; 3] = a.pos.into();
         let vel: [f64; 3] = a.vel.into();
-        assert!(a.center_id() == 1);
-        assert!(pos == [-1.0, 0.0, 0.0]);
-        assert!(vel == [0.0, -1.0, 0.0]);
+        assert_eq!(a.center_id(), 1);
+        assert_eq!(pos, [-1.0, 0.0, 0.0]);
+        assert_eq!(vel, [0.0, -1.0, 0.0]);
     }
 
     #[test]
@@ -385,11 +385,11 @@ mod tests {
         let b = State::<Equatorial>::new(3, 0.0, [0.0, 1.0, 0.0], [0.0, 1.0, 0.0], 0);
         a.try_change_center(b.into_frame()).unwrap();
 
-        assert!(a.center_id() == 3);
-        assert!(a.pos[0] == 1.0);
+        assert_eq!(a.center_id(), 3);
+        assert_eq!(a.pos[0], 1.0);
         assert!(a.pos[1] != 0.0);
         assert!(a.pos[2] != 0.0);
-        assert!(a.vel[0] == 1.0);
+        assert_eq!(a.vel[0], 1.0);
 
         // try cases which cause errors
         let diff_jd = State::<Equatorial>::new(3, 1.0, [0.0, 1.0, 0.0], [0.0, 1.0, 0.0], 0);

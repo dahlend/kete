@@ -489,7 +489,7 @@ impl Desig {
                         rem
                     ))
                 } else {
-                    Ok(format!("~{:0>4}", &num_to_mpc_hex(num - 620_000)))
+                    Ok(format!("~{:0>4}", num_to_mpc_hex(num - 620_000)))
                 }
             }
             Self::CometPerm(orbit_type, id, _) => Ok(format!("{id:0>4}{orbit_type}")),
@@ -1348,19 +1348,19 @@ mod tests {
 
     #[test]
     fn desig_strings() {
-        assert!(Desig::Empty.to_string() == "None");
-        assert!(Desig::Naif(100).to_string() == "100");
-        assert!(Desig::Name("Foo".into()).to_string() == "Foo");
-        assert!(Desig::Perm(123).to_string() == "123");
-        assert!(Desig::Prov("Prov".into()).to_string() == "Prov");
+        assert_eq!(Desig::Empty.to_string(), "None");
+        assert_eq!(Desig::Naif(100).to_string(), "100");
+        assert_eq!(Desig::Name("Foo".into()).to_string(), "Foo");
+        assert_eq!(Desig::Perm(123).to_string(), "123");
+        assert_eq!(Desig::Prov("Prov".into()).to_string(), "Prov");
     }
 
     #[test]
     fn naif_name_resolution() {
         let desig = Desig::Naif(1).try_naif_id_to_name();
-        assert!(desig == Desig::Name("mercury barycenter".into()));
-        assert!(desig.full_string() == "Name(\"mercury barycenter\")");
-        assert!(desig.to_string() == "mercury barycenter");
+        assert_eq!(desig, Desig::Name("mercury barycenter".into()));
+        assert_eq!(desig.full_string(), "Name(\"mercury barycenter\")");
+        assert_eq!(desig.to_string(), "mercury barycenter");
     }
 
     #[test]

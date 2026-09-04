@@ -20,7 +20,7 @@ workspace = true
 kete_core = {version = "*", path = "../kete_core"}
 kete_stats = {version = "*", path = "../kete_stats"}
 nalgebra = {version = "^0.34.2"}
-nuts-rs = {version = "0.17"}
+nuts-rs = {version = "0.18"}
 rand = {version = "^0.10.0"}
 rayon = "^1.11.0"
 

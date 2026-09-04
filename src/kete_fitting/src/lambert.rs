@@ -290,7 +290,7 @@ fn lambert_core<T: InertialFrame>(
     let mut z = if n_revs == 0 {
         0.0
     } else {
-        0.5 * (z_low + z_high)
+        f64::midpoint(z_low, z_high)
     };
 
     for _ in 0..max_iter {
@@ -305,11 +305,11 @@ fn lambert_core<T: InertialFrame>(
         let mut z_new = if dfz.abs() > 1e-30 {
             z - fz / dfz
         } else {
-            0.5 * (z_low + z_high)
+            f64::midpoint(z_low, z_high)
         };
 
         if z_new < z_low || z_new > z_high {
-            z_new = 0.5 * (z_low + z_high);
+            z_new = f64::midpoint(z_low, z_high);
         }
 
         if fz < 0.0 {

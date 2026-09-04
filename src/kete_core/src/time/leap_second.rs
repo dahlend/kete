@@ -102,23 +102,23 @@ mod tests {
     fn test_leap_second() {
         {
             let t = &LEAP_SECONDS.first().unwrap();
-            assert!(t.tai_m_utc == 10.0 / 86400.0);
-            assert!(t.mjd == 41317.0);
+            assert_eq!(t.tai_m_utc, 10.0 / 86400.0);
+            assert_eq!(t.mjd, 41317.0);
         }
         {
             let t = &LEAP_SECONDS.last().unwrap();
-            assert!(t.tai_m_utc == 37.0 / 86400.0);
-            assert!(t.mjd == 57754.0);
+            assert_eq!(t.tai_m_utc, 37.0 / 86400.0);
+            assert_eq!(t.mjd, 57754.0);
         }
     }
 
     #[test]
     fn test_lookup() {
-        assert!(tai_to_utc_offset(0.0) == 0.0);
-        assert!(tai_to_utc_offset(41317.0) == 10.0 / 86400.0);
-        assert!(tai_to_utc_offset(41317.1) == 10.0 / 86400.0);
-        assert!(tai_to_utc_offset(57753.9) == 36.0 / 86400.0);
-        assert!(tai_to_utc_offset(57754.0) == 37.0 / 86400.0);
-        assert!(tai_to_utc_offset(57755.0) == 37.0 / 86400.0);
+        assert_eq!(tai_to_utc_offset(0.0), 0.0);
+        assert_eq!(tai_to_utc_offset(41317.0), 10.0 / 86400.0);
+        assert_eq!(tai_to_utc_offset(41317.1), 10.0 / 86400.0);
+        assert_eq!(tai_to_utc_offset(57753.9), 36.0 / 86400.0);
+        assert_eq!(tai_to_utc_offset(57754.0), 37.0 / 86400.0);
+        assert_eq!(tai_to_utc_offset(57755.0), 37.0 / 86400.0);
     }
 }

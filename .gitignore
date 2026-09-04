@@ -30,10 +30,8 @@ build
 # Ignore built library
 *.so
 *.mod
-*.lock
 
 target/*
-*.lock
 
 # Ignore built documents
 docs/html
@@ -50,3 +48,7 @@ docs/**/.ipynb_checkpoints
 # Ignored downloaded cached files
 **/data/*.json.gz
 **/data/neowise_diameters_albedos*
+
+# Local research and analysis work - scratch scripts, run outputs, notes.
+# Never committed; nothing in the library may depend on it.
+analysis/

@@ -177,7 +177,10 @@ pub fn read_states_parquet(
         .map_err(|_| Error::IOError("File doesn't contain the correct columns".into()))?
         .str()
         .map_err(|_| Error::ValueError("Designations are not all strings.".into()))?
-        .into_no_null_iter();
+        .iter()
+        // A missing designation reads as an empty name, which is what the previous
+        // value iterator returned for it.
+        .map(Option::unwrap_or_default);
 
     let mut center_iter = dataframe
         .column("center")
@@ -288,4 +291,46 @@ pub fn read_update_times_parquet(filename: &str) -> KeteResult<Vec<Option<Time<T
     };
 
     Ok(updated_times)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::desigs::Desig;
+
+    #[test]
+    fn round_trip_states() {
+        let states = vec![
+            State::<Equatorial>::new(
+                Desig::Name("first".into()),
+                2451545.0,
+                [1.0, 2.0, 3.0],
+                [0.1, 0.2, 0.3],
+                10,
+            ),
+            State::<Equatorial>::new(
+                Desig::Name("second".into()),
+                2451546.5,
+                [-4.0, 5.0, -6.0],
+                [-0.4, 0.5, -0.6],
+                399,
+            ),
+        ];
+        let file = std::env::temp_dir().join("kete_parquet_round_trip.parquet");
+        let filename = file.to_str().unwrap();
+
+        write_states_parquet(&states, filename, None).unwrap();
+        let (read, updated) = read_states_parquet(filename).unwrap();
+        let _ = std::fs::remove_file(filename);
+
+        assert_eq!(read.len(), states.len());
+        assert_eq!(updated.len(), states.len());
+        for (a, b) in states.iter().zip(read.iter()) {
+            assert_eq!(a.desig.to_string(), b.desig.to_string());
+            assert_eq!(a.epoch.jd, b.epoch.jd);
+            assert_eq!(a.pos, b.pos);
+            assert_eq!(a.vel, b.vel);
+            assert_eq!(a.center_id(), b.center_id());
+        }
+    }
 }

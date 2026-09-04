@@ -99,8 +99,10 @@ def collect_code(file):
     doc = publish_doctree(contents)
     text = []
     for block in doc.findall(
-        lambda x: x.tagname == "literal_block"
-        and x.attributes["classes"] == ["code", "python"]
+        lambda x: (
+            x.tagname == "literal_block"
+            and x.attributes["classes"] == ["code", "python"]
+        )
     ):
         text.append(block.astext())
     text = [t for t in text if t.strip() != ""]

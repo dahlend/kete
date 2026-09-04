@@ -975,7 +975,7 @@ mod tests {
 
         let (_, vec) = parse_sclk_string(input).unwrap();
 
-        assert_eq!(vec.len(), 9, "Expected 9 tokens, found {:?}", &vec);
+        assert_eq!(vec.len(), 9, "Expected 9 tokens, found {vec:?}");
         assert_eq!(
             vec[0],
             SclkToken::KernelID("@04-SEP-1990//4:23:00".to_string())

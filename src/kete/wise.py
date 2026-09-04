@@ -8,6 +8,7 @@ from functools import lru_cache
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import requests
 from astropy.io import fits
 
 from . import spice
@@ -146,6 +147,7 @@ MissionPhase = namedtuple(
         "jd_end",
         "bands",
         "frame_url",
+        "s3_frame_url",
         "frame_meta_table",
         "source_table",
     ],
@@ -159,12 +161,18 @@ MissionPhase.jd_start.__doc__ = "JD date of the start of the mission phase."
 MissionPhase.jd_end.__doc__ = "JD date of the end of the mission phase."
 MissionPhase.bands.__doc__ = "WISE wavelength bands available during the phase."
 MissionPhase.frame_url.__doc__ = "URL of where the frames are stored on IRSA servers."
+MissionPhase.s3_frame_url.__doc__ = (
+    "URL of where the frames are stored on AWS. This holds the same files as IRSA."
+)
 MissionPhase.frame_meta_table.__doc__ = (
     "SQL Table on IRSA where the metadata for the frames are stored."
 )
 MissionPhase.source_table.__doc__ = (
     "SQL Table on IRSA where source information is stored."
 )
+
+WISE_S3_URL = "https://nasa-irsa-wise.s3.us-west-2.amazonaws.com/"
+"""Public AWS bucket which mirrors the WISE frames held by IRSA."""
 
 MISSION_PHASES = {
     "Cryo": MissionPhase(
@@ -173,6 +181,7 @@ MISSION_PHASES = {
         jd_end=2455414.941783008,
         bands=(1, 2, 3, 4),
         frame_url=IRSA_URL + "/ibe/data/wise/allsky/4band_p1bm_frm/",
+        s3_frame_url=WISE_S3_URL + "wise/allsky/images/4band_p1bm_frm/",
         frame_meta_table="allsky_4band_p1bs_frm",
         source_table="allsky_4band_p1bs_psd",
     ),
@@ -182,6 +191,7 @@ MISSION_PHASES = {
         jd_end=2455469.278276,
         bands=(1, 2, 3),
         frame_url=IRSA_URL + "/ibe/data/wise/cryo_3band/3band_p1bm_frm/",
+        s3_frame_url=WISE_S3_URL + "wise/cryo-3band/images/3band_p1bm_frm/",
         frame_meta_table="allsky_3band_p1bs_frm",
         source_table="allsky_3band_p1bs_psd",
     ),
@@ -191,6 +201,7 @@ MISSION_PHASES = {
         jd_end=2455593.96119803,
         bands=(1, 2),
         frame_url=IRSA_URL + "/ibe/data/wise/postcryo/2band_p1bm_frm/",
+        s3_frame_url=WISE_S3_URL + "wise/postcryo/images/2band_p1bm_frm/",
         frame_meta_table="allsky_2band_p1bs_frm",
         source_table="allsky_2band_p1bs_psd",
     ),
@@ -200,6 +211,7 @@ MISSION_PHASES = {
         jd_end=Time.from_ymd(2015, 1, 1).jd,
         bands=(1, 2),
         frame_url=IRSA_URL + "/ibe/data/wise/neowiser/p1bm_frm/",
+        s3_frame_url=WISE_S3_URL + "wise/neowiser/images/p1bm_frm/",
         frame_meta_table="neowiser_p1bs_frm",
         source_table="neowiser_p1bs_psd",
     ),
@@ -209,6 +221,7 @@ MISSION_PHASES = {
         jd_end=Time.from_ymd(2024, 8, 1.291525).jd,
         bands=(1, 2),
         frame_url=IRSA_URL + "/ibe/data/wise/neowiser/p1bm_frm/",
+        s3_frame_url=WISE_S3_URL + "wise/neowiser/images/p1bm_frm/",
         frame_meta_table="neowiser_p1bs_frm",
         source_table="neowiser_p1bs_psd",
     ),
@@ -222,6 +235,7 @@ for year in range(2015, 2024):
         jd_end=Time.from_ymd(year + 1, 1, 1).jd,
         bands=(1, 2),
         frame_url=IRSA_URL + "/ibe/data/wise/neowiser/p1bm_frm/",
+        s3_frame_url=WISE_S3_URL + "wise/neowiser/images/p1bm_frm/",
         frame_meta_table="neowiser_p1bs_frm",
         source_table="neowiser_p1bs_psd",
     )
@@ -392,8 +406,8 @@ def fetch_frame(
     as_fits :
         Should the file path or an Astropy FITs object be returned.
     im_type :
-        Which image type should be returned,
-        `int` for intensity is typical, `mask` for the mask file.
+        Which image type should be returned. `int` for the intensity image is
+        typical, `unc` for the uncertainty image, and `msk` for the mask.
     """
     scan_id, frame_num, band = _scan_frame(scan_id, frame_num, band)
 
@@ -413,11 +427,24 @@ def fetch_frame(
     band_str = f"w{band:1d}"
     ext = "fits" if im_type == "int" else "fits.gz"
     filename = f"{scan_id}{frame_num}-{band_str}-{im_type}-1b.{ext}"
-    url = f"{phase.frame_url}{scan_group}/{scan_id}/{frame_num}/{filename}"
+    frame_path = f"{scan_group}/{scan_id}/{frame_num}/{filename}"
 
     subfolder = os.path.join("wise_frames", scan_group)
 
-    file_path = download_file(url, auto_zip=True, subfolder=subfolder)
+    # AWS holds the same frames as IRSA, check them first
+    file_path = None
+    if _aws_reachable():
+        try:
+            file_path = download_file(
+                phase.s3_frame_url + frame_path, auto_zip=True, subfolder=subfolder
+            )
+        except requests.exceptions.RequestException as exc:
+            logger.info("Could not fetch the frame from AWS (%s), trying IRSA.", exc)
+
+    if file_path is None:
+        file_path = download_file(
+            phase.frame_url + frame_path, auto_zip=True, subfolder=subfolder
+        )
     if as_fits:
         try:
             return fits.open(file_path)[0]
@@ -608,3 +635,23 @@ def fetch_fovs(phase):
         fovs.append(fov)
     fovs = sorted(fovs, key=lambda x: x.jd)
     return fovs
+
+
+@lru_cache(maxsize=1)
+def _aws_reachable():
+    """
+    Return whether the bucket holding the WISE frames can be connected to.
+
+    Frames are usually fetched in the thousands. A connection which fails once
+    also fails for the rest of them, so this is checked one time per session.
+
+    Any reply means the bucket was reached. This includes a reply which refuses
+    the request, because the check is of the connection and not of the
+    contents.
+    """
+    try:
+        requests.head(WISE_S3_URL, timeout=5)
+        return True
+    except requests.exceptions.RequestException as exc:
+        logger.info("AWS cannot be reached (%s), fetching frames from IRSA.", exc)
+        return False

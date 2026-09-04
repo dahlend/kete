@@ -341,7 +341,7 @@ mod tests {
     fn test_convex_shape() {
         let n1024 = ConvexShape::new_fibonacci_lattice(1024);
 
-        assert!(n1024.facets.len() == 1024);
+        assert_eq!(n1024.facets.len(), 1024);
         assert!(n1024.facets.iter().all(|x| x.area == (1024_f64).recip()));
     }
 

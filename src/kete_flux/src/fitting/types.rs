@@ -325,7 +325,7 @@ impl Model {
                 }
             } else {
                 let r = ob.flux - mf;
-                ll += -sigma_eff.ln() - 0.5 * (nu + 1.0) * (1.0 + r * r / (nu * sigma2)).ln();
+                ll += -sigma_eff.ln() - f64::midpoint(nu, 1.0) * (1.0 + r * r / (nu * sigma2)).ln();
             }
         }
 
@@ -459,7 +459,7 @@ impl ParamPrior {
     /// Midpoint of the bounds, or the Gaussian mean if set.
     pub(crate) fn center(&self) -> f64 {
         self.gaussian
-            .map_or(0.5 * (self.bounds.0 + self.bounds.1), |(m, _)| m)
+            .map_or(f64::midpoint(self.bounds.0, self.bounds.1), |(m, _)| m)
     }
 }
 

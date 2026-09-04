@@ -35,9 +35,7 @@ use kete_core::errors::{Error, KeteResult};
 use kete_stats::fitting::{NelderMeadResult, nelder_mead};
 use nalgebra::{DMatrix, DVector};
 use nuts_rs::rand::SeedableRng;
-use nuts_rs::{
-    Chain, CpuLogpFunc, CpuMath, CpuMathError, DiagGradNutsSettings, LogpError, Settings,
-};
+use nuts_rs::{Chain, CpuLogpFunc, CpuMath, CpuMathError, DiagNutsSettings, LogpError, Settings};
 use rayon::prelude::*;
 use std::collections::HashMap;
 
@@ -363,13 +361,13 @@ fn run_chain(
 
     let d = posterior.dim();
 
-    let mut settings = DiagGradNutsSettings {
+    let mut settings = DiagNutsSettings {
         num_tune,
         num_draws,
         maxdepth,
         seed: chain_seed,
         num_chains: 1,
-        ..DiagGradNutsSettings::default()
+        ..DiagNutsSettings::default()
     };
     settings.adapt_options.step_size_settings.target_accept = target_accept;
 
