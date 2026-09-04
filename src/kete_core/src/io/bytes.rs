@@ -77,8 +77,8 @@ pub fn bytes_to_f64_vec(bytes: &[u8]) -> KeteResult<Box<[f64]>> {
     // SAFETY: bytes length is verified to be a multiple of 8.
     // On little-endian targets this is a direct memcpy; on big-endian
     // targets (not supported) it would need byte-swapping.
-    for chunk in bytes.chunks_exact(8) {
-        res.push(f64::from_le_bytes(chunk.try_into().unwrap()));
+    for chunk in bytes.as_chunks::<8>().0 {
+        res.push(f64::from_le_bytes(*chunk));
     }
     Ok(res.into())
 }
@@ -97,8 +97,8 @@ pub fn bytes_to_i32_vec(bytes: &[u8]) -> KeteResult<Box<[i32]>> {
         Err(Error::IOError("File is not correctly formatted".into()))?;
     }
     let mut res = Vec::with_capacity(byte_len / 4);
-    for chunk in bytes.chunks_exact(4) {
-        res.push(i32::from_le_bytes(chunk.try_into().unwrap()));
+    for chunk in bytes.as_chunks::<4>().0 {
+        res.push(i32::from_le_bytes(*chunk));
     }
     Ok(res.into())
 }

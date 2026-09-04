@@ -69,7 +69,7 @@ impl PckCollection {
     pub fn load_file(&mut self, filename: &str) -> KeteResult<()> {
         let file = DafFile::from_file(filename)?;
         if !matches!(file.daf_type, DAFType::Pck) {
-            return Err(Error::IOError(format!(
+            Err(Error::IOError(format!(
                 "File {filename:?} is not a PCK formatted file."
             )))?;
         }

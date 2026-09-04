@@ -680,7 +680,7 @@ impl<const N: usize, const DIM: usize> PicardStep<N, DIM> {
     /// # Errors
     /// Evaluation may fail if ``t`` is outside of bounds.
     pub fn evaluate(&self, t: f64) -> KeteResult<[f64; DIM]> {
-        let w1 = (self.t0.jd + self.t1.jd) * 0.5;
+        let w1 = f64::midpoint(self.t0.jd, self.t1.jd);
         let w2 = (self.t1 - self.t0).elapsed * 0.5;
         let tau_time = ((t - w1) * w2).acos();
         if tau_time.is_nan() {
@@ -699,7 +699,7 @@ impl<const N: usize, const DIM: usize> PicardStepSecondOrder<N, DIM> {
     /// # Errors
     /// Evaluation may fail if ``t`` is outside of bounds.
     pub fn evaluate(&self, t: f64) -> KeteResult<([f64; DIM], [f64; DIM])> {
-        let w1 = (self.t0.jd + self.t1.jd) * 0.5;
+        let w1 = f64::midpoint(self.t0.jd, self.t1.jd);
         let w2 = (self.t1 - self.t0).elapsed * 0.5;
         let tau_time = ((t - w1) * w2).acos();
         if tau_time.is_nan() {

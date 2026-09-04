@@ -243,7 +243,7 @@ where
         // Allow callers to control convergence using a subset of dimensions.
         integrator.control_dim = control_dim.unwrap_or(integrator.control_dim);
         if integrator.control_dim > integrator.cur_state.len() {
-            return Err(Error::ValueError(format!(
+            Err(Error::ValueError(format!(
                 "control_dim ({}) exceeds state dimension ({})",
                 integrator.control_dim,
                 integrator.cur_state.len(),

@@ -80,7 +80,7 @@ pub fn compute_eccentric_anomaly(ecc: f64, mean_anom: f64, peri_dist: f64) -> Ke
             let p = 2.0 * peri_dist;
             let q = 6.0 * mean_anom;
 
-            let w = (0.5 * (q + (q.powi(2) + 4.0 * p.powi(3)).sqrt())).cbrt();
+            let w = f64::midpoint(q, (q.powi(2) + 4.0 * p.powi(3)).sqrt()).cbrt();
             Ok(w - p / w)
         }
         ecc => {

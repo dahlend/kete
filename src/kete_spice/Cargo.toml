@@ -23,7 +23,7 @@ workspace = true
 kete_core = { version = "*", path = "../kete_core" }
 kete_stats = { version = "*", path = "../kete_stats" }
 crossbeam = "^0.8.4"
-itertools = "^0.14.0"
+itertools = "^0.15.0"
 nalgebra = { version = "^0.34.2", features = ["rayon"] }
 nom = "8.0.0"
 pathfinding = "^4.10.0"

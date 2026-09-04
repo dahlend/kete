@@ -73,7 +73,7 @@ impl CkCollection {
     pub fn load_file(&mut self, filename: &str) -> KeteResult<()> {
         let file = DafFile::from_file(filename)?;
         if !matches!(file.daf_type, DAFType::Ck) {
-            return Err(Error::IOError(format!(
+            Err(Error::IOError(format!(
                 "File {filename:?} is not a CK formatted file."
             )))?;
         }

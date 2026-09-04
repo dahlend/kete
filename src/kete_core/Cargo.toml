@@ -22,7 +22,7 @@ chrono = "^0.4.38"
 crossbeam = "^0.8.4"
 directories = "^6.0"
 flate2 = "^1"
-itertools = "^0.14.0"
+itertools = "^0.15.0"
 kete_stats = {version = "*", path = "../kete_stats"}
 nalgebra = {version = "^0.34.2", features = ["rayon"]}
 nom = "8.0.0"

@@ -341,7 +341,7 @@ impl OrbitalPosterior {
                 // Multivariate Student-t with nu d.o.f.:
                 //   logp -= 0.5 * (nu + m) * ln(1 + q/nu)
                 //   grad += (nu + m) / (nu + q) * H^T W r
-                logp -= 0.5 * (nu + m) * (1.0 + q / nu).ln();
+                logp -= f64::midpoint(nu, m) * (1.0 + q / nu).ln();
                 let dl_factor = (nu + m) / (nu + q);
                 let g = h_epoch.transpose() * &wr;
                 for j in 0..d {
@@ -800,7 +800,7 @@ fn run_single_chain(
         let cart = &seed_vec + &whiten_l * &xi;
         draws.push(cart.as_slice().to_vec());
         divergent.push(progress.diverging);
-        log_posterior.push(stats.logp);
+        log_posterior.push(stats.point.logp);
     }
 
     Ok((draws, divergent, log_posterior))

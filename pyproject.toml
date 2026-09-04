@@ -34,6 +34,7 @@ requires = ["maturin>=1.9",
 build-backend = "maturin"
 
 [tool.maturin]
+bindings = "pyo3"
 python-source = "src"
 module-name = "kete._core"
 manifest-path = "Cargo.toml"

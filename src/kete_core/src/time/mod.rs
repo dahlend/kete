@@ -419,24 +419,24 @@ mod tests {
     #[test]
     fn test_time() {
         let t = Time::<UTC>::new(2451545.);
-        assert!(t.year_month_day() == (2000, 1, 1, 0.5));
+        assert_eq!(t.year_month_day(), (2000, 1, 1, 0.5));
 
         let t2 = Time::<UTC>::from_year_month_day(2000, 1, 1, 0.5);
-        assert!(t2.jd == 2451545.);
+        assert_eq!(t2.jd, 2451545.);
 
         let t3 = Time::<UTC>::from_year_month_day(2000, 1, 2, -0.5);
-        assert!(t3.jd == 2451545.);
+        assert_eq!(t3.jd, 2451545.);
 
         let t4 = Time::<UTC>::new(2000000.);
-        assert!(t4.year_month_day() == (763, 9, 18, 0.5));
+        assert_eq!(t4.year_month_day(), (763, 9, 18, 0.5));
 
         let t5 = Time::<UTC>::from_year_month_day(763, 9, 18, 0.5);
-        assert!(t5.jd == 2000000.);
+        assert_eq!(t5.jd, 2000000.);
 
         let ymd = Time::<UTC>::new(-68774.4991992591).year_month_day();
-        assert!(ymd.0 == -4901);
-        assert!(ymd.1 == 8);
-        assert!(ymd.2 == 8);
+        assert_eq!(ymd.0, -4901);
+        assert_eq!(ymd.1, 8);
+        assert_eq!(ymd.2, 8);
     }
 
     #[test]
@@ -521,10 +521,10 @@ mod tests {
     #[test]
     fn test_iso() {
         let t = Time::<UTC>::from_iso("2000-01-01T06:00:00.000Z").unwrap();
-        assert!(t.year_month_day() == (2000, 1, 1, 0.25));
+        assert_eq!(t.year_month_day(), (2000, 1, 1, 0.25));
 
         let t1 = Time::<UTC>::from_iso("1987-12-25T00:00:00.000Z").unwrap();
-        assert!(t1.year_month_day() == (1987, 12, 25, 0.0));
-        assert!(t1.to_iso().unwrap() == "1987-12-25T00:00:00+00:00");
+        assert_eq!(t1.year_month_day(), (1987, 12, 25, 0.0));
+        assert_eq!(t1.to_iso().unwrap(), "1987-12-25T00:00:00+00:00");
     }
 }
