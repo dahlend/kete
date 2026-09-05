@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "_core"
-version = "3.2.2"
+version = "3.2.3"
 dependencies = [
  "itertools 0.15.0",
  "kete_core",
@@ -1833,7 +1833,7 @@ dependencies = [
 
 [[package]]
 name = "kete_core"
-version = "3.2.2"
+version = "3.2.3"
 dependencies = [
  "bytemuck",
  "chrono",
@@ -1854,7 +1854,7 @@ dependencies = [
 
 [[package]]
 name = "kete_fitting"
-version = "3.2.2"
+version = "3.2.3"
 dependencies = [
  "kete_core",
  "kete_spice",
@@ -1871,7 +1871,7 @@ dependencies = [
 
 [[package]]
 name = "kete_flux"
-version = "3.2.2"
+version = "3.2.3"
 dependencies = [
  "criterion",
  "kete_core",
@@ -1885,7 +1885,7 @@ dependencies = [
 
 [[package]]
 name = "kete_spice"
-version = "3.2.2"
+version = "3.2.3"
 dependencies = [
  "criterion",
  "crossbeam",
@@ -1902,10 +1902,10 @@ dependencies = [
 
 [[package]]
 name = "kete_stats"
-version = "3.2.2"
+version = "3.2.3"
 dependencies = [
  "num-traits",
- "thiserror 2.0.20",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

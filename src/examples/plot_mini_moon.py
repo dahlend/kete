@@ -3,15 +3,26 @@ Temporary Earth Capture
 =======================
 
 Some near-Earth asteroids pass close enough to Earth that they become
-temporarily captured, orbiting the planet for weeks or months before
+temporarily captured, orbiting the planet for months or years before
 escaping back onto heliocentric orbits.  These so-called "mini-moons"
-spend time inside Earth's Hill sphere and can have geocentric specific
-energy that dips below zero during capture.
+spend time inside Earth's Hill sphere and have geocentric specific
+energy below zero while captured.
 
 This example uses 2020 CD3 -- the second known natural object to be
 temporarily captured by Earth -- to demonstrate kete's orbital analysis
 tools: geocentric specific energy and Earth's Hill sphere / sphere of
 influence.
+
+2020 CD3 is roughly a meter across, so solar radiation pressure is a
+significant perturbation and the JPL orbit solution includes a
+non-gravitational term.  That term is passed to the propagation below.
+
+The orbit solution has an epoch several years after the capture, so the
+trajectory shown here is integrated backwards through a sequence of close
+perigee passages.  Small differences in the force model grow quickly across
+those passages, so the window starts in 2018 and does not extend back to the
+capture itself in 2017.  The daily sampling used here also does not resolve
+perigee: the plotted minima are upper bounds on the true perigee distances.
 """
 
 import matplotlib.pyplot as plt
@@ -23,16 +34,19 @@ import kete
 # Fetch 2020 CD3 and set up the time window
 # ------------------------------------------
 #
-# We fetch the orbit from JPL Horizons and define a window covering
-# the temporary capture event (~Aug 2020 to ~Mar 2021).
+# We fetch the orbit from JPL Horizons and define a window covering the
+# final years of the capture and the escape in 2020.
 
 obj = kete.HorizonsProperties.fetch("2020 CD3")
 
-jd_start = kete.Time.from_ymd(2010, 1, 1).jd
+jd_start = kete.Time.from_ymd(2018, 1, 1).jd
 jd_end = kete.Time.from_ymd(2040, 1, 1).jd
 
+# Solar radiation pressure, from the JPL orbit solution.
+non_gravs = obj.non_grav
+
 # Propagate to the start of the window
-state = kete.propagate_n_body(obj.state, jd_start)
+state = kete.propagate_n_body(obj.state, jd_start, non_gravs=non_gravs)
 
 # %%
 # Physical constants
@@ -53,7 +67,8 @@ print(f"Earth sphere of influence: {earth_soi * kete.constants.AU_KM:.0f} km")
 # -------------------------------------
 #
 # Step through the time window recording geocentric distance and specific
-# energy at each epoch.
+# energy at each epoch.  The geocentric orbits have a period of about 75
+# days.
 
 step = 7.0  # days
 times = np.arange(jd_start, jd_end, step)
@@ -62,7 +77,7 @@ geo_dist_km = []
 spec_energy = []
 
 for jd in times:
-    state = kete.propagate_n_body(state, jd)
+    state = kete.propagate_n_body(state, jd, non_gravs=non_gravs)
 
     # Geocentric state for distance and specific energy
     geo_state = state.change_center(planet)
@@ -88,7 +103,8 @@ t_years = [kete.Time(jd).year_float for jd in times]
 # - **Geocentric distance** relative to Earth's Hill sphere and sphere of
 #   influence.
 # - **Geocentric specific energy** -- negative values indicate a bound
-#   orbit around Earth.
+#   orbit around Earth.  The axis is clipped to the bound episode; outside
+#   the capture the energy is several hundred times larger.
 
 fig, axes = plt.subplots(2, 1, figsize=(9, 6), sharex=True, dpi=150)
 
@@ -118,8 +134,8 @@ ax.plot(t_years, spec_energy, "k-", lw=0.5)
 ax.axhline(0, color="red", ls="--", lw=0.8, label="Bound / unbound boundary")
 ax.set_ylabel("Specific energy (AU$^2$/day$^2$)")
 ax.set_xlabel("Year")
-thresh = 10 ** (np.ceil(np.log10(np.abs(np.min(spec_energy)))))
-ax.set_yscale("symlog", linthresh=thresh)
+bound = spec_energy[spec_energy < 0]
+ax.set_ylim(2 * bound.min(), -2 * bound.min())
 ax.legend(fontsize=8)
 
 plt.tight_layout()
