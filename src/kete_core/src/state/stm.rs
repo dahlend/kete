@@ -601,7 +601,8 @@ mod tests {
         // Random-ish symmetric positive definite covariance.
         let mut cov = DMatrix::<f64>::zeros(total, total);
         for i in 0..total {
-            cov[(i, i)] = (i as f64 + 1.0) * 0.5;
+            let diag = i as f64 + 1.0;
+            cov[(i, i)] = diag * 0.5;
         }
         cov[(0, 1)] = 0.1;
         cov[(1, 0)] = 0.1;

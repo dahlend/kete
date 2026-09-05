@@ -227,7 +227,7 @@ where
                 "control_dim ({}) exceeds state dimension ({})",
                 integrator.control_dim,
                 integrator.cur_state.len(),
-            )))?;
+            )));
         }
 
         // First step guess. The controller reaches the right size within a few steps

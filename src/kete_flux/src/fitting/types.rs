@@ -761,7 +761,8 @@ impl Model {
         }
     }
 
-    /// Evaluate the Student-t(nu=5) log-likelihood for the given parameters.
+    /// Evaluate the log-likelihood for the given parameters: the sum over
+    /// observations of [`FluxObs::log_likelihood_term`].
     ///
     /// Returns a value to be **maximized** (negative of the NLL).
     /// Returns `f64::NEG_INFINITY` for infeasible points.
@@ -773,22 +774,11 @@ impl Model {
     ) -> f64 {
         let fwd = self.evaluate_forward_model(params, obs, tpm);
 
-        let nu = STUDENT_NU;
-        let mut ll = 0.0;
-        for (i, ob) in obs.iter().enumerate() {
-            let mf = fwd.model_fluxes[i];
-            let sigma_eff = params.f_sigma * ob.sigma;
-            let sigma2 = sigma_eff * sigma_eff;
-            if ob.is_upper_limit {
-                if mf > ob.flux {
-                    let r = mf - ob.flux;
-                    ll += -0.5 * (nu + 1.0) * (1.0 + r * r / (nu * sigma2)).ln();
-                }
-            } else {
-                let r = ob.flux - mf;
-                ll += -sigma_eff.ln() - f64::midpoint(nu, 1.0) * (1.0 + r * r / (nu * sigma2)).ln();
-            }
-        }
+        let ll: f64 = obs
+            .iter()
+            .zip(fwd.model_fluxes.iter())
+            .map(|(ob, &model_flux)| ob.log_likelihood_term(model_flux, params.f_sigma))
+            .sum();
 
         if ll.is_finite() {
             ll
@@ -1183,7 +1173,7 @@ impl Penalty {
                     };
                 }
                 if normalize && let (Some(lo), Some(hi)) = (scale_lo, scale_hi) {
-                    let sigma_bar = 0.5 * (lo + hi);
+                    let sigma_bar = f64::midpoint(lo, hi);
                     c += -(scale_factor * sigma_bar).ln();
                 }
                 c
@@ -1229,7 +1219,7 @@ fn centering_scale(scale_lo: Option<f64>, scale_hi: Option<f64>, r: f64) -> Opti
         } else if r < 0.0 {
             hi
         } else {
-            0.5 * (lo + hi)
+            f64::midpoint(lo, hi)
         }),
         // Upper limit: only the above-center side (model above, r < 0) bites.
         (None, Some(hi)) => (r < 0.0).then_some(hi),

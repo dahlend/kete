@@ -140,7 +140,7 @@ pub(super) fn shape_factors(e: f64) -> (f64, f64, f64) {
     let log_term = ((1.0 + eta) / (1.0 - eta)).ln();
     let psi_x = 3.0 * e2 / (4.0 * eta * eta) * ((1.0 + eta * eta) / (2.0 * eta) * log_term - 1.0);
     let psi_z = 3.0 / (2.0 * eta * eta) * (1.0 - e2 / (2.0 * eta) * log_term);
-    let sigma = 0.5 * (1.0 + e2 / (2.0 * eta) * log_term);
+    let sigma = f64::midpoint(1.0, e2 / (2.0 * eta) * log_term);
     (psi_x, psi_z, sigma)
 }
 

@@ -1843,14 +1843,14 @@ pub fn gamma_from_mean_slope(theta_bar: f64) -> f64 {
     }
     let (mut lo, mut hi) = (0.0_f64, FRAC_PI_2);
     for _ in 0..60 {
-        let mid = 0.5 * (lo + hi);
+        let mid = f64::midpoint(lo, hi);
         if mean_slope_angle(mid) < theta_bar {
             lo = mid;
         } else {
             hi = mid;
         }
     }
-    0.5 * (lo + hi)
+    f64::midpoint(lo, hi)
 }
 
 /// Approximate RMS surface slope angle (radians) of the full-coverage spherical-cap
@@ -2148,8 +2148,6 @@ impl RoughnessCorrection {
     /// truncated or inconsistent.
     #[must_use]
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        let read_f64 =
-            |c: &[u8]| -> Option<f64> { Some(f64::from_le_bytes(<[u8; 8]>::try_from(c).ok()?)) };
         let read_u64 = |off: usize| -> Option<usize> {
             let c = bytes.get(off..off.checked_add(8)?)?;
             Some(u64::from_le_bytes(<[u8; 8]>::try_from(c).ok()?) as usize)
@@ -2165,9 +2163,15 @@ impl RoughnessCorrection {
         let mut off: usize = 40;
         let mut take = |n: usize| -> Option<Vec<f64>> {
             let end = off.checked_add(n.checked_mul(8_usize)?)?;
-            let v: Option<Vec<f64>> = bytes.get(off..end)?.chunks_exact(8).map(read_f64).collect();
+            let v: Vec<f64> = bytes
+                .get(off..end)?
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|c| f64::from_le_bytes(*c))
+                .collect();
             off = end;
-            v
+            Some(v)
         };
         let thetas = take(nt)?;
         let gammas = take(ng)?;
@@ -2512,7 +2516,7 @@ mod tests {
                     sub[i] = -alpha[i];
                     diag[i] = 1.0 - beta[i];
                     sup[i] = -gamma[i];
-                    let s_mid = 0.5 * (source(x[i], tn) + source(x[i], tn1));
+                    let s_mid = f64::midpoint(source(x[i], tn), source(x[i], tn1));
                     rhs[i] = u[i]
                         + alpha[i] * u[i - 1]
                         + beta[i] * u[i]

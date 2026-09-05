@@ -986,7 +986,7 @@ mod tests {
         // What a plain arithmetic mean of the stored floats would have produced: half a
         // turn away, on the far side of the orbit. Stated as a number so the failure this
         // guards against is on the record rather than described.
-        let naive = 0.5 * (low.elements.true_lon + high.elements.true_lon);
+        let naive = f64::midpoint(low.elements.true_lon, high.elements.true_lon);
         let mut naive_elements = base.elements.clone();
         naive_elements.true_lon = naive;
         let naive_pos = Vector3::from(
@@ -1039,15 +1039,17 @@ mod tests {
 
         // The identity itself, not a hard-coded number: total = within + between, with
         // the between term formed from where the components actually sit in element coordinates.
-        let mean: Vec<f64> = (0..6).map(|i| 0.5 * (offset_a[i] + offset_b[i])).collect();
+        let mean: Vec<f64> = (0..6)
+            .map(|i| f64::midpoint(offset_a[i], offset_b[i]))
+            .collect();
         for r in 0..6 {
             for c in 0..6 {
                 let between = 0.5 * (offset_a[r] - mean[r]) * (offset_a[c] - mean[c])
                     + 0.5 * (offset_b[r] - mean[r]) * (offset_b[c] - mean[c]);
                 let within = 0.5 * within_a[(r, c)] + 0.5 * within_b[(r, c)];
                 let expect = within + between;
-                let scale = (0.5 * (within_a[(r, r)] + within_b[(r, r)])).sqrt()
-                    * (0.5 * (within_a[(c, c)] + within_b[(c, c)])).sqrt()
+                let scale = f64::midpoint(within_a[(r, r)], within_b[(r, r)]).sqrt()
+                    * f64::midpoint(within_a[(c, c)], within_b[(c, c)]).sqrt()
                     + between.abs();
                 assert!(
                     (cov[(r, c)] - expect).abs() / scale.max(1e-30) < 1e-9,
@@ -1086,7 +1088,7 @@ mod tests {
 
         let far = base.displaced_by(&step).try_to_state().unwrap();
         let near = base.try_to_state().unwrap();
-        let midpoint = 0.5 * (near.pos[1] + far.pos[1]);
+        let midpoint = f64::midpoint(near.pos[1], far.pos[1]);
 
         let samples: Vec<(State<Equatorial>, Vec<f64>)> = d.sample(1000, Some(7)).unwrap();
         assert_eq!(samples.len(), 1000);

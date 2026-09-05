@@ -323,7 +323,7 @@ fn true_longitude_vs_mean_anomaly_probes() {
                         continue;
                     };
                     let (dp, dm) = (bf.offset_to(&l_plus)[5], bf.offset_to(&l_minus)[5]);
-                    let (odd_l, even_l) = ((dp - dm) * 0.5, (dp + dm) * 0.5);
+                    let (odd_l, even_l) = ((dp - dm) * 0.5, f64::midpoint(dp, dm));
 
                     // Mean-anomaly column.
                     let (Some(m_plus), Some(m_minus)) = (
@@ -340,7 +340,7 @@ fn true_longitude_vs_mean_anomaly_probes() {
                         continue;
                     };
                     let (ep, em) = (wrap(plus_m - base_m), wrap(minus_m - base_m));
-                    let (odd_m, even_m) = ((ep - em) * 0.5, (ep + em) * 0.5);
+                    let (odd_m, even_m) = ((ep - em) * 0.5, f64::midpoint(ep, em));
                     let err_m = even_m.abs() / odd_m.abs().max(1e-300);
                     worst_m = worst_m.max(err_m);
 

@@ -461,7 +461,7 @@ mod tests {
                 let mut lo = 0.0_f64;
                 let mut hi = 1e3_f64;
                 for _ in 0..200 {
-                    let mid = 0.5 * (lo + hi);
+                    let mid = f64::midpoint(lo, hi);
                     if mid + mid.powi(3) / 3.0 < target {
                         lo = mid;
                     } else {
