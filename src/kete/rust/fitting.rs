@@ -1088,7 +1088,7 @@ pub struct PyRangingSamples(pub RangingSamples);
 
 #[pymethods]
 impl PyRangingSamples {
-    /// Reference epoch (JD TDB).
+    /// Epoch of every draw (JD TDB), the attributable reference epoch.
     #[getter]
     fn epoch(&self) -> f64 {
         self.0.epoch
@@ -1127,19 +1127,31 @@ impl PyRangingSamples {
         self.0.draws.clone()
     }
 
-    /// Normalized log-posterior weight per draw.
+    /// Log posterior density of the grid cell each draw came from, relative to the
+    /// maximum across draws.
+    ///
+    /// Draws are already distributed according to the posterior and are equally
+    /// weighted; these values are not importance weights.
     #[getter]
     fn log_posterior(&self) -> Vec<f64> {
         self.0.log_posterior.clone()
     }
 
-    /// Effective sample size of the grid before drawing.
+    /// Effective sample size over the grid cells before drawing.
+    ///
+    /// This counts cells, not independent orbit solutions.  Refinement splits
+    /// cells, so it grows with grid resolution.
     #[getter]
     fn effective_sample_size(&self) -> f64 {
         self.0.effective_sample_size
     }
 
-    /// Warning message if ESS < 50, else ``None``.
+    /// Warning message, else ``None``.
+    ///
+    /// Set when, after refinement, the grid ESS is below 50, the grid is still
+    /// coarser than the posterior structure it samples, the linear attributable
+    /// model does not describe the observations, or the best orbit fits the
+    /// observations far worse than their uncertainties allow.
     #[getter]
     fn convergence_warning(&self) -> Option<&str> {
         self.0.convergence_warning.as_deref()
@@ -1162,9 +1174,14 @@ impl PyRangingSamples {
 /// Generate orbit samples covering the full admissible region from sparse
 /// observations.
 ///
-/// Scans a grid over topocentric distances at a selected pair of observations,
-/// scores each cell via Gaussian chi^2, adaptively refines in high-probability
-/// regions, and draws samples with within-cell Gaussian perturbation.
+/// Scans a grid over topocentric range and range-rate, scores each cell by the
+/// chi^2 of its attributable, refines the grid where the posterior is
+/// significant, and draws samples in proportion to each cell's posterior mass,
+/// with Gaussian jitter within the cell.
+///
+/// The attributable comes from a short window of observations from a single
+/// observer, chosen where the linear-motion approximation fits best. All
+/// observations are used to score the cells.
 ///
 /// This is the appropriate tool when the arc is short and MCMC cannot explore
 /// the ridge, or when multiple orbital families may be consistent with the data.
@@ -1172,7 +1189,7 @@ impl PyRangingSamples {
 /// Parameters
 /// ----------
 /// observations : list
-///     At least 2 :class:`~kete.fitting.Observation` objects.
+///     At least 3 :class:`~kete.fitting.Observation` objects.
 /// num_draws : int
 ///     Number of orbit samples to return. Default 1000.
 /// temperature : float
