@@ -143,14 +143,14 @@ impl PyTime {
 
     /// Create time object from the Year, Month, and Day.
     ///
-    /// These times are assumed to be in UTC amd conversion is performed automatically.
+    /// These times are assumed to be in UTC and conversion is performed automatically.
     ///
     /// Parameters
     /// ----------
     /// year:
     ///     The Year, for example `2020`
     /// month:
-    ///     The Month as an integer, 0 = January etc.
+    ///     The Month as an integer, 1 = January etc.
     /// day:
     ///     The day as an integer or float.
     #[staticmethod]

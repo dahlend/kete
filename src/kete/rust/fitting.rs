@@ -930,7 +930,7 @@ impl PyOrbitSamples {
         self.0.divergent.clone()
     }
 
-    /// Log-posterior density at each draw (nats, relative only).
+    /// Log-posterior density at each draw (natural log, relative only).
     ///
     /// Values are only meaningful relative to each other within a single
     /// run.  Useful for weighting draws or diagnosing chain quality.

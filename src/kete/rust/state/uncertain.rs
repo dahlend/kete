@@ -40,10 +40,10 @@ const COMETARY_ANGLE_ROWS: [usize; 3] = [3, 4, 5];
 /// the ordering, :attr:`state` for the best-fit orbit as a
 /// :class:`~kete.State`, and :attr:`cartesian_cov_matrix` for the covariance in
 /// position and velocity.
-///
-/// `state.non_grav` stores an all-`None` [`ParameterMask`] wrapping the typed
-/// ParameterizedForce template; free-parameter values live in
-/// `state.free_params`, not in the mask.
+//
+// `state.non_grav` stores a `ParameterMask` over the non-gravitational model:
+// `None` marks a free parameter, whose value lives in `state.free_params`, and
+// `Some(v)` marks a parameter held fixed at `v`.
 #[pyclass(frozen, module = "kete", name = "UncertainState", from_py_object)]
 #[derive(Clone)]
 pub struct PyUncertainState {

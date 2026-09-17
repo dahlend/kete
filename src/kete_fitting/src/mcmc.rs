@@ -88,7 +88,7 @@ pub struct OrbitSamples {
     pub seed_id: Vec<usize>,
     /// True if the draw was a divergent transition.
     pub divergent: Vec<bool>,
-    /// Log-posterior density at each draw (nats, relative only).
+    /// Log-posterior density at each draw (natural log, relative only).
     pub log_posterior: Vec<f64>,
 }
 
