@@ -230,9 +230,8 @@ pub fn flux_to_mag(flux: f64, mag_zero_flux: f64) -> f64 {
 /// Add the HG reflected-light contribution to a set of thermal fluxes and assemble the
 /// [`ModelResults`].
 ///
-/// Shared by every thermal model (NEATM, FRM, TPM): each takes the per-band thermal
-/// flux it computed and combines it with the HG reflected flux and V-band magnitude in
-/// exactly the same way.
+/// Used by NEATM and FRM with their per-band thermal flux, and by the HG fitting model
+/// with zero thermal flux.
 ///
 /// # Arguments
 ///
@@ -245,7 +244,7 @@ pub fn flux_to_mag(flux: f64, mag_zero_flux: f64) -> f64 {
 /// * `sun2obj` - Position of the object with respect to the Sun in AU.
 /// * `sun2obs` - Position of the observer with respect to the Sun in AU.
 #[must_use]
-pub fn assemble_total(
+pub(crate) fn assemble_total(
     obs_bands: &[BandInfo],
     band_albedos: &[f64],
     thermal_fluxes: Vec<f64>,
