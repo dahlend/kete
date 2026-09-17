@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections import Counter
 
 import numpy as np
 
@@ -45,7 +46,7 @@ class MPCObservation:
 
     """
 
-    _UNSUPPORTED = set("WwQqVvRrXxTt")
+    _UNSUPPORTED = set("WwQqRrXxTt")
 
     def __init__(
         self,
@@ -61,6 +62,7 @@ class MPCObservation:
         catalog_code: str,
         obs_code: str,
         sun2sc: list[float],
+        geodetic: tuple[float, float, float] | None = None,
     ):
         self.desig = desig
         self.prov_desig = prov_desig
@@ -74,26 +76,41 @@ class MPCObservation:
         self.catalog_code = catalog_code
         self.obs_code = obs_code
         self.sun2sc = list(sun2sc) if sun2sc is not None else [np.nan, np.nan, np.nan]
+        # Roving observer location as (geodetic latitude deg, east longitude deg,
+        # height km), or None.
+        self.geodetic = geodetic
 
     @classmethod
     def from_lines(cls, lines, load_sc_pos=True):
         """
         Create a list of MPCObservations from a list of single 80 char lines.
+
+        Spacecraft (``S``/``s``) and roving observer (``V``/``v``) observations
+        span two lines. Lines whose observation type is not supported are
+        skipped, and a warning reports how many of each type were skipped.
         """
         from .. import conversion
         from ..time import Time
 
         found = []
+        skipped: Counter = Counter()
         idx = 0
         while True:
             if idx >= len(lines):
                 break
-            line = cls._read_first_line(lines[idx], conversion, Time)
+            raw = lines[idx]
+            if len(raw) > 14 and raw[14] in cls._UNSUPPORTED:
+                skipped[raw[14]] += 1
+                idx += 1
+                continue
+            line = cls._read_first_line(raw, conversion, Time)
             idx += 1
             if line is None:
                 continue
-            if line["note2"] == "s":
-                logger.warning("Second line of spacecraft observation found alone")
+            if line["note2"] in ("s", "v"):
+                logger.warning(
+                    "Second line of a two-line observation found alone: %s", raw
+                )
                 continue
             elif line["note2"] == "S":
                 if idx >= len(lines):
@@ -103,15 +120,25 @@ class MPCObservation:
                 idx += 1
                 if load_sc_pos:
                     line["sun2sc"] = cls._read_second_line(pos_line, line["jd"])
+            elif line["note2"] == "V":
+                if idx >= len(lines):
+                    logger.warning("Missing second line of roving observation.")
+                    break
+                pos_line = lines[idx]
+                idx += 1
+                line["geodetic"] = cls._read_roving_line(pos_line)
             found.append(cls(**line))
+        if skipped:
+            logger.warning(
+                "Skipped %d MPC lines with unsupported observation types: %s",
+                sum(skipped.values()),
+                ", ".join(f"{k!r} x{v}" for k, v in sorted(skipped.items())),
+            )
         return found
 
     @staticmethod
     def _read_first_line(line, conversion, Time):
         from .._core import unpack_designation as _unpack
-
-        if line[14] in MPCObservation._UNSUPPORTED:
-            return None
 
         mag_band = line[65:71].strip()
         year, month, day = line[15:32].strip().split()
@@ -157,13 +184,40 @@ class MPCObservation:
         if line[14] != "s":
             raise SyntaxError("No second line of spacecraft observation found.")
 
-        x = float(line[34:45].replace(" ", "")) / constants.AU_KM
-        y = float(line[46:57].replace(" ", "")) / constants.AU_KM
-        z = float(line[58:69].replace(" ", "")) / constants.AU_KM
+        # Column 33 is the units flag of the geocentric offsets: 1 km, 2 AU.
+        units = line[32]
+        if units == "1":
+            scale = 1.0 / constants.AU_KM
+        elif units == "2":
+            scale = 1.0
+        else:
+            raise SyntaxError(
+                f"Spacecraft position line has units flag {units!r} in column 33; "
+                f"expected '1' (km) or '2' (AU): {line}"
+            )
+        x = float(line[34:45].replace(" ", "")) * scale
+        y = float(line[46:57].replace(" ", "")) * scale
+        z = float(line[58:69].replace(" ", "")) * scale
         earth2sc = Vector([x, y, z], Frames.Equatorial).as_ecliptic
         sun2earth = spice.get_state("Earth", jd).pos
         sun2sc = sun2earth + earth2sc
         return list(sun2sc)
+
+    @staticmethod
+    def _read_roving_line(line):
+        """
+        Read the second line of a roving observer observation.
+
+        Returns ``(geodetic latitude deg, east longitude deg, height km)``. The MPC
+        format gives east longitude in columns 35-44, geodetic latitude in columns
+        46-55, and altitude in meters in columns 57-61.
+        """
+        if line[14] != "v":
+            raise SyntaxError("No second line of roving observation found.")
+        lon = float(line[34:44])
+        lat = float(line[45:55])
+        alt_m = float(line[56:61])
+        return (lat, lon, alt_m / 1000.0)
 
     @property
     def sc2obj(self):
@@ -182,8 +236,8 @@ def mpc_obs_to_observations(
 
     Only optical (RA/Dec) observations are supported. Each MPCObservation is
     converted to an ``Observation.optical`` with the observer state computed
-    from the MPC observatory code (ground-based) or from the stored spacecraft
-    position.
+    from the MPC observatory code (ground-based), the stored spacecraft
+    position, or the stored roving observer location.
 
     Per-observatory uncertainties are applied when available from the
     pre-computed residual table.  When no table entry exists for an observatory
@@ -232,8 +286,14 @@ def mpc_obs_to_observations(
 
     spacecraft = [obs.note2 in ("S", "s") for obs in mpc_obs]
     if apply_over_obs_reweight:
+        # Roving observers share code 247, so each site is its own group.
         factors = _over_obs_reweight_factors(
-            [obs.obs_code for obs in mpc_obs],
+            [
+                obs.obs_code
+                if obs.geodetic is None
+                else f"{obs.obs_code} {obs.geodetic}"
+                for obs in mpc_obs
+            ],
             [obs.jd for obs in mpc_obs],
             spacecraft,
         )
@@ -274,6 +334,11 @@ def mpc_obs_to_observations(
                 vel=[0.0, 0.0, 0.0],
                 frame=Frames.Ecliptic,
                 center_id=0,
+            ).as_equatorial
+        elif obs.note2 == "V" and obs.geodetic is not None:
+            lat, lon, height_km = obs.geodetic
+            observer = spice.earth_pos_to_ecliptic(
+                obs.jd, lat, lon, height_km, name=obs.obs_code, center=0
             ).as_equatorial
         else:
             observer = spice.mpc_code_to_ecliptic(

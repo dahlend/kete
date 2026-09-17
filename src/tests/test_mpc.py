@@ -1,5 +1,7 @@
+import numpy as np
 import pytest
 
+import kete
 from kete import mpc, orbit_fitting
 
 
@@ -142,3 +144,88 @@ def test_mpc_obs_to_observations_spacecraft():
     assert abs(obs.ra - mpc_obs[0].ra) < 1.0 / 3600.0
     assert abs(obs.dec - mpc_obs[0].dec) < 1.0 / 3600.0
     assert obs.observer.center_id == 10
+
+
+# SWAN26Q NEOCP lines: STEREO-A (C49) with geocentric offsets in AU (units flag 2),
+# and a roving observer (247) giving longitude, latitude, and altitude.
+SC_AU_LINES = [
+    "     SWAN26Q 2S2026 08 11.95713016 13 38.424-39 50 06.00               vNEOCPC49",
+    "     SWAN26Q 2s2026 08 11.9571302 +0.10231295 +0.99336454 +0.43090773   NEOCPC49",
+]
+ROVING_LINES = [
+    "     SWAN26Q 4V2026 09 03.12877411 43 34.872+20 38 23.03         13.2 gWNEOCP247",
+    "     SWAN26Q 4v2026 09 03.1287741 247.16759   37.63058   3190          WNEOCP247",
+]
+
+
+def test_spacecraft_offset_units_flag():
+    """Column 33 selects km (1) or AU (2) for the geocentric offset."""
+    obs = orbit_fitting.MPCObservation.from_lines(SC_AU_LINES)[0]
+    earth = kete.spice.get_state("Earth", obs.jd).pos
+    offset = np.array(obs.sun2sc) - np.array(list(earth))
+    expected = np.linalg.norm([0.10231295, 0.99336454, 0.43090773])
+    assert np.isclose(np.linalg.norm(offset), expected, rtol=1e-9)
+
+    km_line = SC_AU_LINES[1][:32] + "1" + SC_AU_LINES[1][33:]
+    obs_km = orbit_fitting.MPCObservation.from_lines([SC_AU_LINES[0], km_line])[0]
+    offset_km = np.array(obs_km.sun2sc) - np.array(list(earth))
+    assert np.isclose(
+        np.linalg.norm(offset_km), expected / kete.constants.AU_KM, rtol=1e-6
+    )
+
+    bad_line = SC_AU_LINES[1][:32] + " " + SC_AU_LINES[1][33:]
+    with pytest.raises(SyntaxError, match="units flag"):
+        orbit_fitting.MPCObservation.from_lines([SC_AU_LINES[0], bad_line])
+
+
+def test_roving_observer():
+    """Roving observer lines are parsed and placed at their stated location."""
+    mpc_obs = orbit_fitting.MPCObservation.from_lines(ROVING_LINES)
+    assert len(mpc_obs) == 1
+    obs = mpc_obs[0]
+    assert obs.note2 == "V"
+    assert obs.geodetic == (37.63058, 247.16759, 3.19)
+
+    converted = orbit_fitting.mpc_obs_to_observations(mpc_obs, debias=False)[0]
+    expected = kete.spice.earth_pos_to_ecliptic(obs.jd, 37.63058, 247.16759, 3.19)
+    assert np.allclose(converted.observer.pos, expected.pos, atol=1e-12)
+
+
+def test_unsupported_lines_warn(caplog):
+    """Skipped observation types are reported rather than dropped silently."""
+    radar = (
+        "01566         R2010 09 12.65630 "
+        "17 32 56.69 -65 49 50.3                L~0Myl251"
+    )
+    with caplog.at_level("WARNING"):
+        found = orbit_fitting.MPCObservation.from_lines([radar])
+    assert found == []
+    assert "Skipped 1 MPC lines" in caplog.text
+
+
+def test_roving_sites_reweight_separately():
+    """Roving observers at different sites are not grouped as one station."""
+    first = ROVING_LINES[1]
+    moved = first[:36] + "8" + first[37:]
+    lines = []
+    for _ in range(4):
+        lines += [ROVING_LINES[0], first, ROVING_LINES[0], moved]
+    mpc_obs = orbit_fitting.MPCObservation.from_lines(lines)
+    assert len({o.geodetic for o in mpc_obs}) == 2
+    observations = orbit_fitting.mpc_obs_to_observations(mpc_obs, debias=False)
+    single = orbit_fitting.mpc_obs_to_observations(mpc_obs[:1], debias=False)[0]
+    for obs in observations:
+        assert np.isclose(obs.sigma_ra, single.sigma_ra)
+
+
+def test_ades_wgs84_altitude_meters():
+    """ADES WGS84 altitude is in meters."""
+    from kete.orbit_fitting.mpc_api import _build_observer
+
+    rec = {"sys": "WGS84", "pos1": "247.16759", "pos2": "37.63058", "pos3": "3190"}
+    jd = 2461000.5
+    observer = _build_observer("247", jd, rec)
+    expected = kete.spice.earth_pos_to_ecliptic(
+        jd, 37.63058, 247.16759, 3.19, center=10
+    ).as_equatorial
+    assert np.allclose(observer.pos, expected.pos, atol=1e-12)

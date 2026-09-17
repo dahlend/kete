@@ -85,9 +85,10 @@ def _build_observer(stn: str, jd: float, rec: dict):
         elif sys == "ICRF_KM":
             pos_au = pos_km / constants.AU_KM
         elif sys == "WGS84":
-            lon, lat, alt = float(pos1), float(pos2), float(pos3)
+            # ADES gives WGS84 altitude in meters.
+            lon, lat, alt_m = float(pos1), float(pos2), float(pos3)
             return spice.earth_pos_to_ecliptic(
-                jd, lat, lon, alt, name=stn, center=10
+                jd, lat, lon, alt_m / 1000.0, name=stn, center=10
             ).as_equatorial
         else:
             logger.warning(
