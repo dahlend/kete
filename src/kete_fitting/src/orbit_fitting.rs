@@ -980,8 +980,11 @@ fn iterate_to_convergence(
                     // state, so it drops out of the Jacobian.
                     let mut helio = State::<Equatorial>::from(state_epoch);
                     LOADED_SPK.try_read()?.try_change_center(&mut helio, 10)?;
-                    let uncertain_state =
+                    let mut uncertain_state =
                         UncertainState::from_state(&helio, &covariance, free_params)?;
+                    // The mask names the free parameters the covariance and
+                    // `free_params` cover, and carries the frozen values.
+                    uncertain_state.non_grav = mask.cloned();
                     let non_grav = mask.map(|m| m.freeze_inner(&ng_values)).transpose()?;
                     return Ok(OrbitFit {
                         uncertain_state,
@@ -1074,8 +1077,9 @@ fn make_non_converged_result(
         .expect("SPK lock")
         .try_change_center(&mut helio, 10)
         .expect("the fitted state can be referred to the Sun");
-    let uncertain_state = UncertainState::from_state(&helio, &covariance, free_params)
+    let mut uncertain_state = UncertainState::from_state(&helio, &covariance, free_params)
         .expect("the fitted state is a valid orbit with matching covariance dimensions");
+    uncertain_state.non_grav = mask.cloned();
 
     #[allow(clippy::missing_panics_doc, reason = "wont panic by construction")]
     let non_grav = mask
@@ -2081,6 +2085,56 @@ mod tests {
 
         // RMS should be small.
         assert!(fit.rms < 1e-3, "Weighted RMS {:.6e} too large", fit.rms);
+    }
+
+    /// The fitted `UncertainState` carries the fit's non-grav mask, frozen values
+    /// included, so its covariance, free parameters, and model describe the same
+    /// parameters.  Without it, samples of the state cannot be propagated with the
+    /// fitted forces.
+    #[test]
+    fn test_nongrav_partial_mask_on_uncertain_state() {
+        use kete_core::forces::{JplCometNonGrav, ParameterMask, ParameterizedForce};
+        ensure_test_spk();
+        let r = 1.5;
+        let v = (GMS / r).sqrt();
+        let true_state = make_state([r, 0.0, 0.0], [0.0, v, 0.0], 2460000.5);
+        let true_a2 = 1e-8;
+        let true_ng = jpl_comet_default_fit(0.0, true_a2, 0.0);
+        let epochs: Vec<f64> = (0..15).map(|i| 2460000.5 + f64::from(i) * 6.0).collect();
+        let observations = synth_observations(
+            &true_state,
+            &epochs,
+            earth_observer,
+            1e-7,
+            Some((&true_ng.0, &true_ng.1)),
+        );
+
+        // Only A2 is free; A1 and A3 are frozen at zero.
+        let kind = NonGravKind::JplComet(JplCometNonGrav::standard_comet());
+        assert_eq!(kind.n_free_params(), 3);
+        let mask = ParameterMask::new(kind, vec![Some(0.0), None, Some(0.0)]).unwrap();
+
+        let fit = fit_orbit(
+            &true_state,
+            &observations,
+            false,
+            Some(&mask),
+            30,
+            1e-10,
+            9.0,
+            0,
+        )
+        .unwrap();
+
+        let us = &fit.uncertain_state;
+        assert_eq!(us.free_params.len(), 1);
+        assert_eq!(us.cov_matrix.nrows(), 7);
+        let carried = us
+            .non_grav
+            .as_ref()
+            .expect("fitted state must carry the non-grav mask");
+        assert_eq!(carried.mask, vec![Some(0.0), None, Some(0.0)]);
+        assert_eq!(carried.n_free_params(), us.free_params.len());
     }
 
     #[test]

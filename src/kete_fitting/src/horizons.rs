@@ -9,7 +9,9 @@ use kete_core::constants::GMS_SQRT;
 use kete_core::desigs::Desig;
 use kete_core::elements::CometElements;
 use kete_core::errors::{Error, KeteResult};
-use kete_core::forces::{FrozenForce, FrozenNonGrav, NonGravKind};
+use kete_core::forces::{
+    FrozenForce, FrozenNonGrav, NonGravKind, ParameterMask, ParameterizedForce,
+};
 use kete_core::frames::{Ecliptic, Equatorial};
 use kete_core::state::State;
 use kete_core::state::UncertainState;
@@ -444,6 +446,19 @@ impl HorizonsProperties {
             .as_ref()
             .and_then(|pars| build_nongrav_from_model_pars(pars));
 
+        // The covariance names only the fitted coefficients, so the model on the
+        // uncertain state has the default g(r) shape and time delay. Replace it with
+        // the Horizons model when both have the same parameters.
+        if let Some(model) = &props.non_grav
+            && let Some(mask) = props
+                .uncertain_state
+                .as_mut()
+                .and_then(|us| us.non_grav.as_mut())
+            && mask.inner.free_param_names() == model.inner.free_param_names()
+        {
+            mask.inner = model.inner.clone();
+        }
+
         props.alternate_desigs = {
             let mut desig_list = vec![desig.clone()];
             if let Some(obj) = &resp.object
@@ -540,10 +555,7 @@ fn build_uncertain_state(
     let n = 6 + np;
 
     let ng_param_names: Vec<&str> = match &non_grav {
-        Some(ng) => {
-            use kete_core::forces::ParameterizedForce;
-            ng.inner.free_param_names()
-        }
+        Some(ng) => ng.inner.free_param_names(),
         None => Vec::new(),
     };
     let reorder: Vec<Option<usize>> = (0..n)
@@ -560,7 +572,7 @@ fn build_uncertain_state(
         })
         .collect();
 
-    if is_cometary {
+    let mut uncertain = if is_cometary {
         let elements = CometElements {
             desig: Desig::Name(desig.to_string()),
             epoch: epoch.into(),
@@ -587,7 +599,7 @@ fn build_uncertain_state(
         let free_params = non_grav
             .as_ref()
             .map_or_else(Vec::new, |m| m.values.clone());
-        UncertainState::from_cometary(&elements, &mat, free_params)
+        UncertainState::from_cometary(&elements, &mat, free_params)?
     } else {
         let x = get("x")?;
         let y = get("y")?;
@@ -610,8 +622,18 @@ fn build_uncertain_state(
         let free_params = non_grav
             .as_ref()
             .map_or_else(Vec::new, |m| m.values.clone());
-        UncertainState::from_state(&state, &mat, free_params)
-    }
+        UncertainState::from_state(&state, &mat, free_params)?
+    };
+    // Every parameter of the model spans a row of the covariance (zero where Horizons
+    // gave none), so all of them are free. The g(r) shape here is the default; the
+    // fetch path replaces it with the Horizons model parameters.
+    uncertain.non_grav = non_grav
+        .map(|f| {
+            let n = f.values.len();
+            ParameterMask::new(f.inner, vec![None; n])
+        })
+        .transpose()?;
+    Ok(uncertain)
 }
 
 /// Build a [`NonGravFit`] from leftover (non-orbital) sampled parameters.

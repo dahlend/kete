@@ -6,7 +6,6 @@ use crate::nongrav::PyNonGravModel;
 use crate::state::PyState;
 use crate::state::PyUncertainState;
 use kete_core::errors::Error;
-use kete_core::forces::{ParameterMask, ParameterizedForce};
 
 use pyo3::prelude::*;
 
@@ -175,15 +174,10 @@ impl PyHorizonsProperties {
     /// Returns ``None`` if no covariance was provided.
     #[getter]
     fn uncertain_state(&self) -> Option<PyUncertainState> {
-        self.0.uncertain_state.clone().map(|us| {
-            let mask = self.0.non_grav.as_ref().map(|f| {
-                let n = f.inner.n_free_params();
-                ParameterMask::new(f.inner.clone(), vec![None; n]).expect("valid")
-            });
-            let mut state = us;
-            state.non_grav = mask;
-            PyUncertainState { state }
-        })
+        self.0
+            .uncertain_state
+            .clone()
+            .map(|state| PyUncertainState { state })
     }
 
     /// Non-gravitational force model from Horizons, if available.

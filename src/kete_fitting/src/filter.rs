@@ -647,7 +647,8 @@ fn build_result(
     // time, not of the state, so it drops out of the Jacobian.
     let mut helio = State::<Equatorial>::from(result_state);
     LOADED_SPK.try_read()?.try_change_center(&mut helio, 10)?;
-    let uncertain = UncertainState::from_state(&helio, final_p, free_params)?;
+    let mut uncertain = UncertainState::from_state(&helio, final_p, free_params)?;
+    uncertain.non_grav = mask.cloned();
 
     // -- Compute final residuals from smoothed states --------------
     let mut residuals: Vec<DVector<f64>> = Vec::with_capacity(n_obs);
@@ -870,6 +871,34 @@ mod tests {
                 "Cov diagonal [{idx},{idx}] not positive"
             );
         }
+    }
+
+    /// The filter's `UncertainState` carries the non-grav mask it was given,
+    /// frozen values included, matching its covariance and free parameters.
+    #[test]
+    fn test_filter_carries_nongrav_mask() {
+        use kete_core::forces::{JplCometNonGrav, NonGravKind, ParameterMask};
+        ensure_test_spk();
+
+        let radius = 1.5;
+        let vel = (GMS / radius).sqrt();
+        let true_state = make_state([radius, 0.0, 0.0], [0.0, vel, 0.0], 2_460_000.5);
+        let epochs: Vec<f64> = (0..20).map(|i| 2_460_000.5 + f64::from(i) * 6.0).collect();
+        let observations = synth_observations(&true_state, &epochs, 1e-6);
+
+        let kind = NonGravKind::JplComet(JplCometNonGrav::standard_comet());
+        let mask = ParameterMask::new(kind, vec![Some(0.0), None, Some(0.0)]).unwrap();
+        let fit =
+            fit_orbit_filter(&true_state, &observations, false, Some(&mask), 100.0, 0.0).unwrap();
+
+        let us = &fit.uncertain_state;
+        assert_eq!(us.free_params.len(), 1);
+        assert_eq!(us.cov_matrix.nrows(), 7);
+        let carried = us
+            .non_grav
+            .as_ref()
+            .expect("filter state must carry the non-grav mask");
+        assert_eq!(carried.mask, vec![Some(0.0), None, Some(0.0)]);
     }
 
     /// EKF+RTS on a longer arc (2 years) with a larger perturbation.

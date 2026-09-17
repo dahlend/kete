@@ -4,7 +4,7 @@
 
 use kete_core::Band;
 
-use kete_core::forces::{NonGravMask, ParameterMask, ParameterizedForce};
+use kete_core::forces::NonGravMask;
 use kete_core::frames::{Equatorial, Vector};
 use kete_core::prelude::*;
 use kete_fitting::{
@@ -531,15 +531,9 @@ impl PyOrbitFit {
     /// The uncertain orbit state (state + covariance + non-grav model).
     #[getter]
     fn uncertain_state(&self) -> PyUncertainState {
-        // Build an all-None ParameterMask from the FrozenNonGrav inner kind so
-        // PyUncertainState gets the template it needs for re-propagation.
-        let mask = self.inner.non_grav.as_ref().and_then(|f| {
-            let n = f.inner.n_free_params();
-            ParameterMask::new(f.inner.clone(), vec![None; n]).ok()
-        });
-        let mut state = self.inner.uncertain_state.clone();
-        state.non_grav = mask;
-        PyUncertainState { state }
+        PyUncertainState {
+            state: self.inner.uncertain_state.clone(),
+        }
     }
 
     /// Best-fit state at the reference epoch (Sun-centered, Ecliptic).
