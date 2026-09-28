@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `TT` is now its own time scale rather than an alias of `TDB`. UTC and TAI to TDB
   conversions now include the periodic TDB-TT term, up to 1.7 ms.
+- RA/Dec sexagesimal strings no longer show 60 seconds, and invalid RA/Dec values
+  raise `ValueError`.
 
 ## [3.2.2]
 

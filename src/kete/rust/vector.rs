@@ -206,9 +206,8 @@ impl PyVector {
 
     /// The right ascension, in hours-minutes-seconds string format.
     #[getter]
-    pub fn ra_hms(&self) -> String {
-        let deg = Degrees::from_radians(self.raw.to_ra_dec().0);
-        deg.to_hms_str()
+    pub fn ra_hms(&self) -> PyResult<String> {
+        Ok(Degrees::from_radians(self.raw.to_ra_dec().0).to_hms_str()?)
     }
 
     /// Declination in degrees in the Equatorial Frame.
@@ -219,9 +218,8 @@ impl PyVector {
 
     /// The declination, in degrees-arcminutes-arcseconds string format.
     #[getter]
-    pub fn dec_dms(&self) -> String {
-        let deg = Degrees::from_radians(self.raw.to_ra_dec().1);
-        deg.to_dms_str()
+    pub fn dec_dms(&self) -> PyResult<String> {
+        Ok(Degrees::from_radians(self.raw.to_ra_dec().1).to_dms_str()?)
     }
 
     /// Latitude in degrees in the Ecliptic Frame.
