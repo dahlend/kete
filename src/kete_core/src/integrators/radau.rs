@@ -355,10 +355,9 @@ where
                     step_failures = 0;
                 }
                 Err(error) => match error {
-                    Error::Bounds(_) | Error::Impact(_, _) | Error::OutOfMemory => Err(error)?,
+                    Error::Bounds(_) | Error::Impact(_, _) => Err(error)?,
                     Error::Convergence(_)
                     | Error::ValueError(_)
-                    | Error::UnknownFrame(_)
                     | Error::IOError(_)
                     | Error::LockFailed => {
                         step_failures += 1;

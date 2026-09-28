@@ -53,9 +53,6 @@ pub enum Error {
     /// Attempting to query outside of data limits.
     Bounds(String),
 
-    /// Attempting to load or convert to/from an Frame of reference which is not known.
-    UnknownFrame(i32),
-
     /// Error related to IO.
     IOError(String),
 
@@ -64,9 +61,6 @@ pub enum Error {
 
     /// Failed to acquire lock on memory.
     LockFailed,
-
-    /// Out of memory error.
-    OutOfMemory,
 }
 
 impl error::Error for Error {}
@@ -77,18 +71,12 @@ impl fmt::Display for Error {
             Self::Convergence(s) | Self::ValueError(s) | Self::Bounds(s) | Self::IOError(s) => {
                 write!(f, "{s}")
             }
-            Self::UnknownFrame(_) => {
-                write!(f, "This reference frame is not supported.")
-            }
             Self::Impact(s, t) => {
                 let t = t.jd;
                 write!(f, "Propagation detected an impact with {s} at time {t}")
             }
             Self::LockFailed => {
                 write!(f, "Failed to acquire lock on memory.")
-            }
-            Self::OutOfMemory => {
-                write!(f, "The system ran out of memory.")
             }
         }
     }
@@ -124,10 +112,6 @@ impl From<Error> for PyErr {
                 Self::new::<exceptions::PyValueError, _>(s)
             }
 
-            Error::UnknownFrame(_) => {
-                Self::new::<exceptions::PyValueError, _>("This reference frame is not supported.")
-            }
-
             Error::LockFailed => {
                 Self::new::<exceptions::PyValueError, _>("Failed to acquire lock on memory.")
             }
@@ -136,9 +120,6 @@ impl From<Error> for PyErr {
                 let t = t.jd;
                 format!("Propagation detected an impact with {s} at time {t}")
             }),
-            Error::OutOfMemory => {
-                Self::new::<exceptions::PyMemoryError, _>("The system ran out of memory.")
-            }
         }
     }
 }
