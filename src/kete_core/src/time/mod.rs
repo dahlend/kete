@@ -44,7 +44,7 @@ use crate::prelude::{Error, KeteResult};
 use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc};
 
 // pub use self::leap_second::{};
-pub use self::scales::{JD_TO_MJD, TAI, TCB, TDB, TimeScale, UTC};
+pub use self::scales::{JD_TO_MJD, TAI, TCB, TDB, TT, TimeScale, UTC};
 
 /// Representation of Time.
 ///
@@ -104,6 +104,11 @@ impl<T: TimeScale> Duration<T> {
     /// Cast to TAI scaled time.
     pub fn tai(&self) -> Duration<TAI> {
         Duration::<TAI>::new(TAI::from_tdb(T::to_tdb(self.elapsed)))
+    }
+
+    /// Cast to TT scaled time.
+    pub fn tt(&self) -> Duration<TT> {
+        Duration::<TT>::new(TT::from_tdb(T::to_tdb(self.elapsed)))
     }
 
     /// Cast to TDB scaled time.
@@ -333,6 +338,11 @@ impl<T: TimeScale> Time<T> {
     /// Cast to TAI scaled time.
     pub fn tai(&self) -> Time<TAI> {
         Time::<TAI>::new(TAI::from_tdb(T::to_tdb(self.jd)))
+    }
+
+    /// Cast to TT scaled time.
+    pub fn tt(&self) -> Time<TT> {
+        Time::<TT>::new(TT::from_tdb(T::to_tdb(self.jd)))
     }
 
     /// Cast to TDB scaled time.

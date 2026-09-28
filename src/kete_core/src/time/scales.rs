@@ -37,12 +37,45 @@
 
 use super::leap_second::tai_to_utc_offset;
 
-/// Offset from TT to TAI.
-/// Definitional offset from TT to TAI, however we treat TT==TDB.
+/// Definitional offset from TT to TAI.
 ///
 /// ``TT = TAI + TT_TO_TAI``
 /// ``TAI = TT - TT_TO_TAI``
 pub(crate) const TT_TO_TAI: f64 = 32.184 / 86400.0;
+
+/// ``TDB - TT`` in days, at the given julian date.
+///
+/// The term is periodic over a year. Contributions of shorter period are not
+/// included.
+///
+/// ``TDB - TT = K sin(E)``, where ``E`` is the eccentric anomaly of the
+/// heliocentric orbit of the Earth-Moon barycenter. The form and constants
+/// are from Moyer (1981), Celestial Mechanics 23, 33-56 and 57-68.
+///
+/// `jd` is nominally TDB. The epoch is used as given rather than iterated to
+/// self-consistency; `tdb_minus_tt_is_insensitive_to_the_epoch_scale` bounds
+/// what that costs.
+fn tdb_minus_tt(jd: f64) -> f64 {
+    /// Julian date of the J2000 epoch, the origin of the mean anomaly.
+    const J2000_JD: f64 = 2_451_545.0;
+
+    /// Amplitude of the periodic term, seconds.
+    const K: f64 = 1.657e-3;
+
+    /// Eccentricity of the orbit.
+    const EB: f64 = 1.671e-2;
+
+    /// Mean anomaly at J2000, radians.
+    const M0: f64 = 6.239996;
+
+    /// Rate of change of the mean anomaly, radians per second.
+    const M1: f64 = 1.990_968_71e-7;
+
+    let seconds_past_j2000 = (jd - J2000_JD) * 86400.0;
+    let mean_anom = M0 + M1 * seconds_past_j2000;
+    let ecc_anom = EB.mul_add(mean_anom.sin(), mean_anom);
+    K * ecc_anom.sin() / 86400.0
+}
 
 /// Offset from JD to MJD
 ///
@@ -68,7 +101,8 @@ pub trait TimeScale {
 /// the Earth (and as a result doesn't feel the relativistic dilation effects of
 /// Earth).
 ///
-/// This is in agreement with TT up to about 1.7ms per century.
+/// This differs from TT by a periodic term of amplitude just under two
+/// milliseconds, with a period of a year. See [`TT`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TDB;
 
@@ -97,19 +131,36 @@ impl TimeScale for UTC {
         let offset = tai_to_utc_offset(jd + JD_TO_MJD + offset);
         jd += offset;
 
-        // then tai to tdb
-        jd += TT_TO_TAI;
-        jd
+        // then tai to tt to tdb
+        TT::to_tdb(jd + TT_TO_TAI)
     }
-    fn from_tdb(mut jd: f64) -> f64 {
-        // convert from TDB to TAI
-        jd -= TT_TO_TAI;
+    fn from_tdb(jd: f64) -> f64 {
+        // convert from TDB to TT to TAI
+        let mut jd = TT::from_tdb(jd) - TT_TO_TAI;
 
         // Time is now TAI
         // calculate leap seconds for that time to convert from TAI to UTC
         let offset = tai_to_utc_offset(jd + JD_TO_MJD);
         jd -= offset;
         jd
+    }
+}
+
+/// TT (Terrestrial Time).
+///
+/// The time scale of a clock on the geoid, and the parallel time system of
+/// some spacecraft clocks. It is offset from TAI by a constant 32.184 seconds
+/// and differs from TDB by a periodic term of amplitude just under two
+/// milliseconds with a period of a year.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TT;
+
+impl TimeScale for TT {
+    fn to_tdb(jd: f64) -> f64 {
+        jd + tdb_minus_tt(jd)
+    }
+    fn from_tdb(jd: f64) -> f64 {
+        jd - tdb_minus_tt(jd)
     }
 }
 
@@ -122,10 +173,10 @@ pub struct TAI;
 
 impl TimeScale for TAI {
     fn from_tdb(jd: f64) -> f64 {
-        jd - TT_TO_TAI
+        TT::from_tdb(jd) - TT_TO_TAI
     }
     fn to_tdb(jd: f64) -> f64 {
-        jd + TT_TO_TAI
+        TT::to_tdb(jd + TT_TO_TAI)
     }
 }
 
@@ -161,5 +212,105 @@ impl TimeScale for TCB {
     fn from_tdb(jd: f64) -> f64 {
         // TCB = (TDB - L_B * T_0) / (1 - L_B)
         (jd - L_B_TCB * TCB_EPOCH) / (1.0 - L_B_TCB)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TAI, TDB, TT, TimeScale, tdb_minus_tt};
+
+    /// ``TDB - TT`` in seconds, from an independent evaluation of the Moyer
+    /// expression at each epoch.
+    ///
+    /// The first four are a quarter of an anomalistic year apart, so they
+    /// sample the term at four phases rather than repeating one.
+    const REFERENCE_TDB_MINUS_TT: [(f64, f64); 7] = [
+        (2_451_545.0, -7.273_677_616_69e-5),
+        (2_451_636.0, 1.656_156_033_28e-3),
+        (2_451_727.0, 8.798_018_097_88e-5),
+        (2_451_818.0, -1.652_203_500_27e-3),
+        (2_440_587.5, -6.437_301_635_74e-5),
+        (2_457_316.5, -1.600_563_526_15e-3),
+        (2_469_807.5, -8.678_436_279_30e-5),
+    ];
+
+    #[test]
+    fn tdb_minus_tt_matches_reference() {
+        for (jd, expected) in REFERENCE_TDB_MINUS_TT {
+            let got = tdb_minus_tt(jd) * 86400.0;
+            // The reference values were read at an epoch held as a double, so
+            // they carry tens of nanoseconds of rounding.
+            assert!(
+                (got - expected).abs() < 1e-7,
+                "jd {jd}: got {got:e} want {expected:e}"
+            );
+        }
+    }
+
+    /// The term is periodic with a one year period and an amplitude just under
+    /// two milliseconds, so it must not accumulate.
+    #[test]
+    fn tdb_minus_tt_is_bounded_and_periodic() {
+        let mut max = 0.0_f64;
+        for step in 0..4000 {
+            let jd = 2_451_545.0 + f64::from(step) * 10.0;
+            max = max.max((tdb_minus_tt(jd) * 86400.0).abs());
+        }
+        assert!(max < 1.7e-3, "amplitude {max:e} exceeds the expected bound");
+        assert!(max > 1.6e-3, "amplitude {max:e} is implausibly small");
+    }
+
+    /// The epoch is fed in on whatever scale the caller holds, so the result
+    /// must not depend much on which one that is. The scales sit at most a
+    /// couple of minutes apart, counting leap seconds and the TT offset.
+    #[test]
+    fn tdb_minus_tt_is_insensitive_to_the_epoch_scale() {
+        let mut worst = 0.0_f64;
+        for step in 0..2000 {
+            let jd = 2_451_545.0 + f64::from(step) * 0.2;
+            for offset_seconds in [7.3e-5, 32.184, 64.184, 11.25] {
+                let shifted = jd + offset_seconds / 86400.0;
+                let diff = (tdb_minus_tt(shifted) - tdb_minus_tt(jd)).abs() * 86400.0;
+                worst = worst.max(diff);
+            }
+        }
+        assert!(
+            worst < 1e-7,
+            "epoch scale changed the result by {worst:e} s"
+        );
+    }
+
+    #[test]
+    fn tt_round_trips_through_tdb() {
+        for step in 0..100 {
+            let jd = 2_451_545.0 + f64::from(step) * 37.0;
+            let back = TT::from_tdb(TT::to_tdb(jd));
+            assert!((back - jd).abs() < 1e-11, "round trip drifted at jd {jd}");
+        }
+    }
+
+    /// TAI and TDB differ by the constant TT offset plus the periodic term, so
+    /// the gap must vary by the full amplitude over a year and never be fixed.
+    #[test]
+    fn tai_to_tdb_carries_the_periodic_term() {
+        let mut lo = f64::INFINITY;
+        let mut hi = f64::NEG_INFINITY;
+        for step in 0..400 {
+            let jd = 2_451_545.0 + f64::from(step);
+            let offset = (TAI::to_tdb(jd) - jd) * 86400.0;
+            lo = lo.min(offset);
+            hi = hi.max(offset);
+        }
+        let spread = hi - lo;
+        assert!(
+            spread > 3.2e-3 && spread < 3.4e-3,
+            "spread over a year was {spread:e}, expected twice the amplitude"
+        );
+    }
+
+    #[test]
+    fn tdb_is_the_identity() {
+        assert!((TDB::to_tdb(2_457_316.5) - 2_457_316.5).abs() < f64::EPSILON);
+        assert!((TDB::from_tdb(2_457_316.5) - 2_457_316.5).abs() < f64::EPSILON);
     }
 }
