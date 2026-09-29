@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `kete_core::geometry::TriMesh`, a validated closed triangle mesh.
+- Earth orientation: `approx_earth_frame`, `teme_frame`, `earth_nutation` (IAU 2000B),
+  `approx_ut1` and `approx_delta_t`.
 
 ### Changed
 
@@ -24,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Radau predicts each step's starting coefficients from the previous step and chooses
   its first step from the problem's timescales, so it takes fewer iterations and
   steps. Propagated states differ from earlier releases within integrator accuracy.
+- Earth frames use the IAU 2006 precession, obliquity and sidereal time, and include
+  the frame bias to the ICRF. `earth_rotation_angle` is replaced by
+  `greenwich_mean_sidereal_time`.
+- Rust: `NonInertialFrame` no longer has a `frame_id` field.
 
 ### Fixed
 
@@ -37,6 +43,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It now finds every critical point and returns the smallest.
 - MPC designations follow the MPC packed-format specification.
 - MPC band `u` is now unknown, as the MPC defines it; SDSS u is `Su`.
+- `approx_earth_pos_to_ecliptic` returned a spurious velocity. It now also includes
+  nutation, and Delta T before 1972.
+- `earth_precession_rotation` composed its angles in the wrong order.
+- `equation_of_time` returned mean minus apparent solar time.
+- `ecef_to_geodetic_lat_lon` returned wrong heights on the polar axis.
 
 ## [3.2.2]
 

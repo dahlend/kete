@@ -141,7 +141,6 @@ impl CkSegmentType3 {
             quaternion.to_rotation_matrix().inverse(),
             Some(rotation_rate.inverse().into_inner()),
             self.array.reference_frame_id,
-            self.array.instrument_id,
         );
 
         Ok((time, frame))

@@ -121,7 +121,6 @@ impl CkSegmentType2 {
             rotation.inverse(),
             None,
             self.array.reference_frame_id,
-            self.array.instrument_id,
         );
         Ok((time, frame))
     }

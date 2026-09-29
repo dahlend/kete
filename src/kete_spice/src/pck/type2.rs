@@ -105,7 +105,6 @@ impl PckSegmentType2 {
                 w_der / t_step * 86400.0,
             ],
             self.array.reference_frame_id,
-            1,
         );
 
         Ok(frame)

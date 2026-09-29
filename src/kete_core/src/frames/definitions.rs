@@ -161,9 +161,6 @@ pub struct NonInertialFrame {
 
     /// The frame that this frame is defined relative to.
     pub reference_frame_id: i32,
-
-    /// The frame ID of this frame.
-    pub frame_id: i32,
 }
 
 impl NonInertialFrame {
@@ -173,7 +170,6 @@ impl NonInertialFrame {
         angles: [f64; 3],
         rates: [f64; 3],
         reference_frame_id: i32,
-        frame_id: i32,
     ) -> Self {
         let (rot_p, rot_dp) = euler_rotation::<E1, E2, E3>(&angles, &rates);
         Self {
@@ -181,7 +177,6 @@ impl NonInertialFrame {
             rotation: rot_p,
             rotation_rate: Some(rot_dp),
             reference_frame_id,
-            frame_id,
         }
     }
 
@@ -192,20 +187,17 @@ impl NonInertialFrame {
     /// * `rotation` - Rotation matrix from this frame to the reference frame.
     /// * `rotation_rate` - Rotation rate of this frame, if not defined, this is assumed to be zero.
     /// * `reference_frame_id` - The frame that this frame is defined relative to.
-    /// * `frame_id` - The frame ID of this frame.
     pub fn from_rotations(
         time: impl Into<Time<TDB>>,
         rotation: Rotation3<f64>,
         rotation_rate: Option<Matrix3<f64>>,
         reference_frame_id: i32,
-        frame_id: i32,
     ) -> Self {
         Self {
             time: time.into(),
             rotation,
             rotation_rate,
             reference_frame_id,
-            frame_id,
         }
     }
 
@@ -222,12 +214,12 @@ impl NonInertialFrame {
             // Equatorial frame
             Ok((
                 self.rotation,
-                self.rotation_rate.unwrap_or_else(Matrix3::identity),
+                self.rotation_rate.unwrap_or_else(Matrix3::zeros),
             ))
         } else if self.reference_frame_id == 17 {
             // Ecliptic frame
             let rot = self.rotation;
-            let dt_rot = self.rotation_rate.unwrap_or_else(Matrix3::identity);
+            let dt_rot = self.rotation_rate.unwrap_or_else(Matrix3::zeros);
             Ok((
                 *ECLIPTIC_EQUATORIAL_ROT * rot,
                 *ECLIPTIC_EQUATORIAL_ROT * dt_rot,
@@ -346,7 +338,7 @@ mod tests {
         let rates = [0.41, 0.51, 0.61];
         let pos = [1.0, 2.0, 3.0];
         let vel = [0.1, 0.2, 0.3];
-        let frame = NonInertialFrame::from_euler::<'Z', 'X', 'Z'>(0_f64, angles, rates, 17, 100);
+        let frame = NonInertialFrame::from_euler::<'Z', 'X', 'Z'>(0_f64, angles, rates, 17);
         let (r_pos, r_vel) = frame.to_equatorial(pos, vel).unwrap();
         let (pos_return, vel_return) = frame.from_equatorial(r_pos, r_vel).unwrap();
 
@@ -356,5 +348,22 @@ mod tests {
         assert!((0.1 - vel_return.x).abs() <= 10.0 * f64::EPSILON);
         assert!((0.2 - vel_return.y).abs() <= 10.0 * f64::EPSILON);
         assert!((0.3 - vel_return.z).abs() <= 10.0 * f64::EPSILON);
+    }
+
+    /// A frame with no rotation rate only rotates the velocity; the position
+    /// contributes nothing to it.
+    #[test]
+    fn test_noninertial_missing_rate_is_zero() {
+        let rotation = euler_rotation::<'Z', 'X', 'Z'>(&[0.11, 0.21, 0.31], &[0.0; 3]).0;
+        let pos = Vector3::new(1.0, 2.0, 3.0);
+        let vel = Vector3::new(0.1, 0.2, 0.3);
+        for reference in [1, 17] {
+            let frame = NonInertialFrame::from_rotations(0_f64, rotation, None, reference);
+            let (rot, _) = frame.rotations_to_equatorial().unwrap();
+            let (_, new_vel) = frame.to_equatorial(pos, vel).unwrap();
+            assert!((new_vel - rot * vel).norm() <= 10.0 * f64::EPSILON);
+            let (_, new_vel) = frame.from_equatorial(pos, vel).unwrap();
+            assert!((new_vel - rot.inverse() * vel).norm() <= 10.0 * f64::EPSILON);
+        }
     }
 }

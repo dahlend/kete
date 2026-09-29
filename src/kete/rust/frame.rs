@@ -81,45 +81,47 @@ pub fn ecef_to_wgs_lat_lon(x: f64, y: f64, z: f64) -> (f64, f64, f64) {
     (lat.to_degrees(), lon.to_degrees(), alt)
 }
 
-/// Calculate the obliquity angle of the Earth at the specified time.
+/// Compute the mean obliquity of the ecliptic of date.
 ///
-/// This is only valid for several centuries near J2000.
-///
-/// The equation is from the 2010 Astronomical Almanac.
+/// The expression is the IAU 2006 obliquity, equation (39) of the paper cited
+/// on :func:`earth_precession_rotation`. Use it within several centuries of
+/// J2000.
 ///
 /// Parameters
 /// ----------
-/// time:
-///     Calculate the obliquity angle of the Earth at the specified time.
+/// time : float
+///   Time in TDB scaled Julian Days.
+///
+/// Returns
+/// -------
+/// float
+///   Mean obliquity in degrees.
 #[pyfunction]
 #[pyo3(name = "compute_obliquity")]
 pub fn calc_obliquity_py(time: f64) -> f64 {
     earth_obliquity(time.into()).to_degrees()
 }
 
-/// Calculate how far the Earth's north pole has precessed from the J2000 epoch.
+/// Compute the precession rotation from the J2000 epoch to a date.
 ///
-/// Earth's north pole precesses at a rate of about 50 arcseconds per year.
-/// This means there was an approximately 20 arcminute rotation of the Equatorial
-/// axis from the year 2000 to 2025.
+/// The matrix transforms a vector in the J2000 Equatorial frame to the mean
+/// equator and equinox of the date. The equinox precesses by about 50
+/// arcseconds per year, which is about 20 arcminutes from 2000 to 2025. The
+/// matrix does not include the frame bias.
 ///
-/// This calculates the rotation matrix which transforms a vector from the J2000
-/// Equatorial frame to the desired epoch.
-///
-/// This implementation is valid for around 200 years on either side of 2000 to
-/// within sub micro-arcsecond accuracy.
-///
-/// This function is an implementation equation (21) from this paper:
+/// The angles are the P03 precession angles of equation (40), which the IAU
+/// adopted as the IAU 2006 precession. Use them within a few centuries of
+/// 2000. The source is:
 ///
 /// .. code-block:: text
 ///
 ///     "Expressions for IAU 2000 precession quantities"
 ///     Capitaine, N. ; Wallace, P. T. ; Chapront, J.
 ///     Astronomy and Astrophysics, v.412, p.567-586 (2003)
+///     doi:10.1051/0004-6361:20031539
 ///
-/// It is recommended to first look at the following paper, as it provides useful
-/// discussion to help understand the above model. This defines the model used
-/// by JPL Horizons:
+/// This paper defines the IAU 1976 model, which JPL Horizons uses. It
+/// discusses the same angles:
 ///
 /// .. code-block:: text
 ///
@@ -127,11 +129,21 @@ pub fn calc_obliquity_py(time: f64) -> f64 {
 ///     Lieske, J. H.
 ///     Astronomy and Astrophysics, vol. 73, no. 3, Mar. 1979, p. 282-284.
 ///
-/// The IAU 2000 model paper improves accuracy by approximately ~300 mas/century over
-/// the IAU 1976 model.
+/// Parameters
+/// ----------
+/// time : Time or float
+///   Time, as a :class:`Time` or in TDB scaled Julian Days.
 ///
-/// Vectors in the Equatorial J2000 frame can be converted to the Equatorial frame
-/// at the time of the epoch desired:
+/// Returns
+/// -------
+/// list of list of float
+///   The 3x3 rotation matrix.
+///
+/// Examples
+/// --------
+/// Convert a vector in the Equatorial J2000 frame to the mean equator and
+/// equinox of 2025. The result is not an Equatorial vector as kete defines
+/// it, because kete defines that frame at the J2000 epoch.
 ///
 /// .. code-block:: python
 ///
@@ -140,16 +152,7 @@ pub fn calc_obliquity_py(time: f64) -> f64 {
 ///
 ///     jd = kete.Time.from_ymd(2025, 1, 1).jd
 ///     rotation = np.array(kete.conversion.earth_precession_rotation(jd))
-///
 ///     new_vec = rotation @ kete.Vector.from_ra_dec(20, 10)
-///
-///     # keep in mind this is no longer an equatorial vector as defined by kete,
-///     # as it would need to be the J2000 epoch under the kete definition.
-///
-/// Parameters
-/// ----------
-/// tdb_time:
-///     Time in TDB scaled Julian Days.
 #[pyfunction]
 #[pyo3(name = "earth_precession_rotation")]
 pub fn calc_earth_precession(time: PyTime) -> Vec<Vec<f64>> {
@@ -173,7 +176,20 @@ pub fn solar_noon_py(time: PyTime, geodetic_lon: f64) -> f64 {
         .jd
 }
 
-/// Compute the equation of time at a given time.
+/// Compute the approximate equation of time.
+///
+/// The equation of time is the apparent solar time minus the mean solar time.
+/// It is positive when the Sun crosses the meridian before mean noon.
+///
+/// Parameters
+/// ----------
+/// time : Time or float
+///   Time, as a :class:`Time` or in TDB scaled Julian Days.
+///
+/// Returns
+/// -------
+/// float
+///   Equation of time in days.
 #[pyfunction]
 #[pyo3(name = "equation_of_time")]
 pub fn equation_of_time_py(time: PyTime) -> f64 {
@@ -205,13 +221,19 @@ pub fn next_sunset_sunrise_py(
     (PyTime(set.tdb()), PyTime(rise.tdb()))
 }
 
-/// Compute the approximate position of a location on Earth in the Ecliptic frame.
+/// Compute the approximate state of a location on Earth in the Ecliptic frame.
 ///
 /// :func:`kete.spice.earth_pos_to_ecliptic` should be preferred for all modern
 /// dates. *This function is only an approximation*.
 ///
-/// This should be used when the desired date is before ~1970, when there are no
-/// SPICE SPK kernels for the Earth available.
+/// This should be used when the desired date is outside the Earth orientation
+/// PCK kernels, which begin in 1962.
+///
+/// The Earth's orientation includes precession, the largest nutation terms, and
+/// the Earth's rotation, which also sets the velocity. Polar motion is not
+/// included. From 1972 the rotation uses UTC in place of UT1, which differ by
+/// less than a second. Before 1972 it uses a model of Delta T, the difference
+/// between TT and UT1, which is poorly known before 1600.
 ///
 /// Parameters
 /// ----------
