@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Updated the MPC observatory code table.
+
 ### Fixed
 
 - `TT` is now its own time scale rather than an alias of `TDB`. UTC and TAI to TDB
@@ -17,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   asymptote and ecliptic-referenced axes.
 - `moid` could return a local rather than the global minimum, off by up to 0.8 AU.
   It now finds every critical point and returns the smallest.
+- MPC designations follow the MPC packed-format specification.
+- MPC band `u` is now unknown, as the MPC defines it; SDSS u is `Su`.
 
 ## [3.2.2]
 

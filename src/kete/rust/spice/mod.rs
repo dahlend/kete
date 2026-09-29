@@ -15,7 +15,7 @@ pub use spk::*;
 use pyo3::{PyResult, pyfunction};
 
 /// Return a list of MPC observatory codes, along with the latitude, longitude (deg),
-/// altitude (m above the WGS84 surface), and name.
+/// altitude (km above the WGS84 ellipsoid), and name.
 #[pyfunction]
 #[pyo3(name = "observatory_codes")]
 pub fn obs_codes() -> Vec<(f64, f64, f64, String, String)> {
