@@ -27,14 +27,12 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Basic Shape Models
-use kete_core::constants::GOLDEN_RATIO;
+//! Faceted shape models.
+use super::TriMesh;
+use crate::constants::GOLDEN_RATIO;
+use crate::errors::KeteResult;
 use nalgebra::{Unit, UnitVector3, Vector3};
-use std::f64::consts::{FRAC_PI_2, PI, TAU};
-
-/// Pre-compute a default shape.
-pub static DEFAULT_SHAPE: std::sync::LazyLock<ConvexShape> =
-    std::sync::LazyLock::new(|| ConvexShape::new_fibonacci_lattice(2048));
+use std::f64::consts::TAU;
 
 /// Facet of a shape.
 #[derive(Debug, Clone)]
@@ -92,14 +90,6 @@ impl ConvexShape {
             facets: facets.into(),
         }
     }
-
-    /// Rescale the total areas to sum to 1.
-    pub fn normalize_areas(&mut self) {
-        let total_area_inv = self.facets.iter().map(|f| f.area).sum::<f64>().recip();
-        self.facets
-            .iter_mut()
-            .for_each(|x| x.area *= total_area_inv);
-    }
 }
 
 /// A single triangle facet defined by three vertices, used for visualization.
@@ -148,12 +138,28 @@ pub struct TriangleShape {
 }
 
 impl TriangleShape {
-    /// Construct a triangle-faceted ellipsoid (or sphere when all scales are equal).
-    ///
-    /// Uses the algorithm described in <https://arxiv.org/abs/1502.04816> to generate
-    /// a nearly-uniform triangulation of a sphere, then applies axis scaling.
+    /// Build from a closed mesh: one facet per face, normals from the mesh winding.
     ///
     /// Total surface area is normalized to 1.
+    #[must_use]
+    pub fn from_mesh(mesh: &TriMesh) -> Self {
+        let total_area_inv = mesh.surface_area().recip();
+        let facets = mesh
+            .faces()
+            .iter()
+            .map(|face| TriangleFacet {
+                vertices: mesh.face_vertices(face),
+                normal: mesh.face_normal(face),
+                area: mesh.face_area(face) * total_area_inv,
+            })
+            .collect();
+        Self { facets }
+    }
+
+    /// Construct a triangle-faceted ellipsoid (or sphere when all scales are equal).
+    ///
+    /// The triangulation is [`TriMesh::new_ellipsoid`]. Total surface area is
+    /// normalized to 1.
     ///
     /// # Arguments
     ///
@@ -163,160 +169,11 @@ impl TriangleShape {
     /// * `y_scale` - Scale factor along the y-axis.
     /// * `z_scale` - Scale factor along the z-axis.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `n_div` is 0.
-    #[must_use]
-    pub fn new_ellipsoid(n_div: u32, x_scale: f64, y_scale: f64, z_scale: f64) -> Self {
-        assert!(n_div >= 1, "n_div must be at least 1");
-        let n = n_div as usize;
-        let dth = FRAC_PI_2 / n as f64;
-
-        // Generate points on the unit sphere from (colatitude, longitude) -> Cartesian.
-        let mut points: Vec<Vector3<f64>> = Vec::new();
-
-        // North pole
-        points.push(Vector3::new(0.0, 0.0, 1.0));
-
-        // Northern hemisphere rings
-        for i in 1..=n {
-            let dphi = FRAC_PI_2 / i as f64;
-            for j in 0..4 * i {
-                let theta = i as f64 * dth;
-                let phi = j as f64 * dphi;
-                points.push(Vector3::new(
-                    theta.sin() * phi.cos(),
-                    theta.sin() * phi.sin(),
-                    theta.cos(),
-                ));
-            }
-        }
-
-        // Southern hemisphere rings
-        for i in (1..n).rev() {
-            let dphi = FRAC_PI_2 / i as f64;
-            for j in 0..4 * i {
-                let theta = PI - i as f64 * dth;
-                let phi = j as f64 * dphi;
-                points.push(Vector3::new(
-                    theta.sin() * phi.cos(),
-                    theta.sin() * phi.sin(),
-                    theta.cos(),
-                ));
-            }
-        }
-
-        // South pole
-        points.push(Vector3::new(0.0, 0.0, -1.0));
-
-        // Apply axis scaling before computing normals/areas.
-        for p in &mut points {
-            p.x *= x_scale;
-            p.y *= y_scale;
-            p.z *= z_scale;
-        }
-
-        // Build the vertex-index matrix (variable row lengths).
-        // Row i has 4*k + 1 elements where k mirrors around the equator.
-        let mut matrix: Vec<Vec<usize>> = Vec::with_capacity(2 * n + 1);
-        for i in 0..=n {
-            matrix.push(vec![0; 4 * i + 1]);
-        }
-        for i in (0..n).rev() {
-            matrix.push(vec![0; 4 * i + 1]);
-        }
-
-        // Fill matrix entries: map each ring position to its point index.
-        let mut count: usize = 0;
-
-        for i in 1..=n {
-            for j in 0..4 * i {
-                count += 1;
-                matrix[i][j] = count;
-                if j == 0 {
-                    // wrap-around
-                    matrix[i][4 * i] = count;
-                }
-            }
-        }
-
-        for i in (1..n).rev() {
-            for j in 0..4 * i {
-                count += 1;
-                matrix[2 * n - i][j] = count;
-                if j == 0 {
-                    matrix[2 * n - i][4 * i] = count;
-                }
-            }
-        }
-        // south pole
-        matrix[2 * n][0] = count + 1;
-
-        // Generate triangle facets by connecting adjacent rings.
-        let expected = 8 * n * n;
-        let mut facets: Vec<TriangleFacet> = Vec::with_capacity(expected);
-
-        // Northern hemisphere
-        for j1 in 1..=n {
-            for j3 in 1..=4_usize {
-                let j0 = (j3 - 1) * j1;
-                facets.push(TriangleFacet::new(
-                    points[matrix[j1 - 1][j0 - (j3 - 1)]],
-                    points[matrix[j1][j0]],
-                    points[matrix[j1][j0 + 1]],
-                ));
-
-                for j2 in (j0 + 1)..(j0 + j1) {
-                    facets.push(TriangleFacet::new(
-                        points[matrix[j1][j2]],
-                        points[matrix[j1 - 1][j2 - (j3 - 1)]],
-                        points[matrix[j1 - 1][(j2 - 1) - (j3 - 1)]],
-                    ));
-                    facets.push(TriangleFacet::new(
-                        points[matrix[j1][j2]],
-                        points[matrix[j1 - 1][j2 - (j3 - 1)]],
-                        points[matrix[j1][j2 + 1]],
-                    ));
-                }
-            }
-        }
-
-        // Southern hemisphere
-        for j1 in (n + 1)..=(2 * n) {
-            for j3 in 1..=4_usize {
-                let j0 = (j3 - 1) * (2 * n - j1);
-                facets.push(TriangleFacet::new(
-                    points[matrix[j1][j0]],
-                    points[matrix[j1 - 1][(j0 + 1) + (j3 - 1)]],
-                    points[matrix[j1 - 1][j0 + (j3 - 1)]],
-                ));
-
-                for j2 in (j0 + 1)..=(j0 + 2 * n - j1) {
-                    facets.push(TriangleFacet::new(
-                        points[matrix[j1][j2]],
-                        points[matrix[j1 - 1][j2 + (j3 - 1)]],
-                        points[matrix[j1][j2 - 1]],
-                    ));
-                    facets.push(TriangleFacet::new(
-                        points[matrix[j1][j2]],
-                        points[matrix[j1 - 1][(j2 + 1) + (j3 - 1)]],
-                        points[matrix[j1 - 1][j2 + (j3 - 1)]],
-                    ));
-                }
-            }
-        }
-
-        debug_assert_eq!(facets.len(), expected, "facet count mismatch");
-
-        // Normalize total area to 1.
-        let total_area_inv = facets.iter().map(|f| f.area).sum::<f64>().recip();
-        for facet in &mut facets {
-            facet.area *= total_area_inv;
-        }
-
-        Self {
-            facets: facets.into(),
-        }
+    /// Fails if `n_div` is 0 or a scale is not positive and finite.
+    pub fn new_ellipsoid(n_div: u32, x_scale: f64, y_scale: f64, z_scale: f64) -> KeteResult<Self> {
+        TriMesh::new_ellipsoid(n_div, x_scale, y_scale, z_scale).map(|m| Self::from_mesh(&m))
     }
 
     /// Total number of facets.
@@ -347,7 +204,7 @@ mod tests {
 
     #[test]
     fn test_triangle_shape_sphere() {
-        let shape = TriangleShape::new_ellipsoid(6, 1.0, 1.0, 1.0);
+        let shape = TriangleShape::new_ellipsoid(6, 1.0, 1.0, 1.0).unwrap();
         // 8 * n_div^2
         assert_eq!(shape.len(), 8 * 36);
 
@@ -363,7 +220,7 @@ mod tests {
 
     #[test]
     fn test_triangle_shape_ellipsoid() {
-        let shape = TriangleShape::new_ellipsoid(4, 2.0, 1.0, 0.5);
+        let shape = TriangleShape::new_ellipsoid(4, 2.0, 1.0, 0.5).unwrap();
         // 8 * 4^2
         assert_eq!(shape.len(), 8 * 16);
 
@@ -374,7 +231,7 @@ mod tests {
     #[test]
     fn test_triangle_shape_n_div_1() {
         // Minimal case: 8 facets (octahedron)
-        let shape = TriangleShape::new_ellipsoid(1, 1.0, 1.0, 1.0);
+        let shape = TriangleShape::new_ellipsoid(1, 1.0, 1.0, 1.0).unwrap();
         assert_eq!(shape.len(), 8);
     }
 }

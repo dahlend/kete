@@ -239,6 +239,7 @@ pub fn neatm_total_flux(
 mod tests {
 
     use crate::*;
+    use kete_core::geometry::ConvexShape;
     use nalgebra::UnitVector3;
     use std::f64::consts::PI;
 

@@ -1,6 +1,7 @@
+use kete_core::fov::FovLike;
 use kete_core::fov::{self};
-use kete_core::fov::{FovLike, SkyPatch};
 use kete_core::frames::Vector;
+use kete_core::geometry::SkyPatch;
 use kete_core::time::{TDB, Time};
 use pyo3::{exceptions, prelude::*};
 

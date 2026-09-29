@@ -54,7 +54,7 @@ impl Contains {
 }
 
 /// Given an iterable of [`Contains`], find the closest one to being Inside.
-pub(super) fn closest_inside(contains: &[Contains]) -> (usize, Contains) {
+pub(crate) fn closest_inside(contains: &[Contains]) -> (usize, Contains) {
     let mut best = (usize::MAX, f64::INFINITY);
     for (idx, con) in contains.iter().enumerate() {
         match con {
@@ -295,13 +295,13 @@ pub struct SphericalCone {
     /// Unit vector which defines the direction of the cone.
     pub(crate) pointing: Vector<Equatorial>,
 
-    /// Size of the cone in degrees.
+    /// Angle from the central pointing vector to the edge of the cone, in radians.
     pub angle: f64,
 }
 
 impl SphericalCone {
-    /// Construct a new `SphericalCone` given the central vector and the angle of the
-    /// cone.
+    /// Construct a new `SphericalCone` given the central vector and the angle from
+    /// the central vector to the edge of the cone in radians.
     #[must_use]
     pub fn new(pointing: &Vector<Equatorial>, angle: f64) -> Self {
         let pointing = pointing.normalize();
@@ -312,7 +312,7 @@ impl SphericalCone {
 impl SkyPatch for SphericalCone {
     /// Is the vector inside of the cone.
     fn contains(&self, obs_to_obj: &Vector<Equatorial>) -> Contains {
-        let dist = self.pointing.dot(&obs_to_obj.normalize()).acos().abs();
+        let dist = self.pointing.angle(obs_to_obj);
         match dist {
             // if d is less than the angle, it is inside cone
             d if d <= self.angle => Contains::Inside,

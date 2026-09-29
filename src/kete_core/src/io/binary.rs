@@ -40,11 +40,11 @@ use crate::forces::{
     DustNonGrav, FarnocchiaNonGrav, JplCometNonGrav, NonGravKind, ParameterMask, ParameterizedForce,
 };
 use crate::fov::{
-    FOV, GenericCone, GenericRectangle, NeosCmos, NeosVisit, OmniDirectional, OnSkyRectangle,
-    PTFFilter, PtfCcd, PtfField, SpherexCmos, SpherexField, SphericalCone, SpitzerBand,
-    SpitzerFrame, WiseCmos, ZtfCcdQuad, ZtfField,
+    FOV, GenericCone, GenericRectangle, NeosCmos, NeosVisit, OmniDirectional, PTFFilter, PtfCcd,
+    PtfField, SpherexCmos, SpherexField, SpitzerBand, SpitzerFrame, WiseCmos, ZtfCcdQuad, ZtfField,
 };
 use crate::frames::{Equatorial, Vector};
+use crate::geometry::{OnSkyRectangle, SphericalCone};
 use crate::state::{DiffuseState, ProbeSet, SimultaneousStates, State, UncertainState};
 use crate::time::{TDB, Time};
 use nalgebra::{DMatrix, DVector, Vector3};

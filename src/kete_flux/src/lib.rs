@@ -43,7 +43,6 @@ pub mod fitting;
 mod frm;
 mod neatm;
 mod reflected;
-mod shapes;
 mod sun;
 
 pub use self::comets::CometMKParams;
@@ -59,5 +58,4 @@ pub use self::reflected::{
     h_mag_from_diam_albedo, hg_apparent_flux, hg_apparent_mag, hg_phase_curve_correction,
     resolve_hg_params,
 };
-pub use self::shapes::{ConvexShape, DEFAULT_SHAPE, Facet, TriangleFacet, TriangleShape};
 pub use self::sun::{solar_flux, solar_flux_black_body};

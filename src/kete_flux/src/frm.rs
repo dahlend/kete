@@ -29,12 +29,18 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use crate::{
-    BandInfo, DEFAULT_SHAPE, ModelResults, assemble_total, black_body_flux,
-    lambertian_vis_scale_factor, sub_solar_temperature,
+    BandInfo, ModelResults, assemble_total, black_body_flux, lambertian_vis_scale_factor,
+    sub_solar_temperature,
 };
+use kete_core::geometry::ConvexShape;
+use std::sync::LazyLock;
 
 use nalgebra::{UnitVector3, Vector3};
 use std::f64::consts::PI;
+
+/// Surface facets of the FRM quadrature.
+static FRM_SHAPE: LazyLock<ConvexShape> =
+    LazyLock::new(|| ConvexShape::new_fibonacci_lattice(2048));
 
 /// Using the FRM thermal model, calculate the temperature of each facet given the
 /// direction of the sun, the subsolar temperature and the facet normal vectors.
@@ -85,7 +91,7 @@ pub fn frm_thermal_flux(
     let obj2sun = -sun2obj;
     let obs2obj = sun2obj - sun2obs;
     let obs2obj_r = obs2obj.norm();
-    let geom = &DEFAULT_SHAPE;
+    let geom = &FRM_SHAPE;
 
     let ss_temp = sub_solar_temperature(obj2sun.norm(), vis_albedo, g_param, PI, emissivity);
 
@@ -161,7 +167,6 @@ mod tests {
     use nalgebra::UnitVector3;
 
     use super::*;
-    use crate::*;
     use std::f64::consts::PI;
 
     #[test]

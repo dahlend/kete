@@ -7,9 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `kete_core::geometry::TriMesh`, a validated closed triangle mesh.
+
 ### Changed
 
 - Updated the MPC observatory code table.
+- `kete.shape.TriangleEllipsoid` is built from `TriMesh`. All facets wind outward,
+  and invalid scales raise `ValueError`.
+- Rust: geometry types moved to `kete_core::geometry`, from `kete_flux` and
+  `kete_core::fov`.
 
 ### Fixed
 

@@ -29,11 +29,12 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use super::patches::closest_inside;
-use super::{Contains, FovLike, OnSkyRectangle, SkyPatch};
+use super::FovLike;
 use crate::constants::{NEOS_HEIGHT, NEOS_WIDTH};
 use crate::fov::FOV;
 use crate::frames::Vector;
+use crate::geometry::closest_inside;
+use crate::geometry::{Contains, OnSkyRectangle, SkyPatch};
 use crate::prelude::*;
 /// NEOS frame data, a single detector on a single band
 #[derive(Debug, Clone)]

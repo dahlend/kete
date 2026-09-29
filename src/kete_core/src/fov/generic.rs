@@ -32,7 +32,8 @@
 
 use std::fmt::Debug;
 
-use super::{Contains, FovLike, OnSkyRectangle, SkyPatch, SphericalCone};
+use super::FovLike;
+use crate::geometry::{Contains, OnSkyRectangle, SkyPatch, SphericalCone};
 use crate::{
     errors::{Error, KeteResult},
     fov::FOV,

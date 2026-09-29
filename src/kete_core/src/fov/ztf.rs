@@ -29,9 +29,10 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use super::patches::closest_inside;
-use super::{Contains, FovLike, OnSkyRectangle, SkyPatch};
+use super::FovLike;
 use crate::fov::FOV;
+use crate::geometry::closest_inside;
+use crate::geometry::{Contains, OnSkyRectangle, SkyPatch};
 use crate::{frames::Vector, prelude::*};
 /// ZTF frame data, single quad of a single chip
 #[derive(Debug, Clone)]

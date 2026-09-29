@@ -80,6 +80,7 @@ pub mod errors;
 pub mod forces;
 pub mod fov;
 pub mod frames;
+pub mod geometry;
 pub mod integrators;
 pub mod io;
 pub mod kepler;

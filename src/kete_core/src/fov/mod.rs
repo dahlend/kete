@@ -33,7 +33,6 @@
 mod fov_like;
 mod generic;
 mod neos;
-mod patches;
 mod ptf;
 mod spherex;
 mod spitzer;
@@ -42,12 +41,12 @@ mod ztf;
 
 use crate::errors::KeteResult;
 use crate::frames::{Equatorial, Vector};
+use crate::geometry::Contains;
 use crate::state::State;
 
 pub use self::fov_like::{FovLike, check_linear, check_statics, check_two_body};
 pub use self::generic::{GenericCone, GenericRectangle, OmniDirectional};
 pub use self::neos::{NeosCmos, NeosVisit};
-pub use self::patches::{Contains, OnSkyRectangle, SkyPatch, SphericalCone, SphericalPolygon};
 pub use self::ptf::{PTFFilter, PtfCcd, PtfField};
 pub use self::spherex::{SpherexCmos, SpherexField};
 pub use self::spitzer::{SpitzerBand, SpitzerFrame};

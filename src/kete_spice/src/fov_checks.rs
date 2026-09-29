@@ -6,8 +6,9 @@
 use kete_core::constants::C_AU_PER_DAY_INV;
 use kete_core::errors::Error;
 use kete_core::forces::{FrozenNonGrav, Sum};
-use kete_core::fov::{Contains, FovLike, check_linear, check_two_body};
+use kete_core::fov::{FovLike, check_linear, check_two_body};
 use kete_core::frames::{Equatorial, SSB, SunCenter};
+use kete_core::geometry::Contains;
 use kete_core::kepler::light_time_correct;
 use kete_core::prelude::{KeteResult, SimultaneousStates, State};
 use kete_core::state::StateLike;

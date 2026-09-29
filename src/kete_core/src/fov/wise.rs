@@ -29,8 +29,9 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use super::{Contains, FovLike, OnSkyRectangle, SkyPatch};
+use super::FovLike;
 use crate::fov::FOV;
+use crate::geometry::{Contains, OnSkyRectangle, SkyPatch};
 use crate::prelude::*;
 use crate::{constants::WISE_WIDTH, frames::Vector};
 /// WISE or NEOWISE frame data, all bands

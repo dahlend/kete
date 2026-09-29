@@ -3,6 +3,7 @@ use itertools::Itertools;
 use kete_core::constants::{
     w1_color_correction, w2_color_correction, w3_color_correction, w4_color_correction,
 };
+use kete_core::geometry::{ConvexShape, TriangleShape};
 use kete_core::prelude::Error;
 use kete_flux::*;
 use nalgebra::UnitVector3;
@@ -372,7 +373,7 @@ impl PyTriangleShape {
             ));
         }
         Ok(Self {
-            shape: TriangleShape::new_ellipsoid(n_div, x_scale, y_scale, z_scale),
+            shape: TriangleShape::new_ellipsoid(n_div, x_scale, y_scale, z_scale)?,
         })
     }
 
