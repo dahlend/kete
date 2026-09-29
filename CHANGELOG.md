@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   raise `ValueError`.
 - `compute_b_plane` returned values for the wrong geometry. It now uses the incoming
   asymptote and ecliptic-referenced axes.
+- `moid` could return a local rather than the global minimum, off by up to 0.8 AU.
+  It now finds every critical point and returns the smallest.
 
 ## [3.2.2]
 

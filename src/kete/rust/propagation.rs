@@ -1,6 +1,6 @@
 //! Python support for n body propagation
 use itertools::Itertools;
-use kete_core::kepler::moid;
+use kete_core::moid::moid;
 use kete_core::{
     desigs::try_name_from_id,
     errors::Error,
@@ -21,17 +21,33 @@ use crate::{
 };
 use kete_core::forces::FrozenNonGrav;
 
-/// Compute the MOID between the input state and an optional second state.
-/// If the second state is not provided, default to Earth.
+/// Compute the Minimum Orbital Intersection Distance (MOID).
 ///
-/// Returns the MOID in units of au.
+/// The MOID is the smallest distance between a point on the orbit of
+/// ``state_a`` and a point on the orbit of ``state_b``. Each state defines a
+/// two-body orbit about the Sun. A state with a center other than the Sun is
+/// converted to a Sun centered state with the loaded SPICE kernels.
 ///
 /// Parameters
 /// ----------
-/// state_a:
-///     State of the first object.
-/// state_b:
-///     Optional state of the second object, defaults to Earth.
+/// state_a : :class:`~kete.State` or list of :class:`~kete.State`
+///   State of the first object, or a list of states.
+/// state_b : :class:`~kete.State`, optional
+///   State of the second object. The default is the Earth, at the epoch of the
+///   first state in ``state_a``.
+///
+/// Returns
+/// -------
+/// float or list of float
+///   MOID in au, one value for each state in ``state_a``. The value is NaN for
+///   a state whose MOID cannot be computed, such as a state with purely radial
+///   motion.
+///
+/// Raises
+/// ------
+/// ValueError
+///   If ``state_a`` is empty, or if the Earth state or ``state_b`` cannot be
+///   converted to a Sun centered state.
 #[pyfunction]
 #[pyo3(name = "moid", signature = (state_a, state_b=None))]
 pub fn moid_py(
@@ -68,7 +84,7 @@ pub fn moid_py(
             .with_min_len(30)
             .map(|state_sun| {
                 state_sun
-                    .and_then(|s| moid(s, state_b_sun.clone()).ok())
+                    .and_then(|s| moid(&s, &state_b_sun).ok())
                     .unwrap_or(f64::NAN)
             })
             .collect::<Vec<_>>()

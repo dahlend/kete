@@ -83,6 +83,7 @@ pub mod frames;
 pub mod integrators;
 pub mod io;
 pub mod kepler;
+pub mod moid;
 pub mod state;
 pub mod time;
 pub mod util;

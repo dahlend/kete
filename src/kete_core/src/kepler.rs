@@ -35,12 +35,12 @@
 use crate::constants::{C_AU_PER_DAY_INV, GMS};
 use crate::errors::Error;
 use crate::frames::{InertialFrame, SunCenter, Vector};
-use crate::prelude::{CometElements, KeteResult};
+use crate::prelude::KeteResult;
 use crate::state::State;
 use crate::time::{Duration, TDB, Time};
 use core::f64;
-use kete_stats::fitting::{halley, nelder_mead, newton_raphson};
-use nalgebra::{ComplexField, Vector3};
+use kete_stats::fitting::{halley, newton_raphson};
+use nalgebra::{ComplexField, DMatrix, Vector3};
 use std::f64::consts::TAU;
 
 /// How close to ecc=1 do we assume the orbit is parabolic
@@ -169,7 +169,7 @@ pub fn compute_eccentric_anomaly_from_true(
 ///
 /// This is the cheap scalar form, taking `mu` explicitly and returning without an error
 /// path or an allocation, so it is usable inside an integrator's inner loop.
-/// [`CometElements`] and [`EquinoctialElements`](crate::elements::EquinoctialElements)
+/// [`CometElements`](crate::elements::CometElements) and [`EquinoctialElements`](crate::elements::EquinoctialElements)
 /// expose the same quantity as a method when a full element set is wanted.
 ///
 /// # Arguments
@@ -493,10 +493,10 @@ pub fn analytic_2_body_stm(
     pos: &Vector3<f64>,
     vel: &Vector3<f64>,
     depth: Option<usize>,
-) -> KeteResult<(Vector3<f64>, Vector3<f64>, nalgebra::DMatrix<f64>)> {
+) -> KeteResult<(Vector3<f64>, Vector3<f64>, DMatrix<f64>)> {
     let (nom_pos, nom_vel) = analytic_2_body(time, pos, vel, depth)?;
 
-    let mut stm = nalgebra::DMatrix::<f64>::zeros(6, 6);
+    let mut stm = DMatrix::<f64>::zeros(6, 6);
     let eps = 1e-8;
 
     for j in 0..6 {
@@ -580,72 +580,6 @@ pub fn light_time_correct<T: InertialFrame>(
     }
 
     Ok(corrected)
-}
-
-/// Compute the MOID between two states in au.
-/// MOID = Minimum Orbital Intersection Distance
-///
-/// # Errors
-/// Can fail due to orbital element conversion errors, or failing to find minimum.
-pub fn moid<T: InertialFrame>(
-    mut state_a: State<T, SunCenter>,
-    mut state_b: State<T, SunCenter>,
-) -> KeteResult<f64> {
-    const N_STEPS: i32 = 50;
-
-    let elements_a = CometElements::from_state(&state_a.clone().into_frame())?;
-    state_a = propagate_two_body(&state_a, elements_a.peri_time)?;
-    let elements_b = CometElements::from_state(&state_b.clone().into_frame())?;
-    state_b = propagate_two_body(&state_b, elements_b.peri_time)?;
-
-    let state_a_step_size = match elements_a.orbital_period() {
-        p if p.is_finite() => p / f64::from(N_STEPS),
-        _ => 300.0 / f64::from(N_STEPS),
-    };
-    let state_b_step_size = match elements_b.orbital_period() {
-        p if p.is_finite() => p / f64::from(N_STEPS),
-        _ => 300.0 / f64::from(N_STEPS),
-    };
-
-    let mut states_b: Vec<State<_, SunCenter>> = Vec::with_capacity(N_STEPS as usize);
-    let mut states_a: Vec<State<_, SunCenter>> = Vec::with_capacity(N_STEPS as usize);
-
-    for idx in (-N_STEPS)..N_STEPS {
-        states_a.push(propagate_two_body(
-            &state_a,
-            (state_a.epoch.jd + f64::from(idx) * state_a_step_size).into(),
-        )?);
-        states_b.push(propagate_two_body(
-            &state_b,
-            (state_b.epoch.jd + f64::from(idx) * state_b_step_size).into(),
-        )?);
-    }
-    let mut best = (f64::INFINITY, state_a.clone(), state_b.clone());
-    for s0 in &states_a {
-        for s1 in &states_b {
-            let d = (Vector3::from(s0.pos) - Vector3::from(s1.pos)).norm();
-            if d < best.0 {
-                best = (d, s0.clone(), s1.clone());
-            }
-        }
-    }
-
-    let best_a = best.1;
-    let best_b = best.2;
-    let cost = |p: &[f64]| {
-        let dt_a = p[0];
-        let dt_b = p[1];
-        let Ok(s0) = propagate_two_body(&best_a, (best_a.epoch.jd + dt_a).into()) else {
-            return f64::INFINITY;
-        };
-        let Ok(s1) = propagate_two_body(&best_b, (best_b.epoch.jd + dt_b).into()) else {
-            return f64::INFINITY;
-        };
-        (Vector3::from(s0.pos) - Vector3::from(s1.pos)).norm()
-    };
-
-    let res = nelder_mead(cost, &[0.0, 0.0], &[15.0, 15.0], 1e-12, 1000)?;
-    Ok(res.value)
 }
 
 #[cfg(test)]
@@ -796,7 +730,7 @@ mod tests {
         let (p, v, stm) = analytic_2_body_stm(0.0.into(), &pos, &vel, None).unwrap();
         assert!((p - pos).norm() < 1e-14);
         assert!((v - vel).norm() < 1e-14);
-        let id = nalgebra::DMatrix::<f64>::identity(6, 6);
+        let id = DMatrix::<f64>::identity(6, 6);
         assert!(
             (stm - id).norm() < 1e-6,
             "STM at t=0 should be near identity"
