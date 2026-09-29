@@ -28,7 +28,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use super::*;
-use crate::fitting::types::{Penalty, Tail, logistic_barrier};
+use crate::fitting::types::{FitProblem, Penalty, Tail, logistic_barrier};
 use crate::{BandInfo, frm_total_flux, neatm_total_flux, resolve_hg_params};
 use kete_core::constants::C_V;
 use nalgebra::Vector3;
@@ -66,10 +66,9 @@ fn make_neg_log_likelihood(
     c_hg: f64,
     emissivity: f64,
 ) -> impl Fn(&[f64]) -> f64 {
-    let obs = obs.to_vec();
+    let problem = FitProblem::new(model, obs, c_hg, emissivity, &FluxPriors::default());
     move |x: &[f64]| -> f64 {
-        let params = model.unpack(x, emissivity, c_hg);
-        let ll = model.log_likelihood(&params, &obs);
+        let ll = problem.log_likelihood(&problem.unpack(x));
         if ll.is_finite() { -ll } else { f64::MAX }
     }
 }
@@ -1125,4 +1124,87 @@ fn test_multi_geometry_neatm() {
     );
     assert_eq!(res.nobs, 8, "Should count all 8 observations");
     assert_eq!(res.best_fit_fluxes.len(), 8);
+}
+
+/// Observations at a non-zero phase angle covering every penalty shape, in bands
+/// with and without a color correction.
+fn mixed_obs() -> Vec<FluxObs> {
+    let hg = TestHg::new(0.15, Some(18.0), None, Some(10.0));
+    let sun2obj = Vector3::new(2.0, 0.4, 0.1);
+    let sun2obs = Vector3::new(0.3, 0.95, 0.0);
+    let mut bands = BandInfo::WISE.to_vec();
+    bands.push(BandInfo::new(4600.0, 1.0, f64::NAN, None));
+    bands.push(BandInfo::new(550.0, 1.0, f64::NAN, None));
+    let albedos = vec![1.2 * hg.vis_albedo; bands.len()];
+    let fluxes = neatm_total_flux(
+        &bands,
+        &albedos,
+        hg.diameter,
+        hg.vis_albedo,
+        hg.g_param,
+        hg.h_mag,
+        1.2,
+        0.9,
+        &sun2obj,
+        &sun2obs,
+    )
+    .fluxes;
+    let f = |i: usize| fluxes[i];
+    vec![
+        FluxObs::detection(f(0) * 1.05, f(0) * 0.05, bands[0], sun2obj, sun2obs),
+        FluxObs::detection_asym(
+            f(1) * 0.9,
+            f(1) * 0.03,
+            f(1) * 0.1,
+            bands[1],
+            sun2obj,
+            sun2obs,
+        ),
+        FluxObs::detection(f(2) * 1.1, f(2) * 0.05, bands[2], sun2obj, sun2obs),
+        FluxObs::upper_limit(f(3) * 0.8, f(3) * 0.1, bands[3], sun2obj, sun2obs),
+        FluxObs::from_parts(
+            Some((f(4) * 0.5, f(4) * 1.02)),
+            Some((f(4) * 0.97, Some(f(4) * 0.04), Some(f(4) * 0.04))),
+            bands[4],
+            sun2obj,
+            sun2obs,
+        ),
+        FluxObs::bounded(f(5) * 0.99, f(5) * 1.2, bands[5], sun2obj, sun2obs),
+        FluxObs::detection(f(5) * 1.02, f(5) * 0.05, bands[5], sun2obj, sun2obs),
+    ]
+}
+
+#[test]
+fn test_gradient_matches_finite_difference() {
+    let obs = mixed_obs();
+    let priors = FluxPriors {
+        h_mag: ParamPrior::with_gaussian_asym(-5.0, 35.0, 17.9, 0.2, 0.4),
+        diameter: ParamPrior::with_gaussian(0.001, 1000.0, 9.0, 2.0),
+        ..Default::default()
+    };
+    // A point away from the optimum, with G and f_sigma near a barrier wall.
+    let points: [(Model, Vec<f64>); 3] = [
+        (Model::Neatm, vec![11.0, 1.3, 18.1, -0.28, 0.52, 1.1]),
+        (Model::Frm, vec![11.0, 18.1, 0.1, 1.5, 1.1]),
+        (Model::Hg, vec![18.1, 0.1, 1.5]),
+    ];
+    for (model, x) in points {
+        let problem = FitProblem::new(model, &obs, C_V, 0.9, &priors);
+        let mut grad = vec![0.0; x.len()];
+        let lp = problem.log_posterior_and_gradient(&x, &mut grad);
+        assert_eq!(lp, problem.log_posterior(&x), "{model:?} value differs");
+        for j in 0..x.len() {
+            let step = 1e-6 * x[j].abs().max(1.0);
+            let mut xp = x.clone();
+            xp[j] += step;
+            let mut xm = x.clone();
+            xm[j] -= step;
+            let fd = (problem.log_posterior(&xp) - problem.log_posterior(&xm)) / (2.0 * step);
+            assert!(
+                (grad[j] - fd).abs() <= 1e-6 * fd.abs().max(1.0),
+                "{model:?} parameter {j}: analytic {} vs finite difference {fd}",
+                grad[j]
+            );
+        }
+    }
 }

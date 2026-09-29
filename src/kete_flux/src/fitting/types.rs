@@ -29,7 +29,8 @@
 
 //! Core types and helper functions shared across the fitting submodules.
 
-use crate::{BandInfo, ModelResults, assemble_total, frm_total_flux, neatm_total_flux};
+use crate::common::ThermalGeometry;
+use crate::{BandInfo, bond_albedo, hg_apparent_flux};
 use nalgebra::Vector3;
 
 /// Degrees of freedom for the Student-t likelihood.
@@ -127,7 +128,8 @@ impl Model {
                 g_param: x[1],
                 emissivity,
                 f_sigma: x[2],
-                r_ir: f64::NAN,
+                // Every band reflects with the visible albedo.
+                r_ir: 1.0,
                 vis_albedo,
             };
         }
@@ -139,7 +141,7 @@ impl Model {
         let (beaming, h) = if self.is_neatm() {
             (x[1], 2)
         } else {
-            (std::f64::consts::PI, 1)
+            (f64::NAN, 1)
         };
 
         let h_mag = x[h];
@@ -184,6 +186,12 @@ pub(crate) struct ModelParams {
 }
 
 impl ModelParams {
+    /// Band albedo times the squared diameter in km^2, which scales the reflected
+    /// flux. `vis_albedo * diameter^2 = (c_hg * 10^(-H/5))^2` depends only on H.
+    fn reflecting_area(&self) -> f64 {
+        self.r_ir * self.vis_albedo * self.diameter.powi(2)
+    }
+
     /// Convert to a draw row in physical space.
     ///
     /// NEATM: `[diameter, vis_albedo, beaming, h_mag, g_param, r_ir, f_sigma]`
@@ -202,97 +210,202 @@ impl ModelParams {
     }
 }
 
+/// Positions of the physical parameters in a gradient, which uses the NEATM
+/// parameter layout for every model.
+const DIAMETER: usize = 0;
+const BEAMING: usize = 1;
+const H_MAG: usize = 2;
+const G_PARAM: usize = 3;
+const F_SIGMA: usize = 4;
+const R_IR: usize = 5;
+
+/// d ln(10^(-0.4 H)) / dH: the rate at which `vis_albedo * diameter^2` changes with H.
+const LN_FLUX_PER_MAG: f64 = -0.4 * std::f64::consts::LN_10;
+
 impl Model {
-    /// Compute apparent total fluxes for the given geometry.
-    ///
-    /// Works for all three model variants (NEATM, FRM, HG).
-    pub(crate) fn compute_fluxes(
-        self,
-        params: &ModelParams,
-        bands: &[BandInfo],
-        sun2obj: &Vector3<f64>,
-        sun2obs: &Vector3<f64>,
-    ) -> ModelResults {
+    /// Positions in the NEATM layout of each entry of this model's parameter vector.
+    /// Must agree with [`Model::unpack`].
+    fn neatm_positions(self) -> &'static [usize] {
         match self {
-            Self::Neatm => neatm_total_flux(
-                bands,
-                &vec![params.r_ir * params.vis_albedo; bands.len()],
+            Self::Neatm => &[DIAMETER, BEAMING, H_MAG, G_PARAM, F_SIGMA, R_IR],
+            Self::Frm => &[DIAMETER, H_MAG, G_PARAM, F_SIGMA, R_IR],
+            Self::Hg => &[H_MAG, G_PARAM, F_SIGMA],
+        }
+    }
+}
+
+/// Parameter-independent quantities of one observation, computed once per fit.
+#[derive(Debug, Clone)]
+struct ObsGeometry {
+    /// Thermal geometry, `None` for the HG model.
+    thermal: Option<ThermalGeometry>,
+
+    /// Reflected flux in Jy per unit band albedo and per km^2 of squared diameter,
+    /// at `G = 0` and `G = 1`. The HG phase curve is linear in `G`.
+    reflected: [f64; 2],
+}
+
+impl ObsGeometry {
+    fn new(model: Model, ob: &FluxObs) -> Self {
+        let thermal = match model {
+            Model::Neatm => Some(ThermalGeometry::neatm(&ob.sun2obj, &ob.sun2obs)),
+            Model::Frm => Some(ThermalGeometry::frm(&ob.sun2obj, &ob.sun2obs)),
+            Model::Hg => None,
+        };
+        let reflected = [0.0, 1.0].map(|g_param| {
+            hg_apparent_flux(
+                g_param,
+                1.0,
+                &ob.sun2obj,
+                &ob.sun2obs,
+                ob.band.wavelength,
+                1.0,
+            ) * ob.band.solar_correction
+        });
+        Self { thermal, reflected }
+    }
+
+    /// Model thermal and reflected flux of one observation in Jy.
+    fn fluxes(&self, band: &BandInfo, params: &ModelParams) -> (f64, f64) {
+        let thermal = self.thermal.as_ref().map_or(0.0, |geom| {
+            geom.flux(
+                band,
                 params.diameter,
                 params.vis_albedo,
                 params.g_param,
-                params.h_mag,
                 params.beaming,
                 params.emissivity,
-                sun2obj,
-                sun2obs,
-            ),
-            Self::Frm => frm_total_flux(
-                bands,
-                &vec![params.r_ir * params.vis_albedo; bands.len()],
+            )
+        });
+        let [refl_0, refl_1] = self.reflected;
+        let phase_curve = (1.0 - params.g_param) * refl_0 + params.g_param * refl_1;
+        (thermal, phase_curve * params.reflecting_area())
+    }
+
+    /// Model flux of one observation in Jy, and its gradient with respect to the
+    /// physical parameters in the NEATM layout. Only NEATM fits the beaming.
+    fn flux_and_gradient(
+        &self,
+        model: Model,
+        band: &BandInfo,
+        params: &ModelParams,
+    ) -> (f64, [f64; 6]) {
+        let mut grad = [0.0; 6];
+
+        // Thermal flux and its derivative with respect to the log of the
+        // sub-solar temperature.
+        let (thermal, d_log_temp) = self.thermal.as_ref().map_or((0.0, 0.0), |geom| {
+            geom.flux_and_log_derivative(
+                band,
                 params.diameter,
                 params.vis_albedo,
                 params.g_param,
-                params.h_mag,
+                params.beaming,
                 params.emissivity,
-                sun2obj,
-                sun2obs,
-            ),
-            // Reflected light only: every band uses the visible albedo and carries no
-            // thermal flux.
-            Self::Hg => assemble_total(
-                bands,
-                &vec![params.vis_albedo; bands.len()],
-                vec![0.0; bands.len()],
-                params.diameter,
-                params.g_param,
-                params.h_mag,
-                sun2obj,
-                sun2obs,
-            ),
+            )
+        });
+        if self.thermal.is_some() {
+            grad[DIAMETER] = 2.0 * thermal / params.diameter;
+        }
+        if d_log_temp != 0.0 {
+            // T_ss^4 is proportional to (1 - A) / beaming, with the Bond albedo
+            // A = vis_albedo * q(G) and vis_albedo proportional to 10^(-0.4 H) / D^2.
+            let bond = bond_albedo(params.vis_albedo, params.g_param);
+            let d_bond = d_log_temp * -0.25 / (1.0 - bond);
+            grad[DIAMETER] += d_bond * -2.0 * bond / params.diameter;
+            grad[H_MAG] += d_bond * LN_FLUX_PER_MAG * bond;
+            grad[G_PARAM] += d_bond
+                * (bond_albedo(params.vis_albedo, 1.0) - bond_albedo(params.vis_albedo, 0.0));
+            if model.is_neatm() {
+                grad[BEAMING] = d_log_temp * -0.25 / params.beaming;
+            }
+        }
+
+        let [refl_0, refl_1] = self.reflected;
+        let area = params.reflecting_area();
+        let phase_curve = (1.0 - params.g_param) * refl_0 + params.g_param * refl_1;
+        let reflected = phase_curve * area;
+        grad[H_MAG] += LN_FLUX_PER_MAG * reflected;
+        grad[G_PARAM] += (refl_1 - refl_0) * area;
+        grad[R_IR] = phase_curve * params.vis_albedo * params.diameter.powi(2);
+
+        (thermal + reflected, grad)
+    }
+}
+
+/// A model with its observations, priors and fixed constants, and the geometry of
+/// each observation precomputed.
+#[derive(Debug, Clone)]
+pub(super) struct FitProblem {
+    /// Model being fit.
+    pub model: Model,
+    /// Observations.
+    pub obs: Vec<FluxObs>,
+    /// Geometry of each observation.
+    geometry: Vec<ObsGeometry>,
+    /// Relationship constant for D-H-pV conversion (km).
+    pub c_hg: f64,
+    /// Fixed thermal emissivity.
+    pub emissivity: f64,
+    /// Priors.
+    pub priors: FluxPriors,
+}
+
+impl FitProblem {
+    pub(super) fn new(
+        model: Model,
+        obs: &[FluxObs],
+        c_hg: f64,
+        emissivity: f64,
+        priors: &FluxPriors,
+    ) -> Self {
+        Self {
+            model,
+            obs: obs.to_vec(),
+            geometry: obs.iter().map(|ob| ObsGeometry::new(model, ob)).collect(),
+            c_hg,
+            emissivity,
+            priors: priors.clone(),
         }
     }
 
-    /// Evaluate the forward model for the given [`ModelParams`].
-    ///
-    /// Assumes `params` came from [`Model::unpack`], which already performed
-    /// feasibility checks.
-    pub(super) fn evaluate_forward_model(
-        self,
-        params: &ModelParams,
-        obs: &[FluxObs],
-    ) -> ForwardModelResult {
-        let n = obs.len();
-        let mut model_fluxes = Vec::with_capacity(n);
-        let mut reflected_frac = Vec::with_capacity(n);
+    /// Decode the raw parameter vector, see [`Model::unpack`].
+    pub(super) fn unpack(&self, x: &[f64]) -> ModelParams {
+        self.model.unpack(x, self.emissivity, self.c_hg)
+    }
 
-        for ob in obs {
-            let bands = [ob.band];
-            let result = self.compute_fluxes(params, &bands, &ob.sun2obj, &ob.sun2obs);
-            let rf = result.reflected_fraction();
-            model_fluxes.push(result.fluxes[0]);
-            reflected_frac.push(rf[0]);
-        }
-
+    /// Model flux and reflected fraction of every observation.
+    pub(super) fn forward(&self, params: &ModelParams) -> ForwardModelResult {
+        let (model_fluxes, reflected_frac) = self
+            .obs
+            .iter()
+            .zip(&self.geometry)
+            .map(|(ob, geom)| {
+                let (thermal, reflected) = geom.fluxes(&ob.band, params);
+                let total = thermal + reflected;
+                (total, reflected / total)
+            })
+            .unzip();
         ForwardModelResult {
             model_fluxes,
             reflected_frac,
         }
     }
 
-    /// Evaluate the log-likelihood for the given parameters: the sum over
-    /// observations of [`FluxObs::log_likelihood_term`].
+    /// Log-likelihood: the sum over observations of
+    /// [`FluxObs::log_likelihood_term`].
     ///
-    /// Returns a value to be **maximized** (negative of the NLL).
     /// Returns `f64::NEG_INFINITY` for infeasible points.
-    pub(super) fn log_likelihood(self, params: &ModelParams, obs: &[FluxObs]) -> f64 {
-        let fwd = self.evaluate_forward_model(params, obs);
-
-        let ll: f64 = obs
+    pub(super) fn log_likelihood(&self, params: &ModelParams) -> f64 {
+        let ll: f64 = self
+            .obs
             .iter()
-            .zip(fwd.model_fluxes.iter())
-            .map(|(ob, &model_flux)| ob.log_likelihood_term(model_flux, params.f_sigma))
+            .zip(&self.geometry)
+            .map(|(ob, geom)| {
+                let (thermal, reflected) = geom.fluxes(&ob.band, params);
+                ob.log_likelihood_term(thermal + reflected, params.f_sigma)
+            })
             .sum();
-
         if ll.is_finite() {
             ll
         } else {
@@ -300,56 +413,87 @@ impl Model {
         }
     }
 
-    /// Evaluate the log-prior for the given [`ModelParams`].
+    /// Log-prior, adding its gradient in the NEATM layout to `grad`.
     ///
-    /// All models share H, G, and `f_sigma` priors.  Thermal models add
-    /// diameter, beaming, and `r_ir` priors plus a derived `vis_albedo` penalty.
-    pub(super) fn log_prior(self, params: &ModelParams, priors: &FluxPriors) -> f64 {
+    /// All models share H, G, and `f_sigma` priors. Thermal models add diameter,
+    /// beaming, and `r_ir` priors plus a derived `vis_albedo` penalty.
+    fn log_prior_and_gradient(&self, params: &ModelParams, grad: &mut [f64; 6]) -> f64 {
+        let priors = &self.priors;
         let mut lp = 0.0;
+        let mut add = |prior: &ParamPrior, value: f64, idx: usize| {
+            let (p, d) = prior.log_prob_and_derivative(value);
+            lp += p;
+            grad[idx] += d;
+        };
 
         // ----- Shared across all models -----
-        lp += priors.h_mag.log_prob(params.h_mag);
-        lp += priors.g_param.log_prob(params.g_param);
-        lp += priors.f_sigma.log_prob(params.f_sigma);
+        add(&priors.h_mag, params.h_mag, H_MAG);
+        add(&priors.g_param, params.g_param, G_PARAM);
+        add(&priors.f_sigma, params.f_sigma, F_SIGMA);
 
-        if self.is_hg() {
+        if self.model.is_hg() {
             return lp;
         }
 
         // ----- Thermal only (NEATM / FRM) -----
-        lp += priors.diameter.log_prob(params.diameter);
-        if self.is_neatm() {
-            lp += priors.beaming.log_prob(params.beaming);
+        add(&priors.diameter, params.diameter, DIAMETER);
+        if self.model.is_neatm() {
+            add(&priors.beaming, params.beaming, BEAMING);
         }
-        lp += priors.r_ir.log_prob(params.r_ir);
-        lp += priors.vis_albedo.log_prob(params.vis_albedo);
+        add(&priors.r_ir, params.r_ir, R_IR);
+        let (p, d) = priors.vis_albedo.log_prob_and_derivative(params.vis_albedo);
+        lp += p;
+        grad[DIAMETER] += d * -2.0 * params.vis_albedo / params.diameter;
+        grad[H_MAG] += d * LN_FLUX_PER_MAG * params.vis_albedo;
 
         lp
     }
 
-    /// Evaluate the full log-posterior = log-likelihood + log-prior.
+    /// Log-posterior = log-likelihood + log-prior, to be **maximized**.
     ///
-    /// Returns a value to be **maximized**.
     /// Returns `f64::NEG_INFINITY` for infeasible points.
-    pub(super) fn log_posterior(
-        self,
-        x: &[f64],
-        obs: &[FluxObs],
-        c_hg: f64,
-        emissivity: f64,
-        priors: &FluxPriors,
-    ) -> f64 {
-        let params = self.unpack(x, emissivity, c_hg);
-        let ll = self.log_likelihood(&params, obs);
+    pub(super) fn log_posterior(&self, x: &[f64]) -> f64 {
+        let params = self.unpack(x);
+        let ll = self.log_likelihood(&params);
         if !ll.is_finite() {
             return f64::NEG_INFINITY;
         }
-        let val = ll + self.log_prior(&params, priors);
+        let val = ll + self.log_prior_and_gradient(&params, &mut [0.0; 6]);
         if val.is_finite() {
             val
         } else {
             f64::NEG_INFINITY
         }
+    }
+
+    /// [`Self::log_posterior`], writing its gradient with respect to `x` into `grad`.
+    ///
+    /// The gradient is only written when the log-posterior is finite.
+    pub(super) fn log_posterior_and_gradient(&self, x: &[f64], grad: &mut [f64]) -> f64 {
+        let params = self.unpack(x);
+        let mut physical = [0.0; 6];
+        let mut ll = 0.0;
+        for (ob, geom) in self.obs.iter().zip(&self.geometry) {
+            let (flux, flux_grad) = geom.flux_and_gradient(self.model, &ob.band, &params);
+            let (cost, d_flux, d_f_sigma) =
+                ob.log_likelihood_term_and_derivatives(flux, params.f_sigma);
+            ll += cost;
+            for (g, fg) in physical.iter_mut().zip(flux_grad) {
+                *g += d_flux * fg;
+            }
+            physical[F_SIGMA] += d_f_sigma;
+        }
+        if !ll.is_finite() {
+            return f64::NEG_INFINITY;
+        }
+        let val = ll + self.log_prior_and_gradient(&params, &mut physical);
+        if !val.is_finite() {
+            return f64::NEG_INFINITY;
+        }
+        for (g, &idx) in grad.iter_mut().zip(self.model.neatm_positions()) {
+            *g = physical[idx];
+        }
+        val
     }
 }
 
@@ -531,12 +675,25 @@ impl FluxObs {
 
     /// Log-likelihood contribution of this observation: the sum of its penalty
     /// terms. Hard `bounds` are walls not scaled by `f_sigma`; a point estimate
-    /// is a Student-t term scaled by `f_sigma`. See [`Penalty::cost`].
+    /// is a Student-t term scaled by `f_sigma`. See [`Penalty::cost_and_derivatives`].
     pub(super) fn log_likelihood_term(&self, model_flux: f64, f_sigma: f64) -> f64 {
+        self.log_likelihood_term_and_derivatives(model_flux, f_sigma)
+            .0
+    }
+
+    /// [`Self::log_likelihood_term`] and its derivatives with respect to the model
+    /// flux and `f_sigma`.
+    pub(super) fn log_likelihood_term_and_derivatives(
+        &self,
+        model_flux: f64,
+        f_sigma: f64,
+    ) -> (f64, f64, f64) {
         self.penalties
             .iter()
-            .map(|p| p.cost(model_flux, f_sigma))
-            .sum()
+            .fold((0.0, 0.0, 0.0), |(c, d_flux, d_f_sigma), p| {
+                let (pc, pd_flux, pd_f_sigma) = p.cost_and_derivatives(model_flux, f_sigma);
+                (c + pc, d_flux + pd_flux, d_f_sigma + pd_f_sigma)
+            })
     }
 }
 
@@ -562,7 +719,7 @@ pub(super) enum Tail {
 /// A constraint -- a [`ParamPrior`] on a parameter, or a [`FluxObs`] on a model
 /// flux -- is a *sum* of these. The terms are independent costs with no shared
 /// parameters; the caller supplies the scalar (the projection) and sums each
-/// term's [`Penalty::cost`]. New constraint shapes are new variants here.
+/// term's [`Penalty::cost_and_derivatives`]. New constraint shapes are new variants here.
 #[derive(Debug, Clone)]
 pub(super) enum Penalty {
     /// Hard interval: logistic-barrier walls of steepness `k`, flat (zero cost)
@@ -605,12 +762,22 @@ impl Penalty {
         Self::TopHat { lo, hi, k }
     }
 
-    /// Log-cost contribution at scalar `x`. `scale_factor` multiplies the
-    /// centering scales (1.0 for priors, the fitted `f_sigma` for measurements);
-    /// a [`Penalty::TopHat`] ignores it.
+    /// Value of [`Self::cost_and_derivatives`].
+    #[cfg(test)]
     pub(super) fn cost(&self, x: f64, scale_factor: f64) -> f64 {
+        self.cost_and_derivatives(x, scale_factor).0
+    }
+
+    /// Log-cost contribution at scalar `x`, and its derivatives with respect to `x`
+    /// and `scale_factor`. `scale_factor` multiplies the centering scales (1.0 for
+    /// priors, the fitted `f_sigma` for measurements); a [`Penalty::TopHat`]
+    /// ignores it.
+    pub(super) fn cost_and_derivatives(&self, x: f64, scale_factor: f64) -> (f64, f64, f64) {
         match *self {
-            Self::TopHat { lo, hi, k } => logistic_barrier(x, lo, hi, k),
+            Self::TopHat { lo, hi, k } => {
+                let (c, d_x) = logistic_barrier_and_derivative(x, lo, hi, k);
+                (c, d_x, 0.0)
+            }
             Self::Center {
                 mean,
                 scale_lo,
@@ -620,21 +787,31 @@ impl Penalty {
             } => {
                 let r = mean - x;
                 let mut c = 0.0;
+                let mut d_x = 0.0;
+                let mut d_scale = 0.0;
                 if let Some(scale) = centering_scale(scale_lo, scale_hi, r) {
                     let sigma = scale_factor * scale;
-                    c += match tail {
+                    match tail {
                         Tail::Gaussian => {
                             let z = r / sigma;
-                            -0.5 * z * z
+                            c += -0.5 * z * z;
+                            d_x += z / sigma;
+                            d_scale += z * z / scale_factor;
                         }
-                        Tail::StudentT => student_t_log_kernel(r, sigma),
-                    };
+                        Tail::StudentT => {
+                            c += student_t_log_kernel(r, sigma);
+                            let denom = STUDENT_NU * sigma * sigma + r * r;
+                            d_x += (STUDENT_NU + 1.0) * r / denom;
+                            d_scale += (STUDENT_NU + 1.0) * r * r / (denom * scale_factor);
+                        }
+                    }
                 }
                 if normalize && let (Some(lo), Some(hi)) = (scale_lo, scale_hi) {
                     let sigma_bar = f64::midpoint(lo, hi);
                     c += -(scale_factor * sigma_bar).ln();
+                    d_scale -= scale_factor.recip();
                 }
-                c
+                (c, d_x, d_scale)
             }
         }
     }
@@ -744,23 +921,32 @@ impl ParamPrior {
         }
     }
 
-    /// Evaluate the log-prior contribution for this parameter: a hard
-    /// [`Penalty::top_hat`] wall plus, if present, a Gaussian
+    /// Value of [`Self::log_prob_and_derivative`].
+    #[cfg(test)]
+    pub(super) fn log_prob(&self, x: f64) -> f64 {
+        self.log_prob_and_derivative(x).0
+    }
+
+    /// Log-prior contribution for this parameter, and its derivative with respect
+    /// to `x`: a hard [`Penalty::top_hat`] wall plus, if present, a Gaussian
     /// [`Penalty::Center`]. Priors are never inflated by `f_sigma`
     /// (`scale_factor = 1.0`) and carry no anchor.
-    pub(super) fn log_prob(&self, x: f64) -> f64 {
-        let mut lp = Penalty::top_hat(self.bounds.0, self.bounds.1).cost(x, 1.0);
+    pub(super) fn log_prob_and_derivative(&self, x: f64) -> (f64, f64) {
+        let (mut lp, mut d_x, _) =
+            Penalty::top_hat(self.bounds.0, self.bounds.1).cost_and_derivatives(x, 1.0);
         if let Some((mean, scale_lo, scale_hi)) = self.gaussian {
-            lp += Penalty::Center {
+            let (c, d, _) = Penalty::Center {
                 mean,
                 scale_lo: Some(scale_lo),
                 scale_hi: Some(scale_hi),
                 tail: Tail::Gaussian,
                 normalize: false,
             }
-            .cost(x, 1.0);
+            .cost_and_derivatives(x, 1.0);
+            lp += c;
+            d_x += d;
         }
-        lp
+        (lp, d_x)
     }
 
     /// Midpoint of the bounds, or the Gaussian mean if set.
@@ -819,8 +1005,15 @@ impl Default for FluxPriors {
     }
 }
 
-/// Logistic barrier prior: smooth wall that is 0 in the interior and -> -inf at
-/// the boundaries.
+/// Value of [`logistic_barrier_and_derivative`].
+#[cfg(test)]
+#[must_use]
+pub(super) fn logistic_barrier(x: f64, lo: f64, hi: f64, k: f64) -> f64 {
+    logistic_barrier_and_derivative(x, lo, hi, k).0
+}
+
+/// Logistic barrier prior, and its derivative with respect to `x`: a smooth wall
+/// that is 0 in the interior and -> -inf at the boundaries.
 ///
 /// $$\ln\sigma(k(x - lo)) + \ln\sigma(k(hi - x))$$
 ///
@@ -831,18 +1024,22 @@ impl Default for FluxPriors {
 /// * `lo` -- lower bound
 /// * `hi` -- upper bound
 /// * `k`  -- steepness (larger = sharper wall; 30 is typical)
-#[must_use]
-pub(super) fn logistic_barrier(x: f64, lo: f64, hi: f64, k: f64) -> f64 {
+fn logistic_barrier_and_derivative(x: f64, lo: f64, hi: f64, k: f64) -> (f64, f64) {
     // ln(sigmoid(z)) = z - ln(1 + exp(z)) but for numerical stability use -ln(1+exp(-z))
-    // which is equivalent and avoids overflow for large positive z.
-    fn log_sigmoid(z: f64) -> f64 {
+    // which is equivalent and avoids overflow for large positive z. Its derivative is
+    // sigmoid(-z).
+    fn log_sigmoid(z: f64) -> (f64, f64) {
         if z > 0.0 {
-            -(-z).exp().ln_1p()
+            let e = (-z).exp();
+            (-e.ln_1p(), e / (1.0 + e))
         } else {
-            z - z.exp().ln_1p()
+            let e = z.exp();
+            (z - e.ln_1p(), (1.0 + e).recip())
         }
     }
-    log_sigmoid(k * (x - lo)) + log_sigmoid(k * (hi - x))
+    let (lower, d_lower) = log_sigmoid(k * (x - lo));
+    let (upper, d_upper) = log_sigmoid(k * (hi - x));
+    (lower + upper, k * (d_lower - d_upper))
 }
 
 /// Result of evaluating the forward model at a parameter point.

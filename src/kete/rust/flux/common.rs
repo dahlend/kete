@@ -173,8 +173,8 @@ pub fn neatm_facet_temperature_py(
         .map(|normal| {
             neatm_facet_temperature(
                 &UnitVector3::new_normalize(normal.into()),
+                subsolar_temp,
                 &obj2sun,
-                &subsolar_temp,
             )
         })
         .collect_vec()

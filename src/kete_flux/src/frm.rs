@@ -28,10 +28,8 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use crate::{
-    BandInfo, ModelResults, assemble_total, black_body_flux, lambertian_vis_scale_factor,
-    sub_solar_temperature,
-};
+use crate::common::ThermalGeometry;
+use crate::{BandInfo, ModelResults, assemble_total};
 use kete_core::geometry::ConvexShape;
 use std::sync::LazyLock;
 
@@ -88,37 +86,31 @@ pub fn frm_thermal_flux(
     sun2obj: &Vector3<f64>,
     sun2obs: &Vector3<f64>,
 ) -> Vec<f64> {
-    let obj2sun = -sun2obj;
-    let obs2obj = sun2obj - sun2obs;
-    let obs2obj_r = obs2obj.norm();
-    let geom = &FRM_SHAPE;
+    let geometry = ThermalGeometry::frm(sun2obj, sun2obs);
+    // FRM ignores the beaming argument; pi is its fixed beaming.
+    obs_bands
+        .iter()
+        .map(|band| geometry.flux(band, diameter, vis_albedo, g_param, PI, emissivity))
+        .collect()
+}
 
-    let ss_temp = sub_solar_temperature(obj2sun.norm(), vis_albedo, g_param, PI, emissivity);
-
-    let bands: Vec<_> = obs_bands.iter().map(|x| x.wavelength).collect();
-    let color_correction: Vec<_> = obs_bands.iter().map(|x| x.color_correction).collect();
-    let obj2sun = UnitVector3::new_normalize(obj2sun);
-    let obs2obj = UnitVector3::new_normalize(obs2obj);
-
-    let mut fluxes = vec![0.0; obs_bands.len()];
-    for facet in &geom.facets {
-        let temp = frm_facet_temperature(&facet.normal, ss_temp, &obj2sun);
-        let obs_flux_scaling =
-            lambertian_vis_scale_factor(&facet.normal, &obs2obj, obs2obj_r, diameter, emissivity);
-        if temp == 0.0 || obs_flux_scaling == 0.0 {
-            continue;
-        }
-        for (idx, (wavelength, flux)) in bands.iter().zip(&mut fluxes).enumerate() {
-            let mut facet_flux = black_body_flux(temp, *wavelength);
-            if let Some(func) = color_correction[idx] {
-                facet_flux *= func(temp);
-            }
-            facet_flux *= facet.area;
-
-            *flux += obs_flux_scaling * facet_flux;
-        }
-    }
-    fluxes
+/// FRM surface nodes `(weight, temp_fraction)` of an object at `sun2obj` seen
+/// from `sun2obs`, both in AU from the Sun.
+///
+/// The nodes are the facets of [`FRM_SHAPE`] that are both heated and visible to
+/// the observer, with the rotation pole along z. See [`ThermalGeometry`].
+pub(crate) fn frm_nodes(sun2obj: &Vector3<f64>, sun2obs: &Vector3<f64>) -> Vec<(f64, f64)> {
+    let obj2sun = UnitVector3::new_normalize(-sun2obj);
+    let obs2obj_hat = UnitVector3::new_normalize(sun2obj - sun2obs);
+    FRM_SHAPE
+        .facets
+        .iter()
+        .filter_map(|facet| {
+            let frac = frm_facet_temperature(&facet.normal, 1.0, &obj2sun);
+            let observed = -facet.normal.dot(&obs2obj_hat);
+            (frac > 0.0 && observed > 0.0).then_some((observed * PI * facet.area, frac))
+        })
+        .collect()
 }
 
 /// Compute FRM thermal + reflected flux and magnitudes for each band.

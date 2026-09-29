@@ -351,6 +351,48 @@ pub fn partial_str_match<'a>(needle: &str, haystack: &'a [&'a str]) -> Vec<(usiz
         .collect()
 }
 
+/// Sample points and weights for numerical integration over `[0, 1]`.
+///
+/// To estimate the integral of a function `f` from 0 to 1, evaluate `f` at
+/// each returned point `x` and add up `w * f(x)`. The function returns `count`
+/// pairs `(x, w)`. The weights sum to 1.
+///
+/// The points are not evenly spaced; they bunch toward the ends of the
+/// interval. This placement makes the estimate exact when `f` is a polynomial
+/// of degree up to `2 * count - 1`, and very accurate for smooth functions with
+/// only a few dozen points. The rule is Gauss-Legendre quadrature: the points
+/// are the roots of the Legendre polynomial of degree `count`, moved from
+/// `[-1, 1]` to `[0, 1]`.
+#[must_use]
+pub fn gauss_legendre(count: usize) -> Vec<(f64, f64)> {
+    // P_count and its derivative at x, by the three-term recurrence.
+    let legendre = |x: f64| {
+        let (mut prev, mut value) = (1.0, x);
+        for k in 2..=count {
+            let next = ((2 * k - 1) as f64 * x * value - (k - 1) as f64 * prev) / k as f64;
+            prev = value;
+            value = next;
+        }
+        (value, count as f64 * (x * value - prev) / (x * x - 1.0))
+    };
+    (0..count)
+        .map(|i| {
+            // Newton on P_count from the usual cosine guess
+            let mut x = (std::f64::consts::PI * (i as f64 + 0.75) / (count as f64 + 0.5)).cos();
+            for _ in 0..100 {
+                let (value, slope) = legendre(x);
+                let step = value / slope;
+                x -= step;
+                if step.abs() < 1e-16 {
+                    break;
+                }
+            }
+            let (_, slope) = legendre(x);
+            ((1.0 - x) / 2.0, 1.0 / ((1.0 - x * x) * slope * slope))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -531,6 +573,24 @@ mod tests {
                         "Failed for {dms_str}",
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn test_gauss_legendre_exact() {
+        // Exact for x^k, k < 2 count, whose integral on [0, 1] is 1 / (k + 1).
+        for count in 1..=64 {
+            let points = gauss_legendre(count);
+            assert_eq!(points.len(), count);
+            assert!(points.iter().all(|&(x, w)| x > 0.0 && x < 1.0 && w > 0.0));
+            for k in 0..(2 * count) {
+                let power = i32::try_from(k).unwrap();
+                let integral: f64 = points.iter().map(|&(x, w)| w * x.powi(power)).sum();
+                assert!(
+                    (integral * (k as f64 + 1.0) - 1.0).abs() < 1e-12,
+                    "count {count}, k {k}: {integral}"
+                );
             }
         }
     }

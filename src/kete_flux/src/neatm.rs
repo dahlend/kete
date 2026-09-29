@@ -28,8 +28,9 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use crate::{BandInfo, ModelResults, assemble_total, black_body_flux, sub_solar_temperature};
-use kete_core::constants::AU_KM;
+use crate::common::ThermalGeometry;
+use crate::{BandInfo, ModelResults, assemble_total};
+use kete_core::util::gauss_legendre;
 
 use nalgebra::{UnitVector3, Vector3};
 use std::f64::consts::PI;
@@ -47,8 +48,8 @@ use std::sync::LazyLock;
 #[must_use]
 pub fn neatm_facet_temperature(
     facet_normal: &UnitVector3<f64>,
+    subsolar_temp: f64,
     obj2sun: &UnitVector3<f64>,
-    subsolar_temp: &f64,
 ) -> f64 {
     let tmp = facet_normal.dot(obj2sun);
     if tmp > 0.0 {
@@ -60,47 +61,8 @@ pub fn neatm_facet_temperature(
 /// Number of Gauss-Legendre quadrature points for the 1D thermal integral.
 const GL_ORDER: usize = 64;
 
-/// Precomputed Gauss-Legendre nodes and weights on [0, 1].
-static GL_POINTS: LazyLock<Box<[(f64, f64)]>> = LazyLock::new(|| gauss_legendre_unit(GL_ORDER));
-
-/// Evaluate Legendre polynomial `P_n(x)` and its derivative `P_n'(x)`.
-fn legendre_pd(n: usize, x: f64) -> (f64, f64) {
-    if n == 0 {
-        return (1.0, 0.0);
-    }
-    let mut p0 = 1.0;
-    let mut p1 = x;
-    for k in 1..n {
-        let kf = k as f64;
-        let p2 = ((2.0 * kf + 1.0) * x * p1 - kf * p0) / (kf + 1.0);
-        p0 = p1;
-        p1 = p2;
-    }
-    let nf = n as f64;
-    let dp = nf * (x * p1 - p0) / (x * x - 1.0);
-    (p1, dp)
-}
-
-/// Compute n-point Gauss-Legendre nodes and weights on [0, 1].
-fn gauss_legendre_unit(n: usize) -> Box<[(f64, f64)]> {
-    let mut result = Vec::with_capacity(n);
-    for i in 0..n {
-        let theta = PI * (4 * i + 3) as f64 / (4 * n + 2) as f64;
-        let mut x = theta.cos();
-        for _ in 0..100 {
-            let (p, dp) = legendre_pd(n, x);
-            let dx = p / dp;
-            x -= dx;
-            if dx.abs() < 1e-15 {
-                break;
-            }
-        }
-        let (_, dp) = legendre_pd(n, x);
-        let w = 2.0 / ((1.0 - x * x) * dp * dp);
-        result.push((f64::midpoint(x, 1.0), w / 2.0));
-    }
-    result.into_boxed_slice()
-}
+/// Gauss-Legendre nodes and weights on [0, 1].
+static GL_POINTS: LazyLock<Vec<(f64, f64)>> = LazyLock::new(|| gauss_legendre(GL_ORDER));
 
 /// Azimuthal visibility integral: the integral of max(cos(alpha), 0) over
 /// phi in [0, 2*pi] for a ring at cos(theta) = u, given the phase angle
@@ -149,48 +111,33 @@ pub fn neatm_thermal_flux(
     sun2obj: &Vector3<f64>,
     sun2obs: &Vector3<f64>,
 ) -> Vec<f64> {
-    let obj2sun = -sun2obj;
-    let obs2obj = sun2obj - sun2obs;
-    let obs2obj_r = obs2obj.norm();
+    let geometry = ThermalGeometry::neatm(sun2obj, sun2obs);
+    obs_bands
+        .iter()
+        .map(|band| geometry.flux(band, diameter, vis_albedo, g_param, beaming, emissivity))
+        .collect()
+}
 
-    let ss_temp = sub_solar_temperature(obj2sun.norm(), vis_albedo, g_param, beaming, emissivity);
-
-    let obj2sun_hat = UnitVector3::new_normalize(obj2sun);
-    let obj2obs_hat = UnitVector3::new_normalize(-obs2obj);
+/// NEATM surface nodes `(weight, temp_fraction)` of an object at `sun2obj` seen
+/// from `sun2obs`, both in AU from the Sun.
+///
+/// The nodes are Gauss-Legendre points over the cosine of the angle from the
+/// sub-solar point. The visible fraction of each ring is integrated analytically
+/// over azimuth. See [`ThermalGeometry`].
+pub(crate) fn neatm_nodes(sun2obj: &Vector3<f64>, sun2obs: &Vector3<f64>) -> Vec<(f64, f64)> {
+    let obj2sun_hat = UnitVector3::new_normalize(-sun2obj);
+    let obj2obs_hat = UnitVector3::new_normalize(sun2obs - sun2obj);
     let cos_phase = obj2sun_hat.dot(&obj2obs_hat).clamp(-1.0, 1.0);
     let sin_phase = (1.0 - cos_phase * cos_phase).max(0.0).sqrt();
 
-    let geo_scale = emissivity / 4.0 * (diameter / (obs2obj_r * AU_KM)).powi(2);
-
-    let bands: Vec<_> = obs_bands.iter().map(|x| x.wavelength).collect();
-    let color_correction: Vec<_> = obs_bands.iter().map(|x| x.color_correction).collect();
-
-    let mut fluxes = vec![0.0; obs_bands.len()];
-    for &(cos_theta, weight) in GL_POINTS.iter() {
-        let temp = ss_temp * cos_theta.sqrt().sqrt();
-        if temp < 30.0 {
-            continue;
-        }
-
-        let vis = azimuthal_visibility(cos_theta, cos_phase, sin_phase);
-        if vis <= 0.0 {
-            continue;
-        }
-
-        let scaled_weight = weight * vis;
-        for (idx, (wavelength, flux)) in bands.iter().zip(&mut fluxes).enumerate() {
-            let mut bb = black_body_flux(temp, *wavelength);
-            if let Some(func) = color_correction[idx] {
-                bb *= func(temp);
-            }
-            *flux += scaled_weight * bb;
-        }
-    }
-
-    for flux in &mut fluxes {
-        *flux *= geo_scale;
-    }
-    fluxes
+    // The 1/4 turns the squared diameter of the flux scale into the squared radius.
+    GL_POINTS
+        .iter()
+        .filter_map(|&(cos_theta, weight)| {
+            let vis = azimuthal_visibility(cos_theta, cos_phase, sin_phase);
+            (vis > 0.0).then(|| (weight * vis / 4.0, cos_theta.sqrt().sqrt()))
+        })
+        .collect()
 }
 
 /// Compute NEATM thermal + reflected flux and magnitudes for each band.
@@ -250,36 +197,36 @@ mod tests {
 
         let temp = neatm_facet_temperature(
             &UnitVector3::new_unchecked([1.0, 0.0, 0.0].into()),
+            1.0,
             &obj2sun,
-            &1.0,
         );
         assert!((temp - 1.0).abs() < 1e-8);
 
         let temp = neatm_facet_temperature(
             &UnitVector3::new_unchecked([0.0, 1.0, 0.0].into()),
+            1.0,
             &obj2sun,
-            &1.0,
         );
         assert!(temp.abs() < 1e-8);
 
         let temp = neatm_facet_temperature(
             &UnitVector3::new_unchecked([-1.0, 0.0, 0.0].into()),
+            1.0,
             &obj2sun,
-            &1.0,
         );
         assert!(temp.abs() < 1e-8);
 
         let temp = neatm_facet_temperature(
             &UnitVector3::new_normalize([1.0, 1.0, 0.0].into()),
+            1.0,
             &obj2sun,
-            &1.0,
         );
         assert!((temp - t).abs() < 1e-8);
 
         let temp = neatm_facet_temperature(
             &UnitVector3::new_normalize([1.0, -1.0, 0.0].into()),
+            1.0,
             &obj2sun,
-            &1.0,
         );
         assert!((temp - t).abs() < 1e-8);
         let fib_n1024 = ConvexShape::new_fibonacci_lattice(1028);
@@ -289,12 +236,12 @@ mod tests {
         let t1: f64 = fib_n2048
             .facets
             .iter()
-            .map(|facet| neatm_facet_temperature(&facet.normal, &obj2sun, &1.0))
+            .map(|facet| neatm_facet_temperature(&facet.normal, 1.0, &obj2sun))
             .sum();
         let t2: f64 = fib_n1024
             .facets
             .iter()
-            .map(|facet| neatm_facet_temperature(&facet.normal, &obj2sun, &1.0))
+            .map(|facet| neatm_facet_temperature(&facet.normal, 1.0, &obj2sun))
             .sum();
 
         let t1: f64 = t1 / fib_n2048.facets.len() as f64;

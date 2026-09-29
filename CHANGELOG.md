@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and invalid scales raise `ValueError`.
 - Rust: geometry types moved to `kete_core::geometry`, from `kete_flux` and
   `kete_core::fov`.
+- `fit_model` is faster, using an analytic gradient.
+- Rust: removed `ModelResults::reflected_fraction` and `lambertian_vis_scale_factor`,
+  and reordered the arguments of `neatm_facet_temperature`.
 
 ### Fixed
 
