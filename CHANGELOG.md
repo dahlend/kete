@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   conversions now include the periodic TDB-TT term, up to 1.7 ms.
 - RA/Dec sexagesimal strings no longer show 60 seconds, and invalid RA/Dec values
   raise `ValueError`.
+- `compute_b_plane` returned values for the wrong geometry. It now uses the incoming
+  asymptote and ecliptic-referenced axes.
 
 ## [3.2.2]
 
