@@ -58,17 +58,10 @@
 //!
 //! # Predictor
 //!
-//! The corrector starts from the previous step's `b` rather than from zero. Because `b`
-//! lives in the step-normalized variable `s = (t - t_0) / H`, that guess is at the wrong
-//! scale as soon as the step size moves, and [`Self::predict`] rescales it exactly,
-//! `b_k -> q^(k+1) b_k` for `q = H_new / H_old`.
-//!
-//! [`RadauIntegrator`] omits this: it does not earn its complexity on the second-order
-//! form. It does matter here, and two things make this form more sensitive. Its
-//! convergence test is per-component relative with no absolute floor,
-//! so it will not tolerate a mis-scaled guess the way a floored test does. And a mis-scaled
-//! guess is badly wrong when the step moves: the controller may grow the step by the
-//! `1/MIN_RATIO` clamp, and `b_6` then starts off by `q^7` - worse than starting from zero.
+//! The corrector starts each step from `b` extrapolated from the last accepted step: the
+//! previous polynomial re-expanded about the end of that step and rescaled to the new step
+//! size, plus the error of the previous prediction. This is shared with
+//! [`RadauIntegrator`]; see `BPredictor` in that module for the formula.
 //!
 //! # Order
 //!
@@ -136,7 +129,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 use crate::errors::Error;
 use crate::integrators::radau::{
-    C_MAT, EPSILON, GAUSS_RADAU_SPACINGS, MIN_RATIO, MIN_STEP, U_POW_TABLE, U_VEC,
+    BPredictor, C_MAT, EPSILON, GAUSS_RADAU_SPACINGS, MIN_RATIO, MIN_STEP, U_POW_TABLE, U_VEC,
 };
 use crate::integrators::util::FirstOrderODEDyn;
 use crate::prelude::KeteResult;
@@ -191,10 +184,7 @@ where
     comp_state: OVector<f64, D>,
     comp_time: f64,
 
-    /// Size of the last attempted step, used to rescale `cur_b` when the step size
-    /// changes.  Zero before the first step.  Tracks attempts rather than accepted
-    /// steps so a shrink-and-retry rescales from the size that was actually tried.
-    last_step_size: f64,
+    predictor: BPredictor<D>,
 }
 
 impl<'a, MType, D: Dim> RadauFirstOrder<'a, MType, D>
@@ -326,7 +316,7 @@ where
             control_dim: full_dim,
             comp_state: Matrix::zeros_generic(dim, U1),
             comp_time: 0.0,
-            last_step_size: 0.0,
+            predictor: BPredictor::new(dim),
         };
         res.cur_state_der = (res.func)(time_init, &res.cur_state, &mut res.metadata, true)?;
         Ok(res)
@@ -337,7 +327,7 @@ where
     /// Returns the recommended next step size on success. Failure means the corrector
     /// did not converge within [`MAX_SWEEPS`], or the ODE function itself failed.
     fn step(&mut self, step_size: f64) -> KeteResult<f64> {
-        self.predict(step_size);
+        self.predictor.predict(step_size, &mut self.cur_b);
         self.g_scratch.fill(0.0);
         self.state_scratch.fill(0.0);
         self.eval_scratch.set_column(0, &self.cur_state_der);
@@ -403,37 +393,6 @@ where
         ))?
     }
 
-    /// Rescale the carried-over `b` for a change of step size (Everhart's predictor).
-    ///
-    /// `b` are the coefficients of the right-hand side in the step-normalized variable
-    /// `s = (t - t_0) / H`.  Changing the step to `H' = q H` means `s = q s'`, so the same
-    /// polynomial re-expressed in `s'` has coefficients
-    ///
-    /// ```text
-    /// b_k' = q^(k+1) b_k
-    /// ```
-    ///
-    /// This is an exact change of variable, not an approximation: it costs 7 scalar
-    /// multiplies per component and leaves the corrector a strictly better starting guess
-    /// whenever the step size moved.  Without it the previous step's `b` is reused at the
-    /// wrong scale, which for a growing step understates every coefficient.
-    fn predict(&mut self, step_size: f64) {
-        if self.last_step_size == 0.0 {
-            self.last_step_size = step_size;
-            return;
-        }
-        let q = step_size / self.last_step_size;
-        self.last_step_size = step_size;
-        if (q - 1.0).abs() < f64::EPSILON {
-            return;
-        }
-        let mut q_pow = 1.0;
-        for idx in 0..7 {
-            q_pow *= q;
-            self.cur_b.column_mut(idx).scale_mut(q_pow);
-        }
-    }
-
     /// Largest `|v_i| / scale_i` over the controlled components.
     ///
     /// Components whose right-hand side vanished at every node of this step are skipped:
@@ -470,6 +429,7 @@ where
         self.cur_time.jd = t_t;
 
         self.cur_state_der = (self.func)(self.cur_time, &self.cur_state, &mut self.metadata, true)?;
+        self.predictor.accept(step_size, &self.cur_b);
 
         // b_6 scales as H^7, hence the 1/7 exponent. The worst-resolved controlled
         // component drives the step.

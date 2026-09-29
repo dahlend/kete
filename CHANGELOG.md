@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `fit_model` is faster, using an analytic gradient.
 - Rust: removed `ModelResults::reflected_fraction` and `lambertian_vis_scale_factor`,
   and reordered the arguments of `neatm_facet_temperature`.
+- Radau predicts each step's starting coefficients from the previous step and chooses
+  its first step from the problem's timescales, so it takes fewer iterations and
+  steps. Propagated states differ from earlier releases within integrator accuracy.
 
 ### Fixed
 
