@@ -196,24 +196,24 @@ pub fn spk_raw_state_py(id: NaifIDLike, jd: PyTime) -> PyResult<PyState> {
 
 /// Builder for creating multi-segment SPK binary kernel files.
 ///
-/// Segments of different types can be added incrementally before writing the
-/// completed file to disk.  This is the primary entry point for creating new
-/// SPK files from Python.
+/// Add segments of different types one at a time, then write the completed
+/// file to disk. Use this class to create new SPK files from Python.
+///
+/// Parameters
+/// ----------
+/// internal_desc : str, optional
+///   Short internal description in the DAF header, at most 60 characters.
+///   Default is an empty string.
+/// comment : str, optional
+///   Free-text comment block in the DAF file. Default is an empty string.
 ///
 /// Examples
 /// --------
 /// .. code-block:: python
 ///
 ///     builder = kete.spice.SpkBuilder()
-///     builder.add_tle_segment("iss_tles.txt", -25544, 399)
+///     builder.add_tle_segment("iss_tles.txt", 399, 1)
 ///     builder.write("iss.bsp")
-///
-/// Parameters
-/// ----------
-/// internal_desc :
-///     Short internal description embedded in the DAF header (max 60 chars).
-/// comment :
-///     Free-text comment block written into the DAF file.
 #[pyclass(name = "SpkBuilder")]
 #[derive(Debug)]
 pub struct PySpkBuilder {
@@ -238,25 +238,39 @@ impl PySpkBuilder {
         }
     }
 
-    /// Add a Type 10 (TLE) segment from a TLE text file.
+    /// Add Type 10 (TLE) segments from a TLE text file.
     ///
-    /// All TLE entries in the file that share the same NORAD catalog number are
-    /// combined into a single SPK segment.  NAIF object IDs are set to
-    /// ``-(norad_id)``.
+    /// The method combines all TLE entries with the same NORAD catalog number
+    /// into one SPK segment. The NAIF ID of each object is ``-norad_id``.
     ///
     /// Parameters
     /// ----------
-    /// tle_file :
-    ///     Path to a text file containing TLEs (2-line or 3-line format).
-    /// center_id :
-    ///     NAIF ID of the central body (399 = Earth).
-    /// frame_id :
-    ///     NAIF frame ID (1 = J2000 equatorial, the standard for TLE data).
+    /// tle_file : str
+    ///   Path to a text file of TLEs, in 2-line or 3-line format.
+    /// center_id : int
+    ///   NAIF ID of the central body, for example 399 for Earth.
+    /// frame_id : int
+    ///   NAIF frame ID stored in each segment. kete evaluates Type 10 states in
+    ///   the J2000 equatorial frame, which is frame ID 1.
+    /// pad_days : float, optional
+    ///   Days of coverage added before the first and after the last element set
+    ///   of each segment. In the padding, the nearest element set is
+    ///   propagated. An object with one element set covers only this padding.
+    ///   Must be non-negative. Default is 0.5.
+    ///
+    /// Raises
+    /// ------
+    /// OSError
+    ///   If the TLE file cannot be read.
+    /// ValueError
+    ///   If the text holds no valid TLE, or if ``pad_days`` is negative or NaN.
+    #[pyo3(signature = (tle_file, center_id, frame_id, pad_days=0.5))]
     pub fn add_tle_segment(
         &mut self,
         tle_file: &str,
         center_id: i32,
         frame_id: i32,
+        pad_days: f64,
     ) -> PyResult<()> {
         let text = std::fs::read_to_string(tle_file).map_err(|e| {
             pyo3::exceptions::PyIOError::new_err(format!(
@@ -264,7 +278,7 @@ impl PySpkBuilder {
                 tle_file, e
             ))
         })?;
-        let arrays = SpkSegmentType10::arrays_from_tle_text(&text, center_id, frame_id)
+        let arrays = SpkSegmentType10::arrays_from_tle_text(&text, center_id, frame_id, pad_days)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         for array in arrays {
             self.daf.arrays.push(array.daf);

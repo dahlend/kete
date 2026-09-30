@@ -80,6 +80,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SPK type 18 chooses its interpolation window as SPICE does, and rejects windows
   and segments SPICE rejects.
 - Malformed SPK type 1, 9, 13 and 21 segments raise an error instead of panicking.
+- SPK type 10 states are rotated from TEME to J2000; they were returned in TEME.
+- `SpkBuilder.add_tle_segment` stores epochs as TDB, uses WGS72, and takes
+  `pad_days` so single-TLE segments cover time.
 - SPK type 1 and 21 writers include the epoch directory SPICE expects, and a query
   past the last record no longer reads past the segment data.
 

@@ -136,7 +136,7 @@ impl SpkSegment {
             Self::Type2(v) => v.try_get_pos_vel(jds)?,
             Self::Type3(v) => v.try_get_pos_vel(jds)?,
             Self::Type9(v) => v.try_get_pos_vel(jds),
-            Self::Type10(v) => v.try_get_pos_vel(jds),
+            Self::Type10(v) => v.try_get_pos_vel(jds)?,
             Self::Type13(v) => v.try_get_pos_vel(jds),
             Self::Type18(v) => v.try_get_pos_vel(jds),
             Self::Type19(v) => v.try_get_pos_vel(jds)?,

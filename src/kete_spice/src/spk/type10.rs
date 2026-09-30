@@ -3,18 +3,17 @@
 //! <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/spk.html#Type%2010:%20Space%20Command%20Two-Line%20Elements>
 
 use super::SpkArray;
-use crate::spice_jd_to_jd;
-use itertools::Itertools;
+use crate::{jd_to_spice_jd, spice_jd_to_jd};
 use kete_core::constants::AU_KM;
 use kete_core::errors::Error;
+use kete_core::frames::teme_frame;
 use kete_core::prelude::KeteResult;
+use kete_core::time::{Time, UTC};
+use nalgebra::Vector3;
 use sgp4::{
     Constants, Geopotential, MinutesSinceEpoch, Orbit,
     julian_years_since_j2000_afspc_compatibility_mode,
 };
-
-/// J2000 Unix timestamp (2000-Jan-1 12:00:00 UTC) for TLE epoch conversion.
-const J2000_UTC_UNIX: f64 = 946_728_000.0;
 
 /// Space Command two-line elements
 ///
@@ -38,25 +37,31 @@ pub struct SpkSegmentType10 {
 impl SpkSegmentType10 {
     /// Create a Type 10 (TLE) SPK array.
     ///
-    /// # Arguments
-    /// * `object_id`    - NAIF body ID.
-    /// * `center_id`    - NAIF center body ID (typically 399 for Earth).
-    /// * `frame_id`     - NAIF reference frame ID.
-    /// * `consts`       - 8 geophysical constants: `[j2, j3, j4, ke, qo, so, re, ae]`.
-    /// * `elements`     - Flat TLE elements, 10 values per set in order:
-    ///   `[ndt2o, ndd6o, bstar, incl, node0, ecc, omega, m0, n0, epoch]`.
-    ///   Angles in radians, rates in radians/minute, epoch in seconds past J2000.
-    /// * `epochs`       - n reference epochs (seconds past J2000), must equal element
-    ///   epochs and be strictly increasing.
-    /// * `segment_name` - Name for the DAF segment (max 40 chars).
+    /// `object_id` is the NAIF ID of the body, and `center_id` is the NAIF ID
+    /// of the center, usually 399 for Earth. `frame_id` is the NAIF ID of the
+    /// reference frame. `consts` holds the 8 geophysical constants
+    /// `[j2, j3, j4, ke, qo, so, re, ae]`.
+    ///
+    /// `elements` holds 10 values per element set, in the order
+    /// `[ndt2o, ndd6o, bstar, incl, node0, ecc, omega, m0, n0, epoch]`. Angles
+    /// are in radians, rates are in radians per minute, and the epoch is in TDB
+    /// seconds from J2000. `epochs` holds one reference epoch per element set,
+    /// in TDB seconds from J2000. Each reference epoch must equal the epoch of
+    /// its element set, and the epochs must be strictly increasing.
+    ///
+    /// `first` and `last` are the coverage of the segment, in TDB seconds from
+    /// J2000. The caller chooses them. The coverage can extend past the first
+    /// and last element sets. The reader propagates the nearest element set to
+    /// those times. `segment_name` is the name of the DAF segment, which holds
+    /// at most 40 characters.
     ///
     /// # Errors
-    /// Returns an error if inputs are empty, dimensions mismatch, or epochs aren't
-    /// strictly increasing.
-    #[allow(
-        clippy::missing_panics_doc,
-        reason = "build_data validates non-empty slices before the unwrap is reached"
-    )]
+    /// Returns [`Error::ValueError`] if:
+    /// - `epochs` is empty.
+    /// - `elements` does not hold 10 values per epoch.
+    /// - `epochs` is not strictly increasing.
+    /// - A reference epoch differs from the epoch of its element set.
+    /// - `first` or `last` is NaN, or `first` is after `last`.
     pub fn new_array(
         object_id: i32,
         center_id: i32,
@@ -64,37 +69,56 @@ impl SpkSegmentType10 {
         consts: &[f64; 8],
         elements: &[f64],
         epochs: &[f64],
+        first: f64,
+        last: f64,
         segment_name: &str,
     ) -> KeteResult<SpkArray> {
         let data = Self::build_data(consts, elements, epochs)?;
+        if first.is_nan() || last.is_nan() || first > last {
+            return Err(Error::ValueError(format!(
+                "Type 10: coverage start {first} is after its end {last}."
+            )));
+        }
         Ok(SpkArray::new(
             object_id,
             center_id,
             frame_id,
             10,
-            epochs[0],
-            *epochs.last().unwrap(),
+            first,
+            last,
             data,
             segment_name.to_string(),
         ))
     }
 
-    /// Create a Type 10 SPK segment from a slice of TLE `sgp4::Elements` for a
-    /// single object.
+    /// Create a Type 10 SPK segment from the TLE element sets of one object.
     ///
-    /// All elements must belong to the same satellite. They are sorted by epoch
-    /// before being written. Angle units are converted from degrees (TLE) to
-    /// radians, and mean motion from rev/day to rad/min, as required by SPICE.
-    /// Uses WGS72 geophysical constants.
+    /// All element sets in `elements` must belong to the same satellite. The
+    /// function sorts them by epoch before it writes them. `object_id`,
+    /// `center_id`, `frame_id`, and `segment_name` are as in
+    /// [`Self::new_array`].
+    ///
+    /// The Type 10 format requires these unit conversions:
+    /// - Angles convert from degrees to radians.
+    /// - Mean motion converts from revolutions per day to radians per minute.
+    /// - Epochs convert from UTC to TDB seconds from J2000.
+    ///
+    /// The segment uses the WGS72 geophysical constants, which are the
+    /// constants of the TLE fits. The coverage of the segment is the span of
+    /// the element set epochs, extended by `pad_days` before the first epoch
+    /// and after the last epoch.
     ///
     /// # Errors
-    /// Returns an error if `elements` is empty or epochs are not strictly
-    /// monotone after sorting.
+    /// Returns [`Error::ValueError`] if `elements` is empty, or if `pad_days`
+    /// is NaN or negative. Also returns [`Error::ValueError`] if the TDB epochs
+    /// are not strictly increasing after the sort, for example when two element
+    /// sets have the same epoch.
     pub fn from_tle_records(
         elements: &[sgp4::Elements],
         object_id: i32,
         center_id: i32,
         frame_id: i32,
+        pad_days: f64,
         segment_name: &str,
     ) -> KeteResult<SpkArray> {
         // Unit conversion constants - placed before any let statements to
@@ -112,19 +136,24 @@ impl SpkSegmentType10 {
                 "Type 10: need at least one TLE element set.".into(),
             ));
         }
+        if pad_days.is_nan() || pad_days < 0.0 {
+            return Err(Error::ValueError(format!(
+                "Type 10: pad_days must be non-negative, found {pad_days}."
+            )));
+        }
 
-        // Build the 8-element SPICE geophysical constants array from the sgp4
-        // WGS84 model: [j2, j3, j4, ke, qo, so, re, ae].
-        // qo (120.0) and so (78.0) are standard SPICE drag-layer heights (km).
-        // The final 1.0 is a dimensionless distance-unit factor used by SPICE.
+        // The 8 geophysical constants of the Type 10 format, in the order
+        // [j2, j3, j4, ke, qo, so, re, ae], from the sgp4 WGS72 model.
+        // qo (120.0) and so (78.0) are the standard drag-layer heights in km.
+        // The final 1.0 is ae, the number of distance units per Earth radius.
         let geop_consts: [f64; 8] = [
-            sgp4::WGS84.j2,
-            sgp4::WGS84.j3,
-            sgp4::WGS84.j4,
-            sgp4::WGS84.ke,
+            sgp4::WGS72.j2,
+            sgp4::WGS72.j3,
+            sgp4::WGS72.j4,
+            sgp4::WGS72.ke,
             120.0,
             78.0,
-            sgp4::WGS84.ae,
+            sgp4::WGS72.ae,
             1.0,
         ];
         // Sort a local copy by UTC datetime.
@@ -135,9 +164,19 @@ impl SpkSegmentType10 {
         let mut epochs: Vec<f64> = Vec::with_capacity(sorted.len());
 
         for elem in &sorted {
-            // Approximate TDB ~= UTC for TLE work (consistent with the existing
-            // time handling in try_get_pos_vel; see issue #66).
-            let et = elem.datetime.and_utc().timestamp() as f64 - J2000_UTC_UNIX;
+            // TLE epochs are UTC. The Type 10 format stores epochs as TDB
+            // seconds from J2000.
+            let unix = elem.datetime.and_utc();
+            // The cast from i64 to f64 can lose precision. Unix seconds in the
+            // TLE era are far below 2^53, so the cast is exact.
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "Unix seconds in the TLE era are exact in f64."
+            )]
+            let unix_days = (unix.timestamp() as f64
+                + f64::from(unix.timestamp_subsec_nanos()) * 1e-9)
+                / 86400.0;
+            let et = jd_to_spice_jd(Time::<UTC>::new(unix_days + 2_440_587.5).tdb());
             flat_elements.push(elem.mean_motion_dot * MMDT_TO_RAD_PER_MIN2);
             flat_elements.push(elem.mean_motion_ddot * MMDT2_TO_RAD_PER_MIN3);
             flat_elements.push(elem.drag_term);
@@ -151,6 +190,7 @@ impl SpkSegmentType10 {
             epochs.push(et);
         }
 
+        let pad = pad_days * 86400.0;
         Self::new_array(
             object_id,
             center_id,
@@ -158,24 +198,29 @@ impl SpkSegmentType10 {
             &geop_consts,
             &flat_elements,
             &epochs,
+            epochs[0] - pad,
+            epochs[epochs.len() - 1] + pad,
             segment_name,
         )
     }
 
-    /// Parse a block of TLE text (2-line or 3-line format) and return one
-    /// `SpkArray` per unique NORAD catalog number found.
+    /// Parse a block of TLE text and return one `SpkArray` per NORAD catalog
+    /// number.
     ///
-    /// NAIF object IDs are assigned as `-(norad_id as i32)`. Frame and center
-    /// default to equatorial (frame 1) and Earth (center 399).
-    ///
-    /// Lines that cannot be parsed are silently skipped.
+    /// The text is in 3-line or 2-line TLE format. The NAIF ID of each object
+    /// is `-(norad_id as i32)`. All segments use `center_id` and `frame_id`.
+    /// The coverage of each segment is the span of its element set epochs,
+    /// extended by `pad_days`, as in [`Self::from_tle_records`].
     ///
     /// # Errors
-    /// Returns an error if no valid TLEs are found.
+    /// Returns [`Error::ValueError`] if the text cannot be parsed, or if the
+    /// text has no TLE. Also returns each error of [`Self::from_tle_records`],
+    /// for example when `pad_days` is negative.
     pub fn arrays_from_tle_text(
         text: &str,
         center_id: i32,
         frame_id: i32,
+        pad_days: f64,
     ) -> KeteResult<Vec<SpkArray>> {
         let groups = parse_tle_text(text)?;
         if groups.is_empty() {
@@ -192,43 +237,55 @@ impl SpkSegmentType10 {
                 .unwrap_or("")
                 .to_string();
             arrays.push(Self::from_tle_records(
-                elements, object_id, center_id, frame_id, &name,
+                elements, object_id, center_id, frame_id, pad_days, &name,
             )?);
         }
         Ok(arrays)
     }
 
-    #[inline(always)]
-    pub(in crate::spk) fn try_get_pos_vel(&self, jds: f64) -> ([f64; 3], [f64; 3]) {
-        // TODO: this does not yet implement the interpolation between two neighboring
-        // states which is present in the cSPICE implementation.
-
+    /// Return the position in AU and velocity in AU/day, in Equatorial J2000.
+    ///
+    /// `jds` is the time in TDB seconds from J2000. The function propagates the
+    /// element set with the epoch nearest to `jds`, with SGP4 in improved mode
+    /// and the geophysical constants of the segment. At the midpoint between
+    /// two epochs, it uses the later element set. It does not blend the
+    /// predictions of neighboring element sets.
+    ///
+    /// SGP4 gives the state in the TEME frame of date, from
+    /// [`teme_frame`]. The function rotates the position and the velocity to
+    /// Equatorial J2000. The velocity does not include the rotation rate of the
+    /// TEME frame.
+    ///
+    /// # Errors
+    /// Returns [`Error::ValueError`] if the epoch of the element set cannot be
+    /// converted to a UTC date, if the elements are invalid, or if SGP4 fails
+    /// to propagate.
+    pub(in crate::spk) fn try_get_pos_vel(&self, jds: f64) -> KeteResult<([f64; 3], [f64; 3])> {
         let times = self.get_times();
-        let idx: usize = match times.binary_search_by(|probe| probe.total_cmp(&jds)) {
-            Ok(c) => c,
-            Err(c) => {
-                if c == 0 {
-                    c
-                } else if c == times.len() || (jds - times[c - 1]).abs() < (jds - times[c]).abs() {
-                    c - 1
-                } else {
-                    c
-                }
-            }
+        let n_before = times.partition_point(|&t| t < jds);
+        let idx = if n_before == 0 {
+            0
+        } else if n_before == times.len()
+            || (jds - times[n_before - 1]).abs() < (times[n_before] - jds).abs()
+        {
+            n_before - 1
+        } else {
+            n_before
         };
-        let epoch = times[idx];
-        let record = self.get_record(idx);
-        let prediction = record
-            .propagate(MinutesSinceEpoch((jds - epoch) / 60.0))
-            .unwrap();
 
-        let [x, y, z] = prediction.position;
-        let [vx, vy, vz] = prediction.velocity;
-        let v_scale = 86400.0 / AU_KM;
-        (
-            [x / AU_KM, y / AU_KM, z / AU_KM],
-            [vx * v_scale, vy * v_scale, vz * v_scale],
-        )
+        let record = self.get_record(idx)?;
+        let prediction = record
+            .propagate(MinutesSinceEpoch(
+                (jds - self.array.get_packet::<15>(idx)[10]) / 60.0,
+            ))
+            .map_err(|e| Error::ValueError(format!("SGP4 propagation failed: {e}")))?;
+        let pos = Vector3::from(prediction.position);
+        let vel = Vector3::from(prediction.velocity);
+
+        let rot = teme_frame(spice_jd_to_jd(jds)).rotation;
+        let pos = rot * pos / AU_KM;
+        let vel = rot * vel / AU_KM * 86400.0;
+        Ok((pos.into(), vel.into()))
     }
 
     /// Build the data array for a Type 10 (TLE) generic segment.
@@ -239,7 +296,6 @@ impl SpkSegmentType10 {
     ///
     /// Nutation values (packet indices 10-13) are set to zero; the kete reader
     /// does not use them.
-    #[allow(dead_code, reason = "Writer for external use, no internal callers yet")]
     fn build_data(consts: &[f64; 8], elements: &[f64], epochs: &[f64]) -> KeteResult<Vec<f64>> {
         let n = epochs.len();
         if n == 0 {
@@ -261,10 +317,21 @@ impl SpkSegmentType10 {
                 ));
             }
         }
+        if elements
+            .chunks(10)
+            .zip(epochs)
+            .any(|(set, epoch)| set[9] != *epoch)
+        {
+            return Err(Error::ValueError(
+                "Type 10: epochs must equal the element set epochs.".into(),
+            ));
+        }
 
+        // In the generic segment layout, the reference directory follows the
+        // reference items.
         let n_ref_dir = if n > 100 { (n - 1) / 100 } else { 0 };
         let ref_items_addr = 8 + 15 * n;
-        let ref_dir_addr = ref_items_addr + n + n_ref_dir;
+        let ref_dir_addr = ref_items_addr + n;
         let total_len = 8 + 15 * n + n + n_ref_dir + 17;
         let mut data = Vec::with_capacity(total_len);
 
@@ -314,9 +381,12 @@ impl SpkSegmentType10 {
         self.array.get_reference_items()
     }
 
-    /// Return the SGP4 record stored within the spice kernel.
-    #[inline(always)]
-    fn get_record(&self, idx: usize) -> Constants {
+    /// Build the SGP4 constants from the element set at `idx`.
+    ///
+    /// # Errors
+    /// Returns [`Error::ValueError`] if the stored epoch does not convert to a
+    /// UTC date, or if SGP4 rejects the elements.
+    fn get_record(&self, idx: usize) -> KeteResult<Constants> {
         let rec = self.array.get_packet::<15>(idx);
         let [
             _,
@@ -336,12 +406,10 @@ impl SpkSegmentType10 {
             _,
         ] = *rec;
 
+        // The stored epoch is TDB. SGP4 expects the TLE epoch in UTC, so the
+        // epoch converts back to UTC.
         let epoch = julian_years_since_j2000_afspc_compatibility_mode(
-            &spice_jd_to_jd(epoch)
-                .utc()
-                .to_datetime()
-                .unwrap()
-                .naive_utc(),
+            &spice_jd_to_jd(epoch).utc().to_datetime()?.naive_utc(),
         );
 
         // use the provided goepotential even if it is not correct.
@@ -354,7 +422,7 @@ impl SpkSegmentType10 {
             mean_anomaly,
             kozai_mean_motion,
         )
-        .expect("Failed to load orbit values");
+        .map_err(|e| Error::ValueError(format!("Invalid TLE elements: {e}")))?;
         Constants::new(
             self.geopotential,
             sgp4::afspc_epoch_to_sidereal_time,
@@ -362,7 +430,7 @@ impl SpkSegmentType10 {
             b_star,
             orbit_0,
         )
-        .expect("Failed to load orbit values")
+        .map_err(|e| Error::ValueError(format!("Invalid TLE elements: {e}")))
     }
 }
 
@@ -371,6 +439,12 @@ impl TryFrom<SpkArray> for SpkSegmentType10 {
     fn try_from(array: SpkArray) -> KeteResult<Self> {
         let array: GenericSegment = array.try_into()?;
         let constants = array.constants();
+        if constants.len() < 8 {
+            return Err(Error::IOError(format!(
+                "SPK Type 10 needs 8 geophysical constants, found {}.",
+                constants.len()
+            )));
+        }
         let geopotential = Geopotential {
             j2: constants[0],
             j3: constants[1],
@@ -481,24 +555,34 @@ impl GenericSegment {
 impl TryFrom<SpkArray> for GenericSegment {
     type Error = Error;
 
+    // The metadata values are f64 in the file, and the casts to usize can lose
+    // the sign or truncate. Each metadata value is checked to be a finite,
+    // non-negative whole number before its cast. The count of metadata values
+    // is checked to be finite and in range, and its cast drops any fraction.
     #[allow(
         clippy::cast_sign_loss,
-        reason = "This is correct as long as the file is correct."
+        clippy::cast_possible_truncation,
+        reason = "Metadata values are checked to be non-negative whole numbers, and the count to be in range."
     )]
     fn try_from(array: SpkArray) -> KeteResult<Self> {
-        // The very last value of this array is an int (cast to f64) which indicates the number
-        // of meta-data values.
+        let malformed = || Error::IOError("SPK generic segment is not correctly formatted.".into());
+        let len = array.daf.len();
 
-        let n_meta = array.daf[array.daf.len() - 1] as usize;
-
-        if n_meta < 15 {
-            Err(Error::IOError(
-                "PSK File not correctly formatted. There are fewer values found than expected."
-                    .into(),
-            ))?;
+        // The last value of the array is the number of metadata values, stored
+        // as an f64. There are at least 15 metadata values.
+        let n_meta = *array.daf.data.last().ok_or_else(malformed)?;
+        if !(n_meta.is_finite() && n_meta >= 15.0 && n_meta <= len as f64) {
+            return Err(malformed());
         }
-        // there are guaranteed to be 15 meta data values.
-        let (
+        let meta = &array.daf.data[len - n_meta as usize..len - 1];
+        if meta
+            .iter()
+            .any(|x| !(x.is_finite() && *x >= 0.0 && x.fract() == 0.0))
+        {
+            return Err(malformed());
+        }
+        let meta: Vec<usize> = meta.iter().map(|x| *x as usize).collect();
+        let [
             const_addr,
             n_consts,
             ref_dir_addr,
@@ -511,29 +595,30 @@ impl TryFrom<SpkArray> for GenericSegment {
             packet_dir_dype,
             packet_addr,
             n_packets,
-        ) = array
-            .daf
-            .data
-            .get(array.daf.len() - n_meta..array.daf.len() - 1)
-            .unwrap()
-            .iter()
-            .map(|x| *x as usize)
-            .next_tuple()
-            .unwrap();
+            res_addr,
+            n_reserved,
+        ] = meta[..14]
+        else {
+            return Err(malformed());
+        };
 
-        let (res_addr, n_reserved) = array
-            .daf
-            .data
-            .get(array.daf.len() - n_meta..array.daf.len() - 1)
-            .unwrap()
-            .iter()
-            .map(|x| *x as usize)
-            .next_tuple()
-            .unwrap();
+        // Later reads of these regions do not check bounds, so each region must
+        // lie inside the array.
+        let fits = |addr: usize, count: usize| addr.checked_add(count).is_some_and(|e| e <= len);
+        if !fits(const_addr, n_consts)
+            || !fits(ref_items_addr, n_ref_items)
+            || n_packets
+                .checked_mul(15)
+                .is_none_or(|n| !fits(packet_addr, n))
+            || n_ref_items == 0
+            || n_packets != n_ref_items
+        {
+            return Err(malformed());
+        }
 
         Ok(Self {
             array,
-            n_meta,
+            n_meta: n_meta as usize,
             const_addr,
             n_consts,
             ref_dir_addr,
@@ -605,9 +690,10 @@ mod tests {
         ];
         let epochs = vec![epoch1, epoch2];
 
-        let array =
-            SpkSegmentType10::new_array(-25544, 399, 1, &consts, &elements, &epochs, "test")
-                .unwrap();
+        let array = SpkSegmentType10::new_array(
+            -25544, 399, 1, &consts, &elements, &epochs, epoch1, epoch2, "test",
+        )
+        .unwrap();
 
         // Round-trip through GenericSegment -> SpkSegmentType10
         let seg: SpkSegmentType10 = array.try_into().unwrap();
@@ -640,16 +726,22 @@ mod tests {
     #[test]
     fn type10_validation() {
         let consts = [0.0; 8];
+        let make = |elements: &[f64], epochs: &[f64], first: f64, last: f64| {
+            SpkSegmentType10::new_array(1, 399, 1, &consts, elements, epochs, first, last, "t")
+        };
+        let mut two = [0.0; 20];
+        two[19] = 1.0;
+        assert!(make(&two, &[0.0, 1.0], 0.0, 1.0).is_ok());
         // Empty elements
-        assert!(SpkSegmentType10::new_array(1, 399, 1, &consts, &[], &[], "t").is_err());
+        assert!(make(&[], &[], 0.0, 1.0).is_err());
         // Mismatched lengths
-        assert!(
-            SpkSegmentType10::new_array(1, 399, 1, &consts, &[0.0; 10], &[0.0, 1.0], "t").is_err()
-        );
+        assert!(make(&[0.0; 10], &[0.0, 1.0], 0.0, 1.0).is_err());
         // Non-increasing epochs
-        assert!(
-            SpkSegmentType10::new_array(1, 399, 1, &consts, &[0.0; 20], &[1.0, 0.0], "t").is_err()
-        );
+        assert!(make(&[0.0; 20], &[1.0, 0.0], 0.0, 1.0).is_err());
+        // Reference epochs which differ from the element epochs
+        assert!(make(&two, &[0.0, 2.0], 0.0, 2.0).is_err());
+        // Coverage which ends before it starts
+        assert!(make(&two, &[0.0, 1.0], 1.0, 0.0).is_err());
     }
 
     #[test]
@@ -671,11 +763,58 @@ ISS (ZARYA)
         assert_eq!(elems.len(), 2);
         assert!(elems[0].datetime <= elems[1].datetime);
 
-        let array = SpkSegmentType10::from_tle_records(elems, -25544, 399, 1, "ISS").unwrap();
+        let array = SpkSegmentType10::from_tle_records(elems, -25544, 399, 1, 0.5, "ISS").unwrap();
+        // The coverage is padded by half a day on either side.
+        let start = array.jds_start;
+        let end = array.jds_end;
         let seg: SpkSegmentType10 = array.try_into().unwrap();
         let times = seg.get_times();
         assert_eq!(times.len(), 2);
-        assert!(times[0] < times[1]);
+        // The 2008 epoch, 2008-264T12:25:40.104192 UTC, in TDB seconds from
+        // J2000. The reference value is from SPICE STR2ET.
+        assert!(
+            (times[0] - 275_185_605.286_586).abs() < 1e-3,
+            "{}",
+            times[0]
+        );
+        assert!((start - (times[0] - 43200.0)).abs() < 1e-3);
+        assert!((end - (times[1] + 43200.0)).abs() < 1e-3);
+    }
+
+    /// Each request uses the element set with the nearest epoch. At the epoch
+    /// of a set, the state is the prediction of that set. Past the midpoint
+    /// between two sets, the later set is used.
+    #[test]
+    fn type10_uses_the_nearest_element_set() {
+        let tle_text = "\
+ISS (ZARYA)
+1 25544U 98067A   08264.51782528 -.00002182  00000-0 -11606-4 0  2927
+2 25544  51.6416 247.4627 0006703 130.5360 325.0288 15.72125391563537
+ISS (ZARYA)
+1 25544U 98067A   08265.51782528 -.00002182  00000-0 -11606-4 0  2928
+2 25544  51.6416 242.4627 0006703 130.5360 325.0288 15.72125391563532
+";
+        let arrays = SpkSegmentType10::arrays_from_tle_text(tle_text, 399, 1, 0.0).unwrap();
+        let seg: SpkSegmentType10 = arrays.into_iter().next().unwrap().try_into().unwrap();
+        let t1 = seg.array.get_packet::<15>(0)[10];
+        let t2 = seg.array.get_packet::<15>(1)[10];
+
+        // The prediction of one element set, rotated to J2000, in km.
+        let predict = |idx: usize, jds: f64| {
+            let record = seg.get_record(idx).unwrap();
+            let epoch = seg.array.get_packet::<15>(idx)[10];
+            let p = record
+                .propagate(MinutesSinceEpoch((jds - epoch) / 60.0))
+                .unwrap()
+                .position;
+            *teme_frame(spice_jd_to_jd(jds)).rotation.matrix() * Vector3::from(p)
+        };
+        let mid = f64::midpoint(t1, t2);
+        for (jds, idx) in [(t1, 0), (mid - 60.0, 0), (mid + 60.0, 1), (t2, 1)] {
+            let (pos, _) = seg.try_get_pos_vel(jds).unwrap();
+            let err = (Vector3::from(pos) * AU_KM - predict(idx, jds)).norm();
+            assert!(err < 1e-6, "{jds}: {err} km");
+        }
     }
 
     #[test]
@@ -691,7 +830,7 @@ ISS (ZARYA)
 ";
         let groups = parse_tle_text(tle_text).unwrap();
         assert_eq!(groups.len(), 2);
-        let arrays = SpkSegmentType10::arrays_from_tle_text(tle_text, 399, 1).unwrap();
+        let arrays = SpkSegmentType10::arrays_from_tle_text(tle_text, 399, 1, 0.5).unwrap();
         assert_eq!(arrays.len(), 2);
     }
 }
