@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `NonGravModel.new_ramped_thrust`.
 - `NonGravModel.with_free` to warm-start non-grav fits.
 - `DiffuseState.mean_eta` and `max_unresolved_weight`.
+- SPK segment type 19 (ESOC/DDID piecewise interpolation).
 
 ### Changed
 
@@ -76,6 +77,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Malformed DAF files raise an error instead of panicking or hanging, and a DAF
   damaged by a text mode transfer is detected.
 - SPK types 9 and 13 no longer shift even-sized interpolation windows by one point.
+- SPK type 18 chooses its interpolation window as SPICE does, and rejects windows
+  and segments SPICE rejects.
 - SPK type 1 and 21 writers include the epoch directory SPICE expects, and a query
   past the last record no longer reads past the segment data.
 

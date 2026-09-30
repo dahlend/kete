@@ -36,21 +36,29 @@ pub struct SpkSegmentType18 {
 impl SpkSegmentType18 {
     /// Create a Type 18 (ESOC/DDID Hermite or Lagrange interpolation) SPK array.
     ///
-    /// # Arguments
-    /// * `object_id`     - NAIF ID of the body.
-    /// * `center_id`     - NAIF ID of the center body.
-    /// * `frame_id`      - NAIF frame ID.
-    /// * `records`       - Flat state data: `n * record_size` values (12 for subtype 0, 6 for subtype 1).
-    /// * `epochs`        - n epoch values (SPICE seconds from J2000), strictly increasing.
-    /// * `subtype`       - 0 for Hermite, 1 for Lagrange.
-    /// * `window_size`   - Interpolation window size, must be <= n.
-    /// * `jds_start`     - Segment start, TDB seconds from J2000.
-    /// * `jds_end`       - Segment end, TDB seconds from J2000.
-    /// * `segment_name`  - Name stored in the DAF name record (max 40 chars).
+    /// `object_id` is the NAIF ID of the body, and `center_id` is the NAIF ID
+    /// of the center body. `frame_id` is the NAIF frame ID. `records` is the
+    /// flat packet data, with one packet per epoch. A packet holds 12 values
+    /// for subtype 0 and 6 values for subtype 1. `epochs` holds the packet
+    /// epochs in TDB seconds from J2000. `subtype` is 0 for Hermite and 1 for
+    /// Lagrange. `window_size` is the interpolation window size. `jds_start`
+    /// and `jds_end` are the segment start and end, in TDB seconds from J2000.
+    /// `segment_name` is the name stored in the DAF name record, which holds at
+    /// most 40 characters.
     ///
     /// # Errors
-    /// Returns an error if `subtype` is not 0 or 1, or the data/epoch lengths
-    /// are inconsistent.
+    /// Returns [`Error::ValueError`] in these cases:
+    /// - `subtype` is not 0 or 1.
+    /// - `jds_start` is after `jds_end`, or either one is outside the first to
+    ///   the last epoch.
+    /// - The length of `records` is not the packet size times `epochs.len()`.
+    /// - `window_size` is greater than `epochs.len()`.
+    /// - The epochs are not strictly increasing.
+    ///
+    /// Returns [`Error::IOError`] from `check_packet_layout` in these cases:
+    /// - `epochs` holds fewer than 2 values.
+    /// - `window_size` is odd, less than 2, or greater than 8 for subtype 0 or
+    ///   16 for subtype 1.
     pub fn new_array(
         object_id: i32,
         center_id: i32,
@@ -69,9 +77,17 @@ impl SpkSegmentType18 {
             _ => return Err(Error::ValueError("Type 18: subtype must be 0 or 1.".into())),
         };
         let n = epochs.len();
-        if n == 0 {
+        check_packet_layout(
+            subtype as usize,
+            n,
+            window_size as usize,
+            record_size,
+            n * (record_size + 1),
+            TYPE18_MAX_DEGREE,
+        )?;
+        if !(epochs[0] <= jds_start && jds_start <= jds_end && jds_end <= epochs[n - 1]) {
             return Err(Error::ValueError(
-                "Type 18: need at least one record.".into(),
+                "Type 18: the segment start and end must be ordered and within the epochs.".into(),
             ));
         }
         if records.len() != n * record_size {
@@ -120,127 +136,130 @@ impl SpkSegmentType18 {
     }
 
     #[inline(always)]
-    fn get_record(&self, idx: usize) -> Type18RecordView<'_> {
-        unsafe {
-            let rec = self
-                .array
-                .daf
-                .data
-                .get_unchecked(idx * self.record_size..(idx + 1) * self.record_size);
-            Type18RecordView {
-                pos: &rec[0..self.record_size / 2],
-                vel: &rec[self.record_size / 2..self.record_size],
-            }
-        }
-    }
-
-    #[inline(always)]
-    fn get_times(&self) -> &[f64] {
-        unsafe {
-            self.array.daf.data.get_unchecked(
-                self.n_records * self.record_size..self.n_records * (self.record_size + 1),
-            )
-        }
-    }
-
-    #[inline(always)]
-    #[allow(
-        clippy::cast_possible_wrap,
-        reason = "This is correct as long as the file is correct."
-    )]
     pub(crate) fn try_get_pos_vel(&self, jds: f64) -> ([f64; 3], [f64; 3]) {
-        let times = self.get_times();
-        let start_idx: isize = match times.binary_search_by(|probe| probe.total_cmp(&jds)) {
-            Ok(c) => c as isize - (self.window_size as isize) / 2,
-            Err(c) => {
-                if (jds - times[c - 1]).abs() < (jds - times[c]).abs() {
-                    c as isize - 1 - self.window_size as isize / 2
-                } else {
-                    c as isize - self.window_size as isize / 2
-                }
-            }
-        };
+        PacketSeries {
+            packets: &self.array.daf.data[..self.n_records * self.record_size],
+            epochs: &self.array.daf.data
+                [self.n_records * self.record_size..self.n_records * (self.record_size + 1)],
+            subtype: self.subtype,
+            window_size: self.window_size,
+            record_size: self.record_size,
+        }
+        .try_get_pos_vel(jds)
+    }
+}
 
-        #[allow(
-            clippy::cast_sign_loss,
-            reason = "This is correct as long as the file is correct."
-        )]
-        let start_idx =
-            start_idx.clamp(0, self.n_records as isize - self.window_size as isize) as usize;
+/// Return the number of values in a packet of an ESOC/DDID subtype.
+///
+/// A subtype 0 packet holds 12 values. A subtype 1 or subtype 2 packet holds 6
+/// values. Type 18 supports subtypes 0 and 1. Subtype 2 occurs only in type 19
+/// mini-segments. Any other subtype gives `None`.
+pub(in crate::spk) const fn packet_size(subtype: usize) -> Option<usize> {
+    match subtype {
+        0 => Some(12),
+        1 | 2 => Some(6),
+        _ => None,
+    }
+}
+
+/// A run of ESOC/DDID packets with their epochs.
+///
+/// A type 18 segment and each mini-segment of a type 19 segment share this
+/// layout, so both use this evaluator. The packets hold positions in km and
+/// velocities in km/s. The evaluator returns positions in AU and velocities in
+/// AU/day.
+pub(in crate::spk) struct PacketSeries<'a> {
+    pub packets: &'a [f64],
+    pub epochs: &'a [f64],
+    pub subtype: usize,
+    pub window_size: usize,
+    pub record_size: usize,
+}
+
+impl PacketSeries<'_> {
+    #[inline(always)]
+    fn record(&self, idx: usize) -> &[f64] {
+        // SAFETY: Each constructor sets `packets` to hold `record_size` values
+        // for each epoch. The only caller takes `idx` from `window`, which
+        // keeps it below `epochs.len()`.
+        unsafe {
+            self.packets
+                .get_unchecked(idx * self.record_size..(idx + 1) * self.record_size)
+        }
+    }
+
+    /// Return the first index and the size of the interpolation window.
+    ///
+    /// This follows the SPKR18 and SPKR19 window rule. The interval starts at
+    /// the last epoch strictly before `jds`. If no epoch is before `jds`, the
+    /// interval starts at the first epoch. The window takes up to half its
+    /// nominal size on each side of this interval. Near either end of the
+    /// series, the window shrinks and does not shift.
+    #[inline(always)]
+    fn window(&self, jds: f64) -> (usize, usize) {
+        let n = self.epochs.len();
+        let low = self.epochs.partition_point(|&t| t < jds).max(1) - 1;
+        let half = self.window_size / 2;
+        let left = half.min(low + 1);
+        let right = half.min(n - low - 1);
+        (low + 1 - left, left + right)
+    }
+
+    #[inline(always)]
+    pub(in crate::spk) fn try_get_pos_vel(&self, jds: f64) -> ([f64; 3], [f64; 3]) {
+        let (start, window) = self.window(jds);
+        let times = &self.epochs[start..start + window];
 
         let mut pos = [0.0; 3];
         let mut vel = [0.0; 3];
-        match self.subtype {
-            0 => {
-                for idx in 0..3 {
-                    {
-                        let p: Box<[f64]> = (0..self.window_size)
-                            .map(|i| self.get_record(i + start_idx).pos[idx])
-                            .collect();
-                        let dp: Box<[f64]> = (0..self.window_size)
-                            .map(|i| self.get_record(i + start_idx).pos[idx + 3])
-                            .collect();
-                        let (p, _) = hermite_interpolation(
-                            &times[start_idx..start_idx + self.window_size],
-                            &p,
-                            &dp,
-                            jds,
-                        );
-                        pos[idx] = p / AU_KM;
-                    }
-                    {
-                        let p: Box<[f64]> = (0..self.window_size)
-                            .map(|i| self.get_record(i + start_idx).vel[idx])
-                            .collect();
-                        let dp: Box<[f64]> = (0..self.window_size)
-                            .map(|i| self.get_record(i + start_idx).vel[idx + 3])
-                            .collect();
-                        let (v, _) = hermite_interpolation(
-                            &times[start_idx..start_idx + self.window_size],
-                            &p,
-                            &dp,
-                            jds,
-                        );
-                        vel[idx] = v / AU_KM * 86400.;
-                    }
+        for idx in 0..3 {
+            match self.subtype {
+                // Position and velocity each use a Hermite fit with their own
+                // stored derivative.
+                0 => {
+                    let p: Box<[f64]> = (0..window).map(|i| self.record(i + start)[idx]).collect();
+                    let dp: Box<[f64]> = (0..window)
+                        .map(|i| self.record(i + start)[idx + 3])
+                        .collect();
+                    let (p, _) = hermite_interpolation(times, &p, &dp, jds);
+                    pos[idx] = p / AU_KM;
+
+                    let v: Box<[f64]> = (0..window)
+                        .map(|i| self.record(i + start)[idx + 6])
+                        .collect();
+                    let dv: Box<[f64]> = (0..window)
+                        .map(|i| self.record(i + start)[idx + 9])
+                        .collect();
+                    let (v, _) = hermite_interpolation(times, &v, &dv, jds);
+                    vel[idx] = v / AU_KM * 86400.;
                 }
-            }
-            1 => {
-                for idx in 0..3 {
-                    let mut p: Box<[f64]> = (0..self.window_size)
-                        .map(|i| self.get_record(i + start_idx).pos[idx])
+                // The packets hold no derivative data. Position and velocity
+                // each use a Lagrange fit.
+                1 => {
+                    let mut p: Box<[f64]> =
+                        (0..window).map(|i| self.record(i + start)[idx]).collect();
+                    let mut v: Box<[f64]> = (0..window)
+                        .map(|i| self.record(i + start)[idx + 3])
                         .collect();
-                    let mut dp: Box<[f64]> = (0..self.window_size)
-                        .map(|i| self.get_record(i + start_idx).vel[idx])
+                    pos[idx] = lagrange_interpolation(times, &mut p, jds) / AU_KM;
+                    vel[idx] = lagrange_interpolation(times, &mut v, jds) / AU_KM * 86400.;
+                }
+                // The stored velocity is the derivative for the Hermite fit of
+                // the position. One fit gives both position and velocity.
+                2 => {
+                    let p: Box<[f64]> = (0..window).map(|i| self.record(i + start)[idx]).collect();
+                    let dp: Box<[f64]> = (0..window)
+                        .map(|i| self.record(i + start)[idx + 3])
                         .collect();
-                    let p = lagrange_interpolation(
-                        &times[start_idx..start_idx + self.window_size],
-                        &mut p,
-                        jds,
-                    );
-                    let v = lagrange_interpolation(
-                        &times[start_idx..start_idx + self.window_size],
-                        &mut dp,
-                        jds,
-                    );
+                    let (p, v) = hermite_interpolation(times, &p, &dp, jds);
                     pos[idx] = p / AU_KM;
                     vel[idx] = v / AU_KM * 86400.;
                 }
-            }
-            _ => {
-                unreachable!()
+                _ => unreachable!(),
             }
         }
         (pos, vel)
     }
-}
-
-/// Type 18 Record View
-/// A view into a record of type 18, provided mainly for clarity to the underlying
-/// data structure.
-struct Type18RecordView<'a> {
-    pos: &'a [f64],
-    vel: &'a [f64],
 }
 
 impl TryFrom<SpkArray> for SpkSegmentType18 {
@@ -248,29 +267,43 @@ impl TryFrom<SpkArray> for SpkSegmentType18 {
 
     #[allow(
         clippy::cast_sign_loss,
-        reason = "This is correct as long as the file is correct."
+        clippy::cast_possible_truncation,
+        reason = "Values are checked to be non-negative whole numbers first."
     )]
     fn try_from(array: SpkArray) -> KeteResult<Self> {
-        let n_records = array.daf[array.daf.len() - 1] as usize;
-        let mut window_size = array.daf[array.daf.len() - 2] as usize;
-        let subtype = array.daf[array.daf.len() - 3] as usize;
-        let record_size = {
-            if subtype == 0 {
-                12
-            } else if subtype == 1 {
-                6
-            } else {
+        let len = array.daf.len();
+        if len < 3 {
+            return Err(Error::IOError("SPK Type 18: segment is truncated.".into()));
+        }
+        let control = [array.daf[len - 3], array.daf[len - 2], array.daf[len - 1]];
+        if control
+            .iter()
+            .any(|x| !(x.is_finite() && *x >= 0.0 && x.fract() == 0.0))
+        {
+            return Err(Error::IOError(format!(
+                "SPK Type 18: invalid control words {control:?}."
+            )));
+        }
+        let [subtype, window_size, n_records] = control.map(|x| x as usize);
+
+        // Subtype 2 uses the ESOC/DDID packet layout, but it occurs only inside
+        // type 19 mini-segments. This reader rejects it.
+        let record_size = match subtype {
+            0 | 1 => packet_size(subtype).unwrap_or(0),
+            _ => {
                 return Err(Error::ValueError(
                     "SPK Segment Type 18 only supports subtype of 0 or 1".into(),
                 ));
             }
         };
-        if window_size > n_records {
-            eprintln!(
-                "Spk Segment Type 18 must have at least as many records as the window size, n_records={n_records}, window_size={window_size}",
-            );
-            window_size = n_records;
-        }
+        check_packet_layout(
+            subtype,
+            n_records,
+            window_size,
+            record_size,
+            len - 3,
+            TYPE18_MAX_DEGREE,
+        )?;
 
         Ok(Self {
             array,
@@ -279,5 +312,118 @@ impl TryFrom<SpkArray> for SpkSegmentType18 {
             n_records,
             record_size,
         })
+    }
+}
+
+/// Largest interpolation degree SPICE supports in type 18 segments.
+pub(in crate::spk) const TYPE18_MAX_DEGREE: usize = 15;
+
+/// Largest interpolation degree SPICE supports in type 19 mini-segments.
+pub(in crate::spk) const TYPE19_MAX_DEGREE: usize = 27;
+
+/// Check the control words of a type 18 segment or a type 19 mini-segment.
+///
+/// `available` is the number of values before the control words. `max_degree`
+/// is the largest interpolation degree for the segment type. The largest window
+/// is `(max_degree + 1) / 2` for subtype 0 and `max_degree + 1` for the other
+/// subtypes. This check accepts a window larger than the number of packets. The
+/// evaluator shrinks such a window to the packets available.
+///
+/// # Errors
+/// Returns [`Error::IOError`] in these cases:
+/// - `n_records` is less than 2.
+/// - `window_size` is odd, less than 2, or greater than the largest window.
+/// - `available` is less than `n_records * (record_size + 1)`.
+pub(in crate::spk) fn check_packet_layout(
+    subtype: usize,
+    n_records: usize,
+    window_size: usize,
+    record_size: usize,
+    available: usize,
+    max_degree: usize,
+) -> KeteResult<()> {
+    if n_records < 2 {
+        return Err(Error::IOError(format!(
+            "ESOC/DDID segment needs at least 2 packets, found {n_records}."
+        )));
+    }
+    let max_window = if subtype == 0 {
+        max_degree.div_ceil(2)
+    } else {
+        max_degree + 1
+    };
+    if window_size < 2 || !window_size.is_multiple_of(2) || window_size > max_window {
+        return Err(Error::IOError(format!(
+            "ESOC/DDID window size must be even and in [2, {max_window}], found \
+             {window_size}."
+        )));
+    }
+    if n_records
+        .checked_mul(record_size + 1)
+        .is_none_or(|needed| needed > available)
+    {
+        return Err(Error::IOError(format!(
+            "ESOC/DDID segment holds {available} values, too few for {n_records} packets."
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn series(epochs: &[f64], window_size: usize) -> PacketSeries<'_> {
+        PacketSeries {
+            packets: &[],
+            epochs,
+            subtype: 1,
+            window_size,
+            record_size: 6,
+        }
+    }
+
+    /// Check window placement against the SPKR18 rule, with epochs every 60 s.
+    #[test]
+    fn window_matches_spkr18() {
+        let epochs: Vec<f64> = (0..11).map(|i| f64::from(i) * 60.0).collect();
+        let s = series(&epochs, 4);
+
+        // Half the window on each side of the containing interval.
+        assert_eq!(s.window(130.0), (1, 4));
+        assert_eq!(s.window(170.0), (1, 4));
+        // An exact epoch belongs to the interval ending on it.
+        assert_eq!(s.window(180.0), (1, 4));
+        // At either end, the window shrinks and does not shift.
+        assert_eq!(s.window(0.0), (0, 3));
+        assert_eq!(s.window(30.0), (0, 3));
+        assert_eq!(s.window(600.0), (8, 3));
+
+        let s = series(&epochs[..2], 8);
+        assert_eq!(s.window(30.0), (0, 2));
+    }
+
+    #[test]
+    fn rejects_windows_spice_rejects() {
+        let records = [0.0; 12];
+        let epochs = [0.0, 60.0];
+        let make = |window_size| {
+            SpkSegmentType18::new_array(
+                1000,
+                10,
+                1,
+                &records,
+                &epochs,
+                1,
+                window_size,
+                0.0,
+                0.0,
+                "test",
+            )
+        };
+        assert!(make(2).is_ok());
+        assert!(make(0).is_err());
+        assert!(make(1).is_err());
+        assert!(make(3).is_err());
     }
 }

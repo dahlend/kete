@@ -35,6 +35,7 @@ use super::type9::SpkSegmentType9;
 use super::type10::SpkSegmentType10;
 use super::type13::SpkSegmentType13;
 use super::type18::SpkSegmentType18;
+use super::type19::SpkSegmentType19;
 use super::type21::SpkSegmentType21;
 use crate::daf::DafArray;
 use crate::jd_to_spice_jd;
@@ -54,6 +55,7 @@ pub(in crate::spk) enum SpkSegment {
     Type10(SpkSegmentType10),
     Type13(SpkSegmentType13),
     Type18(SpkSegmentType18),
+    Type19(SpkSegmentType19),
     Type21(SpkSegmentType21),
 }
 
@@ -69,6 +71,7 @@ impl TryFrom<SpkArray> for SpkSegment {
             10 => Ok(Self::Type10(array.try_into()?)),
             13 => Ok(Self::Type13(array.try_into()?)),
             18 => Ok(Self::Type18(array.try_into()?)),
+            19 => Ok(Self::Type19(array.try_into()?)),
             21 => Ok(Self::Type21(array.try_into()?)),
             v => Err(Error::IOError(format!(
                 "SPK Segment type {v} not supported. Please submit a github issue!",
@@ -87,6 +90,7 @@ impl<'a> From<&'a SpkSegment> for &'a SpkArray {
             SpkSegment::Type10(v) => &v.array.array,
             SpkSegment::Type13(v) => &v.array,
             SpkSegment::Type18(v) => &v.array,
+            SpkSegment::Type19(v) => &v.array,
             SpkSegment::Type21(v) => &v.array,
         }
     }
@@ -102,6 +106,7 @@ impl From<SpkSegment> for DafArray {
             SpkSegment::Type10(v) => v.array.array.daf,
             SpkSegment::Type13(v) => v.array.daf,
             SpkSegment::Type18(v) => v.array.daf,
+            SpkSegment::Type19(v) => v.array.daf,
             SpkSegment::Type21(v) => v.array.daf,
         }
     }
@@ -134,6 +139,7 @@ impl SpkSegment {
             Self::Type10(v) => v.try_get_pos_vel(jds),
             Self::Type13(v) => v.try_get_pos_vel(jds),
             Self::Type18(v) => v.try_get_pos_vel(jds),
+            Self::Type19(v) => v.try_get_pos_vel(jds)?,
             Self::Type21(v) => v.try_get_pos_vel(jds)?,
         };
 

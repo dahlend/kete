@@ -26,6 +26,7 @@ pub mod type1;
 pub mod type10;
 pub mod type13;
 pub mod type18;
+pub mod type19;
 pub mod type2;
 pub mod type21;
 pub mod type3;
@@ -41,6 +42,7 @@ pub use type3::SpkSegmentType3;
 pub use type9::SpkSegmentType9;
 pub use type13::SpkSegmentType13;
 pub use type18::SpkSegmentType18;
+pub use type19::SpkSegmentType19;
 pub use type21::SpkSegmentType21;
 // BSD 3-Clause License
 //
