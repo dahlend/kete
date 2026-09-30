@@ -4,6 +4,7 @@
 //! The `FovLike` trait and FOV types remain in `kete_core`.
 
 use kete_core::constants::C_AU_PER_DAY_INV;
+use kete_core::desigs::Desig;
 use kete_core::errors::Error;
 use kete_core::forces::NonGravMask;
 use kete_core::fov::{FovLike, check_linear, check_two_body};
@@ -46,22 +47,32 @@ pub fn check_n_body<F: FovLike>(
     Ok((idx, contains, final_state.into()))
 }
 
-/// Given an object ID, attempt to load the object from the SPKs and check visibility.
-/// This will fail silently if the object is not found.
+/// Load objects from the SPKs by NAIF ID and check which are in the FOV.
+///
+/// The position of each object comes from the loaded SPKs at the light-time
+/// corrected epoch. The result has one entry per patch of `fov`. An entry holds
+/// the Sun-centered states seen in that patch, or `None` if the patch has no
+/// object. An object is reported as not visible if an SPK query fails, for
+/// example outside the SPK coverage.
+///
+/// # Errors
+/// Returns [`Error::LockFailed`] if the SPK read lock cannot be taken.
 ///
 /// # Panics
-///
-/// - Panics if the SPK read lock is poisoned.
-/// - Panics if the Fov cannot be converted into an FOV enum.
-///
-pub fn check_spks<F: FovLike>(fov: &F, obj_ids: &[i32]) -> Vec<Option<SimultaneousStates>> {
+/// Panics if `fov` is inconsistent: `contains` returns a patch index of
+/// `n_patches` or more, or `get_child` panics for an index below `n_patches`.
+pub fn check_spks<F: FovLike>(
+    fov: &F,
+    obj_ids: &[i32],
+) -> KeteResult<Vec<Option<SimultaneousStates>>> {
     let obs = fov.observer();
-    let spk = &LOADED_SPK.try_read().unwrap();
+    let spk = &LOADED_SPK.try_read()?;
 
     let mut visible: Vec<Vec<State<_>>> = vec![Vec::new(); fov.n_patches()];
 
     let states: Vec<_> = obj_ids
         .into_par_iter()
+        .with_min_len(100)
         .filter_map(|&obj_id| {
             // Load the state at the observation epoch for an initial position estimate.
             let state = spk.try_get_state_with_center(obj_id, obs.epoch, 10).ok()?;
@@ -94,40 +105,48 @@ pub fn check_spks<F: FovLike>(fov: &F, obj_ids: &[i32]) -> Vec<Option<Simultaneo
         visible[patch_idx].push(state);
     }
 
-    visible
+    Ok(visible
         .into_iter()
         .enumerate()
         .map(|(idx, states_patch)| {
             SimultaneousStates::new_exact(states_patch, Some(fov.get_child(idx).into_fov())).ok()
         })
-        .collect()
+        .collect())
 }
 
-/// Given a list of states, check to see if the objects are visible at the desired time.
+/// Check which states are in the FOV at the observer epoch.
 ///
-/// Only the final observed states are returned, if the object was not seen it will not
-/// be returned.
+/// The result has one entry per patch of `fov`. An entry holds the Sun-centered
+/// states seen in that patch, at the time light left the object. An entry is
+/// `None` if the patch has no object.
 ///
-/// This does progressively more exact checks. For objects close in time (< `dt_limit`),
-/// linear then two-body checks are used. For objects further in time, two-body then
-/// n-body propagation is used.
+/// The checks become progressively more exact. A state without a
+/// non-gravitational model, and less than `dt_limit` days from the observer
+/// epoch, gets a linear check and then a two-body check. Every other state gets
+/// a two-body check and then an n-body propagation. `include_asteroids` adds
+/// the registered asteroid masses to the n-body force model. A pre-filter
+/// rejects a state only if the state is outside the FOV by more than twice the
+/// distance it moves relative to the observer in `dt_limit`.
 ///
-/// `non_gravs` must either be empty, meaning no object has a non-gravitational model,
-/// or contain one entry per state. The two-body and linear checks do not include
-/// non-gravitational accelerations, so a state which has a model always takes the
-/// n-body path, with two-body used only as a coarse pre-filter. That pre-filter assumes
-/// the deviation caused by the non-gravitational force over the time between the state
-/// epoch and the observer epoch is small compared to the distance the object may travel
-/// in `dt_limit`.
+/// `non_gravs` is either empty or holds one entry per state. An empty
+/// `non_gravs` means that no state has a non-gravitational model. The linear
+/// and two-body checks do not include non-gravitational accelerations. Thus a
+/// state with a model always takes the n-body path, and the two-body check is
+/// only a coarse pre-filter. This pre-filter assumes that the
+/// non-gravitational deviation between the state epoch and the observer epoch
+/// is small compared to the pre-filter distance.
+///
+/// A state is reported as not visible if a center change or a propagation
+/// fails, for example outside the loaded SPK coverage.
 ///
 /// # Errors
-/// Returns a `ValueError` if `non_gravs` is non-empty and does not have one entry per
-/// state.
+/// Returns [`Error::ValueError`] if `non_gravs` is not empty and does not have
+/// one entry per state. Returns [`Error::LockFailed`] if the SPK read lock
+/// cannot be taken.
 ///
 /// # Panics
-///
-/// - Panics if the SPK read lock is poisoned.
-/// - Panics if the Fov cannot be converted into an FOV enum.
+/// Panics if `fov` is inconsistent: `contains` returns a patch index of
+/// `n_patches` or more, or `get_child` panics for an index below `n_patches`.
 pub fn check_visible<F: FovLike>(
     fov: &F,
     states: &[State<Equatorial>],
@@ -144,22 +163,55 @@ pub fn check_visible<F: FovLike>(
         )))?;
     }
     let obs_state = fov.observer();
+    let spk = LOADED_SPK.try_read()?;
+
+    // The linear check compares positions directly, so each state moves to the
+    // center of the observer. States usually share a center and an epoch. Thus
+    // the offset between the two centers is kept for reuse by the next state.
+    let mut center_offset: Option<(i32, f64, State<Equatorial>)> = None;
 
     let final_states: Vec<(usize, State<Equatorial>)> = states
         .iter()
         .enumerate()
         .filter_map(|(idx, state)| {
             let non_grav = non_gravs.get(idx).and_then(Option::as_ref);
-            let max_dist = (state.vel - obs_state.vel).norm() * dt_limit * 2.0;
 
             if non_grav.is_none() && (state.epoch - obs_state.epoch).elapsed.abs() < dt_limit {
-                let (_, contains, _) = check_linear(fov, state);
+                let offset = match &center_offset {
+                    Some((center, jd, offset))
+                        if *center == state.center_id() && *jd == state.epoch.jd =>
+                    {
+                        offset
+                    }
+                    _ => {
+                        let mut offset = State::<Equatorial>::new(
+                            Desig::Empty,
+                            state.epoch,
+                            [0.0; 3],
+                            [0.0; 3],
+                            state.center_id(),
+                        );
+                        spk.try_change_center(&mut offset, obs_state.center_id())
+                            .ok()?;
+                        &center_offset
+                            .insert((state.center_id(), state.epoch.jd, offset))
+                            .2
+                    }
+                };
+                let relative = State::<Equatorial>::new(
+                    state.desig.clone(),
+                    state.epoch,
+                    state.pos + offset.pos,
+                    state.vel + offset.vel,
+                    obs_state.center_id(),
+                );
+                let max_dist = (relative.vel - obs_state.vel).norm() * dt_limit * 2.0;
+                let (_, contains, _) = check_linear(fov, &relative);
                 if let Contains::Outside(dist) = contains
                     && dist > max_dist
                 {
                     return None;
                 }
-                let spk = LOADED_SPK.try_read().ok()?;
                 let sun_state = spk.try_to_sun(state.clone()).ok()?;
                 let (idx, contains, state) = check_two_body(fov, &sun_state).ok()?;
                 match contains {
@@ -167,8 +219,8 @@ pub fn check_visible<F: FovLike>(
                     Contains::Outside(_) => None,
                 }
             } else {
-                let spk = LOADED_SPK.try_read().ok()?;
                 let sun_state = spk.try_to_sun(state.clone()).ok()?;
+                let max_dist = (sun_state.vel - obs_state.vel).norm() * dt_limit * 2.0;
                 let (_, contains, _) = check_two_body(fov, &sun_state).ok()?;
                 if let Contains::Outside(dist) = contains
                     && dist > max_dist
@@ -264,6 +316,35 @@ mod tests {
         }
     }
 
+    /// A slow object near the observer passes the linear pre-filter when its
+    /// state and the observer have different centers.
+    #[test]
+    fn linear_prefilter_matches_the_observer_center() {
+        crate::test_data::ensure_test_spk();
+        let observer = State::<Equatorial>::new(
+            Desig::Empty,
+            2451545.0,
+            [0.0, 1., 0.0],
+            [-GMS_SQRT, 0.0, 0.0],
+            10,
+        );
+        // At rest relative to the observer, so the pre-filter allows no slack.
+        let object = State::<Equatorial>::new(
+            Desig::Empty,
+            2451545.0,
+            [1e-3, 1., 0.0],
+            [-GMS_SQRT, 0.0, 0.0],
+            10,
+        );
+        let object_ssb: State<Equatorial> = {
+            let spk = LOADED_SPK.try_read().unwrap();
+            spk.try_to_ssb(object).unwrap().into()
+        };
+        let fov = GenericRectangle::new([1.0, 0.0, 0.0].into(), 0.0, 0.01, 0.01, observer);
+        let seen = check_visible(&fov, &[object_ssb], &[], 3.0, false).unwrap();
+        assert!(seen[0].is_some());
+    }
+
     /// Test the light delay computations for the different checks
     #[test]
     fn test_check_omni_visible() {
@@ -313,7 +394,7 @@ mod tests {
             assert!((n_body.pos - exact.pos).norm() < 1e-9);
 
             // Check spk queries
-            let spk_check = &check_spks(&fov, &[20000042])[0];
+            let spk_check = &check_spks(&fov, &[20000042]).unwrap()[0];
             assert!(spk_check.is_some());
             let spk_check = &spk_check.as_ref().unwrap().states[0];
             assert!(
@@ -336,7 +417,7 @@ mod tests {
 
         // The Sun is co-located with itself in a Sun-centered FOV check
         let sun_fov = OmniDirectional::new(observer.clone());
-        let sun_check = &check_spks(&sun_fov, &[10])[0];
+        let sun_check = &check_spks(&sun_fov, &[10]).unwrap()[0];
         assert!(sun_check.is_some());
         let sun_state = &sun_check.as_ref().unwrap().states[0];
         // The Sun is always at the solar center.

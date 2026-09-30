@@ -107,6 +107,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `instrument_equatorial_to_frame` is equatorial, not ecliptic.
 - Malformed CK type 2 and 3 segments raise an error instead of panicking.
 - `kernel_reload` also clears loaded SCLK kernels.
+- `fov_state_check` no longer drops visible objects whose center differs from the observer's.
 - SPK type 1 and 21 writers include the epoch directory SPICE expects, and a query
   past the last record no longer reads past the segment data.
 

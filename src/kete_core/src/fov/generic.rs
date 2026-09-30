@@ -199,7 +199,7 @@ impl FovLike for OmniDirectional {
     }
 }
 
-/// Generic rectangular FOV
+/// Generic conic FOV
 #[derive(Debug, Clone)]
 pub struct GenericCone {
     pub(crate) observer: State<Equatorial>,
@@ -209,14 +209,14 @@ pub struct GenericCone {
 }
 
 impl GenericCone {
-    /// Create a new Generic Conic FOV
+    /// Create a new Generic Conic FOV, `angle` is in radians.
     #[must_use]
     pub fn new(pointing: Vector<Equatorial>, angle: f64, observer: State<Equatorial>) -> Self {
         let patch = SphericalCone::new(&pointing, angle);
         Self { observer, patch }
     }
 
-    /// Angle of the cone from the central pointing vector.
+    /// Angle of the cone from the central pointing vector in radians.
     #[inline]
     #[must_use]
     pub fn angle(&self) -> &f64 {

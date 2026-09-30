@@ -186,25 +186,21 @@ pub fn fov_spk_checks_py(
     py: Python<'_>,
     obj_ids: Vec<i32>,
     mut fovs: Vec<AllowedFOV>,
-) -> Vec<PySimultaneousStates> {
+) -> PyResult<Vec<PySimultaneousStates>> {
     fovs.sort_by(|a, b| a.jd().jd.total_cmp(&b.jd().jd));
 
-    py.detach(|| {
+    let visible: Vec<Vec<PySimultaneousStates>> = py.detach(|| {
         fovs.into_par_iter()
-            .filter_map(|fov| {
+            .map(|fov| {
                 let fov = fov.unwrap();
-                let vis: Vec<_> = fov_checks::check_spks(&fov, &obj_ids)
+                Ok(fov_checks::check_spks(&fov, &obj_ids)?
                     .into_iter()
                     .filter_map(|pop| pop.map(|p| PySimultaneousStates(Box::new(p))))
-                    .collect();
-                match vis.is_empty() {
-                    true => None,
-                    false => Some(vis),
-                }
+                    .collect())
             })
-            .flatten()
-            .collect()
-    })
+            .collect::<KeteResult<_>>()
+    })?;
+    Ok(visible.into_iter().flatten().collect())
 }
 
 /// Check if a list of static sky positions are present in the given Field of View list.

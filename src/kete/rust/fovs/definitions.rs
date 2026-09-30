@@ -592,7 +592,7 @@ impl PyGenericCone {
         self.0.patch.pointing().into()
     }
 
-    /// The longitudinal width of the FOV.
+    /// Angle of the cone from the central pointing vector in degrees.
     #[getter]
     pub fn angle(&self) -> f64 {
         self.0.angle().to_degrees()

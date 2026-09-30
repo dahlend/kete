@@ -107,8 +107,12 @@ pub fn check_statics<F: FovLike>(
         .collect()
 }
 
-/// Assuming the object undergoes linear motion, check to see if it is within the
-/// field of view.
+/// Check whether an object in linear motion is in the field of view.
+///
+/// The object moves along a straight line at the velocity of `state`. The light
+/// delay uses the distance from the observer to `state` at the epoch of
+/// `state`. `state` must have the same center as the FOV observer. The returned
+/// state is at the time light left the object.
 #[inline]
 pub fn check_linear<F: FovLike>(
     fov: &F,
@@ -129,7 +133,7 @@ pub fn check_linear<F: FovLike>(
     let (idx, contains) = fov.contains(&new_rel_pos);
     let new_state = State::new(
         state.desig.clone(),
-        obs.epoch + dt,
+        state.epoch + dt,
         new_pos,
         vel,
         obs.center_id(),
