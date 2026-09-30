@@ -175,29 +175,10 @@ impl SpkSegmentType9 {
     }
 
     #[inline(always)]
-    #[allow(
-        clippy::cast_possible_wrap,
-        reason = "This is correct as long as the file is correct."
-    )]
     pub(crate) fn try_get_pos_vel(&self, jds: f64) -> ([f64; 3], [f64; 3]) {
         let times = self.get_times();
         let window_size = self.poly_degree + 1;
-        let start_idx: isize = match times.binary_search_by(|probe| probe.total_cmp(&jds)) {
-            Ok(c) => c as isize - (window_size as isize) / 2,
-            Err(c) => {
-                if (jds - times[c - 1]).abs() < (jds - times[c]).abs() {
-                    c as isize - 1 - window_size as isize / 2
-                } else {
-                    c as isize - window_size as isize / 2
-                }
-            }
-        };
-
-        #[allow(
-            clippy::cast_sign_loss,
-            reason = "This is correct as long as the file is correct."
-        )]
-        let start_idx = start_idx.clamp(0, (self.n_records - window_size) as isize) as usize;
+        let start_idx = window_start(times, jds, window_size);
 
         let mut pos = [0.0; 3];
         let mut vel = [0.0; 3];
@@ -250,5 +231,66 @@ impl TryFrom<SpkArray> for SpkSegmentType9 {
             poly_degree,
             n_records,
         })
+    }
+}
+
+/// Return the first index of the interpolation window for SPK types 9 and 13.
+///
+/// This follows the SPKR09 window rule, which SPICE also uses for type 13.
+/// `times` holds the state epochs in increasing order. An even window has the
+/// same number of epochs on each side of the interval that contains `jds`. An
+/// odd window centers on the nearest epoch. On a tie, it centers on the later
+/// epoch. Near either end of the segment, the window shifts to stay inside it.
+/// `window_size` must be in `1..=times.len()`.
+///
+/// # Panics
+/// With overflow checks on, panics if `window_size` is 0 or greater than
+/// `times.len()`. The segment readers check the window size when they are built.
+pub(in crate::spk) fn window_start(times: &[f64], jds: f64, window_size: usize) -> usize {
+    let n = times.len();
+    let n_before = times.partition_point(|&t| t < jds);
+    // Last epoch strictly before jds, or the first epoch if there is none.
+    let low = n_before.max(1) - 1;
+    let anchor = if window_size.is_multiple_of(2)
+        || n_before == 0
+        || low + 1 >= n
+        || (jds - times[low]).abs() < (jds - times[low + 1]).abs()
+    {
+        low
+    } else {
+        low + 1
+    };
+    anchor
+        .saturating_sub((window_size - 1) / 2)
+        .min(n - window_size)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::window_start;
+
+    /// Check window placement against the SPKR09 rule, with epochs every 60 s.
+    #[test]
+    fn window_start_matches_spkr09() {
+        let times: Vec<f64> = (0..11).map(|i| f64::from(i) * 60.0).collect();
+
+        // An even window splits evenly around the containing interval. The
+        // nearer end of the interval does not change the window.
+        assert_eq!(window_start(&times, 310.0, 8), 2);
+        assert_eq!(window_start(&times, 350.0, 8), 2);
+        assert_eq!(window_start(&times, 300.0, 8), 1);
+        assert_eq!(window_start(&times, 310.0, 4), 4);
+
+        // An odd window centers on the nearest epoch. On a tie, it uses the
+        // later epoch.
+        assert_eq!(window_start(&times, 310.0, 5), 3);
+        assert_eq!(window_start(&times, 330.0, 5), 4);
+        assert_eq!(window_start(&times, 300.0, 5), 3);
+
+        // At either end, the window shifts to stay inside the segment.
+        assert_eq!(window_start(&times, 0.0, 8), 0);
+        assert_eq!(window_start(&times, 10.0, 5), 0);
+        assert_eq!(window_start(&times, 600.0, 8), 3);
+        assert_eq!(window_start(&times, 600.0, 11), 0);
     }
 }

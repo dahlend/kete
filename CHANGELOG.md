@@ -75,6 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   requires 3 optical observations.
 - Malformed DAF files raise an error instead of panicking or hanging, and a DAF
   damaged by a text mode transfer is detected.
+- SPK types 9 and 13 no longer shift even-sized interpolation windows by one point.
 
 ## [3.2.2]
 
