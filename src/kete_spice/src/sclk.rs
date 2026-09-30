@@ -35,8 +35,8 @@ use nom::{
         complete::{take_until, take_until1, take_while, take_while1},
         streaming::tag,
     },
-    character::complete::{char, space0},
-    combinator::{map_res, opt},
+    character::complete::{char, digit1, one_of, space0, space1},
+    combinator::{all_consuming, map, map_res, opt},
     error::{ParseError, context},
     multi::{separated_list0, separated_list1},
     sequence::{delimited, pair, preceded, terminated},
@@ -47,7 +47,7 @@ use crate::spice_jd_to_jd;
 use kete_core::{
     cache::cache_path,
     errors::{Error, KeteResult},
-    time::{TDB, Time},
+    time::{TDB, TT, Time, TimeScale},
 };
 
 use crate::jd_to_spice_jd;
@@ -137,16 +137,13 @@ impl SclkCollection {
         }
     }
 
-    /// Convert [`Time<TDB>`] to clock tick.
+    /// Convert a [`Time<TDB>`] to a clock tick.
     ///
-    /// # Parameters
-    /// ``id``: i32
-    ///     The NAIF ID of the spacecraft clock.
-    /// ``time``: f64
-    ///     The clock tick (SCLK float) to convert.
+    /// `id` is the NAIF ID of the spacecraft clock, and `time` is the time to
+    /// convert.
     ///
     /// # Errors
-    /// [`Error::ValueError`] if the SCLK clock for the given ID is not found.
+    /// Returns [`Error::ValueError`] if no SCLK clock is loaded for `id`.
     pub fn try_time_to_tick(&self, id: i32, time: Time<TDB>) -> KeteResult<f64> {
         if let Some(sclk) = self.clocks.get(&id) {
             Ok(sclk.time_to_tick(time))
@@ -162,8 +159,7 @@ impl SclkCollection {
         *self = Self::default();
     }
 
-    /// Return a list of all loaded segments in the SCLK singleton.
-    /// This is a list of the center NAIF IDs of the segments.
+    /// Return the NAIF IDs of all loaded spacecraft clocks.
     #[must_use]
     pub fn loaded_objects(&self) -> Vec<i32> {
         self.clocks.keys().copied().collect()
@@ -181,34 +177,38 @@ impl SclkCollection {
 
     /// Load all SCLK files from a directory.
     ///
-    /// If files fail to load, an error is printed to stderr, but the loading continues.
+    /// The function loads only files whose names end in `.tsc`, in any letter
+    /// case. The files load in sorted path order. If two files define the same
+    /// clock, the clock from the last file in sorted order is kept. Thus the
+    /// result is the same on every machine. The function skips directory
+    /// entries that cannot be read, and paths that are not valid UTF-8. If a
+    /// file fails to load, the function prints an error to stderr and
+    /// continues.
     ///
     /// # Errors
-    /// [`Error::IOError`] if the directory cannot be read.
-    ///
-    /// # Panics
-    /// This can panic if the directory contents cannot be read.
-    ///
+    /// Returns [`Error::IOError`] if the directory cannot be read.
     pub fn load_directory(&mut self, directory: &str) -> KeteResult<()> {
-        fs::read_dir(directory)?.for_each(|entry| {
-            let entry = entry.expect("Failed to read entry in directory");
-            let path = entry.path();
-            if path.is_file() {
-                let filename = path.to_str().unwrap();
-                if filename.to_lowercase().ends_with(".tsc")
-                    && let Err(err) = self.load_file(filename)
-                {
-                    eprintln!("Failed to load SCLK file {filename}: {err}");
-                }
+        let mut files: Vec<_> = fs::read_dir(directory)?
+            .filter_map(|entry| entry.ok().map(|e| e.path()))
+            .filter(|path| path.is_file())
+            .collect();
+        files.sort();
+        for path in files {
+            if let Some(filename) = path.to_str()
+                && filename.to_lowercase().ends_with(".tsc")
+                && let Err(err) = self.load_file(filename)
+            {
+                eprintln!("Failed to load SCLK file {filename}: {err}");
             }
-        });
+        }
         Ok(())
     }
 }
 
 /// SCLK singleton.
-/// This is a lock protected [`SclkCollection`], and must be `.try_read().unwrapped()` for any
-/// read-only cases.
+///
+/// This is a lock-protected [`SclkCollection`]. Use `.try_read()` for read-only
+/// access.
 pub static LOADED_SCLK: std::sync::LazyLock<ShardedLock<SclkCollection>> =
     std::sync::LazyLock::new(|| {
         let singleton = SclkCollection::default();
@@ -240,6 +240,14 @@ struct Sclk {
     /// Rate at which each field of the clock ticks.
     /// The lowest value field ticks at 1 unit per tick.
     tick_rates: Vec<usize>,
+
+    /// Whether the parallel time system of the clock is TDB, rather than TT.
+    ///
+    /// `SCLK01_TIME_SYSTEM_nn` is 1 for TDB and 2 for TT. A missing keyword
+    /// means TDB. The coefficients map ticks to the parallel time system that
+    /// the kernel declares. Thus a TT clock needs the conversion between TDB
+    /// and TT.
+    parallel_is_tdb: bool,
 }
 
 impl Sclk {
@@ -253,23 +261,38 @@ impl Sclk {
     fn tick_to_time(&self, tick: f64) -> Time<TDB> {
         let clock_rate = self.find_tick_rate(tick);
 
-        let par_time = (tick - clock_rate[0])
-            * (clock_rate[2] / (*self.tick_rates.first().unwrap() as f64))
-            + clock_rate[1];
+        let par_time =
+            (tick - clock_rate[0]) * (clock_rate[2] / (self.tick_rates[0] as f64)) + clock_rate[1];
 
-        spice_jd_to_jd(par_time)
+        let parallel = spice_jd_to_jd(par_time);
+        if self.parallel_is_tdb {
+            parallel
+        } else {
+            Time::<TDB>::new(TT::to_tdb(parallel.jd))
+        }
     }
 
     /// Convert time in TDB to a spacecraft clock tick count.
     fn time_to_tick(&self, time: Time<TDB>) -> f64 {
-        let par_time = jd_to_spice_jd(time);
+        let parallel = if self.parallel_is_tdb {
+            time
+        } else {
+            Time::<TDB>::new(TT::from_tdb(time.jd))
+        };
+        let par_time = jd_to_spice_jd(parallel);
         let clock_rate = self.find_parallel_time_rate(par_time);
 
-        (par_time - clock_rate[1]) * ((*self.tick_rates.first().unwrap() as f64) / clock_rate[2])
-            + clock_rate[0]
+        (par_time - clock_rate[1]) * ((self.tick_rates[0] as f64) / clock_rate[2]) + clock_rate[0]
     }
 
     /// Convert a spacecraft clock string into the partition and tick count.
+    ///
+    /// # Errors
+    /// Returns [`Error::ValueError`] in these cases:
+    /// - The string does not parse as clock fields.
+    /// - The number of fields is zero or more than the clock has.
+    /// - A field is below its offset.
+    /// - The partition is not valid for the tick count.
     fn string_to_tick(&self, time_str: &str) -> KeteResult<(usize, f64)> {
         let (_, (partition, mut fields)) = parse_time_fields(time_str)
             .map_err(|_| Error::ValueError("Failed to parse time fields.".into()))?;
@@ -282,29 +305,15 @@ impl Sclk {
             )));
         }
 
-        // Add the offsets to all of the fields.
-        fields
-            .iter_mut()
-            .zip(self.offsets.iter())
-            .for_each(|(field, &offset)| {
-                *field += offset as usize;
-            });
-
-        let mut rollover = false;
-        fields
-            .iter_mut()
-            .zip(self.moduli.iter())
-            .rev()
-            .for_each(|(val, &modulus)| {
-                if rollover {
-                    *val += 1;
-                    rollover = false;
-                }
-                if *val >= (modulus as usize) {
-                    rollover = true;
-                    *val -= modulus as usize;
-                }
-            });
+        // Each field counts from its offset. A field value is not required to
+        // be below its modulus.
+        for (field, &offset) in fields.iter_mut().zip(self.offsets.iter()) {
+            *field = field.checked_sub(offset as usize).ok_or_else(|| {
+                Error::ValueError(format!(
+                    "Clock field value {field} is below its offset {offset}."
+                ))
+            })?;
+        }
 
         // compute a floating point representation of the spacecraft clock time
         let mut tick: f64 = 0.0;
@@ -315,18 +324,9 @@ impl Sclk {
                 tick += (field * rate) as f64;
             });
 
-        let (exp_partition, partition_count) = self.partition_tick_count(tick)?;
-
-        if let Some(partition) = partition
-            && exp_partition != partition
-        {
-            return Err(Error::ValueError(format!(
-                "Partition mismatch: expected {exp_partition}, found {partition}",
-            )));
-        }
-
+        let (partition, partition_count) = self.partition_tick_count(tick, partition)?;
         tick += partition_count;
-        Ok((exp_partition, tick))
+        Ok((partition, tick))
     }
 
     /// Go through the coefficients and find the clock rate for a given spacecraft clock.
@@ -345,44 +345,78 @@ impl Sclk {
         self.coefficients[idx]
     }
 
-    /// Given a tick count, find the partition and the number of ticks from the
-    /// beginning of the SCLK to the current time, minus the partition start.
-    fn partition_tick_count(&self, tick: f64) -> KeteResult<(usize, f64)> {
-        let idx = self.partition_start.partition_point(|&start| start <= tick);
-
-        if idx == 0 || idx > self.partition_start.len() {
-            return Err(Error::ValueError(format!(
-                "Time {tick} is outside of the partition range.",
-            )));
-        }
-        let mut count = 0.0;
-        for i in 0..idx.saturating_sub(1) {
-            count += self.partition_end[i] - self.partition_start[i];
-        }
-        count -= self.partition_start[idx - 1];
-
-        Ok((idx, count))
+    /// Find the partition of a clock count, and the offset from count to ticks.
+    ///
+    /// `count` is the clock count within its partition. `partition` is the
+    /// 1-based partition from the clock string, if the string gives one. The
+    /// function returns the 1-based partition and an offset. The sum of `count`
+    /// and the offset is the number of ticks from the start of the clock. The
+    /// offset is the total length of the earlier partitions, minus the start of
+    /// this partition.
+    ///
+    /// A given partition must contain the count. If no partition is given, the
+    /// function uses the first partition that contains the count. Both
+    /// partition bounds are inclusive.
+    ///
+    /// # Errors
+    /// Returns [`Error::ValueError`] if `partition` is out of range or does not
+    /// contain the count. Also returns [`Error::ValueError`] if `partition` is
+    /// `None` and no partition contains the count.
+    fn partition_tick_count(
+        &self,
+        count: f64,
+        partition: Option<usize>,
+    ) -> KeteResult<(usize, f64)> {
+        let contains =
+            |idx: usize| self.partition_start[idx] <= count && count <= self.partition_end[idx];
+        let idx = match partition {
+            Some(p) if (1..=self.partition_start.len()).contains(&p) && contains(p - 1) => p - 1,
+            Some(p) => {
+                return Err(Error::ValueError(format!(
+                    "Clock count {count} is not in partition {p}."
+                )));
+            }
+            None => (0..self.partition_start.len())
+                .find(|&idx| contains(idx))
+                .ok_or_else(|| {
+                    Error::ValueError(format!("Clock count {count} is not in any partition."))
+                })?,
+        };
+        let earlier: f64 = (0..idx)
+            .map(|i| self.partition_end[i] - self.partition_start[i])
+            .sum();
+        Ok((idx + 1, earlier - self.partition_start[idx]))
     }
 }
 
-/// Parse a formatted time string into a vector of integers.
+/// Parse a spacecraft clock string into a partition and field values.
 ///
-/// Time strings are integers separated by spaces, dashes, colons, commas, or periods.
-/// Spaces between integers and separators are optional.
+/// The fields are unsigned integers. A delimiter is one dash, colon, comma, or
+/// period, with optional spaces around it, or a run of spaces alone. Two
+/// delimiters in a row, such as "::", mark an empty field, which this parser
+/// rejects. An optional partition number and a slash can come before the
+/// fields. The partition is `None` if the string does not give one. Leading
+/// and trailing spaces are allowed.
 ///
-/// String formats include an optional partition number followed by a slash.
-/// If this is not provided, it defaults to the first partition 1.
+/// # Errors
+/// Returns a nom error if the string does not match this format, or if text
+/// remains after the last field.
 fn parse_time_fields(input: &str) -> IResult<&str, (Option<usize>, Vec<usize>)> {
-    preceded(
+    let integer = || map_res(digit1, str::parse::<usize>);
+    all_consuming(delimited(
         space0,
         pair(
-            opt(terminated(
-                delimited(space0, parse_num::<usize>, space0),
-                terminated(char('/'), space0),
-            )),
-            separated_list1(take_while1(|c| " -:,.".contains(c)), parse_num),
+            opt(terminated(integer(), delimited(space0, char('/'), space0))),
+            separated_list1(
+                alt((
+                    delimited(space0, one_of("-:,."), space0),
+                    map(space1, |_| ' '),
+                )),
+                integer(),
+            ),
         ),
-    )
+        space0,
+    ))
     .parse(input)
 }
 
@@ -523,11 +557,12 @@ impl TryFrom<Vec<SclkToken>> for Sclk {
                         return Err(Error::ValueError("Multiple SCLK NAIF ids found.".into()));
                     }
                     naif_id = Some(id);
-                    coefficients = Some(
-                        val.chunks(3)
-                            .map(|chunk| [chunk[0], chunk[1], chunk[2]])
-                            .collect(),
-                    );
+                    if val.is_empty() || val.len() % 3 != 0 {
+                        return Err(Error::ValueError(
+                            "SCLK Coefficients must be a non-empty list of triplets.".into(),
+                        ));
+                    }
+                    coefficients = Some(val.as_chunks::<3>().0.to_vec());
                 }
                 SclkToken::TimeSystem01(id, val) => {
                     if tdb.is_some() {
@@ -565,7 +600,7 @@ impl TryFrom<Vec<SclkToken>> for Sclk {
             partition_end.ok_or(Error::ValueError("SCLK PARTITION_END is missing.".into()))?;
         let coefficients =
             coefficients.ok_or(Error::ValueError("SCLK Coefficients are missing.".into()))?;
-        if partition_start.len() != partition_end.len() {
+        if partition_start.is_empty() || partition_start.len() != partition_end.len() {
             return Err(Error::ValueError(format!(
                 "SCLK PARTITION_START length ({}) does not match PARTITION_END ({})",
                 partition_start.len(),
@@ -591,10 +626,13 @@ impl TryFrom<Vec<SclkToken>> for Sclk {
         // at which the lowest value term of the clock ticks.
         let mut tick_rates = vec![1];
         for modulo in moduli.iter().skip(1).rev() {
-            let last = tick_rates.last().unwrap();
+            let last = tick_rates[tick_rates.len() - 1];
             tick_rates.push(*modulo as usize * last);
         }
         tick_rates.reverse();
+
+        // The time system keyword is optional. A missing keyword means TDB.
+        let parallel_is_tdb = tdb.unwrap_or(true);
 
         Ok(Self {
             naif_id,
@@ -606,6 +644,7 @@ impl TryFrom<Vec<SclkToken>> for Sclk {
             partition_end,
             coefficients,
             tick_rates,
+            parallel_is_tdb,
         })
     }
 }
@@ -823,6 +862,19 @@ mod tests {
         let input = " 5 /  1:2   3 - 5:8 . 9 9 ";
         let (_, result) = parse_time_fields(input).unwrap();
         assert_eq!(result, (Some(5), vec![1, 2, 3, 5, 8, 9, 9]));
+
+        // A Rosetta clock string, with a period between the fields.
+        let (_, result) = parse_time_fields("1/0355251413.46270").unwrap();
+        assert_eq!(result, (Some(1), vec![355_251_413, 46270]));
+        let (_, result) = parse_time_fields("12-345").unwrap();
+        assert_eq!(result, (None, vec![12, 345]));
+
+        assert!(parse_time_fields("1/12:34x").is_err());
+
+        // Two delimiters in a row mark an empty field, which is rejected.
+        assert!(parse_time_fields("1/12::3").is_err());
+        assert!(parse_time_fields("1/12:.3").is_err());
+        assert!(parse_time_fields("1/12 : - 3").is_err());
     }
 
     #[test]
@@ -998,12 +1050,45 @@ mod tests {
         let t2 = clock.tick_to_time(ticks);
         assert_eq!(t, t2);
 
-        let (part, count) = clock.partition_tick_count(0.0).unwrap();
+        let (part, count) = clock.partition_tick_count(0.0, None).unwrap();
         assert_eq!(part, 1);
         assert_eq!(count, 0.0);
 
-        let (part, count) = clock.partition_tick_count(7.290_000_3E+07).unwrap();
+        let (part, count) = clock.partition_tick_count(7.290_000_3E+07, None).unwrap();
         assert_eq!(part, 3);
         assert_eq!(count, -1.0);
+
+        // A count on a shared partition bound belongs to the first partition,
+        // unless the other is given explicitly.
+        let (part, _) = clock.partition_tick_count(2.546_544E+07, None).unwrap();
+        assert_eq!(part, 1);
+        let (part, _) = clock.partition_tick_count(2.546_544E+07, Some(2)).unwrap();
+        assert_eq!(part, 2);
+        assert!(clock.partition_tick_count(1.0E+08, Some(1)).is_err());
+        assert!(clock.partition_tick_count(1.0E+12, None).is_err());
+    }
+
+    /// Field values count from their offsets.
+    #[test]
+    fn string_to_tick_subtracts_offsets() {
+        let input = r"
+            KPL/SCLK
+            \begindata
+            SCLK_KERNEL_ID            = ( @2000-JAN-01 )
+            SCLK_DATA_TYPE_88         = ( 1 )
+            SCLK01_N_FIELDS_88        = ( 2 )
+            SCLK01_MODULI_88          = ( 100000 256 )
+            SCLK01_OFFSETS_88         = ( 0 1 )
+            SCLK01_OUTPUT_DELIM_88    = ( 1 )
+            SCLK_PARTITION_START_88   = ( 0.0 )
+            SCLK_PARTITION_END_88     = ( 2.56E+07 )
+            SCLK01_COEFFICIENTS_88    = ( 0.0 0.0 1.0 )
+            \begintext";
+        let (_, tokens) = parse_sclk_string(input).unwrap();
+        let clock = Sclk::try_from(tokens).unwrap();
+
+        assert_eq!(clock.string_to_tick("1/100:1").unwrap(), (1, 25600.0));
+        assert_eq!(clock.string_to_tick("1/100:256").unwrap(), (1, 25855.0));
+        assert!(clock.string_to_tick("1/100:0").is_err());
     }
 }

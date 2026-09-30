@@ -94,6 +94,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `repack_spk` checks every output record against `threshold_km` and raises where it
   cannot fit, rather than leaving gaps or unchecked records.
 - `repack_spk` fits the input file's data where the core kernels also cover the object.
+- SCLK clocks with a TT time system, and SCLK string parsing, match SPICE.
 - SPK type 1 and 21 writers include the epoch directory SPICE expects, and a query
   past the last record no longer reads past the segment data.
 
