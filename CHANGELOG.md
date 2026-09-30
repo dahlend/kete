@@ -83,6 +83,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SPK type 10 states are rotated from TEME to J2000; they were returned in TEME.
 - `SpkBuilder.add_tle_segment` stores epochs as TDB, uses WGS72, and takes
   `pad_days` so single-TLE segments cover time.
+- Overlapping SPK, CK and PCK segments resolve to the file loaded last, and within a
+  file to the segment stored last, as in SPICE; kete used the file loaded first.
+- Kernel directories load in sorted order, and a file that fails partway through
+  loads none of its segments.
+- Changing a state's center follows the segments covering its epoch, and
+  `SpkCollection::build_mapping` is removed.
+- `kernel_reload` loads the cache before the default kernels, so the defaults and
+  then the given files take precedence.
 - SPK type 1 and 21 writers include the epoch directory SPICE expects, and a query
   past the last record no longer reads past the segment data.
 

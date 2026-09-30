@@ -1,11 +1,10 @@
 //! Loading and reading of states from JPL SPK kernel files.
 //!
-//! SPKs are intended to be loaded into a singleton which is accessible via the
-//! [`LOADED_SPK`] function defined below. This singleton is wrapped in a
-//! [`crossbeam::sync::ShardedLock`], meaning before its use it must by unwrapped.
-//! A vast majority of intended use cases will only be the read case.
+//! SPK data loads into a singleton, the [`LOADED_SPK`] static. A
+//! [`crossbeam::sync::ShardedLock`] wraps the singleton, so a caller must
+//! acquire the lock before use. Most uses need only read access.
 //!
-//! Here is a small worked example:
+//! Example:
 //! ```
 //!     use kete_spice::spk::LOADED_SPK;
 //!     use kete_core::frames::Ecliptic;
@@ -16,8 +15,6 @@
 //!     // get the state of 399 (Earth)
 //!     let state = singleton.try_get_state::<Ecliptic>(399, 2451545.0.into());
 //! ```
-//!
-//!
 
 mod array;
 pub mod repack;
@@ -33,7 +30,6 @@ pub mod type3;
 pub mod type9;
 
 pub use array::SpkArray;
-use kete_core::frames::DynCenter;
 pub use repack::repack_to_type2;
 pub use repack::repack_to_type13;
 pub use type1::SpkSegmentType1;
@@ -76,20 +72,30 @@ pub use type21::SpkSegmentType21;
 
 use crate::daf::DAFType;
 use crate::daf::DafFile;
+use crate::prepend_by_precedence;
 use crate::spice_jd_to_jd;
 use kete_core::cache::cache_path;
 use kete_core::desigs::{NaifId, naif_ids_from_name};
 use kete_core::errors::Error;
-use kete_core::frames::{InertialFrame, SSB, SunCenter};
+use kete_core::frames::{DynCenter, InertialFrame, SSB, SunCenter};
 use kete_core::prelude::KeteResult;
 use kete_core::state::State;
 use kete_core::time::{TDB, Time};
-use pathfinding::prelude::dijkstra;
 use segments::SpkSegment;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 
 use crossbeam::sync::ShardedLock;
+
+/// Maximum number of bodies in a chain of segment centers, including the first
+/// body.
+const MAX_CHAIN: usize = 8;
+
+/// A chain of bodies, each paired with the segment that leads to the next body.
+///
+/// [`SpkCollection::center_chain`] fills the chain. The last body has no
+/// segment.
+type CenterChain<'a> = [(i32, Option<&'a SpkSegment>); MAX_CHAIN];
 
 /// A collection of SPK segments.
 #[derive(Debug, Default)]
@@ -106,12 +112,6 @@ pub struct SpkCollection {
     /// Collection of SPK Segment information.
     segments: HashMap<i32, Vec<SpkSegment>>,
 
-    /// Cache for the pathfinding algorithm between different segments.
-    map_cache: HashMap<(i32, i32), Vec<i32>>,
-
-    /// Map from object id to all connected pairs.
-    nodes: HashMap<i32, HashSet<(i32, i32)>>,
-
     /// Cache of all loaded NAIF IDs.
     naif_ids: HashMap<String, NaifId>,
 }
@@ -125,23 +125,36 @@ impl SpkCollection {
     /// Fails when the id or jd is not found in the [`SpkCollection`].
     #[inline(always)]
     pub fn try_get_state<T: InertialFrame>(&self, id: i32, jd: Time<TDB>) -> KeteResult<State<T>> {
-        for segment in &self.planet_segments {
-            let arr_ref: &SpkArray = segment.into();
-            if arr_ref.object_id == id && arr_ref.contains(jd) {
-                return segment.try_get_state(jd);
-            }
+        self.best_segment(id, jd)
+            .ok_or_else(|| {
+                Error::Bounds(format!(
+                    "Object ({id}) does not have an SPK record for the target JD."
+                ))
+            })?
+            .try_get_state(jd)
+    }
+
+    /// Return the highest precedence segment for `id` that covers `jd`.
+    ///
+    /// Return `None` if no loaded segment for `id` covers `jd`. The solar
+    /// system barycenter (ID 0) is the origin of every ephemeris and has no
+    /// segment. Thus the function returns `None` for ID 0 without a lookup.
+    #[inline(always)]
+    fn best_segment(&self, id: i32, jd: Time<TDB>) -> Option<&SpkSegment> {
+        if id == 0 {
+            return None;
         }
-        if let Some(segments) = self.segments.get(&id) {
-            for segment in segments {
-                let arr_ref: &SpkArray = segment.into();
-                if arr_ref.contains(jd) {
-                    return segment.try_get_state(jd);
-                }
-            }
+        // The loader stores IDs 0 to 1000 only in the planet segments.
+        if (0..=1000).contains(&id) {
+            return self.planet_segments.iter().find(|segment| {
+                let arr_ref: &SpkArray = (*segment).into();
+                arr_ref.object_id == id && arr_ref.contains(jd)
+            });
         }
-        Err(Error::Bounds(format!(
-            "Object ({id}) does not have an SPK record for the target JD."
-        )))
+        self.segments.get(&id)?.iter().find(|segment| {
+            let arr_ref: &SpkArray = (*segment).into();
+            arr_ref.contains(jd)
+        })
     }
 
     /// Load a state from the file, then attempt to change the center to the center id
@@ -163,41 +176,132 @@ impl SpkCollection {
         Ok(state)
     }
 
-    /// Use the data loaded in the SPKs to change the center ID of the provided state.
+    /// Change the center of a state with the loaded SPK segments.
+    ///
+    /// The function changes `state` in place so that its center is
+    /// `new_center`. It uses the highest precedence segments that cover the
+    /// epoch of the state. From each of the two centers, it follows the centers
+    /// of these segments until the two chains share a body.
     ///
     /// # Errors
-    /// Fails when the id or jd is not found in the [`SpkCollection`].
+    /// - `Error::Bounds` if the segments that cover the epoch do not connect
+    ///   the center of the state to `new_center`.
+    /// - `Error::ValueError` if the segments form a cycle, or if a chain does
+    ///   not end within `MAX_CHAIN` bodies.
+    /// - The error of a segment evaluation that fails on the path.
     pub fn try_change_center<T: InertialFrame>(
         &self,
         state: &mut State<T>,
         new_center: i32,
     ) -> KeteResult<()> {
-        match (state.center_id(), new_center) {
-            (a, b) if a == b => (),
-            (i, 0) if i <= 10 => {
-                state.try_change_center(self.try_get_state(i, state.epoch)?)?;
+        let old_center = state.center_id();
+        if old_center == new_center {
+            return Ok(());
+        }
+        let epoch = state.epoch;
+
+        // The common cases need no chains: one center is the parent of the
+        // other, or the two centers share a parent.
+        let old_segment = self.best_segment(old_center, epoch);
+        let old_parent = old_segment.map(|segment| Into::<&SpkArray>::into(segment).center_id);
+        if let Some(segment) = old_segment
+            && old_parent == Some(new_center)
+        {
+            return state.try_change_center(segment.try_get_state(epoch)?);
+        }
+        if let Some(segment) = self.best_segment(new_center, epoch) {
+            let new_parent = Into::<&SpkArray>::into(segment).center_id;
+            if new_parent == old_center {
+                return state.try_change_center(segment.try_get_state(epoch)?);
             }
-            (0, 10) => {
-                let next = self.try_get_state(10, state.epoch)?;
-                state.try_change_center(next)?;
+            if let Some(old_segment) = old_segment
+                && old_parent == Some(new_parent)
+            {
+                state.try_change_center(old_segment.try_get_state(epoch)?)?;
+                return state.try_change_center(segment.try_get_state(epoch)?);
             }
-            (i, 10) if i < 10 => {
-                state.try_change_center(self.try_get_state(i, state.epoch)?)?;
-                state.try_change_center(self.try_get_state(10, state.epoch)?)?;
+        }
+
+        let mut from: CenterChain<'_> = [(0, None); MAX_CHAIN];
+        let mut to: CenterChain<'_> = [(0, None); MAX_CHAIN];
+        let n_from = self.center_chain(old_center, epoch, new_center, &mut from)?;
+        let (up, down) = if from[n_from - 1].0 == new_center {
+            (n_from - 1, 0)
+        } else {
+            let n_to = self.center_chain(new_center, epoch, old_center, &mut to)?;
+            from[..n_from]
+                .iter()
+                .enumerate()
+                .find_map(|(i, (body, _))| {
+                    to[..n_to]
+                        .iter()
+                        .position(|(b, _)| b == body)
+                        .map(|j| (i, j))
+                })
+                .ok_or_else(|| {
+                    Error::Bounds(format!(
+                        "SPK files are missing information to be able to map from obj \
+                         {old_center} to obj {new_center} at JD {}.",
+                        epoch.jd
+                    ))
+                })?
+        };
+
+        // Move up from the old center to the shared body, then down to the new
+        // center. Every body before the end of a chain has a segment.
+        for (_, segment) in &from[..up] {
+            if let Some(segment) = segment {
+                state.try_change_center(segment.try_get_state(epoch)?)?;
             }
-            (10, i) if (i > 1) && (i < 10) => {
-                state.try_change_center(self.try_get_state(10, state.epoch)?)?;
-                state.try_change_center(self.try_get_state(i, state.epoch)?)?;
-            }
-            _ => {
-                let path = self.find_path(state.center_id(), new_center)?;
-                for intermediate in path {
-                    let next = self.try_get_state(intermediate, state.epoch)?;
-                    state.try_change_center(next)?;
-                }
+        }
+        for (_, segment) in to[..down].iter().rev() {
+            if let Some(segment) = segment {
+                state.try_change_center(segment.try_get_state(epoch)?)?;
             }
         }
         Ok(())
+    }
+
+    /// Fill `chain` with a chain of bodies and return the number of bodies.
+    ///
+    /// The chain starts at `id`. The function pairs each body with its highest
+    /// precedence segment that covers `jd`. The center of that segment is the
+    /// next body. The chain ends at `stop`, or at a body with no segment that
+    /// covers `jd`. The last body has no segment.
+    ///
+    /// # Errors
+    /// `Error::ValueError` if the segments form a cycle, or if the chain does
+    /// not end within [`MAX_CHAIN`] bodies.
+    fn center_chain<'a>(
+        &'a self,
+        id: i32,
+        jd: Time<TDB>,
+        stop: i32,
+        chain: &mut CenterChain<'a>,
+    ) -> KeteResult<usize> {
+        let mut len = 0;
+        let mut body = id;
+        while len < MAX_CHAIN {
+            if body == stop {
+                chain[len] = (body, None);
+                return Ok(len + 1);
+            }
+            let segment = self.best_segment(body, jd);
+            chain[len] = (body, segment);
+            len += 1;
+            let Some(segment) = segment else {
+                return Ok(len);
+            };
+            body = Into::<&SpkArray>::into(segment).center_id;
+            if chain[..len].iter().any(|(b, _)| *b == body) {
+                break;
+            }
+        }
+        Err(Error::ValueError(format!(
+            "SPK segments covering JD {} form a cycle, or a chain of more than \
+             {MAX_CHAIN} centers, from object {id}.",
+            jd.jd
+        )))
     }
 
     /// Change the center of a state to the Solar System Barycenter, returning a
@@ -344,103 +448,17 @@ impl SpkCollection {
         found
     }
 
-    /// Given a NAIF ID, and a target NAIF ID, find the intermediate SPICE Segments
-    /// which need to be loaded to find a path from one object to the other.
-    /// Use Dijkstra plus the known segments to calculate a path.
-    fn find_path(&self, start: i32, goal: i32) -> KeteResult<Vec<i32>> {
-        // first we check to see if the cache contains the lookup we need.
-        if let Some(path) = self.map_cache.get(&(start, goal)) {
-            return Ok(path.clone());
-        }
-
-        // not in the cache, manually compute
-        let nodes = &self.nodes;
-        let result = dijkstra(
-            &(start, i32::MIN),
-            |&current| match nodes.get(&current.0) {
-                Some(set) => set.iter().map(|p| (*p, 1_i32)).collect(),
-                None => Vec::<((i32, i32), i32)>::new(),
-            },
-            |&p| p.0 == goal,
-        );
-        if let Some((v, _)) = result {
-            Ok(v.iter().skip(1).map(|x| x.1).collect())
-        } else {
-            Err(Error::Bounds(format!(
-                "SPK files are missing information to be able to map from obj {start} to obj {goal}"
-            )))
-        }
-    }
-
-    /// Return all mappings from one object to another.
+    /// Load all the segments of an SPK file into this collection.
     ///
-    /// These mappings are used to be able to change the center ID from whatever is saved in
-    /// the spks to any possible combination.
-    pub fn build_mapping(&mut self) {
-        static PRECACHE: &[i32] = &[0, 10, 399];
-
-        fn update_nodes(segment: &SpkSegment, nodes: &mut HashMap<i32, HashSet<(i32, i32)>>) {
-            let array_ref: &SpkArray = segment.into();
-            let _ = nodes
-                .entry(array_ref.object_id)
-                .or_default()
-                .insert((array_ref.center_id, array_ref.object_id));
-            let _ = nodes
-                .entry(array_ref.center_id)
-                .or_default()
-                .insert((array_ref.object_id, array_ref.object_id));
-        }
-
-        let mut nodes: HashMap<i32, HashSet<(i32, i32)>> = HashMap::new();
-
-        self.planet_segments
-            .iter()
-            .for_each(|x| update_nodes(x, &mut nodes));
-
-        for segs in self.segments.values() {
-            for x in segs {
-                update_nodes(x, &mut nodes);
-            }
-        }
-
-        let loaded = self.loaded_objects(true);
-
-        for &start in &loaded {
-            for &goal in PRECACHE {
-                let key = (start, goal);
-
-                if self.map_cache.contains_key(&key) {
-                    continue;
-                }
-
-                let result = dijkstra(
-                    &(start, i32::MIN),
-                    |&current| match nodes.get(&current.0) {
-                        Some(set) => set.iter().map(|p| (*p, 1_i32)).collect(),
-                        None => Vec::<((i32, i32), i32)>::new(),
-                    },
-                    |&p| p.0 == goal,
-                );
-
-                if let Some((v, _)) = result {
-                    let v: Vec<i32> = v.iter().skip(1).map(|x| x.1).collect();
-                    let _ = self.map_cache.insert(key, v);
-                }
-            }
-        }
-
-        self.nodes = nodes;
-    }
-
-    /// Given an SPK filename, load all the segments present inside of it.
-    /// These segments are added to the SPK singleton in memory.
-    ///
-    /// After all files are loaded, the mapping must be rebuilt using the
-    /// `build_mapping` function.
+    /// `filename` is the path of the file. For overlapping segments, a segment
+    /// from a file loaded later takes precedence. Within a file, a segment
+    /// stored later takes precedence. If the file fails to load, the collection
+    /// does not change.
     ///
     /// # Errors
-    /// Loading files may fail for a number of reasons, including incorrect formatted
-    /// files or IO errors.
+    /// - `Error::IOError` if the file cannot be read, is not an SPK file, or
+    ///   holds a segment of an unsupported type.
+    /// - The error of the segment parser if a segment is malformed.
     pub fn load_file(&mut self, filename: &str) -> KeteResult<()> {
         let file = DafFile::from_file(filename)?;
         self.load_daf(file, filename)
@@ -465,16 +483,32 @@ impl SpkCollection {
                 "File {source:?} is not a SPK formatted file."
             )))?;
         }
+        // Parse the whole file before the collection changes. Thus a file that
+        // fails partway through does not change the collection.
+        let mut planets = Vec::new();
+        let mut others: HashMap<i32, Vec<SpkSegment>> = HashMap::new();
         for daf_array in file.arrays {
             let segment: SpkArray = daf_array.try_into()?;
-            if (segment.object_id >= 0) && (segment.object_id <= 1000) {
-                self.planet_segments.push(segment.try_into()?);
+            let id = segment.object_id;
+            if (0..=1000).contains(&id) {
+                planets.push(segment.try_into()?);
             } else {
-                self.segments
-                    .entry(segment.object_id)
-                    .or_default()
-                    .push(segment.try_into()?);
+                others.entry(id).or_default().push(segment.try_into()?);
             }
+        }
+
+        // Later files, and later segments within a file, take precedence. They
+        // go first because the readers return the first match.
+        prepend_by_precedence(&mut self.planet_segments, planets, |seg| {
+            let arr: &SpkArray = seg.into();
+            arr.object_id
+        });
+        for (id, segs) in others {
+            let _ = self
+                .segments
+                .entry(id)
+                .or_default()
+                .splice(0..0, segs.into_iter().rev());
         }
         Ok(())
     }
@@ -509,17 +543,22 @@ impl SpkCollection {
     /// # Errors
     /// May fail if there are IO or Parsing errors.
     pub fn load_directory(&mut self, directory: &str) -> KeteResult<()> {
-        fs::read_dir(directory)?.for_each(|entry| {
-            if let Ok(entry) = entry
-                && entry.path().is_file()
-                && let Some(filename) = entry.path().to_str()
+        // Later files take precedence, so the load order matters. `read_dir`
+        // does not specify an order. Sorted order gives the same result on
+        // every machine.
+        let mut files: Vec<_> = fs::read_dir(directory)?
+            .filter_map(|entry| entry.ok().map(|e| e.path()))
+            .filter(|path| path.is_file())
+            .collect();
+        files.sort();
+        for path in files {
+            if let Some(filename) = path.to_str()
                 && filename.to_lowercase().ends_with(".bsp")
                 && let Err(err) = self.load_file(filename)
             {
                 eprintln!("Failed to load SPK file {filename}: {err}");
             }
-        });
-        self.build_mapping();
+        }
         Ok(())
     }
 
@@ -586,11 +625,167 @@ impl SpkCollection {
 }
 
 /// SPK singleton.
-/// This is a lock protected [`SpkCollection`], and must be `.try_read().unwrapped()` for any
-/// read-only cases.
+///
+/// A lock protects this [`SpkCollection`]. Use `.try_read()` for read-only
+/// access.
 pub static LOADED_SPK: std::sync::LazyLock<ShardedLock<SpkCollection>> =
     std::sync::LazyLock::new(|| {
         let mut singleton = SpkCollection::default();
         let _ = singleton.load_core();
         ShardedLock::new(singleton)
     });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::daf::DafFile;
+    use kete_core::constants::AU_KM;
+    use kete_core::frames::Equatorial;
+    use std::io::Cursor;
+
+    /// Return a type 18 segment that holds the object at `x_km` from the Sun.
+    ///
+    /// The segment covers one day from J2000.
+    fn fixed_segment(object_id: i32, x_km: f64, name: &str) -> SpkArray {
+        fixed_segment_about(object_id, 10, x_km, name)
+    }
+
+    /// Return a type 18 segment that holds the object at `x_km` from
+    /// `center_id`.
+    ///
+    /// The segment covers one day from J2000.
+    fn fixed_segment_about(object_id: i32, center_id: i32, x_km: f64, name: &str) -> SpkArray {
+        let records = [x_km, 0.0, 0.0, 0.0, 0.0, 0.0, x_km, 0.0, 0.0, 0.0, 0.0, 0.0];
+        SpkSegmentType18::new_array(
+            object_id,
+            center_id,
+            1,
+            &records,
+            &[0.0, 86400.0],
+            1,
+            2,
+            0.0,
+            86400.0,
+            name,
+        )
+        .unwrap()
+    }
+
+    fn file_of(segments: Vec<SpkArray>) -> Vec<u8> {
+        let mut daf = DafFile::new_spk("precedence test", "");
+        for seg in segments {
+            daf.arrays.push(seg.daf);
+        }
+        let mut buf = Cursor::new(Vec::new());
+        daf.write_to(&mut buf).unwrap();
+        buf.into_inner()
+    }
+
+    fn x_km(spk: &SpkCollection, id: i32) -> f64 {
+        let state: State<Equatorial> = spk.try_get_state(id, Time::new(2451545.5)).unwrap();
+        state.pos[0] * AU_KM
+    }
+
+    /// Overlapping segments resolve to the file loaded last.
+    ///
+    /// The test checks a planet ID and a non-planet ID, because the collection
+    /// stores the two kinds separately.
+    #[test]
+    fn the_file_loaded_last_wins() {
+        for id in [5, 2_000_001] {
+            let older = file_of(vec![fixed_segment(id, 1.0, "older")]);
+            let newer = file_of(vec![fixed_segment(id, 2.0, "newer")]);
+
+            let mut spk = SpkCollection::default();
+            spk.load_from_reader(Cursor::new(&older)).unwrap();
+            spk.load_from_reader(Cursor::new(&newer)).unwrap();
+            assert_eq!(x_km(&spk, id), 2.0, "id {id}");
+
+            let mut spk = SpkCollection::default();
+            spk.load_from_reader(Cursor::new(&newer)).unwrap();
+            spk.load_from_reader(Cursor::new(&older)).unwrap();
+            assert_eq!(x_km(&spk, id), 1.0, "id {id}");
+        }
+    }
+
+    /// Within one file, overlapping segments resolve to the segment stored
+    /// last.
+    #[test]
+    fn the_segment_stored_last_wins_within_a_file() {
+        for id in [5, 2_000_001] {
+            let file = file_of(vec![
+                fixed_segment(id, 1.0, "first"),
+                fixed_segment(id, 2.0, "second"),
+            ]);
+            let mut spk = SpkCollection::default();
+            spk.load_from_reader(Cursor::new(&file)).unwrap();
+            assert_eq!(x_km(&spk, id), 2.0, "id {id}");
+        }
+    }
+
+    /// Change the center from an object that orbits a spacecraft to the SSB.
+    ///
+    /// A spacecraft is not a barycenter. The path to the SSB goes through the
+    /// segment of the spacecraft, then through the segment of its center.
+    #[test]
+    fn change_center_from_a_spacecraft_reaches_the_ssb() {
+        let file = file_of(vec![
+            fixed_segment_about(6, 0, 1000.0, "saturn bary"),
+            fixed_segment_about(-82, 6, 5.0, "spacecraft"),
+            fixed_segment_about(2_000_001, -82, 1.0, "object"),
+        ]);
+        let mut spk = SpkCollection::default();
+        spk.load_from_reader(Cursor::new(&file)).unwrap();
+
+        let jd = Time::new(2451545.5);
+        let state: State<Equatorial> = spk.try_get_state_with_center(2_000_001, jd, 0).unwrap();
+        assert_eq!(state.center_id(), 0);
+        assert!((state.pos[0] * AU_KM - 1006.0).abs() < 1e-6);
+
+        let state: State<Equatorial> = spk.try_get_state_with_center(-82, jd, 0).unwrap();
+        assert_eq!(state.center_id(), 0);
+        assert!((state.pos[0] * AU_KM - 1005.0).abs() < 1e-6);
+    }
+
+    /// A center change follows only the segments that cover the epoch.
+    ///
+    /// The test includes a segment that links the same bodies at a different
+    /// time. The center change must not use it.
+    #[test]
+    fn change_center_uses_segments_covering_the_epoch() {
+        let records = [50.0, 0.0, 0.0, 0.0, 0.0, 0.0, 50.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let later = SpkSegmentType18::new_array(
+            3,
+            10,
+            1,
+            &records,
+            &[5.0 * 86400.0, 6.0 * 86400.0],
+            1,
+            2,
+            5.0 * 86400.0,
+            6.0 * 86400.0,
+            "emb from sun later",
+        )
+        .unwrap();
+        let file = file_of(vec![
+            fixed_segment_about(10, 0, 1.0, "sun"),
+            fixed_segment_about(3, 0, 100.0, "emb"),
+            later,
+            fixed_segment_about(399, 3, 2.0, "earth"),
+        ]);
+        let mut spk = SpkCollection::default();
+        spk.load_from_reader(Cursor::new(&file)).unwrap();
+
+        let state: State<Equatorial> = spk
+            .try_get_state_with_center(399, Time::new(2451545.5), 10)
+            .unwrap();
+        assert_eq!(state.center_id(), 10);
+        assert!((state.pos[0] * AU_KM - 101.0).abs() < 1e-6);
+
+        let state: State<Equatorial> = spk
+            .try_get_state_with_center(10, Time::new(2451545.5), 399)
+            .unwrap();
+        assert_eq!(state.center_id(), 399);
+        assert!((state.pos[0] * AU_KM + 101.0).abs() < 1e-6);
+    }
+}

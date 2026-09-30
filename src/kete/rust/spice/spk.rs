@@ -29,7 +29,6 @@ pub fn spk_load_py(py: Python<'_>, filenames: Vec<String>) -> PyResult<()> {
             eprintln!("{filename} failed to load. {err}");
         }
     }
-    singleton.build_mapping();
     Ok(())
 }
 

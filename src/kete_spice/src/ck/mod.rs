@@ -52,6 +52,7 @@ use kete_core::{
 };
 
 use crate::daf::{DAFType, DafFile};
+use crate::prepend_by_precedence;
 use crate::sclk::LOADED_SCLK;
 use crossbeam::sync::ShardedLock;
 use segments::CkSegment;
@@ -78,11 +79,17 @@ impl CkCollection {
             )))?;
         }
 
+        let mut segments = Vec::with_capacity(file.arrays.len());
         for array in file.arrays {
             let ck_array: CkArray = array.try_into()?;
-            let segment: CkSegment = ck_array.try_into()?;
-            self.segments.push(segment);
+            segments.push(CkSegment::try_from(ck_array)?);
         }
+        // SPICE gives precedence to the file loaded last, and to the segment
+        // stored last within a file.
+        prepend_by_precedence(&mut self.segments, segments, |seg| {
+            let arr: &CkArray = seg.into();
+            arr.instrument_id
+        });
         Ok(())
     }
 

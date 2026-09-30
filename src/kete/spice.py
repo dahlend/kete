@@ -112,13 +112,15 @@ def kernel_reload(
     _core.pck_reset()
     _core.ck_reset()
 
+    # Where kernels overlap, the kernel loaded last is used, so the cache loads
+    # first and the given files load last.
+    if include_cache:
+        _core.spk_load_cache()
+
     if include_planets:
         _download_core_files()
         _core.spk_load_core()
         _core.pck_load_core()
-
-    if include_cache:
-        _core.spk_load_cache()
 
     if filenames:
         _core.spk_load(filenames)

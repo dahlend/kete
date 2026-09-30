@@ -1,9 +1,8 @@
-//! Loading and reading of states from JPL PCK kernel files.
+//! Loading and reading of orientations from binary PCK kernel files.
 //!
-//! PCKs are intended to be loaded into a singleton which is accessible via the
-//! [`LOADED_PCK`] object defined below. This singleton is wrapped in a
-//! [`crossbeam::sync::ShardedLock`], meaning before its use it must by unwrapped.
-//! A vast majority of intended use cases will only be the read case.
+//! The [`LOADED_PCK`] singleton holds the loaded PCK segments. A
+//! [`crossbeam::sync::ShardedLock`] protects it, so a caller must acquire the
+//! lock before use. Most uses need only a read lock.
 //!
 // BSD 3-Clause License
 //
@@ -46,6 +45,7 @@ use std::collections::HashSet;
 use std::fs;
 
 use crate::daf::{DAFType, DafFile};
+use crate::prepend_by_precedence;
 use crossbeam::sync::ShardedLock;
 use kete_core::cache::cache_path;
 use kete_core::errors::{Error, KeteResult};
@@ -74,11 +74,16 @@ impl PckCollection {
             )))?;
         }
 
+        let mut segments = Vec::with_capacity(file.arrays.len());
         for array in file.arrays {
             let pck_array: PckArray = array.try_into()?;
-            let segment: PckSegment = pck_array.try_into()?;
-            self.segments.push(segment);
+            segments.push(PckSegment::try_from(pck_array)?);
         }
+        // A later file, and a later segment within a file, takes precedence.
+        prepend_by_precedence(&mut self.segments, segments, |seg| {
+            let arr: &PckArray = seg.into();
+            arr.frame_id
+        });
         Ok(())
     }
 
@@ -105,8 +110,9 @@ impl PckCollection {
         *self = Self::default();
     }
 
-    /// Return a list of all loaded segments in the PCK singleton.
-    /// This is a list of the center NAIF IDs of the segments.
+    /// Return the frame IDs of all loaded segments, each ID once.
+    ///
+    /// The order of the IDs is not defined.
     #[must_use]
     pub fn loaded_objects(&self) -> Vec<i32> {
         let loaded: HashSet<i32> = self
@@ -143,24 +149,31 @@ impl PckCollection {
     /// This only fails when there is a file IO error. When individual files fail to load,
     /// ``eprintln`` is used, but loading will continue.
     pub fn load_directory(&mut self, directory: &str) -> KeteResult<()> {
-        fs::read_dir(directory)?.for_each(|entry| {
-            // rust is crazy sometimes
-            if let Ok(entry) = entry
-                && entry.path().is_file()
-                && let Some(filename) = entry.path().to_str()
+        // A later file takes precedence, so the load order matters. `read_dir`
+        // does not define an order. A sorted order gives the same result on
+        // every machine.
+        let mut files: Vec<_> = fs::read_dir(directory)?
+            .filter_map(|entry| entry.ok().map(|e| e.path()))
+            .filter(|path| path.is_file())
+            .collect();
+        files.sort();
+        for path in files {
+            if let Some(filename) = path.to_str()
                 && filename.to_lowercase().ends_with(".bpc")
                 && let Err(err) = self.load_file(filename)
             {
                 eprintln!("Failed to load PCK file {filename}: {err}");
             }
-        });
+        }
         Ok(())
     }
 }
 
 /// PCK singleton.
-/// This is a lock protected [`PckCollection`], and must be `.try_read().unwrapped()` for any
-/// read-only cases.
+///
+/// A [`ShardedLock`] protects the [`PckCollection`]. Use `.try_read()` for
+/// read-only access. The first access loads the core kernel files, and it
+/// ignores a failure to load them.
 pub static LOADED_PCK: std::sync::LazyLock<ShardedLock<PckCollection>> =
     std::sync::LazyLock::new(|| {
         let mut singleton = PckCollection::default();
