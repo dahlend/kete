@@ -34,6 +34,7 @@ analysis
 *.mod
 
 target/*
+**/target
 
 # Ignore built documents
 docs/html
@@ -51,6 +52,4 @@ docs/**/.ipynb_checkpoints
 **/data/*.json.gz
 **/data/neowise_diameters_albedos*
 
-# Local research and analysis work - scratch scripts, run outputs, notes.
-# Never committed; nothing in the library may depend on it.
 analysis/
