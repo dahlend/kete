@@ -6,19 +6,26 @@ use kete_core::errors::{Error, KeteResult};
 use kete_core::frames::NonInertialFrame;
 use nalgebra::{Matrix3, Rotation3};
 
-use crate::ck::{CkArray, LOADED_CK};
+use crate::ck::LOADED_CK;
 
-/// Resolve `rotations_to_equatorial` for a [`NonInertialFrame`] including CK data.
+/// Return the rotation and rotation rate of a frame to the Equatorial frame.
 ///
-/// This extends the core implementation by supporting non-inertial reference
-/// frames (negative `reference_frame_id`) via loaded CK kernels.
+/// This function first tries [`NonInertialFrame::rotations_to_equatorial`]. If
+/// that fails and `reference_frame_id` is negative, the reference frame comes
+/// from the loaded CK kernels. The function resolves the reference frame
+/// recursively, then chains the rotations and the rotation rates.
 ///
 /// # Errors
-/// Fails when reference frame is not found or supported.
-///
-/// # Panics
-/// Panics can occur if a non-inertial reference frame is used but the lock on CK's
-/// cannot be taken.
+/// - [`Error::Bounds`] if `reference_frame_id` is not negative and is not a
+///   supported inertial frame.
+/// - [`Error::LockFailed`] if the CK or SCLK read lock cannot be taken.
+/// - [`Error::ValueError`] if no SCLK clock is loaded for the spacecraft of the
+///   reference frame.
+/// - [`Error::Bounds`] if no CK segment holds pointing for the reference frame
+///   at the frame time.
+/// - [`Error::Bounds`] if the pointing time differs from the frame time by more
+///   than 1e-8 days.
+/// - Any error from the evaluation of the CK segment.
 pub fn rotations_to_equatorial_full(
     frame: &NonInertialFrame,
 ) -> KeteResult<(Rotation3<f64>, Matrix3<f64>)> {
@@ -26,32 +33,26 @@ pub fn rotations_to_equatorial_full(
     match frame.rotations_to_equatorial() {
         ok @ Ok(_) => ok,
         Err(_) if frame.reference_frame_id < 0 => {
-            // CK-dependent resolution
-            let cks = LOADED_CK.try_read()?;
-
-            for segment in &cks.segments {
-                let array: &CkArray = segment.into();
-                if array.instrument_id == frame.reference_frame_id {
-                    let orientation =
-                        segment.try_get_orientation(frame.reference_frame_id, frame.time);
-                    if orientation.is_err() {
-                        continue;
-                    }
-                    let (time, ref_frame) = orientation.unwrap();
-                    if (time.jd - frame.time.jd).abs() > 1e-8 {
-                        continue;
-                    }
-                    let (rot, vel) = rotations_to_equatorial_full(&ref_frame)?;
-                    return Ok((
-                        rot * frame.rotation,
-                        vel * frame.rotation_rate.unwrap_or_else(Matrix3::identity),
-                    ));
-                }
+            // The reference frame is itself a CK frame, for example a camera
+            // relative to its spacecraft. The standard CK lookup selects the
+            // segment, so segment coverage and load order apply. The result is
+            // then chained with this frame.
+            let (time, ref_frame) = LOADED_CK
+                .try_read()?
+                .try_get_frame(frame.time.jd, frame.reference_frame_id)?;
+            if (time.jd - frame.time.jd).abs() > 1e-8 {
+                return Err(Error::Bounds(format!(
+                    "Reference frame ID {} has no CK data at the requested time.",
+                    frame.reference_frame_id
+                )));
             }
-            Err(Error::Bounds(format!(
-                "Reference frame ID {} not found in CK data.",
-                frame.reference_frame_id
-            )))
+            // d(R_ref R) / dt = dR_ref R + R_ref dR
+            let (ref_rot, ref_rate) = rotations_to_equatorial_full(&ref_frame)?;
+            let rate = frame.rotation_rate.unwrap_or_else(Matrix3::zeros);
+            Ok((
+                ref_rot * frame.rotation,
+                ref_rate * frame.rotation.matrix() + ref_rot.matrix() * rate,
+            ))
         }
         err => err,
     }

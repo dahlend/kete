@@ -1,5 +1,5 @@
 use crate::daf::{DAFType, DafArray};
-use kete_core::errors::Error;
+use kete_core::errors::{Error, KeteResult};
 
 /// DAF Array of CK data.
 /// These are segments of data.
@@ -74,6 +74,29 @@ impl CkArray {
             segment_type,
             produces_angular_rates,
         }
+    }
+}
+
+/// Convert a count stored as a float in a CK segment to `usize`.
+///
+/// `value` is the stored float. `max` is the largest valid count. `what` names
+/// the count in the error message.
+///
+/// # Errors
+/// [`Error::IOError`] if `value` is not a finite whole number in `[0, max]`.
+#[allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "The value is checked to be a whole number in range first."
+)]
+pub(in crate::ck) fn stored_count(value: f64, max: usize, what: &str) -> KeteResult<usize> {
+    if value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value <= max as f64 {
+        Ok(value as usize)
+    } else {
+        Err(Error::IOError(format!(
+            "CK segment has an invalid {what}: {value}."
+        )))
     }
 }
 

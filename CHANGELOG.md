@@ -95,6 +95,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cannot fit, rather than leaving gaps or unchecked records.
 - `repack_spk` fits the input file's data where the core kernels also cover the object.
 - SCLK clocks with a TT time system, and SCLK string parsing, match SPICE.
+- CK lookups fall back to an earlier segment inside a gap of a later one and never
+  extrapolate across a gap, as SPICE does.
+- CK type 2 pointing between interval starts, and CK type 3 intervals after the
+  first, match SPICE.
+- `instrument_frame_to_equatorial` and `instrument_equatorial_to_frame` resolve CK
+  frames defined relative to another CK frame, and a bare list passed to
+  `instrument_equatorial_to_frame` is equatorial, not ecliptic.
+- Malformed CK type 2 and 3 segments raise an error instead of panicking.
 - SPK type 1 and 21 writers include the epoch directory SPICE expects, and a query
   past the last record no longer reads past the segment data.
 

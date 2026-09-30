@@ -61,6 +61,19 @@ impl CkSegment {
     }
 }
 
+impl CkSegment {
+    /// Return whether the segment holds pointing at the clock tick `tick`.
+    ///
+    /// A segment can span `tick` and hold no pointing there. Every supported
+    /// type can leave gaps between intervals inside the segment bounds.
+    pub(crate) fn has_data_at(&self, tick: f64) -> bool {
+        match self {
+            Self::Type2(seg) => seg.has_data_at(tick),
+            Self::Type3(seg) => seg.has_data_at(tick),
+        }
+    }
+}
+
 impl<'a> From<&'a CkSegment> for &'a CkArray {
     fn from(value: &'a CkSegment) -> Self {
         match value {
