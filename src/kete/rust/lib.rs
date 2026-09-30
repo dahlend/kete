@@ -46,8 +46,10 @@ pub mod horizons;
 pub mod kepler;
 pub mod maybe_vec;
 pub mod nongrav;
+pub mod polyhedron;
 pub mod propagation;
 pub mod simulation;
+pub mod spherical_harmonics;
 pub mod spice;
 pub mod state;
 pub mod stats;
@@ -100,6 +102,8 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_class::<flux::PyModelResults>()?;
     m.add_class::<flux::PyTriangleShape>()?;
+    m.add_class::<polyhedron::PyPolyhedron>()?;
+    m.add_class::<spherical_harmonics::PySphericalHarmonics>()?;
     m.add_class::<flux::PyFluxObs>()?;
     m.add_class::<flux::PyParamPrior>()?;
     m.add_class::<flux::PyFluxPriors>()?;
@@ -122,6 +126,11 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(register_mass, m)?)?;
     m.add_function(wrap_pyfunction!(register_custom_mass, m)?)?;
     m.add_function(wrap_pyfunction!(registered_masses, m)?)?;
+    m.add_function(wrap_pyfunction!(polyhedron::register_polyhedron, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        spherical_harmonics::register_spherical_harmonics,
+        m
+    )?)?;
 
     m.add_function(wrap_pyfunction!(frame::wgs_lat_lon_to_ecef, m)?)?;
     m.add_function(wrap_pyfunction!(frame::ecef_to_wgs_lat_lon, m)?)?;

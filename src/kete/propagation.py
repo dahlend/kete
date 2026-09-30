@@ -18,6 +18,8 @@ from ._core import (
     propagate_two_body,
     register_custom_mass,
     register_mass,
+    register_polyhedron,
+    register_spherical_harmonics,
     thermal_inertia_from_lambda_0,
 )
 
@@ -33,6 +35,8 @@ __all__ = [
     "propagate_two_body",
     "register_custom_mass",
     "register_mass",
+    "register_polyhedron",
+    "register_spherical_harmonics",
     "SymplecticSim",
     "thermal_inertia_from_lambda_0",
 ]

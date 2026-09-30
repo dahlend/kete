@@ -1143,7 +1143,6 @@ mod tests {
     use kete_core::desigs::Desig;
     use kete_core::frames::{SSB, SunCenter};
     use kete_core::kepler::{light_time_correct, propagate_two_body};
-    use kete_core::state::StateLike;
     use kete_core::time::{TDB, Time};
     use kete_spice::prelude::{LOADED_SPK, SpkNBody};
 

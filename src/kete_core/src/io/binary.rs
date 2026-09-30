@@ -37,7 +37,8 @@ use crate::desigs::Desig;
 use crate::elements::EquinoctialElements;
 use crate::errors::{Error, KeteResult};
 use crate::forces::{
-    DustNonGrav, FarnocchiaNonGrav, JplCometNonGrav, NonGravKind, ParameterMask, ParameterizedForce,
+    DustNonGrav, FarnocchiaNonGrav, JplCometNonGrav, NonGravKind, ParameterMask,
+    ParameterizedForce, RampedThrustNonGrav,
 };
 use crate::fov::{
     FOV, GenericCone, GenericRectangle, NeosCmos, NeosVisit, OmniDirectional, PTFFilter, PtfCcd,
@@ -1056,10 +1057,11 @@ fn read_probes<R: Read>(r: &mut R) -> KeteResult<ProbeSet> {
 const NONGRAV_DUST: u8 = 0;
 const NONGRAV_JPL_COMET: u8 = 1;
 const NONGRAV_FARNOCCHIA: u8 = 2;
+const NONGRAV_RAMPED_THRUST: u8 = 3;
 
 /// Write a non-gravitational model and which of its parameters are free.
 fn write_non_grav<W: Write>(mask: &ParameterMask<NonGravKind>, w: &mut W) -> io::Result<()> {
-    match &mask.inner {
+    match mask.inner() {
         NonGravKind::Dust(_) => NONGRAV_DUST.write_to(w)?,
         NonGravKind::JplComet(model) => {
             NONGRAV_JPL_COMET.write_to(w)?;
@@ -1077,8 +1079,13 @@ fn write_non_grav<W: Write>(mask: &ParameterMask<NonGravKind>, w: &mut W) -> io:
             model.flattening.write_to(w)?;
             model.spin_pole.write_to(w)?;
         }
+        NonGravKind::RampedThrust(model) => {
+            NONGRAV_RAMPED_THRUST.write_to(w)?;
+            model.t0.write_to(w)?;
+            model.period.write_to(w)?;
+        }
     }
-    mask.mask.write_to(w)
+    mask.mask().write_to(w)
 }
 
 /// Read a model written by [`write_non_grav`].
@@ -1099,10 +1106,15 @@ fn read_non_grav<R: Read>(r: &mut R) -> KeteResult<ParameterMask<NonGravKind>> {
             f64::read_from(r)?,
             Vector::read_from(r)?,
         )?),
+        NONGRAV_RAMPED_THRUST => {
+            let t0 = f64::read_from(r)?;
+            let period = Option::<f64>::read_from(r)?;
+            NonGravKind::RampedThrust(RampedThrustNonGrav::new(t0, period)?)
+        }
         t => return Err(Error::IOError(format!("Invalid non-grav model tag: {t}"))),
     };
     let mask = Vec::<Option<f64>>::read_from(r)?;
-    Ok(ParameterMask { inner, mask })
+    ParameterMask::new(inner, mask)
 }
 
 // ---------------------------------------------------------------------------
@@ -1520,10 +1532,7 @@ mod tests {
         // The elements' center and the force center coincide here, so the
         // resolver is zero and no ephemeris is needed.
         let resolver = |_: Time<TDB>| Ok((Vector3::zeros(), Vector3::zeros()));
-        state.non_grav = Some(ParameterMask {
-            inner: NonGravKind::Dust(DustNonGrav),
-            mask: vec![None],
-        });
+        state.non_grav = Some(ParameterMask::all_free(NonGravKind::Dust(DustNonGrav)));
         state.probes = Some(ProbeSet::seed(&state, &resolver).unwrap());
         state.whitening_cov = Some(state.cov_matrix.clone());
         state.eta = Some(0.0123);
@@ -1588,17 +1597,35 @@ mod tests {
         assert!(recovered.iter().all(|r| r.probes.is_some()));
     }
 
+    /// The ramped thrust model keeps its reference epoch, its period and which
+    /// parameters are free.
+    #[test]
+    fn test_ramped_thrust_non_grav_round_trip() {
+        let model = RampedThrustNonGrav::new(2_457_310.25, Some(0.52)).unwrap();
+        let mut values = vec![None; 10];
+        values[2] = Some(0.0);
+        values[3] = Some(0.1);
+        let mask = ParameterMask::new(NonGravKind::RampedThrust(model), values).unwrap();
+        let mut buf = Vec::new();
+        write_non_grav(&mask, &mut buf).unwrap();
+        let got = read_non_grav(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(got.mask(), mask.mask());
+        let NonGravKind::RampedThrust(recovered) = got.inner() else {
+            panic!("expected a ramped thrust model");
+        };
+        assert_eq!(recovered.t0, 2_457_310.25);
+        assert_eq!(recovered.period, Some(0.52));
+    }
+
     /// A model whose free parameter count disagrees with the state it is stored
     /// beside is a corrupt file rather than a state to be propagated wrongly.
     #[test]
     fn test_uncertain_state_rejects_mismatched_model() {
         let mut state = sample_uncertain();
-        state.non_grav = Some(ParameterMask {
-            inner: NonGravKind::Dust(DustNonGrav),
-            // Frozen rather than free, so the model exposes no parameters while
-            // the state carries one.
-            mask: vec![Some(0.01)],
-        });
+        // Fixed rather than free, so the model exposes no parameters while the state
+        // carries one.
+        state.non_grav =
+            Some(ParameterMask::all_fixed(NonGravKind::Dust(DustNonGrav), vec![0.01]).unwrap());
         let mut buf = Vec::new();
         state.write_to(&mut buf).unwrap();
         let mut cursor = Cursor::new(&buf);

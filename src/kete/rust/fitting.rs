@@ -617,15 +617,15 @@ impl PyOrbitFit {
     #[getter]
     fn non_grav(&self) -> Option<PyNonGravModel> {
         let f = self.inner.non_grav.as_ref()?;
-        // f is FrozenNonGrav = FrozenForce<NonGravKind>: inner is the kind,
-        // values are the baked-in parameter values.
-        PyNonGravModel::from_force(&f.inner, &f.values)
+        PyNonGravModel::from_force(f.inner(), f.fixed_values().ok()?)
     }
 
     /// Whether the solver achieved strict convergence.
     ///
     /// When ``False`` the fit is the best found within the iteration
-    /// limit but the correction norm did not drop below `tol`.
+    /// limit but the correction norm did not drop below `tol`, and the
+    /// covariance is NaN when it could not be computed or the observations
+    /// do not constrain every parameter.
     #[getter]
     fn converged(&self) -> bool {
         self.inner.converged
@@ -660,9 +660,10 @@ impl PyOrbitFit {
 /// **long, well-sampled arcs**.  For short arcs where the uncertainty
 /// is non-Gaussian, consider :func:`fit_orbit_mcmc` instead.
 ///
-/// For arcs longer than 180 days, progressively wider time windows are
-/// fitted around the reference epoch so that each stage bootstraps from
-/// the previous converged solution.  The final pass fits the full arc
+/// When the arc extends more than 30 days from the reference epoch,
+/// time windows starting at +/-30 days and doubling in width are fitted
+/// around it first, so that each stage bootstraps from the previous
+/// converged solution.  The final pass fits the full arc
 /// and re-evaluates all observations for outlier rejection (if enabled).
 ///
 /// The input state is automatically re-centered to the solar system
@@ -676,9 +677,16 @@ impl PyOrbitFit {
 ///     List of :class:`~kete.fitting.Observation` to fit.
 /// non_grav : :class:`~kete.propagation.NonGravModel`, optional
 ///     Non-gravitational force model. Parameters set to NaN in the model are
-///     fit (starting from 0); parameters with concrete values are held fixed.
-///     A model with no NaN parameters is used as a fixed force and nothing
-///     in it is fit.
+///     fit (starting from 0), after a gravity-only pass that moves
+///     ``initial_state`` to the gravity-only solution; parameters with concrete
+///     values are held fixed. Parameters freed with
+///     :py:meth:`~kete.propagation.NonGravModel.with_free` are fit starting
+///     from their values, and ``initial_state`` is then taken as the matching
+///     starting point: the gravity-only pass is skipped. A starting value below
+///     a parameter's lower bound raises; a parameter on its bound stays there
+///     until the fit moves it up. A model with no free parameters is used as a
+///     fixed force and nothing in it is fit. A fit that converges to a solution
+///     the observations do not constrain in some parameter raises, naming it.
 /// include_asteroids : bool
 ///     If True, include asteroid masses in the force model (slower but more
 ///     accurate for near-Earth objects). Default is False.
@@ -727,6 +735,7 @@ pub fn fit_orbit_py(
 
     let obs: Vec<AstrometricObservation> = observations.into_iter().map(|o| o.obs).collect();
     let ng_fit = non_grav.as_ref().map(py_to_fit);
+    let ng_start = non_grav.as_ref().and_then(PyNonGravModel::start_values);
 
     let fit = fit_orbit(
         &state_ssb,
@@ -737,6 +746,7 @@ pub fn fit_orbit_py(
         1e-8, // tol
         chi2_threshold,
         max_reject_passes,
+        ng_start.as_deref(),
     )?;
     Ok(PyOrbitFit { inner: fit })
 }
@@ -1012,8 +1022,10 @@ impl PyOrbitSamples {
 ///     sampling parameters.  These draws are discarded.  Default is 500.
 /// non_grav : :class:`~kete.propagation.NonGravModel`, optional
 ///     Shared non-gravitational force model applied to all chains.
-///     Parameters set to NaN in the model are sampled; parameters with
-///     concrete values are held fixed.
+///     Parameters set to NaN in the model are sampled, starting from 0.
+///     Parameters freed with :meth:`~kete.propagation.NonGravModel.with_free`
+///     are sampled, starting from their values. Other parameters are held
+///     fixed at their values.
 /// maxdepth : int
 ///     Maximum tree depth for the sampler.  Higher values allow more
 ///     thorough exploration at greater computational cost.
@@ -1059,6 +1071,7 @@ pub fn fit_orbit_mcmc_py(
 
     let obs: Vec<AstrometricObservation> = observations.into_iter().map(|o| o.obs).collect();
     let ng: Option<NonGravMask> = non_grav.as_ref().map(py_to_fit);
+    let ng_start = non_grav.as_ref().and_then(PyNonGravModel::start_values);
 
     let result = fit_orbit_mcmc(
         &ssb_seeds,
@@ -1067,6 +1080,7 @@ pub fn fit_orbit_mcmc_py(
         num_draws,
         num_tune,
         ng.as_ref(),
+        ng_start.as_deref(),
         maxdepth,
         target_accept,
     )?;

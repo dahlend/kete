@@ -3,7 +3,7 @@
 use nalgebra::{Matrix3xX, Vector3};
 
 use crate::constants::GMS;
-use crate::errors::KeteResult;
+use crate::errors::{Error, KeteResult};
 use crate::forces::ParameterizedForce;
 use crate::frames::{Equatorial, SunCenter, Vector};
 use crate::kepler::analytic_2_body;
@@ -114,7 +114,10 @@ impl JplCometNonGrav {
 }
 
 /// The radial / transverse / normal unit vectors of a Sun-relative state.
-fn rtn_dirs(pos: &Vector3<f64>, vel: &Vector3<f64>) -> (Vector3<f64>, Vector3<f64>, Vector3<f64>) {
+pub(super) fn rtn_dirs(
+    pos: &Vector3<f64>,
+    vel: &Vector3<f64>,
+) -> (Vector3<f64>, Vector3<f64>, Vector3<f64>) {
     let r_hat = pos.normalize();
     let t_hat = (vel - r_hat * vel.dot(&r_hat)).normalize();
     let n_hat = r_hat.cross(&t_hat);
@@ -124,6 +127,7 @@ fn rtn_dirs(pos: &Vector3<f64>, vel: &Vector3<f64>) -> (Vector3<f64>, Vector3<f6
 impl ParameterizedForce for JplCometNonGrav {
     type Frame = Equatorial;
     type Center = SunCenter;
+    type Meta = ();
 
     fn n_free_params(&self) -> usize {
         3
@@ -139,6 +143,8 @@ impl ParameterizedForce for JplCometNonGrav {
         pos: &Vector<Equatorial>,
         vel: &Vector<Equatorial>,
         free_params: &[f64],
+        _meta: &mut Self::Meta,
+        _exact_eval: bool,
     ) -> KeteResult<Vector<Equatorial>> {
         let pos: Vector3<f64> = (*pos).into();
         let vel: Vector3<f64> = (*vel).into();
@@ -146,7 +152,12 @@ impl ParameterizedForce for JplCometNonGrav {
 
         let scale = self.g_r(&pos, &vel)?;
 
-        let [a1, a2, a3] = [free_params[0], free_params[1], free_params[2]];
+        let &[a1, a2, a3] = free_params else {
+            return Err(Error::ValueError(format!(
+                "JplCometNonGrav expects 3 free parameters (a1, a2, a3), got {}",
+                free_params.len()
+            )));
+        };
         let result = r_hat * (scale * a1) + t_hat * (scale * a2) + n_hat * (scale * a3);
         Ok(Vector::<Equatorial>::new(result.into()))
     }
@@ -157,6 +168,7 @@ impl ParameterizedForce for JplCometNonGrav {
         pos: &Vector<Equatorial>,
         vel: &Vector<Equatorial>,
         _free_params: &[f64],
+        _meta: &mut Self::Meta,
     ) -> KeteResult<Matrix3xX<f64>> {
         // The acceleration is linear in (a1, a2, a3): the columns are `g(r)`
         // times the RTN basis, independent of the parameter values.
@@ -190,7 +202,16 @@ mod tests {
     }
 
     fn accel_at(f: &JplCometNonGrav, params: &[f64]) -> Vector3<f64> {
-        f.accel(epoch(), &pos(), &vel(), params).unwrap().into()
+        f.accel(
+            epoch(),
+            &pos(),
+            &vel(),
+            params,
+            &mut Default::default(),
+            false,
+        )
+        .unwrap()
+        .into()
     }
 
     /// The velocity derivative must be real, and must be the right one.
@@ -217,7 +238,9 @@ mod tests {
         let force = JplCometNonGrav::standard_comet();
         assert_eq!(force.dt, 0.0, "the closed form below assumes no lag");
         let params = [1e-8, -3e-9, 5e-10];
-        let (_, da_dv) = force.jacobians(epoch(), &pos(), &vel(), &params).unwrap();
+        let (_, da_dv) = force
+            .jacobians(epoch(), &pos(), &vel(), &params, &mut Default::default())
+            .unwrap();
 
         let pos_v: Vector3<f64> = pos().into();
         let vel_v: Vector3<f64> = vel().into();
@@ -258,7 +281,9 @@ mod tests {
         let mut force = JplCometNonGrav::standard_comet();
         force.dt = 30.0;
         let params = [1e-8, -3e-9, 5e-10];
-        let (_, da_dv) = force.jacobians(epoch(), &pos(), &vel(), &params).unwrap();
+        let (_, da_dv) = force
+            .jacobians(epoch(), &pos(), &vel(), &params, &mut Default::default())
+            .unwrap();
         assert!(da_dv.norm() > 0.0, "velocity jacobian is zero with a lag");
     }
 
@@ -270,7 +295,7 @@ mod tests {
             f.dt = dt;
             let params = [1e-8, -3e-9, 5e-10];
             let jac = f
-                .parameter_jacobian(epoch(), &pos(), &vel(), &params)
+                .parameter_jacobian(epoch(), &pos(), &vel(), &params, &mut Default::default())
                 .unwrap();
             let h = 1e-10;
             for col in 0..3 {

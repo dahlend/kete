@@ -1,12 +1,12 @@
 use super::*;
 use kete_core::errors::{Error, KeteResult};
-use kete_core::forces::{FrozenNonGrav, Sum};
+use kete_core::forces::NonGravMask;
 use kete_core::fov::{FOV, FovLike, check_statics};
-use kete_core::frames::{Equatorial, SSB};
-use kete_core::state::{State, StateLike};
+use kete_core::frames::Equatorial;
+use kete_core::state::State;
 use kete_core::time::{TDB, Time};
 use kete_spice::fov_checks;
-use kete_spice::propagation::{Recenter, SpkNBody};
+use kete_spice::propagation::SpkNBody;
 use kete_spice::spk::LOADED_SPK;
 use pyo3::prelude::*;
 use rayon::prelude::*;
@@ -47,7 +47,7 @@ pub fn fov_checks_py(
 ) -> PyResult<Vec<PySimultaneousStates>> {
     let pop = obj_state.0;
 
-    let mut non_gravs: Vec<Option<FrozenNonGrav>> = match non_gravs {
+    let mut non_gravs: Vec<Option<NonGravMask>> = match non_gravs {
         None => vec![None; pop.states.len()],
         Some(models) => {
             if models.len() != pop.states.len() {
@@ -57,7 +57,7 @@ pub fn fov_checks_py(
             }
             models
                 .into_iter()
-                .map(|model| model.map(|model| model.to_frozen()))
+                .map(|model| model.map(|model| model.to_fixed()))
                 .collect()
         }
     };
@@ -107,26 +107,19 @@ pub fn fov_checks_py(
 
     // Propagate every state to the given time, dropping any which fail. Failures drop
     // the state and its non-gravitational model together, keeping the two lists aligned.
-    let propagate = |states: Vec<State<Equatorial>>,
-                     non_gravs: Vec<Option<FrozenNonGrav>>,
-                     jd: Time<TDB>| {
-        states
-            .into_par_iter()
-            .zip(non_gravs)
-            .filter_map(|(state, non_grav)| {
-                let ssb = spk.try_to_ssb(state).ok()?;
-                let grav = SpkNBody::new(&spk, include_asteroids);
-                let moved = match non_grav.as_ref() {
-                    None => ssb.propagate_with(&grav, jd),
-                    Some(non_grav) => {
-                        let force = Sum::new(grav, Recenter::<SSB, _>::new(&spk, non_grav.clone()));
-                        ssb.propagate_with(&force, jd)
-                    }
-                };
-                moved.ok().map(|moved| (moved.into(), non_grav))
-            })
-            .unzip()
-    };
+    let propagate =
+        |states: Vec<State<Equatorial>>, non_gravs: Vec<Option<NonGravMask>>, jd: Time<TDB>| {
+            states
+                .into_par_iter()
+                .zip(non_gravs)
+                .filter_map(|(state, non_grav)| {
+                    let ssb = spk.try_to_ssb(state).ok()?;
+                    let force = SpkNBody::with_non_grav(&spk, include_asteroids, non_grav.clone());
+                    let moved = ssb.propagate_with(&force, jd);
+                    moved.ok().map(|moved| (moved.into(), non_grav))
+                })
+                .unzip()
+        };
 
     for fovs in fov_chunks {
         let jd_mean = (fovs.last().unwrap().observer().epoch.jd

@@ -7,7 +7,7 @@ use kete_core::elements::CometElements;
 use kete_core::errors::Error;
 use kete_core::frames::{Ecliptic, Equatorial};
 use kete_core::prelude::KeteResult;
-use kete_core::state::{State, StateLike};
+use kete_core::state::State;
 use kete_core::time::{TDB, Time};
 use nalgebra::Vector3;
 

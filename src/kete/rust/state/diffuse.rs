@@ -7,11 +7,12 @@ use kete_core::forces::NonGravMask;
 use kete_core::forces::ParameterizedForce;
 use kete_core::frames::Equatorial;
 use kete_core::prelude::*;
-use kete_core::state::{DEFAULT_STEP_DAYS, StepReport, Termination};
-use kete_spice::propagation::SpkNonGravs;
-use kete_spice::propagation::{SplitConfig, propagate_diffuse_state, step_diffuse_state};
+use kete_core::state::{
+    DEFAULT_STEP_DAYS, SplitConfig, StepReport, Termination, propagate_diffuse_state,
+    step_diffuse_state,
+};
+use kete_spice::propagation::{SpkNBody, sun_resolver};
 use kete_spice::spk::LOADED_SPK;
-use nalgebra::Vector3;
 use pyo3::prelude::*;
 
 /// What one leg of an adaptive march decided.
@@ -46,6 +47,14 @@ pub struct PyStepReport {
     /// silent loss of accumulated history, which is why it is counted rather than left to
     /// be inferred.
     pub seeded: usize,
+
+    /// Weight that finished the leg above ``split_threshold``, as a fraction of the
+    /// mixture.
+    ///
+    /// Read next to :attr:`termination`: a leg can stop with a tenth of the distribution
+    /// unresolved or with a thousandth of it in one starved lineage, and those are
+    /// different results.  Zero means every component cleared the threshold.
+    pub unresolved_weight: f64,
 }
 
 impl From<StepReport> for PyStepReport {
@@ -57,6 +66,7 @@ impl From<StepReport> for PyStepReport {
                 Termination::NoSplitDirection => "no_split_direction",
             },
             seeded: report.seeded,
+            unresolved_weight: report.unresolved_weight,
         }
     }
 }
@@ -108,26 +118,8 @@ impl PyDiffuseState {
         self.mixture.components.first()?.non_grav.as_ref()
     }
 
-    fn build_forces<'a>(&self, spk: &'a kete_spice::spk::SpkCollection) -> SpkNonGravs<'a> {
-        if let Some(ng) = self.mask() {
-            SpkNonGravs::with_non_grav_mask(spk, self.mixture.include_asteroids, ng.clone())
-        } else {
-            SpkNonGravs::gravity(spk, self.mixture.include_asteroids)
-        }
-    }
-
-    /// Resolves the Sun against the barycenter for the propagation paths below.
-    ///
-    /// Elements are referred to the Sun while the force models are barycentric, so a state
-    /// crosses between them at every epoch the propagation touches; the adaptive path
-    /// reaches many intermediate epochs while splitting, so it needs something it can ask.
-    fn sun_resolver(
-        spk: &kete_spice::spk::SpkCollection,
-    ) -> impl Fn(Time<TDB>) -> KeteResult<(Vector3<f64>, Vector3<f64>)> + Sync + '_ {
-        move |time| {
-            let sun = spk.try_get_state_with_center::<Equatorial>(10, time, 0)?;
-            Ok((Vector3::from(sun.pos), Vector3::from(sun.vel)))
-        }
+    fn build_forces<'a>(&self, spk: &'a kete_spice::spk::SpkCollection) -> SpkNBody<'a> {
+        SpkNBody::with_non_grav(spk, self.mixture.include_asteroids, self.mask().cloned())
     }
 }
 
@@ -263,6 +255,22 @@ impl PyDiffuseState {
         self.mixture.max_eta()
     }
 
+    /// Weight-weighted mean of the component nonlinearities.
+    ///
+    /// The mixture-level reading, against :attr:`max_eta`, which is an extreme over the
+    /// components and answers a different question: the worst single component, however
+    /// little weight it carries.  The two diverge as a mixture grows, since splitting adds
+    /// components faster than it improves the worst one, so a march that is resolving the
+    /// bulk can report a rising maximum throughout.  Read this to see whether a budget
+    /// bought anything, and :meth:`weight_above_eta` for how much of the distribution is
+    /// still over the threshold.
+    ///
+    /// ``None`` if any component has never been marched.
+    #[getter]
+    fn mean_eta(&self) -> Option<f64> {
+        self.mixture.mean_eta()
+    }
+
     /// Per-component nonlinearity at this epoch, in mixture order, or ``None`` if any
     /// component has never been marched.
     ///
@@ -357,7 +365,7 @@ impl PyDiffuseState {
         let mask = self.mask()?;
         let values = self.mixture.free_params();
         let full = mask.merge(values).ok()?;
-        PyNonGravModel::from_force(&mask.inner, &full)
+        PyNonGravModel::from_force(mask.inner(), &full)
     }
 
     /// Draw random samples from the mixture distribution.
@@ -383,7 +391,7 @@ impl PyDiffuseState {
                     sampled_params.as_slice()
                 };
                 let full = mask.merge(raw).ok()?;
-                PyNonGravModel::from_force(&mask.inner, &full)
+                PyNonGravModel::from_force(mask.inner(), &full)
             });
             non_gravs.push(ng);
         }
@@ -401,10 +409,17 @@ impl PyDiffuseState {
     /// probes each leg would hide nonlinearity that arrives gradually.
     ///
     /// The arc is cut into legs of ``step_days`` and marched.  A component that exceeds
-    /// ``split_threshold`` is rolled back to the start of the leg, split three ways along
-    /// its worst probe's direction, and the leg is redone with the children on fresh
-    /// probes.  Checking at every leg boundary is what places a split near the time the
-    /// flow actually stops being linear.
+    /// ``split_threshold`` is rolled back to the start of the leg, split along its worst
+    /// probe's direction, and the leg is redone with the children on fresh probes.
+    /// Checking at every leg boundary is what places a split near the time the flow
+    /// actually stops being linear.
+    ///
+    /// How many children a split makes is set by how far over threshold the component
+    /// is, not fixed: the residual is second order in the component's width, so a
+    /// component at ``eta`` needs that width cut by ``sqrt(eta / split_threshold)``, and
+    /// the split uses the smallest library that delivers it.  Reaching the same
+    /// narrowing by repeated three-way splits costs about the cube of the components,
+    /// which is why a deep encounter used to exhaust any budget it was given.
     ///
     /// This is :meth:`step` folded over that grid, and nothing more: the probes ride on
     /// the components, so driving the same legs by hand measures the same thing.
@@ -430,9 +445,10 @@ impl PyDiffuseState {
     ///     meaning.
     /// max_components :
     ///     Hard cap on the returned component count - the brake on what a tight
-    ///     threshold may spend.  Splits are three-way, so powers of three avoid
-    ///     truncating a cascade mid-generation.  When it binds, the returned report
-    ///     says ``"component_cap"``.
+    ///     threshold may spend.  It also bounds a single split, which is sized to the
+    ///     nonlinearity it removes and is cut down to whatever the remaining budget
+    ///     allows.  When no split at all fits, the returned report says
+    ///     ``"component_cap"``.
     /// step_days :
     ///     Length of one leg of the time grid, in days.  Equal steps of time, so every
     ///     component reaches the same leg boundaries whatever its orbit.  This sets the
@@ -452,6 +468,7 @@ impl PyDiffuseState {
         split_threshold=0.15,
         max_components=729,
         step_days=DEFAULT_STEP_DAYS,
+        max_unresolved_weight=0.0,
     ))]
     fn propagate(
         &self,
@@ -460,10 +477,12 @@ impl PyDiffuseState {
         split_threshold: f64,
         max_components: usize,
         step_days: f64,
+        max_unresolved_weight: f64,
     ) -> PyResult<(Self, PyStepReport)> {
         let cfg = SplitConfig {
             split_threshold,
             max_components,
+            max_unresolved_weight,
         };
         let target: Time<TDB> = jd.into();
         py.detach(|| {
@@ -475,7 +494,7 @@ impl PyDiffuseState {
                 target,
                 &cfg,
                 step_days,
-                &Self::sun_resolver(&spk),
+                &sun_resolver(&spk),
             )?;
             Ok((
                 Self {
@@ -514,29 +533,27 @@ impl PyDiffuseState {
     ///     through a march is visible where it happens.
     /// max_components :
     ///     As :meth:`propagate`.
-    #[pyo3(signature = (jd, split_threshold=0.15, max_components=729))]
+    #[pyo3(signature = (jd, split_threshold=0.15, max_components=729,
+                       max_unresolved_weight=0.0))]
     fn step(
         &self,
         py: Python<'_>,
         jd: PyTime,
         split_threshold: f64,
         max_components: usize,
+        max_unresolved_weight: f64,
     ) -> PyResult<(Self, PyStepReport)> {
         let cfg = SplitConfig {
             split_threshold,
             max_components,
+            max_unresolved_weight,
         };
         let target: Time<TDB> = jd.into();
         py.detach(|| {
             let spk = LOADED_SPK.try_read().map_err(Error::from)?;
             let forces = self.build_forces(&spk);
-            let (stepped, report) = step_diffuse_state(
-                &self.mixture,
-                &forces,
-                target,
-                &cfg,
-                &Self::sun_resolver(&spk),
-            )?;
+            let (stepped, report) =
+                step_diffuse_state(&self.mixture, &forces, target, &cfg, &sun_resolver(&spk))?;
             Ok((Self { mixture: stepped }, report.into()))
         })
     }

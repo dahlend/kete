@@ -28,13 +28,12 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use kete_core::forces::{FrozenForce, ParameterizedForce, Sum};
+use kete_core::forces::ParameterizedForce;
 use kete_core::frames::{Equatorial, SSB, SunCenter};
 use kete_core::prelude::{KeteResult, State};
 use kete_core::state::propagate_with_stm;
 use kete_core::time::{TDB, Time};
 
-use super::recenter::Recenter;
 use super::spk_n_body::SpkNBody;
 use crate::spk::LOADED_SPK;
 use nalgebra::DMatrix;
@@ -46,18 +45,16 @@ use nalgebra::DMatrix;
 /// time that the center is the solar system barycenter.  The returned state is also
 /// SSB-centered.
 ///
-/// When `include_asteroids` is `true`, the force model includes asteroid
+/// When `include_extended` is `true`, the force model includes asteroid
 /// masses from `GravParams::selected_masses()`; otherwise only the
 /// planets and Moon from `GravParams::planets()` are used.
 ///
-/// When `non_grav` is `Some`, the STM gains parameter-sensitivity columns
-/// for the frozen force's parameters.  The frozen values serve as the
-/// nominal trajectory; the all-`None` variational mask is constructed
-/// internally so the integrator computes `d(r_f, v_f) / d p_k`.
+/// When `non_grav` is `Some((force, free_params))`, the state is propagated under
+/// gravity plus `force` evaluated at `free_params`, and the STM gains one
+/// parameter-sensitivity column `d(r_f, v_f) / d p_k` per free parameter of `force`.
 ///
 /// Returns the propagated [`State`] and a 6x(6+N) sensitivity matrix where N is
-/// the number of free non-gravitational parameters (0 for none, 1 for `Dust`, 3 for
-/// `JplComet`). Column ordering is:
+/// the number of free parameters of `force`, 0 without one. Column ordering is:
 ///
 /// ```text
 /// cols 0-5  : 6x6 state transition matrix  d(r_f, v_f) / d(r_0, v_0)
@@ -70,41 +67,23 @@ pub fn compute_state_transition<F>(
     state: &State<Equatorial, SSB>,
     jd: Time<TDB>,
     include_extended: bool,
-    non_grav: Option<&FrozenForce<F>>,
+    non_grav: Option<(&F, &[f64])>,
 ) -> KeteResult<(State<Equatorial, SSB>, DMatrix<f64>)>
 where
     F: ParameterizedForce<Frame = Equatorial, Center = SunCenter> + Clone,
 {
-    // Gravity-only path stays bare (`SpkNBody` directly).
-    //
-    // Non-grav path: build an all-`None` variational mask from the frozen
-    // template so `propagate_with_stm` gains parameter-sensitivity columns,
-    // then pass the frozen values as the nominal `free_params` slice.
     let spk = LOADED_SPK.try_read()?;
-    let (pos_f, vel_f, sens) = match non_grav {
-        None => propagate_with_stm(
-            &SpkNBody::new(&spk, include_extended),
-            state.pos.into(),
-            state.vel.into(),
-            &[],
-            state.epoch,
-            jd,
-        )?,
-        Some(frozen) => {
-            let force = Sum::new(
-                SpkNBody::new(&spk, include_extended),
-                Recenter::<SSB, _>::new(&spk, frozen.inner.clone()),
-            );
-            propagate_with_stm(
-                &force,
-                state.pos.into(),
-                state.vel.into(),
-                &frozen.values,
-                state.epoch,
-                jd,
-            )?
-        }
-    };
+    let (non_grav, free_params) = non_grav.map_or((None, &[][..]), |(force, params)| {
+        (Some(force.clone()), params)
+    });
+    let (pos_f, vel_f, sens) = propagate_with_stm(
+        &SpkNBody::with_non_grav(&spk, include_extended, non_grav),
+        state.pos.into(),
+        state.vel.into(),
+        free_params,
+        state.epoch,
+        jd,
+    )?;
 
     let final_state = State {
         desig: state.desig.clone(),
@@ -319,10 +298,7 @@ mod tests {
         let (elem, sun_ssb, epoch) = setup();
         let epoch_final = Time::<TDB>::new(epoch.jd + 200.0);
         let spk = LOADED_SPK.try_read().unwrap();
-        let force = Sum::new(
-            SpkNBody::new(&spk, false),
-            Recenter::<SSB, _>::new(&spk, JplCometNonGrav::standard_comet()),
-        );
+        let force = SpkNBody::with_non_grav(&spk, false, Some(JplCometNonGrav::standard_comet()));
         let params = [2.0e-9, 5.0e-10, -1.0e-10];
 
         let (_, _, sens) =
@@ -730,6 +706,7 @@ mod tests {
         let measure_only = SplitConfig {
             split_threshold: 1e30,
             max_components: 1,
+            max_unresolved_weight: 0.0,
         };
 
         println!(
@@ -1012,10 +989,12 @@ mod tests {
         let unsplit = SplitConfig {
             split_threshold: 1e30,
             max_components: 1,
+            max_unresolved_weight: 0.0,
         };
         let one_split = SplitConfig {
             split_threshold: 0.0,
             max_components: 3,
+            max_unresolved_weight: 0.0,
         };
 
         println!(

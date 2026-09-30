@@ -37,7 +37,7 @@ use crate::obs::AstrometricObservation;
 use crate::obs::differential_light_deflect;
 
 use crate::orbit_fitting::OrbitFit;
-use kete_core::forces::{FrozenForce, NonGravMask, ParameterizedForce};
+use kete_core::forces::{NonGravMask, ParameterizedForce};
 use kete_core::frames::{CenterBody, Equatorial, SSB};
 use kete_core::kepler::light_time_correct;
 use kete_core::prelude::{Error, KeteResult, State, UncertainState};
@@ -399,10 +399,13 @@ fn forward_pass(
         // EKF: propagate the state nonlinearly; use the STM only for
         // the covariance prediction.
         let (phi_full, xv_pred, cov_pred, new_state) = if dt.abs() > 1e-12 {
-            let frozen = mask.and_then(|m| FrozenForce::new(m.clone(), ng_values.clone()).ok());
-            let ssb_result =
-                compute_state_transition(&state_cur, obs_epoch, include_asteroids, frozen.as_ref())
-                    .ok();
+            let ssb_result = compute_state_transition(
+                &state_cur,
+                obs_epoch,
+                include_asteroids,
+                mask.map(|m| (m, ng_values.as_slice())),
+            )
+            .ok();
             if let Some((propagated_ssb, phi_6xd)) = ssb_result {
                 let phi = expand_phi(&phi_6xd, dim);
                 let qmat = build_process_noise(dim, process_noise_q, dt);
@@ -686,7 +689,7 @@ fn build_result(
     let dof = if n_meas > dim { n_meas - dim } else { 1 };
     let rms = (chi2_sum / dof as f64).sqrt();
 
-    let non_grav_result = mask.map(|m| m.freeze_inner(ng_values)).transpose()?;
+    let non_grav_result = mask.map(|m| m.fixed_at(ng_values)).transpose()?;
 
     Ok(OrbitFit {
         uncertain_state: uncertain,
@@ -730,7 +733,6 @@ mod tests {
     use kete_core::frames::Equatorial;
     use kete_core::kepler::light_time_correct;
     use kete_core::prelude::State;
-    use kete_core::state::StateLike;
     use kete_core::time::{TDB, Time};
     use kete_spice::prelude::LOADED_SPK;
     use kete_spice::propagation::SpkNBody;
@@ -898,7 +900,7 @@ mod tests {
             .non_grav
             .as_ref()
             .expect("filter state must carry the non-grav mask");
-        assert_eq!(carried.mask, vec![Some(0.0), None, Some(0.0)]);
+        assert_eq!(carried.mask(), vec![Some(0.0), None, Some(0.0)]);
     }
 
     /// EKF+RTS on a longer arc (2 years) with a larger perturbation.

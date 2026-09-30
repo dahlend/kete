@@ -9,9 +9,7 @@ use kete_core::constants::GMS_SQRT;
 use kete_core::desigs::Desig;
 use kete_core::elements::CometElements;
 use kete_core::errors::{Error, KeteResult};
-use kete_core::forces::{
-    FrozenForce, FrozenNonGrav, NonGravKind, ParameterMask, ParameterizedForce,
-};
+use kete_core::forces::{NonGravKind, NonGravMask, ParameterMask, ParameterizedForce};
 use kete_core::frames::{Ecliptic, Equatorial};
 use kete_core::state::State;
 use kete_core::state::UncertainState;
@@ -76,7 +74,7 @@ pub struct HorizonsProperties {
     pub uncertain_state: Option<UncertainState>,
 
     /// Non-gravitational model from Horizons model parameters.
-    pub non_grav: Option<FrozenNonGrav>,
+    pub non_grav: Option<NonGravMask>,
 
     /// Alternate designations for this object.
     pub alternate_desigs: Vec<String>,
@@ -176,7 +174,7 @@ impl HorizonsProperties {
         &self,
         n_samples: usize,
         seed: Option<u64>,
-    ) -> KeteResult<Vec<(State<Equatorial>, Option<FrozenNonGrav>)>> {
+    ) -> KeteResult<Vec<(State<Equatorial>, Option<NonGravMask>)>> {
         let us = self.uncertain_state.as_ref().ok_or(Error::ValueError(
             "This object does not have a covariance matrix, cannot sample from it.".into(),
         ))?;
@@ -184,19 +182,19 @@ impl HorizonsProperties {
         // Reconstruct a NonGravFit per sample by overlaying the
         // perturbed free-parameter values on the stored template.
         let template = self.non_grav.as_ref();
-        Ok(raw_samples
+        raw_samples
             .into_iter()
             .map(|(state, sampled_params)| {
-                let ng = template.map(|tmpl| {
-                    let mut clone = tmpl.clone();
-                    if !sampled_params.is_empty() {
-                        clone.values = sampled_params;
-                    }
-                    clone
-                });
-                (state, ng)
+                let ng = match template {
+                    Some(tmpl) if !sampled_params.is_empty() => Some(ParameterMask::all_fixed(
+                        tmpl.inner().clone(),
+                        sampled_params,
+                    )?),
+                    tmpl => tmpl.cloned(),
+                };
+                Ok((state, ng))
             })
-            .collect())
+            .collect()
     }
 
     /// Cometary orbital elements (q, e, i, node, peri, tp) from this object.
@@ -454,9 +452,9 @@ impl HorizonsProperties {
                 .uncertain_state
                 .as_mut()
                 .and_then(|us| us.non_grav.as_mut())
-            && mask.inner.free_param_names() == model.inner.free_param_names()
+            && mask.inner().free_param_names() == model.inner().free_param_names()
         {
-            mask.inner = model.inner.clone();
+            mask.set_inner(model.inner().clone())?;
         }
 
         props.alternate_desigs = {
@@ -551,11 +549,11 @@ fn build_uncertain_state(
 
     let np = non_grav
         .as_ref()
-        .map_or(0, |ng: &FrozenNonGrav| ng.values.len());
+        .map_or(0, |ng: &NonGravMask| ng.inner().n_free_params());
     let n = 6 + np;
 
     let ng_param_names: Vec<&str> = match &non_grav {
-        Some(ng) => ng.inner.free_param_names(),
+        Some(ng) => ng.inner().free_param_names(),
         None => Vec::new(),
     };
     let reorder: Vec<Option<usize>> = (0..n)
@@ -596,9 +594,10 @@ fn build_uncertain_state(
             _ => 0.0,
         });
 
-        let free_params = non_grav
-            .as_ref()
-            .map_or_else(Vec::new, |m| m.values.clone());
+        let free_params = match &non_grav {
+            Some(ng) => ng.fixed_values()?.to_vec(),
+            None => Vec::new(),
+        };
         UncertainState::from_cometary(&elements, &mat, free_params)?
     } else {
         let x = get("x")?;
@@ -619,20 +618,16 @@ fn build_uncertain_state(
             _ => 0.0,
         });
 
-        let free_params = non_grav
-            .as_ref()
-            .map_or_else(Vec::new, |m| m.values.clone());
+        let free_params = match &non_grav {
+            Some(ng) => ng.fixed_values()?.to_vec(),
+            None => Vec::new(),
+        };
         UncertainState::from_state(&state, &mat, free_params)?
     };
     // Every parameter of the model spans a row of the covariance (zero where Horizons
     // gave none), so all of them are free. The g(r) shape here is the default; the
     // fetch path replaces it with the Horizons model parameters.
-    uncertain.non_grav = non_grav
-        .map(|f| {
-            let n = f.values.len();
-            ParameterMask::new(f.inner, vec![None; n])
-        })
-        .transpose()?;
+    uncertain.non_grav = non_grav.map(|f| ParameterMask::all_free(f.inner().clone()));
     Ok(uncertain)
 }
 
@@ -645,7 +640,7 @@ fn build_uncertain_state(
 ///
 /// Unrecognized parameter sets (e.g. `rho`, `amrat`) yield `None`;
 /// the caller should then fall back to a pure orbital covariance.
-fn build_nongrav_from_hash(hash: &std::collections::HashMap<&str, f64>) -> Option<FrozenNonGrav> {
+fn build_nongrav_from_hash(hash: &std::collections::HashMap<&str, f64>) -> Option<NonGravMask> {
     let get = |key: &str, default: f64| -> f64 { hash.get(key).copied().unwrap_or(default) };
 
     let has_jpl = hash.contains_key("a1") || hash.contains_key("a2") || hash.contains_key("a3");
@@ -661,10 +656,10 @@ fn build_nongrav_from_hash(hash: &std::collections::HashMap<&str, f64>) -> Optio
             get("dt", 0.0),
         ));
         let values = vec![get("a1", 0.0), get("a2", 0.0), get("a3", 0.0)];
-        Some(FrozenForce::new(template, values).ok()?)
+        Some(ParameterMask::all_fixed(template, values).ok()?)
     } else if has_dust {
         let template = NonGravKind::Dust(kete_core::forces::DustNonGrav);
-        Some(FrozenForce::new(template, vec![get("beta", 0.0)]).ok()?)
+        Some(ParameterMask::all_fixed(template, vec![get("beta", 0.0)]).ok()?)
     } else {
         let unknown: Vec<&str> = hash.keys().copied().collect();
         eprintln!(
@@ -677,7 +672,7 @@ fn build_nongrav_from_hash(hash: &std::collections::HashMap<&str, f64>) -> Optio
 
 /// Build a [`NonGravFit`] from the `model_pars` section of a Horizons response.
 #[cfg(feature = "fetch")]
-fn build_nongrav_from_model_pars(pars: &[NameValue]) -> Option<FrozenNonGrav> {
+fn build_nongrav_from_model_pars(pars: &[NameValue]) -> Option<NonGravMask> {
     let mut a1 = 0.0;
     let mut a2 = 0.0;
     let mut a3 = 0.0;
@@ -717,7 +712,7 @@ fn build_nongrav_from_model_pars(pars: &[NameValue]) -> Option<FrozenNonGrav> {
         let template = NonGravKind::JplComet(kete_core::forces::JplCometNonGrav::new(
             alpha, r_0, m, n, k, dt,
         ));
-        FrozenForce::new(template, vec![a1, a2, a3]).ok()
+        ParameterMask::all_fixed(template, vec![a1, a2, a3]).ok()
     } else {
         None
     }

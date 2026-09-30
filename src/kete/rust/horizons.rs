@@ -184,7 +184,7 @@ impl PyHorizonsProperties {
     #[getter]
     fn non_grav(&self) -> Option<PyNonGravModel> {
         let f = self.0.non_grav.as_ref()?;
-        PyNonGravModel::from_force(&f.inner, &f.values)
+        PyNonGravModel::from_force(f.inner(), f.fixed_values().ok()?)
     }
 
     /// Alternate designations for this object.

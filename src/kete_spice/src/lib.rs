@@ -35,10 +35,7 @@ pub mod prelude {
 
     pub use crate::fov_checks::{check_n_body, check_spks, check_visible};
     pub use crate::frame_ext::rotations_to_equatorial_full;
-    pub use crate::propagation::{
-        Recenter, SpkNBody, SplitConfig, StepReport, Termination, compute_state_transition,
-        propagate_diffuse_state, step_diffuse_state,
-    };
+    pub use crate::propagation::{SpkNBody, compute_state_transition};
 }
 
 use kete_core::time::{TDB, Time};

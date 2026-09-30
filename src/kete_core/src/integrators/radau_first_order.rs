@@ -271,18 +271,22 @@ where
                     }
                     step_failures = 0;
                 }
+                // Only a failed step is retried at a smaller size. Any other error comes
+                // from the force model or the ephemeris, where a smaller step gives the
+                // same error, so it is returned as is.
                 Err(error) => match error {
-                    Error::Bounds(_) | Error::Impact(_, _) => Err(error)?,
-                    Error::Convergence(_)
-                    | Error::ValueError(_)
-                    | Error::IOError(_)
-                    | Error::LockFailed => {
+                    Error::Convergence(_) => {
                         step_failures += 1;
                         next_step_size *= 0.7;
                         if step_failures > 10 {
                             Err(Error::Convergence("Radau failed to converge.".into()))?;
                         }
                     }
+                    Error::Bounds(_)
+                    | Error::Impact(_, _)
+                    | Error::ValueError(_)
+                    | Error::IOError(_)
+                    | Error::LockFailed => Err(error)?,
                 },
             }
             if next_step_size.abs() < MIN_STEP {

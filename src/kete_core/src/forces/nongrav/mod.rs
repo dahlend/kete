@@ -1,11 +1,11 @@
 //! Non-gravitational forces: typed [`ParameterizedForce`] impls and physical-input helpers.
 //!
-//! The three non-grav variants are separate concrete types, each holding only
+//! The non-grav variants are separate concrete types, each holding only
 //! its fixed physical constants; fitted parameters are passed through
 //! `ParameterizedForce::accel`'s `&[f64]` argument and stored on the carrying state's
 //! `free_params`.
 //!
-//! [`NonGravKind`] aggregates the three variants behind a single concrete
+//! [`NonGravKind`] aggregates the variants behind a single concrete
 //! type. It is the convenient default for code that ships with kete (Horizons
 //! reader, batch fitting helpers, Python wrapper) and slots into the open
 //! composition machinery exactly like a hand-written `ParameterizedForce`.
@@ -14,6 +14,7 @@ mod dust;
 mod farnocchia;
 mod jpl_comet;
 mod kind;
+mod ramped_thrust;
 
 pub use dust::DustNonGrav;
 pub(crate) use farnocchia::radiation_accel;
@@ -23,3 +24,4 @@ pub use farnocchia::{
 };
 pub use jpl_comet::JplCometNonGrav;
 pub use kind::NonGravKind;
+pub use ramped_thrust::RampedThrustNonGrav;

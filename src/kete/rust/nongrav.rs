@@ -1,8 +1,8 @@
 //! Python wrapper for non-gravitational force models.
 //!
-//! Exposes three non-grav variants to Python as a single class
-//! (`NonGravModel`): dust radiation pressure, JPL comet outgassing, and
-//! the Farnocchia thermal recoil model. Each variant stores the physical
+//! Exposes the non-grav variants to Python as a single class
+//! (`NonGravModel`): dust radiation pressure, JPL comet outgassing, the
+//! Farnocchia thermal recoil model, and a ramped thrust fixed in the RTN frame. Each variant stores the physical
 //! inputs given at construction time (e.g. `beta` for dust, `a1/a2/a3`
 //! for comets) and converts them to the underlying Rust force type on
 //! demand.
@@ -12,11 +12,10 @@ use kete_core::{
     constants::C_V,
     errors::Error,
     forces::{
-        DustNonGrav, FarnocchiaNonGrav, FrozenForce, FrozenNonGrav, JplCometNonGrav, NonGravKind,
-        ParameterMask, a_over_m_from_physical, density_from_a_over_m, lambda_0_from_physical,
-        thermal_inertia_from_lambda_0,
+        DustNonGrav, FarnocchiaNonGrav, JplCometNonGrav, NonGravKind, NonGravMask, ParameterMask,
+        ParameterizedForce, RampedThrustNonGrav, a_over_m_from_physical, density_from_a_over_m,
+        lambda_0_from_physical, thermal_inertia_from_lambda_0,
     },
-    frames::{Equatorial, Vector},
 };
 use kete_flux::diam_from_h_mag_albedo;
 use pyo3::{PyResult, exceptions::PyValueError, pyclass, pyfunction, pymethods};
@@ -37,54 +36,28 @@ use crate::vector::VectorLike;
 /// falls at a diameter of about 1.2 um.
 const C_PR: f64 = 1.19e-3;
 
-/// Per-variant data stored on the Python wrapper.
-#[derive(Debug, Clone)]
-enum NonGravData {
-    Dust {
-        beta: f64,
-    },
-    JplComet {
-        a1: f64,
-        a2: f64,
-        a3: f64,
-        alpha: f64,
-        r_0: f64,
-        m: f64,
-        n: f64,
-        k: f64,
-        dt: f64,
-    },
-    Farnocchia {
-        a_over_m: f64,
-        lambda_0: f64,
-        albedo: f64,
-        absorptivity: f64,
-        flattening: f64,
-        spin_pole: Vector<Equatorial>,
-    },
-}
-
-/// Non-gravitational force models for n-body propagation.
+/// Non-gravitational force model for n-body propagation.
 ///
-/// This is used optionally by the N-Body propagation methods to compute orbits
-/// including non-gravitational forces, such as solar radiation pressure, or
-/// poynting-robertson force.
+/// The n-body propagation functions accept these models to include forces other
+/// than gravity. The constructors are:
 ///
-/// There are two generic non-gravitational models available, one is specifically
-/// intended for dust modeling, and includes the solar radiation pressure, the other
-/// implements the functional form documented for the JPL Horizons comet model
-/// (see :py:meth:`NonGravModel.new_comet` for the formula).
+/// - :py:meth:`NonGravModel.new_dust`: solar radiation pressure and
+///   Poynting-Robertson drag on dust.
+/// - :py:meth:`NonGravModel.new_comet`: the functional form of the JPL Horizons comet
+///   model; see that method for the formula.
+/// - :py:meth:`NonGravModel.new_asteroid`: the comet model with a 1/r^2 falloff,
+///   for asteroids with the Yarkovsky effect.
+/// - :py:meth:`NonGravModel.new_farnocchia`: the Farnocchia et al. radiation
+///   model.
+/// - :py:meth:`NonGravModel.new_ramped_thrust`: an RTN thrust whose magnitude ramps
+///   linearly in time.
 ///
-/// See :py:meth:`NonGravModel.new_dust` and :py:meth:`NonGravModel.new_comet` for more
-/// details. Note that the Comet model can also represent asteroids which undergo the
-/// Yarkovsky effect, see :py:meth:`NonGravModel.new_asteroid`, which is a convenience
-/// function over the :py:meth:`NonGravModel.new_comet` method, but with 1/r^2 falloff.
-///
-/// The fittable parameters of each model (for example A1/A2/A3 of the comet
-/// model) follow a NaN convention when the model is passed to the orbit
-/// fitting tools: a NaN value marks that parameter as free (it will be fit,
-/// starting from 0), while a concrete value freezes it at that value.
-/// Propagation treats NaN values as 0.0.
+/// The orbit fitting tools read the fittable parameters of each model (for example
+/// A1, A2 and A3 of the comet model) with a NaN convention. A NaN value marks the
+/// parameter as free, and the fit starts it from 0. A concrete value holds the
+/// parameter fixed at that value. :py:meth:`NonGravModel.with_free` frees parameters
+/// while keeping their values as the starting point of the fit. Propagation treats
+/// NaN values as 0.
 #[pyclass(
     frozen,
     module = "kete.propagation",
@@ -92,135 +65,94 @@ enum NonGravData {
     from_py_object
 )]
 #[derive(Debug, Clone)]
-pub struct PyNonGravModel(NonGravData);
+pub struct PyNonGravModel {
+    /// The force, with its fixed physical constants.
+    force: NonGravKind,
+    /// Values of the fittable parameters, in the force's parameter order. NaN marks a
+    /// parameter as free for orbit fitting.
+    values: Vec<f64>,
+    /// Parameters freed at their value by [`with_free`](Self::with_free); empty when
+    /// none are.
+    freed: Vec<bool>,
+}
 
 impl PyNonGravModel {
-    /// Return the typed ParameterizedForce template for this model.
-    pub fn to_force(&self) -> NonGravKind {
-        match self.0 {
-            NonGravData::Dust { .. } => NonGravKind::Dust(DustNonGrav),
-            NonGravData::JplComet {
-                alpha,
-                r_0,
-                m,
-                n,
-                k,
-                dt,
-                ..
-            } => NonGravKind::JplComet(JplCometNonGrav::new(alpha, r_0, m, n, k, dt)),
-            NonGravData::Farnocchia {
-                albedo,
-                absorptivity,
-                flattening,
-                spin_pole,
-                ..
-            } => NonGravKind::Farnocchia(
-                FarnocchiaNonGrav::new(albedo, absorptivity, flattening, spin_pole)
-                    .expect("validated at construction"),
-            ),
+    /// Wrap a force and its parameter values, with no parameter freed by
+    /// [`with_free`](Self::with_free).
+    fn from_parts(force: NonGravKind, values: Vec<f64>) -> Self {
+        Self {
+            force,
+            values,
+            freed: Vec::new(),
         }
     }
 
-    /// Return the starting values for the **free** (NaN) parameters.
-    ///
-    /// Non-NaN values are frozen; NaN values are free and start the fit at 0.
+    /// Whether each fittable parameter is free: NaN, or freed at its value.
+    fn free_flags(&self) -> Vec<bool> {
+        self.values
+            .iter()
+            .enumerate()
+            .map(|(i, v)| v.is_nan() || self.freed.get(i).copied().unwrap_or(false))
+            .collect()
+    }
+
+    /// Return the starting values for the free parameters: 0 for a NaN, the value
+    /// for a parameter freed by [`with_free`](Self::with_free).
     pub fn initial_values(&self) -> Vec<f64> {
-        match self.0 {
-            NonGravData::Dust { beta } => {
-                if beta.is_nan() {
-                    vec![0.0]
-                } else {
-                    vec![]
-                }
-            }
-            NonGravData::JplComet { a1, a2, a3, .. } => [a1, a2, a3]
-                .iter()
-                .filter(|v| v.is_nan())
-                .map(|_| 0.0)
-                .collect(),
-            NonGravData::Farnocchia {
-                a_over_m, lambda_0, ..
-            } => [a_over_m, lambda_0]
-                .iter()
-                .filter(|v| v.is_nan())
-                .map(|_| 0.0)
-                .collect(),
-        }
+        self.values
+            .iter()
+            .zip(self.free_flags())
+            .filter(|(_, free)| *free)
+            .map(|(v, _)| if v.is_nan() { 0.0 } else { *v })
+            .collect()
     }
 
-    /// Return a [`FrozenNonGrav`] with all parameter values baked in.
+    /// Starting values of the free parameters for orbit fitting, when at least one
+    /// of them carries a value (a parameter freed by
+    /// [`with_free`](Self::with_free)); `None` when every free parameter is NaN.
+    pub fn start_values(&self) -> Option<Vec<f64>> {
+        let warm = self
+            .values
+            .iter()
+            .zip(self.free_flags())
+            .any(|(v, free)| free && !v.is_nan());
+        warm.then(|| self.initial_values())
+    }
+
+    /// Return a [`NonGravMask`] with every parameter fixed.
     ///
-    /// NaN values are mapped to 0.0. For propagation only - use
+    /// NaN values are mapped to 0.0, freed parameters keep their values. For
+    /// propagation only - use
     /// [`to_mask`](Self::to_mask) when setting up orbit fitting.
-    pub fn to_frozen(&self) -> FrozenNonGrav {
-        let force = self.to_force();
-        let values: Vec<f64> = match self.0 {
-            NonGravData::Dust { beta } => vec![if beta.is_nan() { 0.0 } else { beta }],
-            NonGravData::JplComet { a1, a2, a3, .. } => [a1, a2, a3]
-                .iter()
-                .map(|&v| if v.is_nan() { 0.0 } else { v })
-                .collect(),
-            NonGravData::Farnocchia {
-                a_over_m, lambda_0, ..
-            } => [a_over_m, lambda_0]
-                .iter()
-                .map(|&v| if v.is_nan() { 0.0 } else { v })
-                .collect(),
-        };
-        FrozenForce::new(force, values).expect("n matches n_free_params")
+    pub fn to_fixed(&self) -> NonGravMask {
+        let values = self
+            .values
+            .iter()
+            .map(|v| if v.is_nan() { 0.0 } else { *v })
+            .collect();
+        ParameterMask::all_fixed(self.force.clone(), values).expect("one value per force parameter")
     }
 
-    /// Return a [`ParameterMask`] derived from the NaN sentinel.
+    /// Return a [`NonGravMask`] derived from the NaN sentinel and the freed
+    /// parameters.
     ///
-    /// NaN -> `None` (free); non-NaN value v -> `Some(v)` (frozen at v).
-    /// Used by [`UncertainState`] and [`DiffuseState`] for variational propagation.
-    pub fn to_mask(&self) -> ParameterMask<NonGravKind> {
-        let force = self.to_force();
-        let mask: Vec<Option<f64>> = match self.0 {
-            NonGravData::Dust { beta } => {
-                vec![if beta.is_nan() { None } else { Some(beta) }]
-            }
-            NonGravData::JplComet { a1, a2, a3, .. } => [a1, a2, a3]
-                .iter()
-                .map(|&v| if v.is_nan() { None } else { Some(v) })
-                .collect(),
-            NonGravData::Farnocchia {
-                a_over_m, lambda_0, ..
-            } => [a_over_m, lambda_0]
-                .iter()
-                .map(|&v| if v.is_nan() { None } else { Some(v) })
-                .collect(),
-        };
-        ParameterMask::new(force, mask).expect("n matches n_free_params")
+    /// NaN or freed -> `None` (free); any other value v -> `Some(v)` (fixed at v).
+    pub fn to_mask(&self) -> NonGravMask {
+        let mask = self
+            .values
+            .iter()
+            .zip(self.free_flags())
+            .map(|(v, free)| if free { None } else { Some(*v) })
+            .collect();
+        ParameterMask::new(self.force.clone(), mask).expect("one entry per force parameter")
     }
 
     /// Reconstruct a Python wrapper from a [`NonGravKind`] template and
-    /// its concrete parameter values (one per `inner.n_free_params()`).
+    /// its concrete parameter values (one per `inner.n_free_params()`). Returns `None`
+    /// if the number of values does not match the model.
     pub fn from_force(template: &NonGravKind, values: &[f64]) -> Option<Self> {
-        match template {
-            NonGravKind::Dust(_) => Some(Self(NonGravData::Dust {
-                beta: *values.first()?,
-            })),
-            NonGravKind::JplComet(typed) => Some(Self(NonGravData::JplComet {
-                a1: values.first().copied().unwrap_or(0.0),
-                a2: values.get(1).copied().unwrap_or(0.0),
-                a3: values.get(2).copied().unwrap_or(0.0),
-                alpha: typed.alpha,
-                r_0: typed.r_0,
-                m: typed.m,
-                n: typed.n,
-                k: typed.k,
-                dt: typed.dt,
-            })),
-            NonGravKind::Farnocchia(typed) => Some(Self(NonGravData::Farnocchia {
-                a_over_m: values.first().copied().unwrap_or(0.0),
-                lambda_0: values.get(1).copied().unwrap_or(0.0),
-                albedo: typed.albedo,
-                absorptivity: typed.absorptivity,
-                flattening: typed.flattening,
-                spin_pole: typed.spin_pole,
-            })),
-        }
+        (values.len() == template.n_free_params())
+            .then(|| Self::from_parts(template.clone(), values.to_vec()))
     }
 }
 
@@ -232,7 +164,7 @@ impl PyNonGravModel {
     pub fn new() -> PyResult<Self> {
         Err(Error::ValueError(
             "Non-gravitational force models need to be constructed using new_dust, new_comet, \
-             new_asteroid, or new_farnocchia."
+             new_asteroid, new_farnocchia, or new_ramped_thrust."
                 .into(),
         ))?
     }
@@ -314,14 +246,17 @@ impl PyNonGravModel {
             (Some(b), None) => b,
             (None, Some(d)) => (c_pr * q_pr) / (d * density),
         };
-        Ok(Self(NonGravData::Dust { beta: beta_value }))
+        Ok(Self::from_parts(
+            NonGravKind::Dust(DustNonGrav),
+            vec![beta_value],
+        ))
     }
 
     /// Get the beta value for this dust model.
     #[getter]
     pub fn beta(&self) -> f64 {
-        match self.0 {
-            NonGravData::Dust { beta } => beta,
+        match self.force {
+            NonGravKind::Dust(_) => self.values[0],
             _ => f64::NAN,
         }
     }
@@ -348,8 +283,8 @@ impl PyNonGravModel {
     ///     1.0 is a good estimate for particles larger than 1um (Burns, Lamy & Soter 1979)
     #[pyo3(signature=(density=1000.0, c_pr=C_PR, q_pr=1.0))]
     pub fn diameter(&self, density: f64, c_pr: f64, q_pr: f64) -> f64 {
-        match self.0 {
-            NonGravData::Dust { beta } => (c_pr * q_pr) / (beta * density),
+        match self.force {
+            NonGravKind::Dust(_) => (c_pr * q_pr) / (self.values[0] * density),
             _ => f64::NAN,
         }
     }
@@ -404,17 +339,105 @@ impl PyNonGravModel {
         k: f64,
         dt: f64,
     ) -> Self {
-        Self(NonGravData::JplComet {
-            a1,
-            a2,
-            a3,
-            alpha,
-            r_0,
-            m,
-            n,
-            k,
-            dt,
-        })
+        Self::from_parts(
+            NonGravKind::JplComet(JplCometNonGrav::new(alpha, r_0, m, n, k, dt)),
+            vec![a1, a2, a3],
+        )
+    }
+
+    /// Thrust fixed in the radial / transverse / normal frame, with a strength that
+    /// changes linearly in time, and optionally a part that turns at a fixed period.
+    ///
+    /// .. math::
+    ///
+    ///     \text{accel} = f(t) \big(A_1 \vec{r} + A_2 \vec{t} + A_3 \vec{n}\big),
+    ///     \qquad f(t) = \max\big(0, 1 + \text{rate}\,(t - t_0)\big)
+    ///
+    /// where :math:`\vec{r}`, :math:`\vec{t}`, :math:`\vec{n}` are the radial,
+    /// transverse, and normal unit vectors of the object's heliocentric motion. The
+    /// A terms are the thrust at the reference epoch ``t0``, and ``rate`` is its
+    /// fractional change per day. The ramp scales the whole thrust, which is zero,
+    /// not reversed, where :math:`1 + \text{rate}\,(t - t_0)` is negative.
+    ///
+    /// Without ``period`` the A terms are the constants ``a1, a2, a3``, and the
+    /// direction stays fixed in this frame. With ``period`` (days) they also turn:
+    ///
+    /// .. math::
+    ///
+    ///     A_i = a_i + b_i \cos\phi + c_i \sin\phi,
+    ///     \qquad \phi = 2\pi (t - t_0) / \text{period}
+    ///
+    /// the lowest-order signature of a spinning body whose outgassing is not
+    /// symmetric about its spin axis. ``b`` and ``c`` span the plane the thrust turns
+    /// in; the period is not fitted, so scan it.
+    ///
+    /// There is no dependence on heliocentric distance, so the model suits arcs over
+    /// which the distance to the Sun changes little, such as a body near a comet
+    /// nucleus over hours to days. With ``rate=0`` and no period it is
+    /// :py:meth:`NonGravModel.new_comet` with :math:`g(r) = 1`
+    /// (``alpha=1, r_0=1, m=0, n=0, k=0``).
+    ///
+    /// The a, b and c terms and ``rate`` follow the NaN convention: NaN leaves a
+    /// parameter free for orbit fitting (starting from 0), a value freezes it.
+    /// Propagation treats NaN as 0. The fit is best conditioned with ``t0`` near the
+    /// middle of the observed arc.
+    ///
+    /// Parameters
+    /// ==========
+    /// t0:
+    ///     Reference epoch of the ramp and of the phase, JD (TDB).
+    /// a1:
+    ///     Radial thrust at ``t0`` in AU / day^2, or NaN to fit it.
+    /// a2:
+    ///     Transverse thrust at ``t0`` in AU / day^2, or NaN to fit it.
+    /// a3:
+    ///     Normal thrust at ``t0`` in AU / day^2, or NaN to fit it.
+    /// rate:
+    ///     Fractional change of the thrust per day, or NaN to fit it.
+    /// period:
+    ///     Period of the turning part in days, or None for a thrust without one.
+    /// b1, b2, b3:
+    ///     RTN components of the turning part at phase 0 in AU / day^2, or NaN to
+    ///     fit them. Only with ``period``.
+    /// c1, c2, c3:
+    ///     RTN components of the turning part a quarter period later in
+    ///     AU / day^2, or NaN to fit them. Only with ``period``.
+    #[staticmethod]
+    #[pyo3(signature = (
+        t0, a1=f64::NAN, a2=f64::NAN, a3=f64::NAN, rate=f64::NAN, period=None,
+        b1=f64::NAN, b2=f64::NAN, b3=f64::NAN, c1=f64::NAN, c2=f64::NAN, c3=f64::NAN,
+    ))]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one keyword argument per model parameter, as in the other factories"
+    )]
+    pub fn new_ramped_thrust(
+        t0: f64,
+        a1: f64,
+        a2: f64,
+        a3: f64,
+        rate: f64,
+        period: Option<f64>,
+        b1: f64,
+        b2: f64,
+        b3: f64,
+        c1: f64,
+        c2: f64,
+        c3: f64,
+    ) -> PyResult<Self> {
+        let force = RampedThrustNonGrav::new(t0, period)?;
+        let (b, c) = ([b1, b2, b3], [c1, c2, c3]);
+        if period.is_none() && b.iter().chain(&c).any(|v| !v.is_nan()) {
+            Err(PyValueError::new_err(
+                "b1-b3 and c1-c3 are the turning part of the thrust, which needs a period.",
+            ))?;
+        }
+        let mut values = vec![a1, a2, a3, rate];
+        if period.is_some() {
+            values.extend(b);
+            values.extend(c);
+        }
+        Ok(Self::from_parts(NonGravKind::RampedThrust(force), values))
     }
 
     /// This is the same as :py:meth:`NonGravModel.new_comet`, but with default values
@@ -437,17 +460,10 @@ impl PyNonGravModel {
         k: f64,
         dt: f64,
     ) -> Self {
-        Self(NonGravData::JplComet {
-            a1,
-            a2,
-            a3,
-            alpha,
-            r_0,
-            m,
-            n,
-            k,
-            dt,
-        })
+        Self::from_parts(
+            NonGravKind::JplComet(JplCometNonGrav::new(alpha, r_0, m, n, k, dt)),
+            vec![a1, a2, a3],
+        )
     }
 
     /// Construct a physical radiation force model from Farnocchia et al. 2025.
@@ -497,19 +513,12 @@ impl PyNonGravModel {
         spin_pole: VectorLike,
     ) -> PyResult<Self> {
         let pole = spin_pole.into_vector(PyFrames::Equatorial);
-        // Validate construction inputs by trying to build the typed
-        // FarnocchiaNonGrav force. The actual instance is rebuilt on
-        // demand by `to_model`.
-        let _ = FarnocchiaNonGrav::new(albedo, absorptivity, flattening, pole)
+        let force = FarnocchiaNonGrav::new(albedo, absorptivity, flattening, pole)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(Self(NonGravData::Farnocchia {
-            a_over_m,
-            lambda_0,
-            albedo,
-            absorptivity,
-            flattening,
-            spin_pole: pole,
-        }))
+        Ok(Self::from_parts(
+            NonGravKind::Farnocchia(force),
+            vec![a_over_m, lambda_0],
+        ))
     }
 
     /// Construct a Farnocchia radiation force model from an absolute
@@ -617,8 +626,8 @@ impl PyNonGravModel {
     /// Returns ``NaN`` unless this is a ``FarnocchiaModel``.
     #[getter]
     pub fn a_over_m(&self) -> f64 {
-        match self.0 {
-            NonGravData::Farnocchia { a_over_m, .. } => a_over_m,
+        match self.force {
+            NonGravKind::Farnocchia(_) => self.values[0],
             _ => f64::NAN,
         }
     }
@@ -629,8 +638,8 @@ impl PyNonGravModel {
     /// Returns ``NaN`` unless this is a ``FarnocchiaModel``.
     #[getter]
     pub fn lambda_0(&self) -> f64 {
-        match self.0 {
-            NonGravData::Farnocchia { lambda_0, .. } => lambda_0,
+        match self.force {
+            NonGravKind::Farnocchia(_) => self.values[1],
             _ => f64::NAN,
         }
     }
@@ -640,12 +649,10 @@ impl PyNonGravModel {
     ///
     /// Returns ``NaN`` unless this is a ``FarnocchiaModel``.
     pub fn bulk_density(&self, diameter: f64) -> f64 {
-        match self.0 {
-            NonGravData::Farnocchia {
-                a_over_m,
-                flattening,
-                ..
-            } => density_from_a_over_m(a_over_m, diameter, flattening),
+        match self.force {
+            NonGravKind::Farnocchia(ref f) => {
+                density_from_a_over_m(self.values[0], diameter, f.flattening)
+            }
             _ => f64::NAN,
         }
     }
@@ -656,17 +663,12 @@ impl PyNonGravModel {
     ///
     /// Returns ``NaN`` unless this is a ``FarnocchiaModel``.
     pub fn thermal_inertia(&self, emissivity: f64, rotation_period: f64) -> f64 {
-        match self.0 {
-            NonGravData::Farnocchia {
-                lambda_0,
-                absorptivity,
-                flattening,
-                ..
-            } => thermal_inertia_from_lambda_0(
-                lambda_0,
+        match self.force {
+            NonGravKind::Farnocchia(ref f) => thermal_inertia_from_lambda_0(
+                self.values[1],
                 emissivity,
-                absorptivity,
-                flattening,
+                f.absorptivity,
+                f.flattening,
                 rotation_period,
             ),
             _ => f64::NAN,
@@ -676,49 +678,41 @@ impl PyNonGravModel {
     /// Return a dictionary of the values used in this non-grav model.
     #[getter]
     pub fn items(&self) -> HashMap<String, f64> {
-        let mut values = HashMap::new();
-        match self.0 {
-            NonGravData::Dust { beta } => {
-                let _ = values.insert("beta".to_string(), beta);
+        // The fittable parameters under their own names, then the fixed constants.
+        let mut values: HashMap<String, f64> = self
+            .force
+            .free_param_names()
+            .into_iter()
+            .map(str::to_string)
+            .zip(self.values.iter().copied())
+            .collect();
+        let mut constant = |name: &str, value: f64| {
+            let _ = values.insert(name.to_string(), value);
+        };
+        match self.force {
+            NonGravKind::Dust(_) => {}
+            NonGravKind::JplComet(ref f) => {
+                constant("alpha", f.alpha);
+                constant("r_0", f.r_0);
+                constant("m", f.m);
+                constant("n", f.n);
+                constant("k", f.k);
+                constant("dt", f.dt);
             }
-            NonGravData::JplComet {
-                a1,
-                a2,
-                a3,
-                alpha,
-                r_0,
-                m,
-                n,
-                k,
-                dt,
-            } => {
-                let _ = values.insert("a1".to_string(), a1);
-                let _ = values.insert("a2".to_string(), a2);
-                let _ = values.insert("a3".to_string(), a3);
-                let _ = values.insert("alpha".to_string(), alpha);
-                let _ = values.insert("r_0".to_string(), r_0);
-                let _ = values.insert("m".to_string(), m);
-                let _ = values.insert("n".to_string(), n);
-                let _ = values.insert("k".to_string(), k);
-                let _ = values.insert("dt".to_string(), dt);
+            NonGravKind::Farnocchia(ref f) => {
+                let raw: [f64; 3] = f.spin_pole.into();
+                constant("albedo", f.albedo);
+                constant("absorptivity", f.absorptivity);
+                constant("flattening", f.flattening);
+                constant("spin_pole_x", raw[0]);
+                constant("spin_pole_y", raw[1]);
+                constant("spin_pole_z", raw[2]);
             }
-            NonGravData::Farnocchia {
-                a_over_m,
-                lambda_0,
-                albedo,
-                absorptivity,
-                flattening,
-                spin_pole,
-            } => {
-                let raw: [f64; 3] = spin_pole.into();
-                let _ = values.insert("a_over_m".to_string(), a_over_m);
-                let _ = values.insert("lambda_0".to_string(), lambda_0);
-                let _ = values.insert("albedo".to_string(), albedo);
-                let _ = values.insert("absorptivity".to_string(), absorptivity);
-                let _ = values.insert("flattening".to_string(), flattening);
-                let _ = values.insert("spin_pole_x".to_string(), raw[0]);
-                let _ = values.insert("spin_pole_y".to_string(), raw[1]);
-                let _ = values.insert("spin_pole_z".to_string(), raw[2]);
+            NonGravKind::RampedThrust(ref f) => {
+                constant("t0", f.t0);
+                if let Some(period) = f.period {
+                    constant("period", period);
+                }
             }
         }
         values
@@ -735,42 +729,123 @@ impl PyNonGravModel {
                 format!("{v:?}")
             }
         }
-        match self.0 {
-            NonGravData::Dust { beta } => {
-                format!("kete.propagation.NonGravModel.new_dust(beta={})", f(beta))
+        let v = &self.values;
+        let base = match self.force {
+            NonGravKind::Dust(_) => {
+                format!("kete.propagation.NonGravModel.new_dust(beta={})", f(v[0]))
             }
-            NonGravData::JplComet {
-                a1,
-                a2,
-                a3,
-                alpha,
-                r_0,
-                m,
-                n,
-                k,
-                dt,
-            } => format!(
-                "kete.propagation.NonGravModel.new_comet(a1={}, a2={}, a3={}, alpha={alpha:?}, r_0={r_0:?}, m={m:?}, n={n:?}, k={k:?}, dt={dt:?})",
-                f(a1),
-                f(a2),
-                f(a3),
+            NonGravKind::JplComet(ref c) => format!(
+                "kete.propagation.NonGravModel.new_comet(a1={}, a2={}, a3={}, alpha={:?}, r_0={:?}, m={:?}, n={:?}, k={:?}, dt={:?})",
+                f(v[0]),
+                f(v[1]),
+                f(v[2]),
+                c.alpha,
+                c.r_0,
+                c.m,
+                c.n,
+                c.k,
+                c.dt,
             ),
-            NonGravData::Farnocchia {
-                a_over_m,
-                lambda_0,
-                albedo,
-                absorptivity,
-                flattening,
-                spin_pole,
-            } => {
-                let raw: [f64; 3] = spin_pole.into();
+            NonGravKind::Farnocchia(ref c) => {
+                let raw: [f64; 3] = c.spin_pole.into();
                 format!(
-                    "kete.propagation.NonGravModel.new_farnocchia(a_over_m={}, lambda_0={}, albedo={albedo:?}, absorptivity={absorptivity:?}, flattening={flattening:?}, spin_pole={raw:?})",
-                    f(a_over_m),
-                    f(lambda_0),
+                    "kete.propagation.NonGravModel.new_farnocchia(a_over_m={}, lambda_0={}, albedo={:?}, absorptivity={:?}, flattening={:?}, spin_pole={raw:?})",
+                    f(v[0]),
+                    f(v[1]),
+                    c.albedo,
+                    c.absorptivity,
+                    c.flattening,
                 )
             }
+            NonGravKind::RampedThrust(ref c) => {
+                let turning = match c.period {
+                    Some(p) => format!(
+                        ", period={p:?}, b1={}, b2={}, b3={}, c1={}, c2={}, c3={}",
+                        f(v[4]),
+                        f(v[5]),
+                        f(v[6]),
+                        f(v[7]),
+                        f(v[8]),
+                        f(v[9]),
+                    ),
+                    None => String::new(),
+                };
+                format!(
+                    "kete.propagation.NonGravModel.new_ramped_thrust(t0={:?}, a1={}, a2={}, a3={}, rate={}{turning})",
+                    c.t0,
+                    f(v[0]),
+                    f(v[1]),
+                    f(v[2]),
+                    f(v[3]),
+                )
+            }
+        };
+        let freed: Vec<String> = self
+            .force
+            .free_param_names()
+            .into_iter()
+            .zip(self.values.iter().zip(self.free_flags()))
+            .filter(|(_, (v, free))| *free && !v.is_nan())
+            .map(|(name, _)| format!("{name:?}"))
+            .collect();
+        if freed.is_empty() {
+            base
+        } else {
+            format!("{base}.with_free({})", freed.join(", "))
         }
+    }
+
+    /// Free parameters for orbit fitting, starting from their current values.
+    ///
+    /// Returns a copy of this model in which the named fittable parameters (every
+    /// one when none are named) are free, like a NaN, but keep their values. An orbit
+    /// fit starts those parameters there, and takes ``initial_state`` as the
+    /// matching starting point for the joint fit: the gravity-only pass that
+    /// otherwise precedes the non-gravitational fit is skipped. This is how a fit
+    /// is continued from an earlier one::
+    ///
+    ///     fit = kete.orbit_fitting.fit_orbit(fit.state, obs, non_grav=fit.non_grav.with_free())
+    ///
+    /// Propagation uses the values as given. Parameters that are NaN stay free and
+    /// start from 0.
+    ///
+    /// Parameters
+    /// ----------
+    /// names :
+    ///     Names of fittable parameters, as in :py:attr:`free_parameters` of a model
+    ///     with every parameter NaN (for example ``"a1"``).
+    #[pyo3(signature = (*names))]
+    pub fn with_free(&self, names: Vec<String>) -> PyResult<Self> {
+        let all = self.force.free_param_names();
+        let mut flags = self.free_flags();
+        for name in &names {
+            let Some(i) = all.iter().position(|n| n == name) else {
+                Err(PyValueError::new_err(format!(
+                    "{name:?} is not a fittable parameter of this model; they are {all:?}."
+                )))?
+            };
+            flags[i] = true;
+        }
+        if names.is_empty() {
+            flags.fill(true);
+        }
+        Ok(Self {
+            freed: flags,
+            ..self.clone()
+        })
+    }
+
+    /// Names of the parameters an orbit fit would fit: NaN values and those freed
+    /// by :py:meth:`with_free`.
+    #[getter]
+    pub fn free_parameters(&self) -> Vec<String> {
+        self.force
+            .free_param_names()
+            .into_iter()
+            .zip(self.free_flags())
+            .filter(|(_, free)| *free)
+            .map(|(name, _)| name.to_string())
+            .collect()
     }
 }
 

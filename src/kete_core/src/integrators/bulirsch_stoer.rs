@@ -224,14 +224,16 @@ where
                     }
                     step_failures = 0;
                 }
+                // Only a failed step is retried at a smaller size; see Radau.
                 Err(error) => match error {
-                    Error::Bounds(_) | Error::Impact(_, _) => {
-                        return Err(error);
-                    }
-                    Error::Convergence(_)
+                    Error::Bounds(_)
+                    | Error::Impact(_, _)
                     | Error::ValueError(_)
                     | Error::IOError(_)
                     | Error::LockFailed => {
+                        return Err(error);
+                    }
+                    Error::Convergence(_) => {
                         step_failures += 1;
                         next_step_size *= 0.7;
                         if step_failures > MAX_STEP_REJECT {

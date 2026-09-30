@@ -12,78 +12,62 @@
 //! a separate `free_params: &[f64]` slice so the same force struct can be
 //! used with different parameter values during fitting.
 //!
-//! ## The two force traits
+//! ## The force trait
 //!
-//! [`ParameterizedForce`] is the base trait implemented by every force. It
-//! accepts a `free_params` slice (which may be empty if the force has no
-//! fitted quantities).
+//! [`ParameterizedForce`] is implemented by every force. It accepts a `free_params`
+//! slice, which is empty when the force has no fitted quantities. Propagating a plain
+//! [`State`](crate::state::State) requires a force with no free parameters.
 //!
-//! [`Force`] is a narrower trait that additionally promises the force needs
-//! *no* free parameters -- the slice is always empty and can be omitted.
-//! Gravity (`SpkNBody`) and a non-grav model with its parameters already
-//! fixed ([`FrozenForce`]) are examples. Actually propagating the orbit
-//! of an object cannot have any free parameters - meaning that to propagate
-//! a non-grav contribution, you must first freeze its parameters into a
-//! [`FrozenForce`].
+//! ## Fixing parameters
 //!
+//! [`ParameterMask`] wraps a [`ParameterizedForce`] and fixes any subset of its
+//! parameters at given values; the rest stay free and are passed through from the
+//! caller.
 //!
-//! ## Adapters
+//! With every parameter free ([`ParameterMask::all_free`]) it is what gets stored on an
+//! [`UncertainState`](crate::state::UncertainState) for uncertainty propagation. With
+//! some fixed it restricts a fit, e.g. holding `a1` and `a3` while fitting only `a2`.
+//! With every parameter fixed ([`ParameterMask::all_fixed`]) it has no free parameters,
+//! which is what you use to propagate a single trajectory from a best-fit estimate.
 //!
-//! Sometimes you need to convert one type of force into another.
-//! For example, you might have a non-grav model that you can fix all of its
-//! parameters and it is no longer a `ParameterizedForce` but a `Force`.
-//! For these situations where are a number of adapters:
+//! ## Gravity
 //!
-//! [`FrozenForce`] wraps any [`ParameterizedForce`] and stores a concrete
-//! parameter vector alongside it. The result behaves like a [`Force`] with
-//! no free parameters; every call uses the stored values. Use this when you
-//! have a best-fit estimate and want to propagate a single trajectory.
+//! Every term kete models is a function of the object's state relative to one massive
+//! body. [`GravParams`] describes such a body: its `GM`, whether the relativistic
+//! correction applies, and its [`Shape`] beyond a point mass.
+//! [`GravParams::add_acceleration`] and [`GravParams::add_acceleration_and_jacobians`] evaluate all of a
+//! body's terms on the relative state.
 //!
-//! [`ParameterMask`] also wraps a [`ParameterizedForce`] but leaves some or
-//! all parameters free so they are passed through from the caller. The common
-//! case is an all-`None` mask -- every parameter remains free -- which is what
-//! gets stored on an [`UncertainState`](crate::state::UncertainState) for
-//! uncertainty propagation. You can also partially freeze parameters (e.g.
-//! hold `a2` and `a3` fixed while fitting only `a1`).
-//!
-//! [`Sum`] composes two forces that share frame and center. Accelerations are
-//! summed; free parameters from the two members are concatenated in order.
-//! A complete force model is typically `Sum<gravity, non_grav_adapter>`.
-//!
-//! With these definitions it is possible to define all kinds of forces on
-//! physical objects, and the numerical integrator will happily propagate
-//! them.
-//!
-//! Note that `kete_spice` implements a number of additional forces, including
-//! the primary one needed for efficient n-body orbit propagation, `SpkNBody`.
+//! `kete_spice` implements the complete model used for n-body orbit propagation,
+//! `SpkNBody`: it looks up each massive body in the loaded SPK files, evaluates that
+//! body's gravity, and evaluates an optional non-grav force on the Sun-relative state.
 
-mod frozen;
 mod gravity;
 mod nongrav;
 mod parameter_mask;
-mod sum;
+mod polyhedron;
+mod spherical_harmonics;
 mod traits;
 
-pub use frozen::FrozenForce;
 pub use gravity::{
-    GravParams, MASSES_KNOWN, MASSES_SELECTED, analytical_jacobians, known_masses,
-    register_custom_mass, register_mass, registered_masses,
+    GravParams, Orientation, Shape, known_masses, register_custom_mass, register_mass,
+    registered_masses,
 };
 pub(crate) use gravity::{apply_gr_correction, j2_correction};
 pub(crate) use nongrav::radiation_accel;
 pub use nongrav::{
-    DustNonGrav, FarnocchiaNonGrav, JplCometNonGrav, NonGravKind, a_over_m_from_physical,
-    density_from_a_over_m, lambda_0_from_physical, thermal_inertia_from_lambda_0,
+    DustNonGrav, FarnocchiaNonGrav, JplCometNonGrav, NonGravKind, RampedThrustNonGrav,
+    a_over_m_from_physical, density_from_a_over_m, lambda_0_from_physical,
+    thermal_inertia_from_lambda_0,
 };
 pub use parameter_mask::ParameterMask;
-pub use sum::Sum;
-pub use traits::{Force, ParameterizedForce};
+pub use polyhedron::Polyhedron;
+pub use spherical_harmonics::SphericalHarmonics;
+pub use traits::ParameterizedForce;
 
-/// A [`ParameterMask`] over a [`NonGravKind`]: the variational template
-/// used wherever a non-grav model rides along with an uncertain state
-/// and its parameters need to be exposed for variational integration.
+/// A [`ParameterMask`] over a [`NonGravKind`]: a bundled non-grav model with each of its
+/// parameters fixed or free.
+///
+/// It rides along with an uncertain state with its fitted parameters free, and is handed
+/// to plain `State` propagation with every parameter fixed.
 pub type NonGravMask = ParameterMask<NonGravKind>;
-
-/// A [`NonGravKind`] with all parameter values baked in. Used for plain
-/// `State` propagation where every non-grav parameter is known.
-pub type FrozenNonGrav = FrozenForce<NonGravKind>;

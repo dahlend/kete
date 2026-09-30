@@ -12,11 +12,10 @@ use crate::time::PyTime;
 use kete_core::forces::ParameterizedForce;
 use kete_core::frames::{Ecliptic, Equatorial};
 use kete_core::prelude::*;
-use kete_spice::propagation::SpkNonGravs;
-use kete_spice::propagation::propagate_uncertain;
+use kete_core::state::propagate_uncertain;
+use kete_spice::propagation::{SpkNBody, sun_resolver};
 use kete_spice::spk::LOADED_SPK;
 use nalgebra::DMatrix;
-use nalgebra::Vector3;
 use pyo3::prelude::*;
 use std::f64::consts::PI;
 
@@ -96,35 +95,15 @@ fn resolve_free_params(
 impl PyUncertainState {
     /// Build the SSB-centered force model used by all propagation paths.
     ///
-    /// Gravity-only `SpkNBody` when `non_grav` is `None`, or
-    /// `Sum<SpkNBody, Recenter<SSB, _>>` wrapping the non-grav force
-    /// template otherwise. Captures the `LOADED_SPK` read guard so the
+    /// Gravity-only `SpkNBody` when `non_grav` is `None`, or `SpkNBody` carrying the
+    /// non-grav force template otherwise. Captures the `LOADED_SPK` read guard so the
     /// borrow lifetime is well-defined.
     fn build_forces<'a>(
         &self,
         spk: &'a kete_spice::spk::SpkCollection,
         include_extended: bool,
-    ) -> SpkNonGravs<'a> {
-        if let Some(ref ng) = self.state.non_grav {
-            SpkNonGravs::with_non_grav_mask(spk, include_extended, ng.clone())
-        } else {
-            SpkNonGravs::gravity(spk, include_extended)
-        }
-    }
-}
-
-impl PyUncertainState {
-    /// Resolves the Sun against the barycenter for the propagation paths below.
-    ///
-    /// Elements are referred to the Sun while the force models are barycentric, so a state
-    /// crosses between them at every epoch the propagation touches.
-    fn sun_resolver(
-        spk: &kete_spice::spk::SpkCollection,
-    ) -> impl Fn(Time<TDB>) -> KeteResult<(Vector3<f64>, Vector3<f64>)> + Sync + '_ {
-        move |time| {
-            let sun = spk.try_get_state_with_center::<Equatorial>(10, time, 0)?;
-            Ok((Vector3::from(sun.pos), Vector3::from(sun.vel)))
-        }
+    ) -> SpkNBody<'a> {
+        SpkNBody::with_non_grav(spk, include_extended, self.state.non_grav.clone())
     }
 }
 
@@ -181,7 +160,7 @@ impl PyUncertainState {
         }
         // Elements are defined about a gravitating body, so this centers on the Sun
         // rather than the barycenter. The propagation paths cross to the force model's
-        // center themselves, see `sun_resolver`.
+        // center themselves, see `kete_spice::propagation::sun_resolver`.
         let mut eq_state = state.raw;
         if eq_state.center_id() != 10 {
             let spk = LOADED_SPK.try_read().map_err(Error::from)?;
@@ -488,7 +467,7 @@ impl PyUncertainState {
     fn non_grav(&self) -> Option<PyNonGravModel> {
         self.state.non_grav.as_ref().and_then(|mask| {
             let full = mask.merge(&self.state.free_params).ok()?;
-            PyNonGravModel::from_force(&mask.inner, &full)
+            PyNonGravModel::from_force(mask.inner(), &full)
         })
     }
 
@@ -581,7 +560,7 @@ impl PyUncertainState {
                     &sampled_params
                 };
                 let full = mask.merge(raw).ok()?;
-                PyNonGravModel::from_force(&mask.inner, &full)
+                PyNonGravModel::from_force(mask.inner(), &full)
             });
             non_gravs.push(ng);
         }
@@ -608,8 +587,7 @@ impl PyUncertainState {
         py.detach(|| {
             let spk = LOADED_SPK.try_read().map_err(Error::from)?;
             let forces = self.build_forces(&spk, include_asteroids);
-            let result =
-                propagate_uncertain(&self.state, &forces, target, &Self::sun_resolver(&spk))?;
+            let result = propagate_uncertain(&self.state, &forces, target, &sun_resolver(&spk))?;
             Ok(Self { state: result })
         })
     }

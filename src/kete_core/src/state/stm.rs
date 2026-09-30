@@ -6,8 +6,7 @@
 //! sensitivity matrix.
 //!
 //! The augmented state is dynamically sized (`DVector`) so the caller
-//! can supply any number of free parameters. The encoding mirrors the
-//! existing `kete_spice::propagation::stm_augmented_accel`:
+//! can supply any number of free parameters. The encoding is:
 //!
 //! ```text
 //! pos_aug = [pos | vec(Phi_rr) | vec(Phi_rv) | s_1 | s_2 | ...]
@@ -53,7 +52,7 @@ use nalgebra::{DMatrix, DVector, Matrix3, Vector3};
 use crate::elements::EquinoctialElements;
 use crate::errors::{Error, KeteResult};
 use crate::forces::ParameterizedForce;
-use crate::frames::{CenterBody, DynCenter, Vector};
+use crate::frames::{CenterBody, DynCenter, InertialFrame, Vector};
 use crate::prelude::State;
 use crate::time::{TDB, Time};
 
@@ -69,11 +68,10 @@ use crate::time::{TDB, Time};
 /// cols 6+k  : parameter sensitivity (d (r_f, v_f) / d p_k)
 /// ```
 ///
-/// `free_params.len()` must match `forces.n_free_params()`.
-///
 /// # Errors
-/// Propagation may fail if the integrator does not converge or if the
-/// `ParameterizedForce` impl returns an error.
+/// Returns a `ValueError` if `free_params.len()` does not match
+/// `forces.n_free_params()`. Propagation may fail if the integrator does not converge
+/// or if the `ParameterizedForce` impl returns an error.
 ///
 /// See [`propagate_elements_with_sensitivity`] for the same quantity taken with respect
 /// to orbital elements rather than to the cartesian epoch state.
@@ -88,6 +86,12 @@ pub fn propagate_with_stm<F: ParameterizedForce>(
     use crate::integrators::RadauIntegrator;
 
     let np = free_params.len();
+    if np != forces.n_free_params() {
+        return Err(Error::ValueError(format!(
+            "propagate_with_stm received {np} free parameters for a force with {}",
+            forces.n_free_params()
+        )));
+    }
     let dim = 21 + 3 * np;
 
     // Augmented initial conditions.
@@ -111,24 +115,28 @@ pub fn propagate_with_stm<F: ParameterizedForce>(
     let ode = |time: Time<TDB>,
                pos_aug: &DVector<f64>,
                vel_aug: &DVector<f64>,
-               _meta: &mut (),
-               _exact_eval: bool|
+               meta: &mut F::Meta,
+               exact_eval: bool|
      -> KeteResult<DVector<f64>> {
         let mut result = DVector::<f64>::zeros(dim);
 
         let pos_phys = Vector::<F::Frame>::new([pos_aug[0], pos_aug[1], pos_aug[2]]);
         let vel_phys = Vector::<F::Frame>::new([vel_aug[0], vel_aug[1], vel_aug[2]]);
 
-        // Physical acceleration -- propagate any error from the force.
-        let accel: Vector3<f64> = forces
-            .accel(time, &pos_phys, &vel_phys, free_params)?
-            .into();
+        // Physical acceleration and the dynamics Jacobians at the current physical
+        // state, in one call -- propagate any error from the force.
+        let (accel, da_dr, da_dv, dp) = forces.accel_and_jacobians(
+            time,
+            &pos_phys,
+            &vel_phys,
+            free_params,
+            meta,
+            exact_eval,
+        )?;
+        let accel: Vector3<f64> = accel.into();
         result[0] = accel[0];
         result[1] = accel[1];
         result[2] = accel[2];
-
-        // Dynamics Jacobians at the current physical state.
-        let (da_dr, da_dv) = forces.jacobians(time, &pos_phys, &vel_phys, free_params)?;
 
         // Phi_rr'' = da_dr * Phi_rr + da_dv * Phi_rr'
         let phi_rr = Matrix3::from_column_slice(&pos_aug.as_slice()[3..12]);
@@ -143,19 +151,16 @@ pub fn propagate_with_stm<F: ParameterizedForce>(
         result.as_mut_slice()[12..21].copy_from_slice(phi_rv_ddot.as_slice());
 
         // Parameter sensitivities: s_k'' = da_dr * s_k + da_dv * s_k' + d a / d p_k.
-        if np > 0 {
-            let dp = forces.parameter_jacobian(time, &pos_phys, &vel_phys, free_params)?;
-            for k in 0..np {
-                let base = 21 + k * 3;
-                let s_k = Vector3::new(pos_aug[base], pos_aug[base + 1], pos_aug[base + 2]);
-                let s_k_dot = Vector3::new(vel_aug[base], vel_aug[base + 1], vel_aug[base + 2]);
-                let partial = dp.column(k);
-                let partial_v = Vector3::new(partial[0], partial[1], partial[2]);
-                let s_k_ddot = da_dr * s_k + da_dv * s_k_dot + partial_v;
-                result[base] = s_k_ddot[0];
-                result[base + 1] = s_k_ddot[1];
-                result[base + 2] = s_k_ddot[2];
-            }
+        for k in 0..np {
+            let base = 21 + k * 3;
+            let s_k = Vector3::new(pos_aug[base], pos_aug[base + 1], pos_aug[base + 2]);
+            let s_k_dot = Vector3::new(vel_aug[base], vel_aug[base + 1], vel_aug[base + 2]);
+            let partial = dp.column(k);
+            let partial_v = Vector3::new(partial[0], partial[1], partial[2]);
+            let s_k_ddot = da_dr * s_k + da_dv * s_k_dot + partial_v;
+            result[base] = s_k_ddot[0];
+            result[base + 1] = s_k_ddot[1];
+            result[base + 2] = s_k_ddot[2];
         }
 
         Ok(result)
@@ -165,8 +170,16 @@ pub fn propagate_with_stm<F: ParameterizedForce>(
     // 3-component acceleration row, matching the existing variational
     // integrator. Without it, large STM entries can drag steps to be
     // unnecessarily small.
-    let (pos_f, vel_f, ()) =
-        RadauIntegrator::integrate(&ode, pos_aug, vel_aug, epoch_init, epoch_final, (), Some(3))?;
+    // The integrator owns the force's working storage for this one integration.
+    let (pos_f, vel_f, _) = RadauIntegrator::integrate(
+        &ode,
+        pos_aug,
+        vel_aug,
+        epoch_init,
+        epoch_final,
+        F::Meta::default(),
+        Some(3),
+    )?;
 
     // Reconstruct the 6 x (6 + Np) sensitivity matrix.
     let phi_rr = Matrix3::from_column_slice(&pos_f.as_slice()[3..12]);
@@ -238,12 +251,11 @@ pub fn propagate_with_stm<F: ParameterizedForce>(
 /// integration then runs in `F::Center`, where the force model's acceleration is the
 /// correct right-hand side, and the returned final state comes back in `F::Center` too.
 ///
-/// It is deliberately not [`Recenter`](../../../kete_spice/propagation/struct.Recenter.html),
-/// which shifts the point a force is *evaluated* at while passing the inner acceleration
-/// through unchanged. That is right for forces naturally written about one body but
-/// returning an inertial acceleration on another, and wrong here: it would leave the
-/// integrator stepping relative coordinates against an inertial right-hand side, silently
-/// dropping the central body's own acceleration.
+/// It is deliberately not a shift of the point the force is *evaluated* at with the
+/// acceleration passed through unchanged. That is right for a force naturally written
+/// about one body but returning an inertial acceleration on another, and wrong here: it
+/// would leave the integrator stepping relative coordinates against an inertial right-hand
+/// side, silently dropping the central body's own acceleration.
 ///
 /// The offset does not appear in the Jacobian. It is a function of time and not of the
 /// state, so `d(r,v)_center / d(r,v)_force` is the identity and `K` is unchanged.
@@ -304,78 +316,10 @@ where
     Ok((pos_final, vel_final, out))
 }
 
-/// Update an augmented covariance under the sensitivity matrix from
-/// [`propagate_with_stm`].
-///
-/// Given a 6 x (6 + Np) sensitivity matrix and a (6 + Np) x (6 + Np)
-/// augmented covariance, returns the new augmented covariance:
-///
-/// ```text
-/// Phi_aug = [[ sensitivity ],     // 6 rows
-///            [ 0_{Np x 6} | I_Np ]] // Np rows (parameters constant)
-/// P_new = Phi_aug * P_old * Phi_aug^T
-/// ```
-///
-/// This is the linear approximation: parameters are held constant during
-/// propagation (their values do not change), but their *uncertainty*
-/// couples into the state uncertainty through the sensitivity matrix.
-#[must_use]
-pub fn covariance_update(sensitivity: &DMatrix<f64>, cov_old: &DMatrix<f64>) -> DMatrix<f64> {
-    let np = sensitivity.ncols() - 6;
-    let total = 6 + np;
-    let mut phi_aug = DMatrix::<f64>::zeros(total, total);
-    phi_aug.view_mut((0, 0), (6, total)).copy_from(sensitivity);
-    for k in 0..np {
-        phi_aug[(6 + k, 6 + k)] = 1.0;
-    }
-    &phi_aug * cov_old * phi_aug.transpose()
-}
-
-/// Propagate state and covariance jointly: combines [`propagate_with_stm`]
-/// and [`covariance_update`] into a single call.
-///
-/// Returns `(pos_final, vel_final, cov_final)`. The free-parameter values
-/// themselves do not change during integration; only state and covariance
-/// are returned.
-///
-/// # Errors
-/// Returns an error if `cov_init` does not have shape `(6 + Np) x (6 + Np)`,
-/// or if integration fails.
-pub fn propagate_with_covariance<F: ParameterizedForce>(
-    forces: &F,
-    pos_init: Vector3<f64>,
-    vel_init: Vector3<f64>,
-    cov_init: &DMatrix<f64>,
-    free_params: &[f64],
-    epoch_init: Time<TDB>,
-    epoch_final: Time<TDB>,
-) -> KeteResult<(Vector3<f64>, Vector3<f64>, DMatrix<f64>)> {
-    let np = free_params.len();
-    let expected = 6 + np;
-    if cov_init.nrows() != expected || cov_init.ncols() != expected {
-        return Err(Error::ValueError(format!(
-            "covariance must be {expected} x {expected} (got {} x {})",
-            cov_init.nrows(),
-            cov_init.ncols()
-        )));
-    }
-    let (pos_f, vel_f, sens) = propagate_with_stm(
-        forces,
-        pos_init,
-        vel_init,
-        free_params,
-        epoch_init,
-        epoch_final,
-    )?;
-    let cov_f = covariance_update(&sens, cov_init);
-    Ok((pos_f, vel_f, cov_f))
-}
-
 /// Propagate a state under `forces` with explicit `free_params`,
 /// returning `(pos_final, vel_final)` only.
 ///
-/// Lighter than [`propagate_with_stm`] / [`propagate_with_covariance`]
-/// because no STM/covariance machinery is integrated. Use this for
+/// Lighter than [`propagate_with_stm`] because no STM is integrated. Use this for
 /// sigma-point inner loops, particle propagation, or any other
 /// forward-only propagation where the free-parameter values come from
 /// outside the state shape.
@@ -401,19 +345,69 @@ pub fn propagate_state<F: ParameterizedForce>(
     let ode = |time: Time<TDB>,
                pos: &Vector3<f64>,
                vel: &Vector3<f64>,
-               _meta: &mut (),
-               _exact_eval: bool|
+               meta: &mut F::Meta,
+               exact_eval: bool|
      -> KeteResult<Vector3<f64>> {
         let pos_typed = Vector::<F::Frame>::new([pos[0], pos[1], pos[2]]);
         let vel_typed = Vector::<F::Frame>::new([vel[0], vel[1], vel[2]]);
         Ok(forces
-            .accel(time, &pos_typed, &vel_typed, free_params)?
+            .accel(time, &pos_typed, &vel_typed, free_params, meta, exact_eval)?
             .into())
     };
 
-    let (pos_f, vel_f, ()) =
-        RadauIntegrator::integrate(&ode, pos_init, vel_init, epoch_init, epoch_final, (), None)?;
+    let (pos_f, vel_f, _) = RadauIntegrator::integrate(
+        &ode,
+        pos_init,
+        vel_init,
+        epoch_init,
+        epoch_final,
+        F::Meta::default(),
+        None,
+    )?;
     Ok((pos_f, vel_f))
+}
+
+impl<F: InertialFrame, C: CenterBody> State<F, C>
+where
+    DynCenter: From<C>,
+{
+    /// Advance the state to `to` under `forces`.
+    ///
+    /// The force must have no free parameters: fix those of a non-gravitational model
+    /// first with `ParameterMask::fixed_at` or `ParameterMask::all_fixed`, or pass their
+    /// values to [`propagate_state`].
+    ///
+    /// # Errors
+    /// Fails if the force has free parameters, if the force itself fails, or if the
+    /// integration does not converge.
+    pub fn propagate_with<Forces>(self, forces: &Forces, to: Time<TDB>) -> KeteResult<Self>
+    where
+        Forces: ParameterizedForce<Frame = F, Center = C>,
+    {
+        if forces.n_free_params() != 0 {
+            return Err(Error::ValueError(format!(
+                "State::propagate_with requires a force with zero free parameters \
+                 (got {}); fix the parameters of any non-grav first via \
+                 ParameterMask::fixed_at or ParameterMask::all_fixed.",
+                forces.n_free_params()
+            )));
+        }
+        let (pos, vel) = propagate_state(
+            forces,
+            self.pos.into(),
+            self.vel.into(),
+            &[],
+            self.epoch,
+            to,
+        )?;
+        Ok(Self {
+            desig: self.desig,
+            epoch: to,
+            pos: pos.into(),
+            vel: vel.into(),
+            center: self.center,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -436,6 +430,7 @@ mod tests {
     impl ParameterizedForce for TwoBody {
         type Frame = Equatorial;
         type Center = SunCenter;
+        type Meta = ();
 
         fn accel(
             &self,
@@ -443,6 +438,8 @@ mod tests {
             pos: &Vector<Equatorial>,
             _vel: &Vector<Equatorial>,
             _free_params: &[f64],
+            _meta: &mut Self::Meta,
+            _exact_eval: bool,
         ) -> KeteResult<Vector<Equatorial>> {
             let p: Vector3<f64> = (*pos).into();
             let r3 = p.norm().powi(3);
@@ -455,6 +452,7 @@ mod tests {
             pos: &Vector<Equatorial>,
             _vel: &Vector<Equatorial>,
             _free_params: &[f64],
+            _meta: &mut Self::Meta,
         ) -> KeteResult<(Matrix3<f64>, Matrix3<f64>)> {
             // d(-GM r / r^3) / dr = -GM (I/r^3 - 3 r r^T / r^5)
             //                    = GM/r^5 (3 r r^T - r^2 I)
@@ -541,6 +539,21 @@ mod tests {
         }
     }
 
+    /// A free-parameter count that does not match the force is an error up front, not
+    /// an out-of-range column inside the integrator.
+    #[test]
+    fn stm_rejects_mismatched_free_params() {
+        let result = propagate_with_stm(
+            &TwoBody { gm: GMS },
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, GMS.sqrt(), 0.0),
+            &[1.0],
+            Time::<TDB>::new(0.0),
+            Time::<TDB>::new(1.0),
+        );
+        assert!(result.is_err());
+    }
+
     /// Variational integration round-trip on a circular orbit:
     /// after one period, the state should return to its starting point
     /// and the STM should be close to the identity (modulo a known
@@ -589,148 +602,6 @@ mod tests {
         );
     }
 
-    /// Identity sensitivity (no propagation): covariance should be unchanged.
-    #[test]
-    fn covariance_update_identity_sensitivity() {
-        let np = 2;
-        let total = 6 + np;
-        let mut sens = DMatrix::<f64>::zeros(6, total);
-        for i in 0..6 {
-            sens[(i, i)] = 1.0;
-        }
-        // Random-ish symmetric positive definite covariance.
-        let mut cov = DMatrix::<f64>::zeros(total, total);
-        for i in 0..total {
-            let diag = i as f64 + 1.0;
-            cov[(i, i)] = diag * 0.5;
-        }
-        cov[(0, 1)] = 0.1;
-        cov[(1, 0)] = 0.1;
-        let cov_new = covariance_update(&sens, &cov);
-        // With identity sensitivity and identity-augmented STM, the
-        // covariance is unchanged.
-        for i in 0..total {
-            for j in 0..total {
-                assert!(
-                    (cov_new[(i, j)] - cov[(i, j)]).abs() < 1e-14,
-                    "({i},{j}): {} vs {}",
-                    cov_new[(i, j)],
-                    cov[(i, j)]
-                );
-            }
-        }
-    }
-
-    /// Sensitivity-only-on-state (no parameter columns): covariance
-    /// update should be a standard 6x6 `P_new` = `Phi` * P * `Phi^T`.
-    #[test]
-    fn covariance_update_no_parameters() {
-        let mut sens = DMatrix::<f64>::zeros(6, 6);
-        // Some arbitrary 6x6 transformation.
-        for i in 0..6 {
-            sens[(i, i)] = 2.0;
-            if i + 1 < 6 {
-                sens[(i, i + 1)] = 0.5;
-            }
-        }
-        let mut cov = DMatrix::<f64>::zeros(6, 6);
-        for i in 0..6 {
-            cov[(i, i)] = 1.0;
-        }
-        let cov_new = covariance_update(&sens, &cov);
-        // Direct computation: Phi P Phi^T = sens * I * sens^T = sens * sens^T.
-        let expected = &sens * sens.transpose();
-        for i in 0..6 {
-            for j in 0..6 {
-                assert!(
-                    (cov_new[(i, j)] - expected[(i, j)]).abs() < 1e-14,
-                    "({i},{j}): {} vs {}",
-                    cov_new[(i, j)],
-                    expected[(i, j)]
-                );
-            }
-        }
-    }
-
-    /// Parameter-block invariance: the (Np x Np) bottom-right block of
-    /// the covariance is unchanged on each step (parameters are constant).
-    /// Tested with a non-trivial state-state coupling and a parameter
-    /// covariance entry.
-    #[test]
-    fn covariance_update_parameter_block_passes_through() {
-        let np = 1;
-        let total = 6 + np;
-        let mut sens = DMatrix::<f64>::zeros(6, total);
-        // Identity for state-state; zero state-parameter coupling.
-        for i in 0..6 {
-            sens[(i, i)] = 1.0;
-        }
-        // Initial covariance: pure parameter variance.
-        let mut cov = DMatrix::<f64>::zeros(total, total);
-        cov[(6, 6)] = 0.25; // sigma_p^2 = 0.25
-        let cov_new = covariance_update(&sens, &cov);
-        assert!(
-            (cov_new[(6, 6)] - 0.25).abs() < 1e-14,
-            "parameter variance changed: {} vs 0.25",
-            cov_new[(6, 6)]
-        );
-    }
-
-    /// Validation: covariance with wrong shape returns an error.
-    #[test]
-    fn propagate_with_covariance_validates_shape() {
-        let force = TwoBody { gm: GMS };
-        let pos = Vector3::new(1.0, 0.0, 0.0);
-        let vel = Vector3::new(0.0, GMS.sqrt(), 0.0);
-        // 6x6 covariance, but free_params has 1 element -> expected 7x7.
-        let cov = DMatrix::<f64>::identity(6, 6);
-        let result = propagate_with_covariance(
-            &force,
-            pos,
-            vel,
-            &cov,
-            &[1.0],
-            Time::<TDB>::new(0.0),
-            Time::<TDB>::new(1.0),
-        );
-        assert!(result.is_err());
-    }
-
-    /// End-to-end: propagate a state + covariance jointly, verify the
-    /// covariance is symmetric afterward (a basic sanity invariant).
-    #[test]
-    fn propagate_with_covariance_preserves_symmetry() {
-        let force = TwoBody { gm: GMS };
-        let pos = Vector3::new(1.0, 0.0, 0.0);
-        let vel = Vector3::new(0.0, GMS.sqrt(), 0.0);
-        // Modest position+velocity covariance.
-        let mut cov = DMatrix::<f64>::zeros(6, 6);
-        for i in 0..3 {
-            cov[(i, i)] = 1e-10; // pos variance, AU^2
-            cov[(3 + i, 3 + i)] = 1e-12; // vel variance, (AU/day)^2
-        }
-        let (_, _, cov_new) = propagate_with_covariance(
-            &force,
-            pos,
-            vel,
-            &cov,
-            &[],
-            Time::<TDB>::new(0.0),
-            Time::<TDB>::new(10.0),
-        )
-        .unwrap();
-        // Covariance should remain symmetric to working precision.
-        for i in 0..6 {
-            for j in (i + 1)..6 {
-                let asym = (cov_new[(i, j)] - cov_new[(j, i)]).abs();
-                assert!(
-                    asym < 1e-14 * cov_new[(i, i)].abs().max(cov_new[(j, j)].abs()),
-                    "asymmetry at ({i},{j}): {asym}"
-                );
-            }
-        }
-    }
-
     /// [`ParameterizedForce`] with a single free parameter `gm`. The free parameter
     /// scales the central acceleration, so `d a / d gm = -r / r^3`.
     struct TwoBodyParametric;
@@ -738,6 +609,7 @@ mod tests {
     impl ParameterizedForce for TwoBodyParametric {
         type Frame = Equatorial;
         type Center = SunCenter;
+        type Meta = ();
 
         fn n_free_params(&self) -> usize {
             1
@@ -753,6 +625,8 @@ mod tests {
             pos: &Vector<Equatorial>,
             _vel: &Vector<Equatorial>,
             free_params: &[f64],
+            _meta: &mut Self::Meta,
+            _exact_eval: bool,
         ) -> KeteResult<Vector<Equatorial>> {
             let gm = free_params[0];
             let p: Vector3<f64> = (*pos).into();
@@ -1241,5 +1115,62 @@ mod tests {
                 dvel_dx[i]
             );
         }
+    }
+
+    /// A trivial central-mass gravity force for testing. Constant GM at
+    /// the center body. Holds no free parameters.
+    struct CentralMass {
+        gm: f64,
+    }
+
+    impl ParameterizedForce for CentralMass {
+        type Frame = Equatorial;
+        type Center = SunCenter;
+        type Meta = ();
+
+        fn accel(
+            &self,
+            _time: Time<TDB>,
+            pos: &Vector<Equatorial>,
+            _vel: &Vector<Equatorial>,
+            _free_params: &[f64],
+            _meta: &mut Self::Meta,
+            _exact_eval: bool,
+        ) -> KeteResult<Vector<Equatorial>> {
+            let p: Vector3<f64> = (*pos).into();
+            let r3 = p.norm().powi(3);
+            Ok(Vector::<Equatorial>::new((-p * (self.gm / r3)).into()))
+        }
+    }
+
+    #[test]
+    fn state_propagate_with_two_body_kepler() {
+        // Circular orbit at 1 AU around a body with GM = (2*pi/year)^2 = unity in our units.
+        // We'll use the kete GMS constant via a simple fact: at r = 1 AU, with circular
+        // velocity v = sqrt(GMS), we should return to the start after one period 2*pi/sqrt(GMS).
+        let gm = GMS;
+        let v_circ = gm.sqrt();
+        let period = 2.0 * std::f64::consts::PI / v_circ;
+        let start = State::<Equatorial, SunCenter> {
+            desig: Desig::Empty,
+            epoch: Time::<TDB>::new(0.0),
+            pos: Vector::<Equatorial>::new([1.0, 0.0, 0.0]),
+            vel: Vector::<Equatorial>::new([0.0, v_circ, 0.0]),
+            center: SunCenter,
+        };
+        let force = CentralMass { gm };
+        let final_state = start
+            .clone()
+            .propagate_with(&force, Time::<TDB>::new(period))
+            .unwrap();
+        let pos: Vector3<f64> = final_state.pos.into();
+        let vel: Vector3<f64> = final_state.vel.into();
+        // After one full period, position and velocity should match the start.
+        assert!((pos.x - 1.0).abs() < 1e-9, "x = {}", pos.x);
+        assert!(pos.y.abs() < 1e-9, "y = {}", pos.y);
+        assert!(pos.z.abs() < 1e-12, "z = {}", pos.z);
+        assert!(vel.x.abs() < 1e-9, "vx = {}", vel.x);
+        assert!((vel.y - v_circ).abs() < 1e-9, "vy = {}", vel.y);
+        assert!(vel.z.abs() < 1e-12, "vz = {}", vel.z);
     }
 }

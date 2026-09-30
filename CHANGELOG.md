@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `kete_core::geometry::TriMesh`, a validated closed triangle mesh.
 - Earth orientation: `approx_earth_frame`, `teme_frame`, `earth_nutation` (IAU 2000B),
   `approx_ut1` and `approx_delta_t`.
+- Polyhedron and spherical harmonic gravity for massive bodies:
+  `register_polyhedron`, `register_spherical_harmonics`, `kete.shape.read_obj`.
+- `NonGravModel.new_ramped_thrust`.
+- `NonGravModel.with_free` to warm-start non-grav fits.
+- `DiffuseState.mean_eta` and `max_unresolved_weight`.
 
 ### Changed
 
@@ -30,6 +35,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the frame bias to the ICRF. `earth_rotation_angle` is replaced by
   `greenwich_mean_sidereal_time`.
 - Rust: `NonInertialFrame` no longer has a `frame_id` field.
+- Adaptive splitting needs fewer components; `split_axial_k3_along` is now
+  `split_axial_along`.
+- `register_mass` replaces a body already registered with the same NAIF id.
+- Propagation reads ephemerides once per step and raises force errors directly.
+- Rust: force API reworked; `ParameterMask` replaces `FrozenForce`, `Sum`,
+  `Recenter` and `StateLike` are removed.
+- `fit_orbit` raises on unconstrained parameters; non-converged fits report a NaN
+  covariance instead of zeros.
 
 ### Fixed
 
@@ -48,6 +61,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `earth_precession_rotation` composed its angles in the wrong order.
 - `equation_of_time` returned mean minus apparent solar time.
 - `ecef_to_geodetic_lat_lon` returned wrong heights on the polar axis.
+- `propagate_n_body` detects impacts again.
+- `compute_stm` and `propagate_covariance` use the input state's frame.
+- Non-grav lower bounds were applied to the wrong parameter with some held fixed.
+- `fit_orbit` no longer stalls on a non-grav parameter at its lower bound.
 
 ## [3.2.2]
 

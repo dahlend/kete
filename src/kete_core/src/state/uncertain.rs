@@ -50,7 +50,7 @@ use rand_distr::{Distribution, StandardNormal};
 ///
 /// The covariance is `(6 + Np) x (6 + Np)` where `Np = free_params.len()`. Rows and
 /// columns 6 onward are the free parameters in the same order as `free_params`; their
-/// semantic labels live with the [`Force`](crate::forces::Force) impls that produce them,
+/// semantic labels live with the [`ParameterizedForce`](crate::forces::ParameterizedForce) impls that produce them,
 /// and the state itself stores values only.
 ///
 /// **Rows and columns 0 to 5 are equinoctial orbital elements, not cartesian position and

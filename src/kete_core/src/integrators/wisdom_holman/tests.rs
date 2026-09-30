@@ -17,8 +17,9 @@ use crate::analysis::hill_radius;
 use crate::constants::{F0_OVER_C_AU_DAY2, GMS, SUN_J2};
 use crate::desigs::Desig;
 use crate::forces::{
-    DustNonGrav, FarnocchiaNonGrav, FrozenForce, FrozenNonGrav, GravParams, JplCometNonGrav,
-    NonGravKind, ParameterizedForce, a_over_m_from_physical, apply_gr_correction, radiation_accel,
+    DustNonGrav, FarnocchiaNonGrav, GravParams, JplCometNonGrav, NonGravKind, NonGravMask,
+    ParameterMask, ParameterizedForce, a_over_m_from_physical, apply_gr_correction,
+    radiation_accel,
 };
 use crate::frames::{Ecliptic, Equatorial, SSB, Vector};
 use crate::integrators::RadauIntegrator;
@@ -928,9 +929,9 @@ const DENSITY: f64 = 2500.0;
 /// Frozen Farnocchia (Yarkovsky) force from an explicit area-to-mass ratio,
 /// with the spin pole given on ecliptic axes (the frame the tests integrate
 /// in; the pole is stored equatorial and the map rotates it back).
-fn yark_raw(a_over_m: f64, lambda_0: f64, pole: Vector3<f64>) -> FrozenNonGrav {
+fn yark_raw(a_over_m: f64, lambda_0: f64, pole: Vector3<f64>) -> NonGravMask {
     let pole_eq = Vector::<Ecliptic>::new(pole.into()).into_frame::<Equatorial>();
-    FrozenForce::new(
+    ParameterMask::all_fixed(
         NonGravKind::Farnocchia(
             FarnocchiaNonGrav::new(ALBEDO, ABSORPTIVITY, 1.0, pole_eq).unwrap(),
         ),
@@ -940,7 +941,7 @@ fn yark_raw(a_over_m: f64, lambda_0: f64, pole: Vector3<f64>) -> FrozenNonGrav {
 }
 
 /// Frozen Farnocchia (Yarkovsky) force for a spherical body, `diameter` in km.
-fn yark(diameter: f64, lambda_0: f64, pole: Vector3<f64>) -> FrozenNonGrav {
+fn yark(diameter: f64, lambda_0: f64, pole: Vector3<f64>) -> NonGravMask {
     yark_raw(
         a_over_m_from_physical(DENSITY, diameter, 1.0),
         lambda_0,
@@ -949,8 +950,8 @@ fn yark(diameter: f64, lambda_0: f64, pole: Vector3<f64>) -> FrozenNonGrav {
 }
 
 /// Frozen dust force with the given radiation-pressure ratio.
-fn dust(beta: f64) -> FrozenNonGrav {
-    FrozenForce::new(NonGravKind::Dust(DustNonGrav), vec![beta]).unwrap()
+fn dust(beta: f64) -> NonGravMask {
+    ParameterMask::all_fixed(NonGravKind::Dust(DustNonGrav), vec![beta]).unwrap()
 }
 
 /// Circular prograde orbit of radius `a` in the xy plane (angular momentum +z).
@@ -999,7 +1000,7 @@ fn measure_drift(sim: &mut WisdomHolman<Ecliptic>, n_samples: usize, steps_per_s
 
 /// Run one test particle on a circular orbit with the given frozen Yarkovsky
 /// force and return the measured drift in AU/day.
-fn circular_drift(a: f64, yarkovsky: FrozenNonGrav, use_correctors: bool, dt_frac: u64) -> f64 {
+fn circular_drift(a: f64, yarkovsky: NonGravMask, use_correctors: bool, dt_frac: u64) -> f64 {
     let (pos, vel) = circular(a);
     let particle = make_state(1000, pos, vel);
     let period = TAU * (a.powi(3) / GMS).sqrt();
@@ -1029,8 +1030,8 @@ fn gauss_drift(a: f64, transverse_accel: f64) -> f64 {
 /// Transverse (along-track) component of the radiation acceleration for a
 /// circular orbit of radius `a`, evaluated on ecliptic axes from a frozen
 /// Farnocchia force (the same rotation the map performs).
-fn transverse_accel(a: f64, frozen: &FrozenNonGrav) -> f64 {
-    let NonGravKind::Farnocchia(force) = &frozen.inner else {
+fn transverse_accel(a: f64, frozen: &NonGravMask) -> f64 {
+    let NonGravKind::Farnocchia(force) = frozen.inner() else {
         panic!("test helper expects a Farnocchia force");
     };
     let (pos, vel) = circular(a);
@@ -1041,8 +1042,8 @@ fn transverse_accel(a: f64, frozen: &FrozenNonGrav) -> f64 {
         force.albedo,
         force.absorptivity,
         force.flattening,
-        frozen.values()[0],
-        frozen.values()[1],
+        frozen.fixed_values().unwrap()[0],
+        frozen.fixed_values().unwrap()[1],
     );
     accel.dot(&vel.normalize())
 }
@@ -1332,7 +1333,7 @@ fn yarkovsky_survives_particle_loss() {
 fn yarkovsky_revalidated_at_construction() {
     let (pos, vel) = circular(2.4);
     let state = make_state(1000, pos, vel);
-    let build = |non_grav: FrozenNonGrav| {
+    let build = |non_grav: NonGravMask| {
         WisdomHolman::new(
             &[sun()],
             &[GMS],
@@ -1347,26 +1348,29 @@ fn yarkovsky_revalidated_at_construction() {
     let a_over_m = a_over_m_from_physical(DENSITY, 1.0, 1.0);
 
     // A zero spin pole smuggled in via the public fields must be rejected.
-    let bad = FrozenForce {
-        inner: NonGravKind::Farnocchia(FarnocchiaNonGrav {
+    let bad = ParameterMask::all_fixed(
+        NonGravKind::Farnocchia(FarnocchiaNonGrav {
             albedo: ALBEDO,
             absorptivity: ABSORPTIVITY,
             flattening: 1.0,
             spin_pole: Vector::<Equatorial>::new([0.0, 0.0, 0.0]),
         }),
-        values: vec![a_over_m, 0.188],
-    };
+        vec![a_over_m, 0.188],
+    )
+    .unwrap();
     assert!(
         build(bad).is_err(),
         "zero spin pole must be rejected at construction"
     );
 
-    // A frozen-value count that does not match the kind must be rejected.
-    let short = FrozenForce {
-        inner: NonGravKind::Dust(DustNonGrav),
-        values: Vec::new(),
-    };
-    assert!(build(short).is_err(), "missing beta must be rejected");
+    // A value count that does not match the kind cannot be built.
+    assert!(ParameterMask::all_fixed(NonGravKind::Dust(DustNonGrav), Vec::new()).is_err());
+
+    // A parameter left free cannot be simulated.
+    assert!(
+        build(ParameterMask::all_free(NonGravKind::Dust(DustNonGrav))).is_err(),
+        "a free beta must be rejected"
+    );
 
     // NaN values (left free for orbit fitting) cannot be simulated.
     assert!(
@@ -1378,7 +1382,7 @@ fn yarkovsky_revalidated_at_construction() {
     assert!(build(dust(1.0)).is_err(), "beta = 1 must be rejected");
 
     // The A1/A2/A3 model is supported only in its un-lagged form.
-    let lagged = FrozenForce::new(
+    let lagged = ParameterMask::all_fixed(
         NonGravKind::JplComet(JplCometNonGrav::new(1.0, 1.0, 2.0, 1.0, 0.0, 30.0)),
         vec![1e-13, 1e-13, 0.0],
     )
@@ -1387,28 +1391,30 @@ fn yarkovsky_revalidated_at_construction() {
         build(lagged).is_err(),
         "time-lagged outgassing must be rejected loudly"
     );
-    // A frozen-value count that does not match the comet model is rejected.
-    let short_comet = FrozenForce {
-        inner: NonGravKind::JplComet(JplCometNonGrav::new(1.0, 1.0, 2.0, 1.0, 0.0, 0.0)),
-        values: vec![0.0, 0.0],
-    };
-    assert!(build(short_comet).is_err(), "missing a3 must be rejected");
+    // A partly fixed comet model is rejected: a3 is still free.
+    let partly = ParameterMask::new(
+        NonGravKind::JplComet(JplCometNonGrav::new(1.0, 1.0, 2.0, 1.0, 0.0, 0.0)),
+        vec![Some(0.0), Some(0.0), None],
+    )
+    .unwrap();
+    assert!(build(partly).is_err(), "a free a3 must be rejected");
 
     // A non-unit pole must integrate identically to its normalized form.
     let unit = yark(1.0, 0.188, Vector3::new(0.0, 0.0, 1.0));
-    let NonGravKind::Farnocchia(unit_force) = &unit.inner else {
+    let NonGravKind::Farnocchia(unit_force) = unit.inner() else {
         unreachable!()
     };
     let doubled: Vector3<f64> = Vector3::from(unit_force.spin_pole) * 2.0;
-    let scaled = FrozenForce {
-        inner: NonGravKind::Farnocchia(FarnocchiaNonGrav {
+    let scaled = ParameterMask::all_fixed(
+        NonGravKind::Farnocchia(FarnocchiaNonGrav {
             albedo: ALBEDO,
             absorptivity: ABSORPTIVITY,
             flattening: 1.0,
             spin_pole: Vector::<Equatorial>::new(doubled.into()),
         }),
-        values: vec![a_over_m, 0.188],
-    };
+        vec![a_over_m, 0.188],
+    )
+    .unwrap();
     let mut sim_scaled = build(scaled).unwrap();
     let mut sim_unit = build(unit).unwrap();
     sim_scaled.integrate_n_steps(500).unwrap();
@@ -1592,7 +1598,14 @@ fn dust_matches_radau() {
         let rel_pos = Vector::<Equatorial>::new((r_dust - r_sun).into());
         let rel_vel = Vector::<Equatorial>::new((v_dust - v_sun).into());
         let dust_force: Vector3<f64> = DustNonGrav
-            .accel(Time::new(0.0), &rel_pos, &rel_vel, &[beta])?
+            .accel(
+                Time::new(0.0),
+                &rel_pos,
+                &rel_vel,
+                &[beta],
+                &mut Default::default(),
+                false,
+            )?
             .into();
         a_dust += dust_force;
         for k in 0..3 {
@@ -1651,7 +1664,7 @@ fn jpl_comet_a2_matches_gauss() {
     let a2 = 1e-13;
     let asteroid_form = || JplCometNonGrav::new(1.0, 1.0, 2.0, 1.0, 0.0, 0.0);
     let frozen = |values: Vec<f64>| {
-        FrozenForce::new(NonGravKind::JplComet(asteroid_form()), values).unwrap()
+        ParameterMask::all_fixed(NonGravKind::JplComet(asteroid_form()), values).unwrap()
     };
 
     let measured = circular_drift(a, frozen(vec![0.0, a2, 0.0]), false, 50);
@@ -1694,7 +1707,8 @@ fn jpl_comet_matches_radau() {
 
     let wh_helio = |dt: f64| -> Vector3<f64> {
         let frozen =
-            FrozenForce::new(NonGravKind::JplComet(comet.clone()), params.to_vec()).unwrap();
+            ParameterMask::all_fixed(NonGravKind::JplComet(comet.clone()), params.to_vec())
+                .unwrap();
         let mut sim = WisdomHolman::new(
             &[sun()],
             &[GMS],
@@ -1734,6 +1748,8 @@ fn jpl_comet_matches_radau() {
                 &Vector::<Equatorial>::new(p.into()),
                 &Vector::<Equatorial>::new(v.into()),
                 &params,
+                &mut Default::default(),
+                false,
             )?
             .into();
         accel += ng;

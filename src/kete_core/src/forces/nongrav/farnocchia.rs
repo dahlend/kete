@@ -209,6 +209,7 @@ impl FarnocchiaNonGrav {
 impl ParameterizedForce for FarnocchiaNonGrav {
     type Frame = Equatorial;
     type Center = SunCenter;
+    type Meta = ();
 
     fn n_free_params(&self) -> usize {
         2
@@ -228,15 +229,23 @@ impl ParameterizedForce for FarnocchiaNonGrav {
         pos: &Vector<Equatorial>,
         _vel: &Vector<Equatorial>,
         free_params: &[f64],
+        _meta: &mut Self::Meta,
+        _exact_eval: bool,
     ) -> KeteResult<Vector<Equatorial>> {
+        let &[a_over_m, lambda_0] = free_params else {
+            return Err(Error::ValueError(format!(
+                "FarnocchiaNonGrav expects 2 free parameters (a_over_m, lambda_0), got {}",
+                free_params.len()
+            )));
+        };
         let accel = radiation_accel(
             &(*pos).into(),
             &self.spin_pole.into(),
             self.albedo,
             self.absorptivity,
             self.flattening,
-            free_params[0],
-            free_params[1],
+            a_over_m,
+            lambda_0,
         );
         Ok(Vector::<Equatorial>::new(accel.into()))
     }
@@ -247,52 +256,49 @@ impl ParameterizedForce for FarnocchiaNonGrav {
         pos: &Vector<Equatorial>,
         _vel: &Vector<Equatorial>,
         free_params: &[f64],
+        _meta: &mut Self::Meta,
     ) -> KeteResult<Matrix3xX<f64>> {
-        let a_over_m = free_params[0];
-        let lambda_0 = free_params[1];
-        let e = self.flattening;
-
-        // Geometry mirrors `accel`; the FD-consistency test guards the two
-        // copies against drifting apart.
-        let s_hat: Vector3<f64> = self.spin_pole.into();
+        let &[a_over_m, lambda_0] = free_params else {
+            return Err(Error::ValueError(format!(
+                "FarnocchiaNonGrav expects 2 free parameters (a_over_m, lambda_0), got {}",
+                free_params.len()
+            )));
+        };
         let pos_v: Vector3<f64> = (*pos).into();
-        let r = pos_v.norm();
-        let r_inv = r.recip();
-        let r_hat = pos_v * r_inv;
-        let g = r_inv * r_inv;
-
-        let (psi_x, psi_z, _sigma) = shape_factors(e);
-
-        let r_dot_s = r_hat.dot(&s_hat);
-        let cos_theta_0 = -r_dot_s;
-        let sin2_theta_0 = (1.0 - cos_theta_0 * cos_theta_0).max(0.0);
-        let j2_theta = (e * e * sin2_theta_0 + cos_theta_0 * cos_theta_0).sqrt();
+        let s_hat: Vector3<f64> = self.spin_pole.into();
 
         // The whole acceleration is linear in `a_over_m`, so its column is the
         // acceleration evaluated per unit `a_over_m`.
-        let unit_scale = F0_OVER_C_AU_DAY2 * g;
-        let four_ninths_a0 = 4.0 / 9.0 * self.albedo;
-        let srp_radial = j2_theta + four_ninths_a0 * psi_x;
-        let srp_pole = four_ninths_a0 * (psi_z - psi_x) * r_dot_s;
-        let mut d_a_over_m = unit_scale * (srp_radial * r_hat + srp_pole * s_hat);
+        let d_a_over_m = radiation_accel(
+            &pos_v,
+            &s_hat,
+            self.albedo,
+            self.absorptivity,
+            self.flattening,
+            1.0,
+            lambda_0,
+        );
 
         let mut d_lambda_0 = Vector3::zeros();
         if self.absorptivity > 0.0 && lambda_0 >= 0.0 {
+            // Geometry as in `radiation_accel`.
+            let e = self.flattening;
+            let r = pos_v.norm();
+            let r_inv = r.recip();
+            let r_hat = pos_v * r_inv;
+            let unit_scale = F0_OVER_C_AU_DAY2 * r_inv * r_inv;
+            let (psi_x, _, _) = shape_factors(e);
+            let r_dot_s = r_hat.dot(&s_hat);
+            let cos_theta_0 = -r_dot_s;
+            let sin2_theta_0 = (1.0 - cos_theta_0 * cos_theta_0).max(0.0);
+            let j2_theta = (e * e * sin2_theta_0 + cos_theta_0 * cos_theta_0).sqrt();
+
             // `lambda = lambda_0 * c` with `c` position-only, so
             // `d/d(lambda_0) = c * d/d(lambda)`.
             let c = r.powf(1.5) / j2_theta.powf(0.75);
             let lambda = lambda_0 * c;
             let denom = 1.0 + 2.0 * lambda + 2.0 * lambda * lambda;
-            let big_lambda_1 = (1.0 + lambda) / denom;
-            let big_lambda_2 = lambda / denom;
-
             let four_ninths_alpha = 4.0 / 9.0 * self.absorptivity;
-
-            let t1_radial = big_lambda_1 * psi_x;
-            let t1_pole = (psi_z - big_lambda_1 * psi_x) * r_dot_s;
-            d_a_over_m += (four_ninths_alpha * unit_scale) * (t1_radial * r_hat + t1_pole * s_hat);
-            d_a_over_m -=
-                (four_ninths_alpha * unit_scale * big_lambda_2 * psi_x) * r_hat.cross(&s_hat);
 
             // d(Lambda_1)/d(lambda) and d(Lambda_2)/d(lambda).
             let inv_denom2 = (denom * denom).recip();
@@ -330,12 +336,21 @@ mod tests {
     }
 
     fn accel_at(f: &FarnocchiaNonGrav, params: &[f64]) -> Vector3<f64> {
-        f.accel(epoch(), &pos(), &vel(), params).unwrap().into()
+        f.accel(
+            epoch(),
+            &pos(),
+            &vel(),
+            params,
+            &mut Default::default(),
+            false,
+        )
+        .unwrap()
+        .into()
     }
 
     fn jac_col(f: &FarnocchiaNonGrav, params: &[f64], col: usize) -> Vector3<f64> {
         let jac = f
-            .parameter_jacobian(epoch(), &pos(), &vel(), params)
+            .parameter_jacobian(epoch(), &pos(), &vel(), params, &mut Default::default())
             .unwrap();
         Vector3::new(jac[(0, col)], jac[(1, col)], jac[(2, col)])
     }
@@ -352,7 +367,9 @@ mod tests {
     fn velocity_jacobian_is_exactly_zero() {
         let f = force();
         let params = [1.0, 0.5];
-        let (da_dr, da_dv) = f.jacobians(epoch(), &pos(), &vel(), &params).unwrap();
+        let (da_dr, da_dv) = f
+            .jacobians(epoch(), &pos(), &vel(), &params, &mut Default::default())
+            .unwrap();
         assert!(
             da_dv.iter().all(|entry| *entry == 0.0),
             "a velocity-independent force differenced to a nonzero velocity jacobian: \

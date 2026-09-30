@@ -8,7 +8,7 @@
 //! states at `jd_final`.
 
 use kete_core::errors::Error;
-use kete_core::forces::{FrozenForce, GravParams, ParameterizedForce};
+use kete_core::forces::{GravParams, ParameterMask, ParameterizedForce};
 use kete_core::frames::{Equatorial, SunCenter};
 use kete_core::integrators::RadauIntegrator;
 use kete_core::prelude::{Desig, KeteResult};
@@ -22,9 +22,10 @@ use crate::spk::LOADED_SPK;
 ///
 /// Generic over the inner non-gravitational force `F`. Callers commit to
 /// one concrete force type per batch.
-pub struct AccelVecMeta<'a, F: ParameterizedForce<Frame = Equatorial, Center = SunCenter>> {
-    /// Per-object frozen non-gravitational force (values baked in), or `None`.
-    pub non_gravs: Vec<Option<FrozenForce<F>>>,
+struct AccelVecMeta<'a, F: ParameterizedForce<Frame = Equatorial, Center = SunCenter>> {
+    /// Per-object non-gravitational force with every parameter fixed, or
+    /// `None`.
+    pub non_gravs: Vec<Option<ParameterMask<F>>>,
     /// Massive bodies providing gravity, same order as the leading slots
     /// in the pos/vel vectors.
     pub massive_obj: &'a [GravParams],
@@ -51,7 +52,7 @@ where
 ///
 /// # Errors
 /// Fails on an impact.
-pub fn vec_accel<D, F>(
+fn vec_accel<D, F>(
     time: Time<TDB>,
     pos: &nalgebra::OVector<f64, D>,
     vel: &nalgebra::OVector<f64, D>,
@@ -87,17 +88,27 @@ where
             let vel_idy = vel.fixed_rows::<3>(idy * 3);
             let rel_pos = pos_idx - pos_idy;
             let rel_vel = vel_idx - vel_idy;
-            if exact_eval & (rel_pos.norm() as f32 <= radius) {
+            if exact_eval && (rel_pos.norm() as f32 <= radius) {
                 Err(Error::Impact(grav_params.naif_id, time))?;
             }
-            grav_params.add_acceleration(&mut accel_working, &rel_pos, &rel_vel);
+            // This path has no CK access. A polyhedron or spherical harmonic
+            // body with a CK orientation gives an error inside its switch
+            // radius. It does not fall back to the point-mass term.
+            grav_params.add_acceleration(&mut accel_working, &rel_pos, &rel_vel, None)?;
             if (grav_params.naif_id == 10)
                 && (idx >= n_massive)
                 && let Some(frozen) = &meta.non_gravs[idx - n_massive]
             {
                 let pos_vec = Vector::<Equatorial>::new([rel_pos[0], rel_pos[1], rel_pos[2]]);
                 let vel_vec = Vector::<Equatorial>::new([rel_vel[0], rel_vel[1], rel_vel[2]]);
-                let ng_accel = frozen.accel(time, &pos_vec, &vel_vec, &[])?;
+                let ng_accel = frozen.accel(
+                    time,
+                    &pos_vec,
+                    &vel_vec,
+                    &[],
+                    &mut F::Meta::default(),
+                    exact_eval,
+                )?;
                 let ng_v3: Vector3<f64> = ng_accel.into();
                 accel_working += ng_v3;
             }
@@ -107,24 +118,41 @@ where
     Ok(accel)
 }
 
-/// Propagate using n-body mechanics but skipping SPK queries.
-/// This will propagate all planets and the Moon, so it may vary from SPK states slightly.
+/// Propagate objects with N-body mechanics and no SPK queries during the
+/// integration.
+///
+/// The function integrates the Sun and the planet system barycenters together
+/// with the objects. The Earth and the Moon enter as the Earth-Moon
+/// barycenter. Thus the planet states can differ slightly from the SPK states.
+///
+/// `states` are the objects, all at one epoch. `jd_final` is the end time.
+/// `planet_states` holds Sun-centered states of the bodies in
+/// [`GravParams::simplified_planets`], in that order, at the epoch of
+/// `states`. If it is `None`, the function reads these states from the loaded
+/// SPK. `non_gravs` holds one optional non-gravitational force per object.
+///
+/// The function returns the final object states and the final planet states,
+/// both Sun-centered at `jd_final`.
 ///
 /// # Errors
-/// Propagation may fail for a number of reasons, including lacking SPK information,
-/// numerical singularities, or slow convergence of the integrator. Also returns an
-/// error if `states` is empty, if `non_gravs.len()` does not match `states.len()`,
-/// or if any `state.epoch` differs from the first state's epoch.
+/// - `Error::ValueError` if `states` is empty, if `non_gravs.len()` differs
+///   from `states.len()`, or if the epochs of `states` differ.
+/// - `Error::ValueError` if `planet_states` has the wrong length, or if its
+///   first state has an epoch different from `states`.
+/// - The error of the SPK lock, or of an SPK query for the planet states when
+///   `planet_states` is `None`.
+/// - `Error::Impact` if an object impacts a massive body.
+/// - `Error::Convergence` if the integrator does not converge.
 ///
 /// # Panics
-/// Cannot panic in practice: the `.unwrap()` calls on `states.first()` and
-/// `planet_states.first()` are gated by earlier length checks; `planet_states`
-/// is matched to `simplified_planets()` which is non-empty by construction.
+/// Does not panic. Each `unwrap` on `states.first()` and
+/// `planet_states.first()` follows a length check that guarantees a first
+/// element.
 pub fn propagate_n_body_vec<F>(
     states: Vec<State<Equatorial, SunCenter>>,
     jd_final: Time<TDB>,
     planet_states: Option<Vec<State<Equatorial>>>,
-    non_gravs: Vec<Option<FrozenForce<F>>>,
+    non_gravs: Vec<Option<ParameterMask<F>>>,
 ) -> KeteResult<(Vec<State<Equatorial>>, Vec<State<Equatorial>>)>
 where
     F: ParameterizedForce<Frame = Equatorial, Center = SunCenter>,
@@ -154,7 +182,7 @@ where
         ps
     } else {
         let mut planet_states = Vec::new();
-        for obj in &*planets {
+        for obj in planets {
             let planet = spk.try_get_state_with_center::<Equatorial>(obj.naif_id, jd_init, 10)?;
             planet_states.push(planet);
         }
@@ -190,7 +218,7 @@ where
 
     let meta = AccelVecMeta {
         non_gravs,
-        massive_obj: &planets,
+        massive_obj: planets,
     };
 
     let (pos, vel, _) = {
@@ -234,7 +262,7 @@ mod tests {
         let mut vel: Vec<f64> = Vec::new();
 
         let planets = GravParams::planets();
-        for obj in &*planets {
+        for obj in planets {
             let planet = spk
                 .try_get_state_with_center::<Equatorial>(obj.naif_id, jd, 0)
                 .unwrap();
@@ -251,7 +279,7 @@ mod tests {
             &vel.into(),
             &mut AccelVecMeta::<kete_core::forces::JplCometNonGrav> {
                 non_gravs: vec![None],
-                massive_obj: &planets,
+                massive_obj: planets,
             },
             false,
         )
@@ -267,6 +295,8 @@ mod tests {
                 &Vector::<Equatorial>::new([0.0, 0.0, 0.5]),
                 &Vector::<Equatorial>::new([0.0, 0.0, 1.0]),
                 &[],
+                &mut Default::default(),
+                false,
             )
             .unwrap();
         assert!((accel[0] - accel2[0]).abs() < 1e-10);

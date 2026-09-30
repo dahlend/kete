@@ -1,7 +1,7 @@
 //! Python bindings for the Wisdom-Holman symplectic N-body simulation.
 use kete_core::constants::GMS;
 use kete_core::errors::Error;
-use kete_core::forces::{FrozenNonGrav, GravParams};
+use kete_core::forces::{GravParams, NonGravMask};
 use kete_core::frames::{Equatorial, SSB};
 use kete_core::integrators::{LostReason, WisdomHolman};
 use kete_core::state::State;
@@ -12,14 +12,15 @@ use crate::nongrav::PyNonGravModel;
 use crate::state::PyState;
 use crate::time::PyTime;
 
-/// Convert optional per-particle `NonGravModel`s into the frozen forces the
-/// integrator accepts. Validation (value counts, ranges, supported kinds,
-/// list length) happens in the integrator's constructor.
-fn freeze_non_gravs(non_gravs: Option<Vec<Option<PyNonGravModel>>>) -> Vec<Option<FrozenNonGrav>> {
+/// Convert optional per-particle `NonGravModel`s into the fully fixed forces the
+/// integrator accepts. NaN values become 0, as in every other propagation.
+/// Validation (value counts, ranges, supported kinds, list length) happens in the
+/// integrator's constructor.
+fn freeze_non_gravs(non_gravs: Option<Vec<Option<PyNonGravModel>>>) -> Vec<Option<NonGravMask>> {
     non_gravs
         .unwrap_or_default()
         .into_iter()
-        .map(|model| model.map(|model| model.to_frozen()))
+        .map(|model| model.map(|model| model.to_fixed()))
         .collect()
 }
 
@@ -115,9 +116,9 @@ fn freeze_non_gravs(non_gravs: Option<Vec<Option<PyNonGravModel>>>) -> Vec<Optio
 ///     looping over :meth:`step`.
 /// non_gravs:
 ///     Optional list of :class:`~kete.NonGravModel`, one per test particle,
-///     with ``None`` entries for particles which feel gravity alone. All
-///     model parameters must be concrete values (a ``NaN`` left free for
-///     orbit fitting cannot be simulated).
+///     with ``None`` entries for particles which feel gravity alone. A
+///     ``NaN`` parameter, left free for orbit fitting, is treated as 0, as in
+///     every other propagation.
 #[pyclass(module = "kete", name = "SymplecticSim")]
 #[derive(Debug)]
 pub struct PySymplecticSim {
@@ -224,7 +225,7 @@ impl PySymplecticSim {
         non_gravs: Option<Vec<Option<PyNonGravModel>>>,
     ) -> PyResult<Self> {
         let epoch = jd.0;
-        let mut params: Vec<GravParams> = GravParams::simplified_planets().clone();
+        let mut params: Vec<GravParams> = GravParams::simplified_planets().to_vec();
         if include_registered {
             // Everything registered beyond the merged planet list. Skip the
             // ids that list already covers: the barycenters themselves
@@ -236,7 +237,7 @@ impl PySymplecticSim {
                 .filter(|p| {
                     !covered.contains(&p.naif_id) && params.iter().all(|q| q.naif_id != p.naif_id)
                 })
-                .copied()
+                .cloned()
                 .collect();
             params.extend(extra);
         }

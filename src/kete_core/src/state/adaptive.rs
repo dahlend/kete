@@ -32,9 +32,8 @@
 //! legs, and the reported number does not depend on how the arc was cut.
 //!
 //! All entry points take a generic [`ParameterizedForce<Frame = Equatorial, Center = SSB>`]
-//! and an SSB-centered state. Callers compose their own gravity +
-//! perturbation force model (typically via [`Sum`](crate::forces::Sum))
-//! and convert any `DynCenter` states to SSB before calling.
+//! and an SSB-centered state. Callers supply the complete force model, gravity and any
+//! perturbation together, and convert any `DynCenter` states to SSB before calling.
 
 use crate::elements::EquinoctialElements;
 use crate::errors::Error;
@@ -42,8 +41,8 @@ use crate::forces::ParameterizedForce;
 use crate::frames::{Ecliptic, Equatorial, InertialFrame, SSB};
 use crate::prelude::{Desig, KeteResult, UncertainState};
 use crate::state::{
-    DiffuseState, ProbeSet, covariance_update, propagate_state, propagate_with_stm,
-    split_axial_k3_along,
+    DiffuseState, ProbeSet, propagate_state, propagate_with_stm, split_axial_along,
+    split_count_for_narrowing,
 };
 use crate::time::{TDB, Time};
 use nalgebra::{DMatrix, DVector, Matrix6, SymmetricEigen, Vector3, Vector6};
@@ -123,7 +122,7 @@ pub enum Termination {
 /// Everything about the *state* the leg produced - per-component `eta`, the residual
 /// behind it - lives on the components themselves. This holds only what the returned
 /// mixture cannot say: the decisions the step made.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StepReport {
     /// Why splitting stopped on this leg.
     ///
@@ -139,6 +138,14 @@ pub struct StepReport {
     /// a silent loss of history for a component rebuilt mid-march, so it is counted rather
     /// than left to be inferred.
     pub seeded: usize,
+
+    /// Weight that finished the leg above `split_threshold`, as a fraction of the mixture.
+    ///
+    /// The number to read next to [`Self::termination`]: a leg can stop because the budget
+    /// ran out with a tenth of the distribution unresolved, or with a thousandth of it in
+    /// one starved lineage, and those are different results.  Zero means every component
+    /// cleared the threshold.
+    pub unresolved_weight: f64,
 }
 
 struct PropagationStep {
@@ -215,7 +222,9 @@ where
     for i in 0..np {
         phi_aug[(6 + i, 6 + i)] = 1.0;
     }
-    let new_cov = covariance_update(&sens_local, &component.cov_matrix);
+    // Parameters are constant through the propagation, so their rows of `phi_aug` are the
+    // identity, and their uncertainty couples into the state through the sensitivity.
+    let new_cov = &phi_aug * &component.cov_matrix * phi_aug.transpose();
     let mut propagated =
         UncertainState::new(final_elements, new_cov, component.free_params.clone())?;
     propagated.non_grav.clone_from(&component.non_grav);
@@ -577,16 +586,37 @@ pub struct SplitConfig {
     /// [`Termination::ComponentCap`], so a caller can tell a saturated budget from a
     /// converged one without re-running.
     pub max_components: usize,
+
+    /// Weight allowed to finish a leg above `split_threshold`, as a fraction of the
+    /// mixture.
+    ///
+    /// Demanding that *every* component clear the threshold is a demand on the worst
+    /// component, and the worst component is an extreme over a population that grows with
+    /// every split: a single lineage that splitting does not improve holds the whole
+    /// mixture unconverged however much budget it is given, while the weight that carries
+    /// the density is long since resolved.  This asks the question the density asks
+    /// instead - how much of the distribution is under-resolved - and lets a leg finish
+    /// when that is small enough.
+    ///
+    /// Zero reproduces the strict reading, which is the default: no weight may remain
+    /// above the threshold.  A caller that would rather spend its budget on the bulk than
+    /// on a starved tail raises it, and [`StepReport::unresolved_weight`] reports what was
+    /// left either way.
+    pub max_unresolved_weight: f64,
 }
 
 impl Default for SplitConfig {
     fn default() -> Self {
         Self {
             split_threshold: 0.15,
-            // A power of three: splits are three-way, so any other cap truncates a
-            // cascade mid-generation and the returned count reports where the budget ran
-            // out rather than where the splitter converged.
+            // Splits size themselves to the nonlinearity they are resolving, so no
+            // particular cap is natural; this one is large enough that the threshold
+            // rather than the budget decides most legs.
             max_components: 729,
+            // Strict by default: the tolerance is a decision about which parts of a
+            // distribution a caller is willing to leave unresolved, and nothing here can
+            // make that decision for them.
+            max_unresolved_weight: 0.0,
         }
     }
 }
@@ -601,8 +631,13 @@ impl Default for SplitConfig {
 /// way.  [`propagate_diffuse_state`] is exactly this folded over a time grid.
 ///
 /// A component whose `eta` clears `split_threshold` is rolled back to the start of the leg,
-/// split three ways along the worst probe's direction, and the leg is redone with the
-/// children on fresh probes.  Components are served in order of `weight * eta`, so a heavy
+/// split along the worst probe's direction, and the leg is redone with the
+/// children on fresh probes.  How many children it is split into is read from how far
+/// over threshold it is: the residual is second order in the component's width, so a
+/// component at `eta` needs its width cut by `sqrt(eta / split_threshold)`, and
+/// [`split_count_for_narrowing`] names the smallest library that does that in one step.
+/// Reaching the same narrowing by repeated three-way splits would cost about the cube of
+/// the components, which is what made deep refinement through an encounter unaffordable.  Components are served in order of `weight * eta`, so a heavy
 /// badly-represented component is resolved before a light one.
 ///
 /// A component carrying no probes - a new mixture, a split child, or one a caller
@@ -612,9 +647,10 @@ impl Default for SplitConfig {
 /// Splitting stops when every component falls under the threshold, when `max_components`
 /// refuses the next split, or when the only components left over threshold carry no
 /// direction to split along - the threshold is the accuracy/cost dial and the cap is the
-/// brake, and there is deliberately nothing else.  Splitting yields weights `w/6, 2w/3,
-/// w/6`, so an outer-of-outer component carries a thirty-sixth of its grandparent's weight
-/// and the ranking starves a deep tail on its own.  Work that cares about exactly that
+/// brake, and there is deliberately nothing else.  Splitting puts most of the parent's
+/// weight in the middle of the library and little in its wings, so a component two splits
+/// out from the bulk carries a small fraction of its grandparent's weight and the ranking
+/// starves a deep tail on its own.  Work that cares about exactly that
 /// tail - impact probability is the motivating case - should read the per-component `eta`
 /// on the returned components, and build a [`DiffuseState`] over the tail region and
 /// propagate that directly rather than expecting the ranking to reach it.
@@ -657,6 +693,16 @@ where
         // A component whose probes died reads infinite `eta` and is split like any
         // other; its children re-seed fresh probes, which is the retry, and the cap
         // bounds it.
+        // What is still unresolved, by weight rather than by count: the quantity the
+        // tolerance is stated in, and the one the density cares about.
+        let unresolved: f64 = (0..components.len())
+            .filter(|&i| measured[i].eta > config.split_threshold)
+            .map(|i| weights[i])
+            .sum();
+        if unresolved <= config.max_unresolved_weight {
+            break;
+        }
+
         let next = (0..components.len())
             .filter(|&i| !skip[i] && measured[i].eta > config.split_threshold)
             .max_by(|&a, &b| {
@@ -666,11 +712,19 @@ where
             });
         let Some(index) = next else { break };
 
-        // A K=3 split replaces one component with three.
-        if components.len() + 2 > config.max_components {
+        // Size the split to the nonlinearity it has to remove.  The residual is second
+        // order in the component's width, so a component reading `eta` needs its width
+        // along the split axis cut by `sqrt(eta / threshold)`.  A component whose probes
+        // died carries no scale, so it is retried at the smallest split instead.
+        let wanted = if measured[index].eta.is_finite() {
+            split_count_for_narrowing((measured[index].eta / config.split_threshold).sqrt())
+        } else {
+            3
+        };
+        let Some(k) = affordable_split(components.len(), wanted, config.max_components) else {
             capped = true;
             break;
-        }
+        };
 
         // Rolling back is free: nothing has been advanced yet, so `components` still
         // holds every component as it stood at the start of this leg.
@@ -679,7 +733,7 @@ where
             degenerate = true;
             continue;
         };
-        let parts = split_axial_k3_along(&components[index], &direction)?;
+        let parts = split_axial_along(&components[index], &direction, k)?;
         // The one thing the children do inherit. Their probes are fresh, so their `eta`
         // measures the children rather than continuing the parent's history - but the
         // covariance that number is whitened against is the parent's, so a split that
@@ -729,12 +783,16 @@ where
 
     let mut stepped = DiffuseState::new(weights, advanced)?;
     stepped.include_asteroids = mixture.include_asteroids;
+    let unresolved_weight = stepped
+        .weight_above_eta(config.split_threshold)
+        .unwrap_or(f64::NAN);
 
     Ok((
         stepped,
         StepReport {
             termination,
             seeded,
+            unresolved_weight,
         },
     ))
 }
@@ -789,6 +847,7 @@ where
     let mut report = StepReport {
         termination: Termination::Converged,
         seeded: 0,
+        unresolved_weight: 0.0,
     };
     for target in leg_grid(step_days, diffuse.epoch(), jd) {
         let stepped = step_diffuse_state(&mixture, forces, target, config, center_at)?;
@@ -796,6 +855,19 @@ where
         report = stepped.1;
     }
     Ok((mixture, report))
+}
+
+/// The largest split the component budget still allows, at or below `wanted`.
+///
+/// A split of `k` adds `k - 1` components, so the budget caps `k` directly.  Returns
+/// `None` when even the smallest split would exceed the cap, which is the one case the
+/// caller reports as [`Termination::ComponentCap`]: a leg that had to split a component
+/// and could not afford to.  Sizes with no library entry are stepped over.
+fn affordable_split(current: usize, wanted: usize, cap: usize) -> Option<usize> {
+    (3..=wanted)
+        .rev()
+        .filter(|&k| k == 3 || k >= 5)
+        .find(|&k| current + k - 1 <= cap)
 }
 
 /// Shared entry checks for the two public marching paths.
@@ -951,7 +1023,8 @@ fn check_probes(component: &UncertainState, probes: &ProbeSet) -> KeteResult<()>
 
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_STEP_DAYS, leg_grid};
+    use super::{DEFAULT_STEP_DAYS, affordable_split, leg_grid};
+    use crate::state::{MAX_SPLIT_COUNT, split_count_for_narrowing, split_narrowing};
     use crate::time::{TDB, Time};
 
     /// Leg endpoints as offsets in days from the start of the arc.
@@ -1022,6 +1095,52 @@ mod tests {
         assert_eq!(back.len(), 4);
         assert!(back.iter().all(|&offset| offset < 0.0));
         assert!((back[3] - span).abs() < 1e-9);
+    }
+
+    /// The budget caps the split size directly, and sizes with no library are stepped
+    /// over rather than rounded into.
+    #[test]
+    fn the_budget_caps_the_split_size() {
+        // Room for anything: the request is what is served.
+        assert_eq!(affordable_split(1, 21, 2187), Some(21));
+        assert_eq!(affordable_split(1, 3, 2187), Some(3));
+        // A cap that bites returns the largest split that still fits.
+        assert_eq!(affordable_split(1, 21, 10), Some(10));
+        assert_eq!(affordable_split(2180, 21, 2187), Some(8));
+        // Four has no library, so a budget that allows exactly four falls to three.
+        assert_eq!(affordable_split(1, 21, 4), Some(3));
+        assert_eq!(affordable_split(1, 4, 2187), Some(3));
+        // No room for even the smallest split is the one case the caller reports as
+        // a bound budget.
+        assert_eq!(affordable_split(5, 21, 5), None);
+        assert_eq!(affordable_split(5, 21, 6), None);
+        assert_eq!(affordable_split(5, 21, 7), Some(3));
+    }
+
+    /// The sizing rule: a component this far over threshold needs its width cut by the
+    /// square root of the ratio, because the residual it is judged on is second order in
+    /// that width.  Checked against the library the chooser hands back, so the two halves
+    /// of the rule stay consistent with each other.
+    #[test]
+    fn the_split_size_follows_the_square_root_of_the_overshoot() {
+        let threshold = 0.15_f64;
+        for eta in [0.16_f64, 0.3, 1.0, 3.0, 10.0, 100.0] {
+            let k = split_count_for_narrowing((eta / threshold).sqrt());
+            let narrowing = split_narrowing(k).unwrap();
+            // One split must bring this component under threshold, unless the table ran
+            // out of reach.
+            let left = eta / (narrowing * narrowing);
+            assert!(
+                left <= threshold * 1.000_001 || k == MAX_SPLIT_COUNT,
+                "eta {eta} split {k} ways still reads {left}"
+            );
+        }
+        // Monotone in the overshoot.
+        let sizes: Vec<usize> = [0.16_f64, 1.0, 10.0, 100.0]
+            .into_iter()
+            .map(|eta| split_count_for_narrowing((eta / threshold).sqrt()))
+            .collect();
+        assert!(sizes.windows(2).all(|w| w[0] <= w[1]), "{sizes:?}");
     }
 
     /// An arc of no length has no legs; the mixture comes back as it went in.

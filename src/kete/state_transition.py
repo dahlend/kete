@@ -16,7 +16,8 @@ def compute_stm(
     15th-order integrator with full N-body physics.
 
     Returns the propagated state and a 6x(6+N) sensitivity matrix where N is the
-    number of free non-gravitational parameters (0, 1, or 3 depending on the model).
+    number of parameters of the non-gravitational model (0 without one).
+    The matrix is expressed in the frame of the input state.
 
     When no non-gravitational model is provided, the result is a standard 6x6 STM.
     When a ``NonGravModel`` is provided, additional columns give the partial
@@ -48,6 +49,8 @@ def propagate_covariance(state: State, covariance: NDArray, jd_end: float) -> ND
     """
     Given a 6x6 covariance matrix which represents uncertainty in [X, Y, Z, Vx, Vy, Vz],
     compute the covariance matrix at a future time defined by `jd_end`.
+
+    The covariance is in the frame of the input state, and so is the result.
 
     Uses the Radau 15th-order integrator with full N-body physics. Units are AU for
     position and AU/day for velocity, matching the state convention throughout kete.

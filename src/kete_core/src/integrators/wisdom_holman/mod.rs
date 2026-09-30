@@ -34,14 +34,14 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 use crate::analysis::hill_radius;
-use crate::constants::{C_AU_PER_DAY, C_AU_PER_DAY_INV_SQUARED, GMS, SUN_J2};
+use crate::constants::{C_AU_PER_DAY, C_AU_PER_DAY_INV_SQUARED, GMS};
 use crate::desigs::Desig;
 use crate::errors::{Error, KeteResult};
 use crate::forces::{
-    FarnocchiaNonGrav, FrozenNonGrav, GravParams, JplCometNonGrav, NonGravKind,
+    FarnocchiaNonGrav, GravParams, JplCometNonGrav, NonGravKind, NonGravMask, Shape,
     apply_gr_correction, j2_correction, radiation_accel,
 };
-use crate::frames::{Ecliptic, InertialFrame, SSB, Vector};
+use crate::frames::{Ecliptic, Equatorial, InertialFrame, SSB, Vector};
 use crate::kepler::analytic_2_body_delta;
 use crate::kepler::{compute_peri_dist, compute_semi_major};
 use crate::state::State;
@@ -63,6 +63,40 @@ static SUN_RADIUS_AU: std::sync::LazyLock<f64> = std::sync::LazyLock::new(|| {
         .find(|p| p.naif_id == 10)
         .map_or(0.0046547587, |p| f64::from(p.radius))
 });
+
+/// J2 coefficient and spin pole of the Sun from its [`GravParams`] entry, the
+/// pole rotated onto the axes of frame `T`.
+///
+/// This is the description the Radau N-body path evaluates, so the two
+/// integrators apply the same solar oblateness.
+///
+/// # Errors
+/// Returns an error if the mass table has no Sun, or the Sun's entry is not
+/// [`Shape::Oblate`].
+fn sun_oblateness<T: InertialFrame>() -> KeteResult<(f64, Vector3<f64>)> {
+    let planets = GravParams::planets();
+    let sun = planets.iter().find(|p| p.naif_id == 10).ok_or_else(|| {
+        Error::ValueError("The Sun (NAIF id 10) is not in the table of massive objects.".into())
+    })?;
+    match &sun.shape {
+        Shape::Oblate { j2, pole } => Ok((
+            *j2,
+            Vector::<Equatorial>::new((*pole).into())
+                .into_frame::<T>()
+                .into(),
+        )),
+        Shape::Point => Err(Error::ValueError(
+            "The solar J2 term was requested, but the Sun is described as a point mass.".into(),
+        )),
+        Shape::Polyhedron { .. } => Err(Error::ValueError(
+            "The solar J2 term was requested, but the Sun is described as a polyhedron.".into(),
+        )),
+        Shape::SphericalHarmonics { .. } => Err(Error::ValueError(
+            "The solar J2 term was requested, but the Sun is described by spherical harmonics."
+                .into(),
+        )),
+    }
+}
 
 /// Effective oblateness coefficient `J2 R^2` in AU^2 of the Earth-Moon pair,
 /// treated as an azimuthally symmetric quadrupole about the ecliptic pole:
@@ -174,7 +208,7 @@ struct Yarkovsky {
 }
 
 /// Internal per-particle non-gravitational binding, destructured from the
-/// [`FrozenNonGrav`] inputs of [`WisdomHolman::new`] by [`bind_non_grav`].
+/// [`NonGravMask`] inputs of [`WisdomHolman::new`] by [`bind_non_grav`].
 #[derive(Debug, Clone)]
 enum NonGrav {
     /// Radiation pressure and thermal recoil, applied in the kick.
@@ -316,8 +350,8 @@ pub struct Encounter {
 ///   bounded band in practice (see the test suite). It is the single-body
 ///   term only; planet-planet 1PN cross terms are absent.
 /// - The optional solar J2 term applies the oblateness acceleration shared
-///   with the Radau N-body path ([`crate::constants::SUN_J2`], with the solar
-///   pole approximated by the ecliptic pole). It is a position-only potential,
+///   with the Radau N-body path, with the J2 coefficient and spin pole of the
+///   Sun's [`GravParams`] entry. It is a position-only potential,
 ///   so the map remains symplectic; it drives the secular nodal regression
 ///   `-(3/2) n J2 (R/p)^2 cos(i)` and the corresponding apsidal precession.
 /// - The optional order-17 symplectic corrector (Wisdom 2006) removes the
@@ -359,13 +393,14 @@ pub struct WisdomHolman<T: InertialFrame> {
     steps: i64,
     /// Whether the GR potential correction is applied.
     include_gr: bool,
-    /// Whether the solar J2 oblateness term is applied.
-    include_j2: bool,
+    /// J2 coefficient and spin pole of the Sun, the pole on the axes of the
+    /// map's frame, when the solar J2 oblateness term is applied.
+    solar_j2: Option<(f64, Vector3<f64>)>,
     /// Whether the order-17 symplectic corrector wraps each integration call.
     use_correctors: bool,
-    /// The ecliptic pole (the solar spin axis approximation shared with the
-    /// Radau N-body path) expressed on the axes of the map's frame.
-    solar_pole: Vector3<f64>,
+    /// The ecliptic pole on the axes of the map's frame: the symmetry axis of
+    /// the orbit-averaged lunar quadrupole.
+    ecliptic_pole: Vector3<f64>,
     /// Index into the massive arrays of the body resolving to the Earth-Moon
     /// barycenter (NAIF id 3), which receives the orbit-averaged lunar
     /// quadrupole correction. [`None`] when no such body is present.
@@ -433,8 +468,8 @@ impl<T: InertialFrame> WisdomHolman<T> {
     ///   around the solar GM.
     /// * `test_particles` - Massless particles, in the same frame and at the
     ///   same epoch. They feel all massive bodies but affect nothing.
-    /// * `non_gravs` - Optional frozen non-gravitational force per test
-    ///   particle: either empty (every particle feels gravity alone) or one
+    /// * `non_gravs` - Optional non-gravitational force per test particle, with
+    ///   every parameter fixed: either empty (every particle feels gravity alone) or one
     ///   entry per particle, with [`None`] meaning gravity only. This is the
     ///   same per-object vocabulary used by the Radau N-body propagation.
     ///   [`NonGravKind::Farnocchia`] (frozen values `[a_over_m, lambda_0]`)
@@ -451,8 +486,8 @@ impl<T: InertialFrame> WisdomHolman<T> {
     ///   Schwarzschild acceleration, shared with the Radau N-body path). The
     ///   term is velocity dependent, so with it enabled the map is only
     ///   approximately symplectic; energy stays in a bounded band.
-    /// * `include_j2` - Apply the solar J2 oblateness term, the same
-    ///   [`crate::constants::SUN_J2`] and ecliptic-pole approximation used by
+    /// * `include_j2` - Apply the solar J2 oblateness term, with the J2
+    ///   coefficient and spin pole of the Sun's [`GravParams`] entry, as used by
     ///   the Radau N-body path. This is a position-only potential, so the map
     ///   remains symplectic; it drives the small secular nodal regression and
     ///   apsidal precession of low-`a` orbits. When enabled, only the
@@ -470,7 +505,7 @@ impl<T: InertialFrame> WisdomHolman<T> {
     /// massive body is not the Sun, epochs disagree, any GM is non-positive,
     /// any state is non-finite, `non_gravs` is non-empty with a length other
     /// than `test_particles`, any non-grav entry fails the checks of
-    /// binding the non-gravitational force (wrong frozen-value count, non-finite or
+    /// binding the non-gravitational force (a parameter left free, non-finite or
     /// out-of-range values, invalid surface description, or an unsupported
     /// kind), or `dt` is zero or non-finite.
     #[allow(
@@ -482,7 +517,7 @@ impl<T: InertialFrame> WisdomHolman<T> {
         massive: &[State<T, SSB>],
         gms: &[f64],
         test_particles: &[State<T, SSB>],
-        non_gravs: &[Option<FrozenNonGrav>],
+        non_gravs: &[Option<NonGravMask>],
         dt: f64,
         include_gr: bool,
         include_j2: bool,
@@ -601,6 +636,12 @@ impl<T: InertialFrame> WisdomHolman<T> {
             Vec::new()
         };
 
+        let solar_j2 = if include_j2 {
+            Some(sun_oblateness::<T>()?)
+        } else {
+            None
+        };
+
         // The merged Earth-Moon barycenter is recognized by its NAIF id so it
         // can receive the orbit-averaged lunar quadrupole correction.
         let emb_idx = desigs.iter().position(|d| d.clone().naif_id() == Some(3));
@@ -610,9 +651,9 @@ impl<T: InertialFrame> WisdomHolman<T> {
             epoch0,
             steps: 0,
             include_gr,
-            include_j2,
+            solar_j2,
             use_correctors,
-            solar_pole: Vector::<Ecliptic>::new([0.0, 0.0, 1.0])
+            ecliptic_pole: Vector::<Ecliptic>::new([0.0, 0.0, 1.0])
                 .into_frame::<T>()
                 .into(),
             emb_idx,
@@ -746,7 +787,7 @@ impl<T: InertialFrame> WisdomHolman<T> {
     /// Whether the solar J2 oblateness term is enabled.
     #[must_use]
     pub fn include_j2(&self) -> bool {
-        self.include_j2
+        self.solar_j2.is_some()
     }
 
     /// Whether the order-17 symplectic corrector is enabled.
@@ -831,12 +872,12 @@ impl<T: InertialFrame> WisdomHolman<T> {
                     * C_AU_PER_DAY_INV_SQUARED
                     * (0.375 * v2 * v2 + 1.5 * mu_r * v2 + 0.5 * mu_r * mu_r);
             }
-            if self.include_j2 {
-                let u = self.q[i].val.dot(&self.solar_pole) / r;
-                energy += 0.5 * GMS * SUN_J2 * sun_r2 * gm * (3.0 * u * u - 1.0) / (r * r * r);
+            if let Some((j2, pole)) = &self.solar_j2 {
+                let u = self.q[i].val.dot(pole) / r;
+                energy += 0.5 * GMS * j2 * sun_r2 * gm * (3.0 * u * u - 1.0) / (r * r * r);
             }
             if self.emb_idx == Some(i) {
-                let u = self.q[i].val.dot(&self.solar_pole) / r;
+                let u = self.q[i].val.dot(&self.ecliptic_pole) / r;
                 energy += 0.5 * GMS * *EMB_QUAD_J2R2 * gm * (3.0 * u * u - 1.0) / (r * r * r);
             }
             for j in (i + 1)..n {
@@ -1033,19 +1074,23 @@ impl<T: InertialFrame> WisdomHolman<T> {
                 apply_gr_correction(&mut self.accel[i], &self.q[i].val, &v_helio, GMS);
             }
         }
-        if self.include_j2 {
+        if let Some((j2, pole)) = &self.solar_j2 {
             let sun_radius = *SUN_RADIUS_AU;
             for i in 0..n {
-                self.accel[i] +=
-                    j2_correction(&self.q[i].val, &self.solar_pole, sun_radius, SUN_J2, GMS);
+                self.accel[i] += j2_correction(&self.q[i].val, pole, sun_radius, *j2, GMS);
             }
         }
         // Orbit-averaged lunar quadrupole on the Earth-Moon barycenter (Quinn,
         // Tremaine & Duncan 1991): the J2 form about the ecliptic pole, with
         // the effective `J2 R^2` carried entirely by the coefficient (radius 1).
         if let Some(i) = self.emb_idx {
-            self.accel[i] +=
-                j2_correction(&self.q[i].val, &self.solar_pole, 1.0, *EMB_QUAD_J2R2, GMS);
+            self.accel[i] += j2_correction(
+                &self.q[i].val,
+                &self.ecliptic_pole,
+                1.0,
+                *EMB_QUAD_J2R2,
+                GMS,
+            );
         }
         for i in 0..n {
             self.v[i].add(&(self.accel[i] * dt));
@@ -1054,8 +1099,7 @@ impl<T: InertialFrame> WisdomHolman<T> {
         // Test particles, in parallel.
         let (q, gms, hill_r, hill_thresh) = (&self.q, &self.gms, &self.hill_r, &self.hill_thresh);
         let include_gr = self.include_gr;
-        let include_j2 = self.include_j2;
-        let solar_pole = self.solar_pole;
+        let solar_j2 = self.solar_j2;
         let sun_radius = *SUN_RADIUS_AU;
         let tp_forces = &self.tp_forces;
         let tp_min_chunk = tp_chunk(self.tp_q.len(), 32);
@@ -1083,8 +1127,8 @@ impl<T: InertialFrame> WisdomHolman<T> {
                 if include_gr {
                     apply_gr_correction(&mut accel, &pos.val, &(vel.val - sun_vel), GMS);
                 }
-                if include_j2 {
-                    accel += j2_correction(&pos.val, &solar_pole, sun_radius, SUN_J2, GMS);
+                if let Some((j2, pole)) = &solar_j2 {
+                    accel += j2_correction(&pos.val, pole, sun_radius, *j2, GMS);
                 }
                 // `get` covers the gravity-only case, where `tp_forces` is empty.
                 match tp_forces.get(idx) {
@@ -1334,14 +1378,15 @@ impl CompVec3 {
 ///
 /// # Errors
 ///
-/// Returns an error if the frozen value count does not match the kind, any
-/// frozen value is non-finite or out of range (a NaN left free for orbit
+/// Returns an error if any parameter is left free, any fixed value is non-finite or out of range (a NaN left free for orbit
 /// fitting cannot be simulated), the surface or `g(r)` description is
-/// invalid, or a [`NonGravKind::JplComet`] carries a nonzero time lag `dt`,
-/// which this map does not support.
-fn bind_non_grav<T: InertialFrame>(frozen: &FrozenNonGrav, desig: &Desig) -> KeteResult<NonGrav> {
-    let values = frozen.values();
-    match &frozen.inner {
+/// invalid, a [`NonGravKind::JplComet`] carries a nonzero time lag `dt`, or the
+/// force is a [`NonGravKind::RampedThrust`], which this map does not support.
+fn bind_non_grav<T: InertialFrame>(frozen: &NonGravMask, desig: &Desig) -> KeteResult<NonGrav> {
+    let values = frozen
+        .fixed_values()
+        .map_err(|err| Error::ValueError(format!("Test particle {desig:?}: {err}")))?;
+    match frozen.inner() {
         NonGravKind::Farnocchia(force) => {
             let &[a_over_m, lambda_0] = values else {
                 return Err(Error::ValueError(format!(
@@ -1441,6 +1486,10 @@ fn bind_non_grav<T: InertialFrame>(frozen: &FrozenNonGrav, desig: &Desig) -> Ket
                 a3,
             })
         }
+        NonGravKind::RampedThrust(_) => Err(Error::ValueError(format!(
+            "Test particle {desig:?}: the ramped thrust model depends on time, which this \
+             map does not support; propagate such objects with the Radau N-body propagator."
+        ))),
     }
 }
 

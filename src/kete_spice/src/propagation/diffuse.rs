@@ -2,25 +2,23 @@
 mod tests {
     use kete_core::desigs::Desig;
     use kete_core::frames::Equatorial;
-    use kete_core::prelude::{KeteResult, State, UncertainState};
-    use kete_core::time::{TDB, Time};
+    use kete_core::prelude::{State, UncertainState};
+    use kete_core::time::Time;
     use nalgebra::Vector3;
 
-    use crate::spk::SpkCollection;
     use kete_core::state::{
         DEFAULT_STEP_DAYS, DiffuseState, SplitConfig, Termination, propagate_diffuse_state,
         propagate_with_stm, step_diffuse_state,
     };
     use nalgebra::DMatrix;
 
-    use crate::propagation::SpkNBody;
+    use crate::propagation::{SpkNBody, sun_resolver};
 
     /// A one AU circular orbit, referred to the Sun.
     ///
     /// Elements are defined about a gravitating body, so this is centered on NAIF 10 rather
-    /// than on the barycenter - the barycenter has no body at it and no `mu`, and asking
-    /// for elements about it is now an error rather than a silent substitution of the
-    /// Sun's mass about the wrong focus.
+    /// than on the barycenter, which has no body at it and no `mu`; asking for elements
+    /// about it is an error.
     fn sun_centered_state() -> State<Equatorial> {
         State::<Equatorial>::new(
             Desig::Name("Test".into()),
@@ -29,21 +27,6 @@ mod tests {
             [0.0, 0.01720209895, 0.0],
             10,
         )
-    }
-
-    /// Resolves the Sun against the barycenter, which is what the force models use.
-    ///
-    /// The element center and the integration center are different bodies, so a state has
-    /// to cross between them at every epoch the propagation touches. The adaptive path
-    /// reaches many intermediate epochs while splitting, hence a resolver rather than a
-    /// pair of endpoint states.
-    fn sun_resolver(
-        spk: &SpkCollection,
-    ) -> impl Fn(Time<TDB>) -> KeteResult<(Vector3<f64>, Vector3<f64>)> + Sync + '_ {
-        move |time| {
-            let sun = spk.try_get_state_with_center::<Equatorial>(10, time, 0)?;
-            Ok((Vector3::from(sun.pos), Vector3::from(sun.vel)))
-        }
     }
 
     /// Single-component mixture propagation matches the standalone
@@ -147,6 +130,7 @@ mod tests {
         SplitConfig {
             split_threshold: 1e30,
             max_components: 1,
+            max_unresolved_weight: 0.0,
         }
     }
 
@@ -240,6 +224,7 @@ mod tests {
         let cfg = SplitConfig {
             split_threshold: 0.05,
             max_components: 27,
+            max_unresolved_weight: 0.0,
         };
         let jd_final = (2451545.0 + 10.0).into();
         let (result, report) = propagate_diffuse_state(
@@ -298,6 +283,7 @@ mod tests {
                 // the controller's response to it.
                 split_threshold: 1e6,
                 max_components: 1,
+                max_unresolved_weight: 0.0,
             };
             let (result, _) = propagate_diffuse_state(
                 &mixture,
@@ -355,6 +341,7 @@ mod tests {
         let cfg = SplitConfig {
             split_threshold: 1e-4,
             max_components: 27,
+            max_unresolved_weight: 0.0,
         };
 
         // One call, cut into legs at 20, 110 and 200 days by a 90 day step.
@@ -433,6 +420,7 @@ mod tests {
         let cfg = SplitConfig {
             split_threshold: 1e6,
             max_components: 1,
+            max_unresolved_weight: 0.0,
         };
 
         let (first, first_report) = step_diffuse_state(
@@ -534,6 +522,88 @@ mod tests {
         assert!(mixture.max_eta().is_none());
         assert!(mixture.residual_meters().is_none());
         assert!(mixture.weight_above_eta(0.1).is_none());
+    }
+
+    /// A tolerance on unresolved weight ends a leg the strict reading would not.
+    ///
+    /// Demanding that every component clear the threshold is a demand on the worst one,
+    /// and the worst one is an extreme over a population that grows with every split. The
+    /// same arc at the same threshold, differing only in how much weight may finish above
+    /// it, buys far fewer components for a mixture that is no worse where the weight is.
+    ///
+    /// The cap takes precedence: a leg that runs out of budget reports whatever weight it
+    /// was left with, which can exceed the tolerance.
+    #[test]
+    fn a_tolerance_on_unresolved_weight_ends_the_leg() {
+        crate::test_data::ensure_test_spk();
+        let spk = crate::spk::LOADED_SPK.try_read().unwrap();
+        let forces = SpkNBody::new(&spk, false);
+        // An eccentric orbit at perihelion: shear enough over the arc that the splitter
+        // has real work to do, so the tolerance has something to trade away.
+        let state = State::<Equatorial>::new(
+            Desig::Name("Test".into()),
+            2451545.0,
+            [2.2, 0.0, 0.0],
+            [0.0, 0.012_44, 0.0],
+            10,
+        );
+        let mut cov = DMatrix::<f64>::zeros(6, 6);
+        for i in 0..3 {
+            cov[(i, i)] = 1e-4;
+            cov[(i + 3, i + 3)] = 1e-10;
+        }
+        let component = UncertainState::from_state(&state, &cov, vec![]).unwrap();
+        let mixture = DiffuseState::from_uncertain(component);
+        let target = Time::new(state.epoch.jd + 3652.5);
+
+        let strict = SplitConfig {
+            split_threshold: 0.01,
+            max_components: 243,
+            max_unresolved_weight: 0.0,
+        };
+        let (tight, tight_report) = propagate_diffuse_state(
+            &mixture,
+            &forces,
+            target,
+            &strict,
+            90.0,
+            &sun_resolver(&spk),
+        )
+        .unwrap();
+
+        let loose = SplitConfig {
+            max_unresolved_weight: 0.2,
+            ..strict.clone()
+        };
+        let (relaxed, relaxed_report) =
+            propagate_diffuse_state(&mixture, &forces, target, &loose, 90.0, &sun_resolver(&spk))
+                .unwrap();
+
+        assert!(
+            relaxed.n_components() < tight.n_components(),
+            "the tolerance bought nothing: {} against {}",
+            relaxed.n_components(),
+            tight.n_components()
+        );
+        assert!(
+            tight_report.unresolved_weight <= relaxed_report.unresolved_weight,
+            "the strict run cannot leave more unresolved than the loose one: {} against {}",
+            tight_report.unresolved_weight,
+            relaxed_report.unresolved_weight
+        );
+        assert!(
+            relaxed_report.termination != Termination::Converged
+                || relaxed_report.unresolved_weight <= 0.2 + 1e-12,
+            "a converged leg must respect the tolerance it was given: {}",
+            relaxed_report.unresolved_weight
+        );
+        // The mixture is no worse where the weight is, which is the point of the trade.
+        let tight_mean = tight.mean_eta().unwrap();
+        let relaxed_mean = relaxed.mean_eta().unwrap();
+        assert!(
+            relaxed_mean < 10.0 * tight_mean,
+            "weighted mean {relaxed_mean:e} against {tight_mean:e}"
+        );
     }
 
     /// Propagating backwards lands on the epoch asked for rather than accumulating a leg
@@ -643,8 +713,7 @@ mod tests {
     /// A component that has never split is whitened against itself, so nothing about the
     /// reference is visible until a split happens.
     ///
-    /// This is what keeps the single-Gaussian behavior, and every number measured on it,
-    /// exactly what it was before the reference existed.
+    /// This keeps the behavior of a single Gaussian unchanged by the reference.
     #[test]
     fn an_unsplit_component_is_whitened_against_itself() {
         crate::test_data::ensure_test_spk();
@@ -666,6 +735,7 @@ mod tests {
         let cfg = SplitConfig {
             split_threshold: 1e6,
             max_components: 1,
+            max_unresolved_weight: 0.0,
         };
         let (out, _) = propagate_diffuse_state(
             &mixture,
@@ -714,6 +784,7 @@ mod tests {
         let cfg = SplitConfig {
             split_threshold: 1e-4,
             max_components: 27,
+            max_unresolved_weight: 0.0,
         };
 
         let (out, _) = propagate_diffuse_state(
@@ -777,6 +848,7 @@ mod tests {
         let cfg = SplitConfig {
             split_threshold: 1e-4,
             max_components: 27,
+            max_unresolved_weight: 0.0,
         };
         let jd_final = (2451545.0 + 200.0).into();
         let (result, report) = propagate_diffuse_state(

@@ -3,7 +3,7 @@
 use nalgebra::{Matrix3, Matrix3xX, Vector3};
 
 use crate::constants::{C_AU_PER_DAY_INV, GMS};
-use crate::errors::KeteResult;
+use crate::errors::{Error, KeteResult};
 use crate::forces::ParameterizedForce;
 use crate::frames::{Equatorial, SunCenter, Vector};
 use crate::time::{TDB, Time};
@@ -19,6 +19,7 @@ pub struct DustNonGrav;
 impl ParameterizedForce for DustNonGrav {
     type Frame = Equatorial;
     type Center = SunCenter;
+    type Meta = ();
 
     fn n_free_params(&self) -> usize {
         1
@@ -38,8 +39,15 @@ impl ParameterizedForce for DustNonGrav {
         pos: &Vector<Equatorial>,
         vel: &Vector<Equatorial>,
         free_params: &[f64],
+        _meta: &mut Self::Meta,
+        _exact_eval: bool,
     ) -> KeteResult<Vector<Equatorial>> {
-        let beta = free_params[0];
+        let &[beta] = free_params else {
+            return Err(Error::ValueError(format!(
+                "DustNonGrav expects 1 free parameter (beta), got {}",
+                free_params.len()
+            )));
+        };
         let pos_v: Vector3<f64> = (*pos).into();
         let vel_v: Vector3<f64> = (*vel).into();
         let pos_norm = pos_v.normalize();
@@ -59,10 +67,16 @@ impl ParameterizedForce for DustNonGrav {
         pos: &Vector<Equatorial>,
         vel: &Vector<Equatorial>,
         free_params: &[f64],
+        _meta: &mut Self::Meta,
     ) -> KeteResult<(Matrix3<f64>, Matrix3<f64>)> {
         let pos_v: Vector3<f64> = (*pos).into();
         let vel_v: Vector3<f64> = (*vel).into();
-        let beta = free_params[0];
+        let &[beta] = free_params else {
+            return Err(Error::ValueError(format!(
+                "DustNonGrav expects 1 free parameter (beta), got {}",
+                free_params.len()
+            )));
+        };
         let r = pos_v.norm();
         let r2 = r * r;
         let d_hat = pos_v / r;
@@ -81,24 +95,21 @@ impl ParameterizedForce for DustNonGrav {
 
     fn parameter_jacobian(
         &self,
-        _time: Time<TDB>,
+        time: Time<TDB>,
         pos: &Vector<Equatorial>,
         vel: &Vector<Equatorial>,
-        _free_params: &[f64],
+        free_params: &[f64],
+        meta: &mut Self::Meta,
     ) -> KeteResult<Matrix3xX<f64>> {
-        let pos_v: Vector3<f64> = (*pos).into();
-        let vel_v: Vector3<f64> = (*vel).into();
-        let pos_hat = pos_v.normalize();
-        let r_dot = pos_hat.dot(&vel_v);
-        let norm2_inv = pos_v.norm_squared().recip();
-        let scale = GMS * norm2_inv;
-        let partial =
-            scale * ((1.0 - r_dot * C_AU_PER_DAY_INV) * pos_hat - vel_v * C_AU_PER_DAY_INV);
-        let mut out = Matrix3xX::<f64>::zeros(1);
-        out[(0, 0)] = partial[0];
-        out[(1, 0)] = partial[1];
-        out[(2, 0)] = partial[2];
-        Ok(out)
+        let &[_] = free_params else {
+            return Err(Error::ValueError(format!(
+                "DustNonGrav expects 1 free parameter (beta), got {}",
+                free_params.len()
+            )));
+        };
+        // The force is linear in beta, so its column is the acceleration at beta = 1.
+        let column: Vector3<f64> = self.accel(time, pos, vel, &[1.0], meta, false)?.into();
+        Ok(Matrix3xX::from_column_slice(column.as_slice()))
     }
 }
 
@@ -123,7 +134,14 @@ mod tests {
         let pos = Vector::<Equatorial>::new([r, 0.0, 0.0]);
         let vel = Vector::<Equatorial>::new([0.0, v, 0.0]);
         let accel: Vector3<f64> = DustNonGrav
-            .accel(Time::new(0.0), &pos, &vel, &[beta])
+            .accel(
+                Time::new(0.0),
+                &pos,
+                &vel,
+                &[beta],
+                &mut Default::default(),
+                false,
+            )
             .unwrap()
             .into();
 
@@ -168,7 +186,9 @@ mod tests {
             let pv: Vector3<f64> = p.into();
             let r3 = pv.norm().powi(3);
             let grav = -GMS / r3 * pv; // full solar gravity
-            let dust: Vector3<f64> = DustNonGrav.accel(t, &p, &v, &[beta])?.into();
+            let dust: Vector3<f64> = DustNonGrav
+                .accel(t, &p, &v, &[beta], &mut Default::default(), false)?
+                .into();
             let tot = grav + dust;
             Ok(DVector::from_row_slice(&[tot.x, tot.y, tot.z]))
         };

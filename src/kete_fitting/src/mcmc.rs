@@ -524,6 +524,8 @@ fn diagonal_heuristic_whiten_cart(seed: &State<Equatorial, SSB>, np: usize) -> D
 /// * `num_tune` -- Warmup steps per sub-chain (default 500).  These are
 ///   discarded after adaptation.
 /// * `non_grav` -- Optional shared non-gravitational model.
+/// * `non_grav_start` -- Starting values of the free parameters of `non_grav`, one
+///   per free parameter. `None` starts them at 0.
 /// * `maxdepth` -- Maximum sampler tree depth (default 10).  Higher values
 ///   allow more thorough exploration at greater cost.
 /// * `target_accept` -- Target acceptance probability for step-size
@@ -531,7 +533,8 @@ fn diagonal_heuristic_whiten_cart(seed: &State<Equatorial, SSB>, np: usize) -> D
 ///   take larger steps, which helps in poorly constrained situations.
 ///
 /// # Errors
-/// Returns an error if `seeds` is empty or two-body propagation fails.
+/// Returns an error if `seeds` is empty, if two-body propagation fails, or if
+/// `non_grav_start` is given without `non_grav` or with the wrong length.
 pub fn fit_orbit_mcmc(
     seeds: &[State<Equatorial, SSB>],
     obs: &[AstrometricObservation],
@@ -539,13 +542,23 @@ pub fn fit_orbit_mcmc(
     num_draws: usize,
     num_tune: usize,
     non_grav: Option<&NonGravMask>,
+    non_grav_start: Option<&[f64]>,
     maxdepth: u64,
     target_accept: f64,
 ) -> KeteResult<OrbitSamples> {
     if seeds.is_empty() {
         return Err(Error::ValueError("No seeds provided".into()));
     }
-    let ng_zeros: Vec<f64> = non_grav.map_or_else(Vec::new, |m| vec![0.0; m.n_free_params()]);
+    let ng_start: Vec<f64> = match (non_grav, non_grav_start) {
+        (Some(m), Some(start)) if start.len() == m.n_free_params() => start.to_vec(),
+        (Some(m), None) => vec![0.0; m.n_free_params()],
+        (None, None) => Vec::new(),
+        _ => {
+            return Err(Error::ValueError(
+                "non_grav_start needs a non-grav model with one free parameter per value".into(),
+            ));
+        }
+    };
 
     // Propagate all seeds to the first seed's epoch if needed.
     let epoch = seeds[0].epoch;
@@ -603,7 +616,7 @@ pub fn fit_orbit_mcmc(
     // Pre-compute Cholesky factors for each seed (serial, fast).
     let chol_factors: Vec<DMatrix<f64>> = seeds
         .iter()
-        .map(|seed| build_cholesky(seed, &sorted_obs, include_asteroids, non_grav, &ng_zeros))
+        .map(|seed| build_cholesky(seed, &sorted_obs, include_asteroids, non_grav, &ng_start))
         .collect();
 
     // Scale warmup across sub-chains: each sub-chain adapts independently,
@@ -626,7 +639,7 @@ pub fn fit_orbit_mcmc(
                 &sorted_obs,
                 include_asteroids,
                 non_grav,
-                &ng_zeros,
+                &ng_start,
                 draws,
                 tune_per_chain,
                 maxdepth,

@@ -30,22 +30,21 @@
 //
 #[cfg(test)]
 mod tests {
-    use crate::propagation::{Recenter, SpkNBody, compute_state_transition};
+    use crate::propagation::{SpkNBody, compute_state_transition};
     use crate::spk::LOADED_SPK;
     use kete_core::errors::Error;
     use kete_core::forces::{
-        DustNonGrav, FarnocchiaNonGrav, FrozenForce, FrozenNonGrav, GravParams, JplCometNonGrav,
-        NonGravKind, NonGravMask, ParameterMask, ParameterizedForce, Sum, a_over_m_from_physical,
-        analytical_jacobians, lambda_0_from_physical,
+        DustNonGrav, FarnocchiaNonGrav, GravParams, JplCometNonGrav, NonGravKind, NonGravMask,
+        ParameterMask, ParameterizedForce, a_over_m_from_physical, lambda_0_from_physical,
     };
     use kete_core::frames::{Equatorial, SSB, Vector};
     use kete_core::prelude::{Desig, KeteResult};
-    use kete_core::state::{State, StateLike};
+    use kete_core::state::State;
     use kete_core::time::{TDB, Time};
     use nalgebra::{Matrix3, Vector3};
 
     struct AccelSPKMeta<'a> {
-        non_grav: Option<FrozenNonGrav>,
+        non_grav: Option<NonGravMask>,
         massive_obj: &'a [GravParams],
     }
 
@@ -60,7 +59,7 @@ mod tests {
 
     /// Compute acceleration using pre-fetched planet states, optionally
     /// including a non-gravitational term.  Used as the FD reference for
-    /// validating [`analytical_jacobians`].
+    /// validating [`GravParams::add_acceleration_and_jacobians`].
     fn spk_accel_cached(
         time: Time<TDB>,
         pos: &Vector3<f64>,
@@ -76,13 +75,15 @@ mod tests {
             if exact_eval && (rel_pos.norm() as f32) <= grav_params.radius {
                 return Err(Error::Impact(grav_params.naif_id, time));
             }
-            grav_params.add_acceleration(&mut accel, &rel_pos, &rel_vel);
+            grav_params.add_acceleration(&mut accel, &rel_pos, &rel_vel, None)?;
             if grav_params.naif_id == 10
                 && let Some(frozen) = &meta.non_grav
             {
                 let pv = Vector::<Equatorial>::new([rel_pos[0], rel_pos[1], rel_pos[2]]);
                 let vv = Vector::<Equatorial>::new([rel_vel[0], rel_vel[1], rel_vel[2]]);
-                let ng: Vector3<f64> = frozen.accel(time, &pv, &vv, &[])?.into();
+                let ng: Vector3<f64> = frozen
+                    .accel(time, &pv, &vv, &[], &mut Default::default(), false)?
+                    .into();
                 accel += ng;
             }
         }
@@ -97,35 +98,28 @@ mod tests {
     fn propagate(
         state: State<Equatorial, SSB>,
         jd_final: Time<TDB>,
-        non_grav: Option<&FrozenForce<NonGravMask>>,
+        non_grav: Option<&NonGravMask>,
     ) -> KeteResult<State<Equatorial, SSB>> {
         let spk = LOADED_SPK.try_read()?;
         match non_grav {
             None => state.propagate_with(&SpkNBody::new(&spk, false), jd_final),
             Some(frozen) => {
-                let force = Sum::new(
-                    SpkNBody::new(&spk, false),
-                    Recenter::<SSB, _>::new(&spk, frozen.clone()),
-                );
+                let force = SpkNBody::with_non_grav(&spk, false, Some(frozen.clone()));
                 state.propagate_with(&force, jd_final)
             }
         }
     }
 
     /// Helper: build a frozen JPL-comet non-grav model.
-    fn jpl_comet_entry(a1: f64, a2: f64, a3: f64) -> FrozenForce<NonGravMask> {
+    fn jpl_comet_entry(a1: f64, a2: f64, a3: f64) -> NonGravMask {
         let kind = NonGravKind::JplComet(JplCometNonGrav::standard_comet());
-        let n = kind.n_free_params();
-        let mask = ParameterMask::new(kind, vec![None; n]).unwrap();
-        FrozenForce::new(mask, vec![a1, a2, a3]).unwrap()
+        ParameterMask::all_fixed(kind, vec![a1, a2, a3]).unwrap()
     }
 
     /// Helper: build a frozen Dust non-grav model.
-    fn dust_entry(beta: f64) -> FrozenForce<NonGravMask> {
+    fn dust_entry(beta: f64) -> NonGravMask {
         let kind = NonGravKind::Dust(DustNonGrav);
-        let n = kind.n_free_params();
-        let mask = ParameterMask::new(kind, vec![None; n]).unwrap();
-        FrozenForce::new(mask, vec![beta]).unwrap()
+        ParameterMask::all_fixed(kind, vec![beta]).unwrap()
     }
 
     /// Compute da/dr and da/dv via central finite differences of [`spk_accel_cached`].
@@ -137,7 +131,7 @@ mod tests {
     /// `cached_states` must contain pre-fetched `(pos, vel)` for each massive body,
     /// avoiding redundant SPK lookups across the 12 perturbations.
     ///
-    /// Retained as a test-only reference for validating `analytical_jacobians`.
+    /// Retained as a test-only reference for validating `GravParams::add_acceleration_and_jacobians`.
     fn spk_accel_jacobians(
         time: Time<TDB>,
         pos: &Vector3<f64>,
@@ -284,8 +278,13 @@ mod tests {
         let state = test_state();
         let jd_final = (2451545.0 + 30.0).into();
 
-        let (_final_state, sens) =
-            compute_state_transition(&state, jd_final, false, Some(&model)).unwrap();
+        let (_final_state, sens) = compute_state_transition(
+            &state,
+            jd_final,
+            false,
+            Some((model.inner(), model.fixed_values().unwrap())),
+        )
+        .unwrap();
 
         // Finite-difference test for each A parameter.
         // eps_a = 1e-10 is near-optimal: large enough that position differences
@@ -344,8 +343,13 @@ mod tests {
         let state = test_state();
         let jd_final = (2451545.0 + 30.0).into();
 
-        let (_final_state, sens) =
-            compute_state_transition(&state, jd_final, false, Some(&model)).unwrap();
+        let (_final_state, sens) = compute_state_transition(
+            &state,
+            jd_final,
+            false,
+            Some((model.inner(), model.fixed_values().unwrap())),
+        )
+        .unwrap();
 
         // Sensitivity matrix should be 6x7 (6 state + 1 beta parameter)
         assert_eq!(sens.ncols(), 7, "Expected 6+1 columns for Dust model");
@@ -476,12 +480,24 @@ mod tests {
 
         let mut meta = AccelSPKMeta {
             non_grav: None,
-            massive_obj: &planets,
+            massive_obj: planets,
         };
 
         let (fd_dr, fd_dv) =
             spk_accel_jacobians(time, &pos, &vel, &cached_states, &mut meta).unwrap();
-        let (an_dr, an_dv) = analytical_jacobians(&pos, &vel, &cached_states, meta.massive_obj);
+        let mut an_dr = Matrix3::<f64>::zeros();
+        let mut an_dv = Matrix3::<f64>::zeros();
+        for (body, (body_pos, body_vel)) in meta.massive_obj.iter().zip(&cached_states) {
+            body.add_acceleration_and_jacobians(
+                &mut Vector3::zeros(),
+                &mut an_dr,
+                &mut an_dv,
+                &(pos - body_pos),
+                &(vel - body_vel),
+                None,
+            )
+            .unwrap();
+        }
 
         // FD round-off noise is ~eps_machine * |a| / EPS ~= 3e-13.
         // For Jacobian elements at or below this floor (e.g. GR da/dv ~ 1e-12),
@@ -520,7 +536,7 @@ mod tests {
         check_jacobians_match(5e-6);
     }
 
-    fn radiation_test_model() -> FrozenForce<NonGravMask> {
+    fn radiation_test_model() -> NonGravMask {
         // Realistic 1998 KY26-like inputs.
         let pole = Vector::<Equatorial>::from_ra_dec(49_f64.to_radians(), -28_f64.to_radians());
         let flattening = 0.71_f64;
@@ -528,9 +544,7 @@ mod tests {
         let lambda_0 = lambda_0_from_physical(200.0, 0.9, 0.71, flattening, 5.351 / 60.0);
         let kind =
             NonGravKind::Farnocchia(FarnocchiaNonGrav::new(0.52, 0.71, flattening, pole).unwrap());
-        let n = kind.n_free_params();
-        let mask = ParameterMask::new(kind, vec![None; n]).unwrap();
-        FrozenForce::new(mask, vec![a_over_m, lambda_0]).unwrap()
+        ParameterMask::all_fixed(kind, vec![a_over_m, lambda_0]).unwrap()
     }
 
     #[test]
@@ -543,8 +557,13 @@ mod tests {
         let state = test_state();
         let jd_final = (2451545.0 + 30.0).into();
 
-        let (_final_state, sens) =
-            compute_state_transition(&state, jd_final, false, Some(&model)).unwrap();
+        let (_final_state, sens) = compute_state_transition(
+            &state,
+            jd_final,
+            false,
+            Some((model.inner(), model.fixed_values().unwrap())),
+        )
+        .unwrap();
 
         // Columns 6 and 7 are d/d(a_over_m) and d/d(lambda_0).
         assert_eq!(sens.ncols(), 8, "Expected 6+2 columns for FarnocchiaModel");
@@ -555,7 +574,7 @@ mod tests {
         // acceleration is exactly linear in it, so we perturb by 100% to lift
         // the FD signal off the noise floor.  `lambda_0` is order 1 and
         // mildly nonlinear, so a small relative step is appropriate.
-        let base_params = model.values().to_vec();
+        let base_params = model.fixed_values().unwrap().to_vec();
         let eps_rel = [1.0_f64, 0.1];
         for k in 0..base_params.len() {
             let eps = base_params[k] * eps_rel[k];
@@ -564,8 +583,8 @@ mod tests {
             p_plus[k] += eps;
             p_minus[k] -= eps;
 
-            let model_p = FrozenForce::new(model.inner.clone(), p_plus).unwrap();
-            let model_m = FrozenForce::new(model.inner.clone(), p_minus).unwrap();
+            let model_p = ParameterMask::all_fixed(model.inner().clone(), p_plus).unwrap();
+            let model_m = ParameterMask::all_fixed(model.inner().clone(), p_minus).unwrap();
 
             let res_p = propagate(state.clone(), jd_final, Some(&model_p)).unwrap();
             let res_m = propagate(state.clone(), jd_final, Some(&model_m)).unwrap();

@@ -32,14 +32,13 @@
 use crate::obs::{AstrometricObservation, differential_light_deflect};
 #[cfg(test)]
 use kete_core::forces::NonGravKind;
-use kete_core::forces::{FrozenForce, FrozenNonGrav, NonGravMask, ParameterizedForce, Sum};
+use kete_core::forces::{NonGravMask, ParameterizedForce};
 use kete_core::frames::{Equatorial, SSB};
 use kete_core::kepler::light_time_correct;
 use kete_core::prelude::{Error, KeteResult, State, UncertainState};
-use kete_core::state::StateLike;
 use kete_core::time::{TDB, Time};
 use kete_spice::prelude::{LOADED_SPK, compute_state_transition};
-use kete_spice::propagation::{Recenter, SpkNBody};
+use kete_spice::propagation::SpkNBody;
 use nalgebra::{DMatrix, DVector};
 use rayon::prelude::*;
 
@@ -111,6 +110,10 @@ const LM_LAMBDA_MAX: f64 = 1e12;
 /// getting stuck at near-zero lambda that never damps enough).
 const LM_LAMBDA_RESET_THRESHOLD: f64 = 1e-6;
 
+/// Singular values of the diagonally scaled information matrix at or below this
+/// are directions the observations do not constrain.
+const PSEUDO_INVERSE_CUTOFF: f64 = 1e-12;
+
 /// Result of orbit determination via batch least squares.
 ///
 /// The covariance in `uncertain_state` is the Danby-rescaled posterior
@@ -126,10 +129,10 @@ pub struct OrbitFit {
     /// `mask` is `Some`; the mask determines which slots are free vs frozen.
     pub uncertain_state: UncertainState,
 
-    /// Non-gravitational force model with best-fit values baked in.
+    /// Non-gravitational force model with every parameter fixed at its best-fit value.
     /// `None` for gravity-only fits.  The same values also live on
     /// `uncertain_state.free_params` for variational re-propagation.
-    pub non_grav: Option<FrozenNonGrav>,
+    pub non_grav: Option<NonGravMask>,
 
     /// Post-fit residuals for every observation (time-sorted).
     /// Each entry has as many elements as the measurement dimension
@@ -151,7 +154,9 @@ pub struct OrbitFit {
 
     /// Whether the solver achieved strict convergence (correction norm
     /// dropped below `tol`). When `false` the fit is the best found
-    /// within the iteration limit but may not be fully converged.
+    /// within the iteration limit but may not be fully converged, and its
+    /// covariance is NaN when it could not be computed or the observations
+    /// do not constrain every parameter.
     pub converged: bool,
 }
 
@@ -194,8 +199,9 @@ pub(crate) fn ssb_state(uncertain: &UncertainState) -> KeteResult<State<Equatori
 /// All internal propagation uses SSB coordinates.
 ///
 /// Observations are fitted in progressively wider time windows
-/// centered on the reference epoch: +/-30, +/-60, +/-180, and +/-360 days,
-/// followed by a final pass that includes the full arc.  Each stage
+/// centered on the reference epoch, starting at +/-30 days and doubling
+/// while the arc extends past them, followed by a final pass that includes
+/// the full arc.  Each stage
 /// bootstraps from the previous converged solution.  Windows that
 /// contain fewer than 4 observations are skipped automatically.
 /// The final pass re-evaluates all observations for outlier rejection
@@ -227,9 +233,16 @@ pub(crate) fn ssb_state(uncertain: &UncertainState) -> KeteResult<State<Equatori
 ///   used when `max_reject_passes > 0`.
 /// * `max_reject_passes` - Maximum outlier-rejection cycles.  Set to 0 to
 ///   disable rejection entirely.
+/// * `non_grav_start` - Starting values of the free parameters of `non_grav`,
+///   one per free parameter.  `None` starts them at 0, after a gravity-only
+///   pass that moves `initial_state` to the gravity-only solution.  Given, they
+///   and `initial_state` are taken as a starting point for the joint fit: the
+///   gravity-only pass is skipped, and the expansion windows hold the
+///   non-grav parameters at these values rather than leaving them out.
 ///
 /// # Errors
-/// Fails if any internal propagation or solve fails.
+/// Fails if any internal propagation or solve fails, or if `non_grav_start`
+/// is given without `non_grav` or with the wrong length.
 /// The best-fit state of an [`UncertainState`], referred to the solar system barycenter.
 pub fn fit_orbit(
     initial_state: &State<Equatorial, SSB>,
@@ -240,6 +253,7 @@ pub fn fit_orbit(
     tol: f64,
     chi2_threshold: f64,
     max_reject_passes: usize,
+    non_grav_start: Option<&[f64]>,
 ) -> KeteResult<OrbitFit> {
     if obs.is_empty() {
         return Err(Error::ValueError("No observations provided".into()));
@@ -279,7 +293,37 @@ pub fn fit_orbit(
 
     let mut state = initial_state.clone();
     let ng_mask = non_grav;
-    let ng_values: Vec<f64> = ng_mask.map_or_else(Vec::new, |m| vec![0.0; m.n_free_params()]);
+    let ng_values: Vec<f64> = match (ng_mask, non_grav_start) {
+        (Some(m), Some(start)) if start.len() == m.n_free_params() => start.to_vec(),
+        (Some(m), None) => vec![0.0; m.n_free_params()],
+        (None, None) => Vec::new(),
+        _ => {
+            return Err(Error::ValueError(
+                "non_grav_start needs a non-grav model with one free parameter per value".into(),
+            ));
+        }
+    };
+    // A start at a lower bound is held there until a step moves it up; a start
+    // below one can not reach the feasible region.
+    if let Some(m) = ng_mask {
+        let names = m.free_param_names();
+        for ((v, lo), name) in ng_values.iter().zip(m.lower_bounds()).zip(names) {
+            if let Some(lo) = lo
+                && *v < lo
+            {
+                return Err(Error::ValueError(format!(
+                    "Starting value {v} of non-grav parameter {name:?} is below its lower \
+                     bound {lo}."
+                )));
+            }
+        }
+    }
+    // With starting values the expansion windows hold the model at them; without,
+    // the windows are fitted with gravity alone.
+    let expansion_mask = match non_grav_start {
+        Some(_) => ng_mask.map(|m| m.fixed_at(&ng_values)).transpose()?,
+        None => None,
+    };
     let mut prev_n_in_window: usize = 0;
 
     let expansion_floor = EXPANSION_SIGMA_FLOOR_RAD;
@@ -309,16 +353,22 @@ pub fn fit_orbit(
         // this guard, a poorly-constrained early window can converge to a
         // low-residual but globally wrong orbit and silently poison every
         // subsequent stage.  compute_residuals is cheap (6-dim, no STM).
-        let pre_rms = compute_residuals(&state, &windowed, include_asteroids, None, &[])
-            .ok()
-            .map_or(f64::INFINITY, |r| weighted_rms(&r, &windowed, &included, 6));
+        let pre_rms = compute_residuals(
+            &state,
+            &windowed,
+            include_asteroids,
+            expansion_mask.as_ref(),
+            &[],
+        )
+        .ok()
+        .map_or(f64::INFINITY, |r| weighted_rms(&r, &windowed, &included, 6));
 
         if let Ok(result) = solve_with_rejection(
             &state,
             &windowed,
             &included,
             include_asteroids,
-            None,
+            expansion_mask.as_ref(),
             &[],
             max_iter,
             tol,
@@ -332,9 +382,15 @@ pub fn fit_orbit(
             // inclusion mask: scoring the candidate only on its own
             // post-rejection inliers would let a wrong orbit that rejects
             // good observations win trivially.
-            let post_rms = compute_residuals(&candidate, &windowed, include_asteroids, None, &[])
-                .ok()
-                .map_or(f64::INFINITY, |r| weighted_rms(&r, &windowed, &included, 6));
+            let post_rms = compute_residuals(
+                &candidate,
+                &windowed,
+                include_asteroids,
+                expansion_mask.as_ref(),
+                &[],
+            )
+            .ok()
+            .map_or(f64::INFINITY, |r| weighted_rms(&r, &windowed, &included, 6));
             if post_rms.is_finite() && post_rms <= pre_rms {
                 state = candidate;
             }
@@ -377,6 +433,7 @@ pub fn fit_orbit(
         include_asteroids,
         ng_mask,
         ng_values,
+        non_grav_start.is_some(),
         max_iter,
         tol,
         chi2_threshold,
@@ -396,17 +453,11 @@ fn propagate_helio(
     ng_values: &[f64],
 ) -> KeteResult<State<Equatorial, SSB>> {
     let spk = LOADED_SPK.try_read()?;
-    match mask {
-        None => state.propagate_with(&SpkNBody::new(&spk, include_extended), jd_final),
-        Some(m) => {
-            let frozen = m.freeze_inner(ng_values)?;
-            let force = Sum::new(
-                SpkNBody::new(&spk, include_extended),
-                Recenter::<SSB, _>::new(&spk, frozen),
-            );
-            state.propagate_with(&force, jd_final)
-        }
-    }
+    let frozen = mask.map(|m| m.fixed_at(ng_values)).transpose()?;
+    state.propagate_with(
+        &SpkNBody::with_non_grav(&spk, include_extended, frozen),
+        jd_final,
+    )
 }
 
 /// Internal worker for [`fit_orbit`] that returns a fit with the raw Fisher
@@ -423,6 +474,7 @@ fn fit_orbit_raw(
     include_asteroids: bool,
     mask: Option<&NonGravMask>,
     ng_values: Vec<f64>,
+    warm_start: bool,
     max_iter: usize,
     tol: f64,
     chi2_threshold: f64,
@@ -437,6 +489,23 @@ fn fit_orbit_raw(
             include_asteroids,
             None,
             &[],
+            max_iter,
+            tol,
+            chi2_threshold,
+            max_reject_passes,
+        );
+    }
+
+    // Non-grav requested with starting values: the state and values are a
+    // starting point for the joint fit, which a gravity-only pass would discard.
+    if warm_start {
+        return solve_with_rejection_adaptive(
+            state,
+            sorted,
+            included,
+            include_asteroids,
+            mask,
+            &ng_values,
             max_iter,
             tol,
             chi2_threshold,
@@ -568,7 +637,11 @@ fn solve_with_rejection(
             let h_full: DMatrix<f64> = &entry.h_local * &entry.phi_cum;
             let hch: DMatrix<f64> = &h_full * cov_fisher * h_full.transpose();
             // leverage = tr(H C_0 H^T W)  (full matrix trace for non-diagonal W).
-            let leverage: f64 = (&hch * &entry.weight_matrix).trace();
+            // A fit that did not converge may have no covariance (NaN); it is then
+            // scored without the leverage correction.
+            let leverage: f64 = Some((&hch * &entry.weight_matrix).trace())
+                .filter(|l| l.is_finite())
+                .unwrap_or(0.0);
             // chi2 = r^T W r  (full weight matrix, includes timing correction).
             let wr = &entry.weight_matrix * &entry.residual;
             let chi2: f64 = entry.residual.dot(&wr);
@@ -878,7 +951,7 @@ fn iterate_to_convergence(
     };
 
     for _ in 0..max_iter {
-        let dx = solve_damped(&info_mat, &rhs_vec, lambda)?;
+        let dx = solve_damped_within_ng_bounds(&info_mat, &rhs_vec, lambda, mask, &ng_values)?;
         let dx = limit_correction(dx);
         let dx = backtrack_to_ng_bounds(dx, mask, &ng_values);
 
@@ -939,9 +1012,18 @@ fn iterate_to_convergence(
                 lambda *= LM_LAMBDA_DECREASE;
 
                 if converged {
-                    let raw_cov = scaled_pseudo_inverse(&info_mat).map_err(|e| {
-                        Error::ValueError(format!("SVD pseudo-inverse failed: {e}"))
-                    })?;
+                    let (raw_cov, unconstrained) = scaled_pseudo_inverse(&info_mat)?;
+                    if !unconstrained.is_empty() {
+                        let mut names = vec!["x", "y", "z", "vx", "vy", "vz"];
+                        names.extend(
+                            mask.map_or_else(Vec::new, ParameterizedForce::free_param_names),
+                        );
+                        let names: Vec<&str> = unconstrained.iter().map(|&i| names[i]).collect();
+                        return Err(Error::ValueError(format!(
+                            "The observations do not constrain the fit parameters {names:?}; \
+                             fix them or add observations."
+                        )));
+                    }
 
                     // Build per-obs residuals from the sweep (included
                     // observations only have meaningful values; excluded
@@ -985,7 +1067,7 @@ fn iterate_to_convergence(
                     // The mask names the free parameters the covariance and
                     // `free_params` cover, and carries the frozen values.
                     uncertain_state.non_grav = mask.cloned();
-                    let non_grav = mask.map(|m| m.freeze_inner(&ng_values)).transpose()?;
+                    let non_grav = mask.map(|m| m.fixed_at(&ng_values)).transpose()?;
                     return Ok(OrbitFit {
                         uncertain_state,
                         non_grav,
@@ -1036,8 +1118,9 @@ fn iterate_to_convergence(
 ///
 /// Propagation may fail for the current state (e.g. the initial guess
 /// cannot reach all observation epochs).  In that case we return a
-/// zeroed covariance and NaN residuals so that the caller still gets a
-/// valid `OrbitFit` instead of a hard error.
+/// NaN covariance and NaN residuals so that the caller still gets a
+/// valid `OrbitFit` instead of a hard error.  The covariance is also NaN
+/// when the observations do not constrain every parameter.
 fn make_non_converged_result(
     state: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
@@ -1055,8 +1138,10 @@ fn make_non_converged_result(
     let (covariance, residuals, rms) =
         accumulate_normal_equations(state, obs, included, include_asteroids, mask, ng_values)
             .and_then(|(info_mat, _, _)| {
-                let cov = scaled_pseudo_inverse(&info_mat)
-                    .unwrap_or_else(|_| DMatrix::zeros(n_params, n_params));
+                let cov = match scaled_pseudo_inverse(&info_mat) {
+                    Ok((cov, unconstrained)) if unconstrained.is_empty() => cov,
+                    _ => DMatrix::from_element(n_params, n_params, f64::NAN),
+                };
                 let res = compute_residuals(state, obs, include_asteroids, mask, ng_values)?;
                 let r = weighted_rms(&res, obs, included, n_params);
                 Ok((cov, res, r))
@@ -1066,7 +1151,11 @@ fn make_non_converged_result(
                     .iter()
                     .map(|o| DVector::from_element(o.weights().len(), f64::NAN))
                     .collect();
-                (DMatrix::zeros(n_params, n_params), nan_res, f64::INFINITY)
+                (
+                    DMatrix::from_element(n_params, n_params, f64::NAN),
+                    nan_res,
+                    f64::INFINITY,
+                )
             });
 
     // Dimensions are correct by construction -- `new` cannot fail.
@@ -1083,7 +1172,7 @@ fn make_non_converged_result(
 
     #[allow(clippy::missing_panics_doc, reason = "wont panic by construction")]
     let non_grav = mask
-        .map(|m| m.freeze_inner(ng_values))
+        .map(|m| m.fixed_at(ng_values))
         .transpose()
         .expect("ng_values length matches mask n_free_params");
 
@@ -1168,14 +1257,11 @@ fn stm_sweep_inner(
         let obs_epoch = observation.epoch();
 
         if (obs_epoch.jd - state_cur.epoch.jd).abs() > 1e-12 {
-            let frozen = mask
-                .map(|m| FrozenForce::new(m.clone(), ng_values.to_vec()))
-                .transpose()?;
             let (new_state, phi_k) = compute_state_transition(
                 &state_cur,
                 obs_epoch,
                 include_asteroids,
-                frozen.as_ref(),
+                mask.map(|m| (m, ng_values)),
             )?;
 
             let phi_state: DMatrix<f64> = phi_k.columns(0, 6).clone_owned();
@@ -1605,7 +1691,10 @@ fn solve_damped(
 /// is essentially numerical noise.  Scaling so the diagonal is unit
 /// makes the relative cutoff meaningful, then we unscale on the way
 /// out: cov = D^-1 (D^-1 N D^-1)^+ D^-1.
-fn scaled_pseudo_inverse(n_mat: &DMatrix<f64>) -> KeteResult<DMatrix<f64>> {
+///
+/// Directions below the cutoff have zero variance in the result, not
+/// infinite, so the indices of the parameters in them are returned too.
+fn scaled_pseudo_inverse(n_mat: &DMatrix<f64>) -> KeteResult<(DMatrix<f64>, Vec<usize>)> {
     let n = n_mat.nrows();
     let mut d_inv = DVector::<f64>::zeros(n);
     for i in 0..n {
@@ -1620,9 +1709,19 @@ fn scaled_pseudo_inverse(n_mat: &DMatrix<f64>) -> KeteResult<DMatrix<f64>> {
         }
     }
 
-    let cov_scaled = n_scaled
-        .svd(true, true)
-        .pseudo_inverse(1e-12)
+    let svd = n_scaled.svd(true, true);
+    let mut unconstrained = Vec::new();
+    if let Some(v_t) = &svd.v_t {
+        for (k, sigma) in svd.singular_values.iter().enumerate() {
+            if *sigma <= PSEUDO_INVERSE_CUTOFF {
+                unconstrained.extend((0..n).filter(|&i| v_t[(k, i)].abs() >= 0.1));
+            }
+        }
+    }
+    unconstrained.sort_unstable();
+    unconstrained.dedup();
+    let cov_scaled = svd
+        .pseudo_inverse(PSEUDO_INVERSE_CUTOFF)
         .map_err(|e| Error::ValueError(format!("SVD pseudo-inverse failed: {e}")))?;
 
     let mut cov = cov_scaled;
@@ -1631,7 +1730,51 @@ fn scaled_pseudo_inverse(n_mat: &DMatrix<f64>) -> KeteResult<DMatrix<f64>> {
             cov[(i, j)] *= d_inv[i] * d_inv[j];
         }
     }
-    Ok(cov)
+    Ok((cov, unconstrained))
+}
+
+/// [`solve_damped`], with every non-grav parameter that sits on its lower bound
+/// and that the step would push below it held there.
+///
+/// A held parameter is fixed in the normal equations and the step solved again,
+/// so the other parameters do not compensate for a move it can not make; otherwise
+/// the step is rejected on every iteration and the fit stalls at the bound.
+fn solve_damped_within_ng_bounds(
+    n_mat: &DMatrix<f64>,
+    b_vec: &DVector<f64>,
+    lambda: f64,
+    mask: Option<&NonGravMask>,
+    ng_values: &[f64],
+) -> KeteResult<DVector<f64>> {
+    let mut dx = solve_damped(n_mat, b_vec, lambda)?;
+    let Some(m) = mask else {
+        return Ok(dx);
+    };
+    let bounds = m.lower_bounds();
+    let (mut n_held, mut b_held) = (n_mat.clone(), b_vec.clone());
+    let mut held = vec![false; ng_values.len()];
+    loop {
+        let mut changed = false;
+        for (k, (value, lo)) in ng_values.iter().zip(&bounds).enumerate() {
+            if let Some(lo) = lo
+                && !held[k]
+                && *value <= *lo
+                && value + dx[6 + k] < *lo
+            {
+                held[k] = true;
+                changed = true;
+                let i = 6 + k;
+                n_held.row_mut(i).fill(0.0);
+                n_held.column_mut(i).fill(0.0);
+                n_held[(i, i)] = 1.0;
+                b_held[i] = 0.0;
+            }
+        }
+        if !changed {
+            return Ok(dx);
+        }
+        dx = solve_damped(&n_held, &b_held, lambda)?;
+    }
 }
 
 /// Cap position and velocity corrections to prevent wild jumps.
@@ -1663,12 +1806,13 @@ fn limit_correction(mut dx: DVector<f64>) -> DVector<f64> {
 }
 
 /// Backtrack only the non-grav components of a step so each parameter
-/// stays strictly above its lower bound.
+/// stays at or above its lower bound.
 ///
 /// Position and velocity are left untouched. For each non-grav
 /// parameter that would be pushed at or below its bound, the
 /// corresponding entry of `dx[6+k]` is shrunk so the new value sits
-/// just above the bound. This avoids the pathology where a single
+/// just above the bound; a parameter already at its bound is held
+/// there. This avoids the pathology where a single
 /// out-of-bounds non-grav step inflates Marquardt damping and shrinks
 /// the position step (which was correctly sized) to nothing -- the
 /// orbital fit then stalls completely.
@@ -1680,7 +1824,9 @@ fn backtrack_to_ng_bounds(
     let Some(m) = mask else {
         return dx;
     };
-    let bounds = m.inner.lower_bounds();
+    // The mask's bounds, not the inner force's: `ng_values` holds only the
+    // free parameters, and the mask filters its bounds to the same slots.
+    let bounds = m.lower_bounds();
     for k in 0..ng_values.len() {
         let cur = ng_values[k];
         let lo = bounds[k];
@@ -1706,11 +1852,11 @@ fn apply_correction(
     ng_values: &mut [f64],
 ) -> bool {
     if let Some(m) = mask {
-        let bounds = m.inner.lower_bounds();
+        let bounds = m.lower_bounds();
         for k in 0..ng_values.len() {
             let new_val = ng_values[k] + dx[6 + k];
             let lo = bounds[k].unwrap_or(f64::NEG_INFINITY);
-            if new_val <= lo || !new_val.is_finite() {
+            if new_val < lo || !new_val.is_finite() {
                 return false;
             }
         }
@@ -1802,20 +1948,18 @@ fn weighted_rms(
 
 #[cfg(test)]
 fn jpl_comet_default_fit(a1: f64, a2: f64, a3: f64) -> (NonGravMask, Vec<f64>) {
-    use kete_core::forces::{JplCometNonGrav, ParameterMask, ParameterizedForce};
+    use kete_core::forces::{JplCometNonGrav, ParameterMask};
     let kind = NonGravKind::JplComet(JplCometNonGrav::standard_comet());
-    let n = kind.n_free_params();
-    let mask = ParameterMask::new(kind, vec![None; n]).unwrap();
-    (mask, vec![a1, a2, a3])
+    (ParameterMask::all_free(kind), vec![a1, a2, a3])
 }
 
 #[cfg(test)]
 fn dust_fit(beta: f64) -> (NonGravMask, Vec<f64>) {
-    use kete_core::forces::{DustNonGrav, ParameterMask, ParameterizedForce};
-    let kind = NonGravKind::Dust(DustNonGrav);
-    let n = kind.n_free_params();
-    let mask = ParameterMask::new(kind, vec![None; n]).unwrap();
-    (mask, vec![beta])
+    use kete_core::forces::{DustNonGrav, ParameterMask};
+    (
+        ParameterMask::all_free(NonGravKind::Dust(DustNonGrav)),
+        vec![beta],
+    )
 }
 
 #[cfg(test)]
@@ -1929,7 +2073,18 @@ mod tests {
         // Perturbed initial state (5% error in position, 3% in velocity).
         let perturbed = make_state([r * 1.05, 0.0, 0.0], [0.0, v * 0.97, 0.0], 2460000.5);
 
-        let fit = fit_orbit(&perturbed, &observations, false, None, 20, 1e-8, 9.0, 0).unwrap();
+        let fit = fit_orbit(
+            &perturbed,
+            &observations,
+            false,
+            None,
+            20,
+            1e-8,
+            9.0,
+            0,
+            None,
+        )
+        .unwrap();
 
         // Check that the fit converged near the true state.
         let pos_err = (ssb_state(&fit.uncertain_state).unwrap().pos - true_state.pos).norm();
@@ -1973,7 +2128,18 @@ mod tests {
             2460000.5,
         );
 
-        let fit = fit_orbit(&perturbed, &observations, false, None, 20, 1e-8, 9.0, 0).unwrap();
+        let fit = fit_orbit(
+            &perturbed,
+            &observations,
+            false,
+            None,
+            20,
+            1e-8,
+            9.0,
+            0,
+            None,
+        )
+        .unwrap();
 
         let pos_err = (ssb_state(&fit.uncertain_state).unwrap().pos - true_state.pos).norm();
 
@@ -2011,6 +2177,7 @@ mod tests {
             1e-8,
             9.0,
             3,
+            None,
         )
         .unwrap();
 
@@ -2059,6 +2226,7 @@ mod tests {
             1e-10,
             9.0,
             0,
+            None,
         )
         .unwrap();
 
@@ -2123,6 +2291,7 @@ mod tests {
             1e-10,
             9.0,
             0,
+            None,
         )
         .unwrap();
 
@@ -2133,7 +2302,7 @@ mod tests {
             .non_grav
             .as_ref()
             .expect("fitted state must carry the non-grav mask");
-        assert_eq!(carried.mask, vec![Some(0.0), None, Some(0.0)]);
+        assert_eq!(carried.mask(), vec![Some(0.0), None, Some(0.0)]);
         assert_eq!(carried.n_free_params(), us.free_params.len());
     }
 
@@ -2170,6 +2339,7 @@ mod tests {
             1e-10,
             9.0,
             0,
+            None,
         )
         .unwrap();
 
@@ -2214,7 +2384,18 @@ mod tests {
         // Perturb initial state by 10% position and 5% velocity.
         let perturbed = make_state([r * 1.10, 0.0, 0.0], [0.0, v * 0.95, 0.0], 2460000.5);
 
-        let fit = fit_orbit(&perturbed, &observations, false, None, 50, 1e-8, 9.0, 3).unwrap();
+        let fit = fit_orbit(
+            &perturbed,
+            &observations,
+            false,
+            None,
+            50,
+            1e-8,
+            9.0,
+            3,
+            None,
+        )
+        .unwrap();
 
         let pos_err = (ssb_state(&fit.uncertain_state).unwrap().pos - true_state.pos).norm();
         assert!(
@@ -2251,7 +2432,18 @@ mod tests {
             *ra += 50.0 * sigma;
         }
 
-        let fit = fit_orbit(&true_state, &observations, false, None, 50, 1e-8, 9.0, 5).unwrap();
+        let fit = fit_orbit(
+            &true_state,
+            &observations,
+            false,
+            None,
+            50,
+            1e-8,
+            9.0,
+            5,
+            None,
+        )
+        .unwrap();
 
         // The corrupted observation should be rejected.
         let n_total = 20;
@@ -2448,6 +2640,7 @@ mod tests {
             1e-10,
             9.0,
             0,
+            None,
         )
         .unwrap();
 
@@ -2455,6 +2648,153 @@ mod tests {
             fit.non_grav.is_some(),
             "non_grav should always be returned when requested"
         );
+    }
+
+    /// Starting values for the non-grav parameters: from the truth the fit stays at
+    /// the truth; values of the wrong length, or without a model, are an error.
+    #[test]
+    fn test_ng_start_values() {
+        ensure_test_spk();
+        let r = 1.5;
+        let v = (GMS / r).sqrt();
+        let true_state = make_state([r, 0.0, 0.0], [0.0, v, 0.0], 2460000.5);
+        let true_a2 = 1e-8;
+        let true_ng = jpl_comet_default_fit(0.0, true_a2, 0.0);
+        let epochs: Vec<f64> = (0..15).map(|i| 2460000.5 + f64::from(i) * 6.0).collect();
+        let observations = synth_observations(
+            &true_state,
+            &epochs,
+            earth_observer,
+            1e-7,
+            Some((&true_ng.0, &true_ng.1)),
+        );
+        let free = jpl_comet_default_fit(0.0, 0.0, 0.0);
+        let start = [0.0, true_a2, 0.0];
+
+        let fit = fit_orbit(
+            &true_state,
+            &observations,
+            false,
+            Some(&free.0),
+            30,
+            1e-10,
+            9.0,
+            0,
+            Some(&start),
+        )
+        .unwrap();
+        let a2 = fit.uncertain_state.free_params[1];
+        assert!(
+            (a2 - true_a2).abs() < true_a2 * 1e-3,
+            "a2 {a2:.6e} vs {true_a2:.6e}"
+        );
+
+        let run = |mask: Option<&NonGravMask>, start: &[f64]| {
+            fit_orbit(
+                &true_state,
+                &observations,
+                false,
+                mask,
+                30,
+                1e-10,
+                9.0,
+                0,
+                Some(start),
+            )
+        };
+        assert!(run(Some(&free.0), &[0.0, true_a2]).is_err());
+        assert!(run(None, &start).is_err());
+    }
+
+    /// A start on a lower bound is held there while the rest of the fit moves, and a
+    /// start below one is an error.
+    #[test]
+    fn test_ng_start_at_and_below_bound() {
+        ensure_test_spk();
+        let r = 1.2;
+        let v = (GMS / r).sqrt();
+        let true_state = make_state([r, 0.0, 0.0], [0.0, v, 0.0], 2460000.5);
+        // the best fit is past the bound, so the fit presses against it
+        let truth = dust_fit(-1e-4);
+        let epochs: Vec<f64> = (0..15).map(|i| 2460000.5 + f64::from(i) * 6.0).collect();
+        let observations = synth_observations(
+            &true_state,
+            &epochs,
+            earth_observer,
+            1e-7,
+            Some((&truth.0, &truth.1)),
+        );
+        let start = make_state([r + 1e-4, 0.0, 0.0], [0.0, v, 0.0], 2460000.5);
+        let run = |beta: f64| {
+            fit_orbit(
+                &start,
+                &observations,
+                false,
+                Some(&dust_fit(0.0).0),
+                30,
+                1e-10,
+                9.0,
+                0,
+                Some(&[beta]),
+            )
+        };
+        let fit = run(0.0).unwrap();
+        assert!(fit.converged);
+        assert!(fit.uncertain_state.free_params[0] >= 0.0);
+        assert!(run(-0.1).is_err());
+    }
+
+    /// Directions the information matrix does not constrain are reported, whether a
+    /// single parameter or a combination; a badly scaled but full-rank matrix is not.
+    #[test]
+    fn test_pseudo_inverse_reports_unconstrained() {
+        let (_, none) = scaled_pseudo_inverse(&DMatrix::from_diagonal(&DVector::from_vec(vec![
+            1e20, 1.0, 1e-20,
+        ])))
+        .unwrap();
+        assert!(none.is_empty());
+        let (cov, single) =
+            scaled_pseudo_inverse(&DMatrix::from_diagonal(&DVector::from_vec(vec![
+                2.0, 1.0, 0.0,
+            ])))
+            .unwrap();
+        assert_eq!(single, vec![2]);
+        assert_eq!(cov[(2, 2)], 0.0);
+        let col = DVector::from_vec(vec![1.0, 2.0, 0.0]);
+        let mut info = &col * col.transpose();
+        info[(2, 2)] = 1.0;
+        let (_, pair) = scaled_pseudo_inverse(&info).unwrap();
+        assert_eq!(pair, vec![0, 1]);
+    }
+
+    /// A fit that stops where a parameter is unconstrained has a NaN covariance, not
+    /// a zero variance for that parameter. With zero thrust the ramp rate has no
+    /// effect on the observations.
+    #[test]
+    fn test_non_converged_unconstrained_covariance_is_nan() {
+        use kete_core::forces::{ParameterMask, RampedThrustNonGrav};
+        ensure_test_spk();
+        let r = 1.2;
+        let v = (GMS / r).sqrt();
+        let state = make_state([r, 0.0, 0.0], [0.0, v, 0.0], 2460000.5);
+        let epochs: Vec<f64> = (0..15).map(|i| 2460000.5 + f64::from(i) * 6.0).collect();
+        let observations = synth_observations(&state, &epochs, earth_observer, 1e-7, None);
+        let included = vec![true; observations.len()];
+        let mask = ParameterMask::all_free(NonGravKind::RampedThrust(
+            RampedThrustNonGrav::new(2460000.5, None).unwrap(),
+        ));
+        let fit = make_non_converged_result(
+            &state,
+            &observations,
+            &included,
+            false,
+            Some(&mask),
+            &[0.0; 4],
+        );
+        assert!(!fit.converged);
+        assert!(fit.uncertain_state.cov_matrix.iter().all(|x| x.is_nan()));
+        let fit = make_non_converged_result(&state, &observations, &included, false, None, &[]);
+        assert!(fit.uncertain_state.cov_matrix.iter().all(|x| x.is_finite()));
     }
 
     /// When the truth has a real non-grav signal, the fitter should recover it.
@@ -2488,6 +2828,7 @@ mod tests {
             1e-10,
             9.0,
             0,
+            None,
         )
         .unwrap();
 
@@ -2521,7 +2862,18 @@ mod tests {
         let observations = synth_observations(&true_state, &epochs, earth_observer, sigma, None);
         let included = vec![true; observations.len()];
 
-        let fit = fit_orbit(&true_state, &observations, false, None, 20, 1e-10, 9.0, 0).unwrap();
+        let fit = fit_orbit(
+            &true_state,
+            &observations,
+            false,
+            None,
+            20,
+            1e-10,
+            9.0,
+            0,
+            None,
+        )
+        .unwrap();
 
         // Evaluate normal equations at the converged state.
         let fit_state = ssb_state(&fit.uncertain_state).unwrap();
@@ -2598,7 +2950,18 @@ mod tests {
             }
         }
 
-        let fit = fit_orbit(&true_state, &observations, false, None, 30, 1e-10, 4.5, 3).unwrap();
+        let fit = fit_orbit(
+            &true_state,
+            &observations,
+            false,
+            None,
+            30,
+            1e-10,
+            4.5,
+            3,
+            None,
+        )
+        .unwrap();
 
         let n_included = fit.included.iter().filter(|&&v| v).count();
         let n_total = observations.len();
@@ -2631,7 +2994,18 @@ mod tests {
             *ra += 100.0 * sigma;
         }
 
-        let fit = fit_orbit(&true_state, &observations, false, None, 20, 1e-10, 4.5, 3).unwrap();
+        let fit = fit_orbit(
+            &true_state,
+            &observations,
+            false,
+            None,
+            20,
+            1e-10,
+            4.5,
+            3,
+            None,
+        )
+        .unwrap();
 
         // Observation 3 should be rejected, all others kept.
         assert!(!fit.included[3], "100-sigma outlier should remain rejected");
@@ -2671,7 +3045,18 @@ mod tests {
             }
         }
 
-        let fit = fit_orbit(&true_state, &observations, false, None, 30, 1e-10, 9.0, 0).unwrap();
+        let fit = fit_orbit(
+            &true_state,
+            &observations,
+            false,
+            None,
+            30,
+            1e-10,
+            9.0,
+            0,
+            None,
+        )
+        .unwrap();
 
         assert!(
             fit.rms > 0.5,
@@ -2684,7 +3069,7 @@ mod tests {
         let (info_mat, _, _) =
             accumulate_normal_equations(&fit_state, &observations, &fit.included, false, None, &[])
                 .unwrap();
-        let raw_cov = scaled_pseudo_inverse(&info_mat).unwrap();
+        let (raw_cov, _) = scaled_pseudo_inverse(&info_mat).unwrap();
 
         // Reported covariance must equal raw * rms^2 on every diagonal. The stored
         // covariance is in element coordinates now, so it is converted back to
@@ -2756,9 +3141,20 @@ mod tests {
             })
             .collect();
 
-        let fit_uncorr =
-            fit_orbit(&true_state, &obs_uncorr, false, None, 20, 1e-10, 9.0, 0).unwrap();
-        let fit_corr = fit_orbit(&true_state, &obs_corr, false, None, 20, 1e-10, 9.0, 0).unwrap();
+        let fit_uncorr = fit_orbit(
+            &true_state,
+            &obs_uncorr,
+            false,
+            None,
+            20,
+            1e-10,
+            9.0,
+            0,
+            None,
+        )
+        .unwrap();
+        let fit_corr =
+            fit_orbit(&true_state, &obs_corr, false, None, 20, 1e-10, 9.0, 0, None).unwrap();
 
         // The states should agree (injected residuals are zero in both).
         let pos_diff = (ssb_state(&fit_uncorr.uncertain_state).unwrap().pos

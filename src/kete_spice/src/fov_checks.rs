@@ -5,15 +5,14 @@
 
 use kete_core::constants::C_AU_PER_DAY_INV;
 use kete_core::errors::Error;
-use kete_core::forces::{FrozenNonGrav, Sum};
+use kete_core::forces::NonGravMask;
 use kete_core::fov::{FovLike, check_linear, check_two_body};
 use kete_core::frames::{Equatorial, SSB, SunCenter};
 use kete_core::geometry::Contains;
 use kete_core::kepler::light_time_correct;
 use kete_core::prelude::{KeteResult, SimultaneousStates, State};
-use kete_core::state::StateLike;
 
-use crate::propagation::{Recenter, SpkNBody};
+use crate::propagation::SpkNBody;
 use crate::spk::LOADED_SPK;
 
 use rayon::prelude::*;
@@ -29,20 +28,14 @@ use rayon::prelude::*;
 pub fn check_n_body<F: FovLike>(
     fov: &F,
     state: State<Equatorial, SSB>,
-    non_grav: Option<&FrozenNonGrav>,
+    non_grav: Option<&NonGravMask>,
     include_extended: bool,
 ) -> KeteResult<(usize, Contains, State<Equatorial>)> {
     let obs = fov.observer();
 
     let spk = LOADED_SPK.try_read()?;
-    let grav = SpkNBody::new(&spk, include_extended);
-    let exact_state = match non_grav {
-        None => state.propagate_with(&grav, obs.epoch)?,
-        Some(non_grav) => {
-            let force = Sum::new(grav, Recenter::<SSB, _>::new(&spk, non_grav.clone()));
-            state.propagate_with(&force, obs.epoch)?
-        }
-    };
+    let force = SpkNBody::with_non_grav(&spk, include_extended, non_grav.cloned());
+    let exact_state = state.propagate_with(&force, obs.epoch)?;
     let sun_state = spk.try_to_sun(exact_state)?;
 
     let final_state = light_time_correct(&sun_state, &obs.pos)?;
@@ -138,7 +131,7 @@ pub fn check_spks<F: FovLike>(fov: &F, obj_ids: &[i32]) -> Vec<Option<Simultaneo
 pub fn check_visible<F: FovLike>(
     fov: &F,
     states: &[State<Equatorial>],
-    non_gravs: &[Option<FrozenNonGrav>],
+    non_gravs: &[Option<NonGravMask>],
     dt_limit: f64,
     include_asteroids: bool,
 ) -> KeteResult<Vec<Option<SimultaneousStates>>> {
@@ -212,12 +205,11 @@ mod tests {
     use super::*;
     use kete_core::constants::GMS_SQRT;
     use kete_core::desigs::Desig;
-    use kete_core::forces::{DustNonGrav, FrozenForce, NonGravKind};
+    use kete_core::forces::{DustNonGrav, NonGravKind, ParameterMask};
     use kete_core::fov::{GenericRectangle, OmniDirectional};
     use kete_core::state::State;
 
     use crate::propagation::SpkNBody;
-    use kete_core::state::StateLike;
 
     #[test]
     fn test_check_rectangle_visible() {
@@ -375,7 +367,7 @@ mod tests {
 
         // beta = 0.5 removes half of the solar gravity, which over a day is a
         // deflection of order 1e-5 au, far above the two body vs n-body difference.
-        let dust = FrozenForce::new(NonGravKind::Dust(DustNonGrav), vec![0.5]).unwrap();
+        let dust = ParameterMask::all_fixed(NonGravKind::Dust(DustNonGrav), vec![0.5]).unwrap();
 
         let states = [asteroid];
         let grav_only = check_visible(&fov, &states, &[], 3.0, false).unwrap();

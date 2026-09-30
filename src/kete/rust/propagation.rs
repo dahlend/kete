@@ -4,11 +4,10 @@ use kete_core::moid::moid;
 use kete_core::{
     desigs::try_name_from_id,
     errors::Error,
-    forces::Sum,
-    frames::{Ecliptic, Equatorial, SSB, SunCenter},
-    state::{State, StateLike},
+    frames::{Ecliptic, Equatorial, SunCenter},
+    state::State,
 };
-use kete_spice::propagation::{Recenter, SpkNBody};
+use kete_spice::propagation::SpkNBody;
 use pyo3::{IntoPyObjectExt, Py, PyAny, PyResult, Python, pyfunction};
 use rayon::prelude::*;
 
@@ -19,7 +18,7 @@ use crate::{
     state::PyState,
     time::PyTime,
 };
-use kete_core::forces::FrozenNonGrav;
+use kete_core::forces::NonGravMask;
 
 /// Compute the Minimum Orbital Intersection Distance (MOID).
 ///
@@ -106,8 +105,9 @@ pub fn moid_py(
 /// jd:
 ///     A JD to propagate the initial states to.
 /// include_asteroids:
-///     If this is true, the computation will include the largest 5 asteroids.
-///     The asteroids are: Ceres, Pallas, Interamnia, Hygiea, and Vesta.
+///     If this is true, the computation will include the largest 5 asteroids,
+///     Ceres, Pallas, Interamnia, Hygiea, and Vesta, along with any masses
+///     registered in addition.
 /// non_gravs:
 ///     A list of non-gravitational terms for each object. If provided, then every
 ///     object must have an associated :class:`~NonGravModel` or `None`.
@@ -115,8 +115,9 @@ pub fn moid_py(
 ///     If True, errors during propagation will return NaN for the relevant state
 ///     vectors, but propagation will continue.
 /// suppress_impact_errors:
-///     If True, impacts will be printed to stderr, but states will still return
-///     filled with `NaN`. If False, impacts are not printed.
+///     If True, impacts are not printed to stderr. With ``suppress_errors`` the
+///     state of an object that impacted a massive body is returned filled with
+///     `NaN` either way.
 ///
 /// Returns
 /// -------
@@ -162,7 +163,7 @@ pub fn propagation_n_body_spk_py(
         // creating PyErr objects inside rayon threads (which would require the GIL).
         let proc_chunk: PyResult<Vec<_>> = py.detach(|| {
             // Acquire the SPK read guard once per chunk for center conversions.
-            // SpkNBody acquires the lock internally for each accel call.
+            // The force borrows the collection through this read guard.
             let spk = kete_spice::prelude::LOADED_SPK
                 .try_read()
                 .map_err(|_| Error::ValueError("SPK lock unavailable".into()))?;
@@ -171,7 +172,7 @@ pub fn propagation_n_body_spk_py(
                 .into_par_iter()
                 .with_min_len(5)
                 .map(|(state, model)| {
-                    let model: Option<FrozenNonGrav> = model.map(|x| x.to_frozen());
+                    let model: Option<NonGravMask> = model.map(|x| x.to_fixed());
                     let center = state.center_id();
                     let frame = state.frame;
                     let state = state.raw;
@@ -189,18 +190,8 @@ pub fn propagation_n_body_spk_py(
                         .change_frame(frame));
                     }
                     let ssb_state = spk.try_to_ssb(state)?;
-                    let result: kete_core::errors::KeteResult<_> = match model.as_ref() {
-                        None => {
-                            ssb_state.propagate_with(&SpkNBody::new(&spk, include_asteroids), jd)
-                        }
-                        Some(frozen) => {
-                            let force = Sum::new(
-                                SpkNBody::new(&spk, include_asteroids),
-                                Recenter::<SSB, _>::new(&spk, frozen.clone()),
-                            );
-                            ssb_state.propagate_with(&force, jd)
-                        }
-                    };
+                    let force = SpkNBody::with_non_grav(&spk, include_asteroids, model);
+                    let result = ssb_state.propagate_with(&force, jd);
                     match result {
                         Ok(ssb_result) => {
                             let mut dyn_result = State::<Equatorial>::from(ssb_result);
@@ -312,9 +303,9 @@ pub fn propagation_n_body_py(
         planet_states.map(|s| s.into_iter().map(|x| x.raw).collect());
 
     let non_gravs = non_gravs.unwrap_or(vec![None; states.len()]);
-    let non_gravs: Vec<Option<FrozenNonGrav>> = non_gravs
+    let non_gravs: Vec<Option<NonGravMask>> = non_gravs
         .into_iter()
-        .map(|y| y.map(|z| z.to_frozen()))
+        .map(|y| y.map(|z| z.to_fixed()))
         .collect();
 
     let spk = kete_spice::prelude::LOADED_SPK
@@ -329,7 +320,7 @@ pub fn propagation_n_body_py(
             .collect_vec()
             .par_chunks(batch_size)
             .map(|chunk| {
-                let (chunk_state, chunk_nongrav): (Vec<_>, Vec<Option<FrozenNonGrav>>) =
+                let (chunk_state, chunk_nongrav): (Vec<_>, Vec<Option<NonGravMask>>) =
                     chunk.iter().cloned().unzip();
 
                 let chunk_state: Vec<_> = chunk_state
