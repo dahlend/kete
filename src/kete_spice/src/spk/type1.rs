@@ -60,10 +60,11 @@ impl SpkSegmentType1 {
         // we need to find the first record which has a time greater than or equal
         // to the target jd.
 
+        // A time after the epoch of the last record uses the last record.
         let start_idx = self
             .get_times()
-            .binary_search_by(|probe| probe.total_cmp(&jds))
-            .unwrap_or_else(|c| c);
+            .partition_point(|&t| t < jds)
+            .min(self.n_records - 1);
 
         let record = self.get_record(start_idx);
 
@@ -176,10 +177,11 @@ impl SpkSegmentType1 {
                 n
             )));
         }
-        // Layout: [n*71 records][n epochs][n_records]
-        let mut data = Vec::with_capacity(72 * n + 1);
+        // Layout: [n*71 records][n epochs][every 100th epoch][n_records]
+        let mut data = Vec::with_capacity(72 * n + n / 100 + 1);
         data.extend_from_slice(records);
         data.extend_from_slice(epochs);
+        data.extend(epochs.iter().skip(99).step_by(100));
         data.push(n as f64);
 
         Ok(SpkArray::new(
@@ -212,5 +214,64 @@ impl TryFrom<SpkArray> for SpkSegmentType1 {
             )));
         }
         Ok(Self { array, n_records })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build one difference line with no difference terms.
+    ///
+    /// SPKE01 evaluates this line as linear motion from its reference state.
+    /// The state is x = 1000 km, moving at 1 km/s.
+    fn linear_record(epoch: f64) -> Vec<f64> {
+        let mut record = vec![0.0; 71];
+        record[0] = epoch;
+        record[1..16].fill(1.0);
+        record[16] = 1000.0;
+        record[17] = 1.0;
+        record[67] = 2.0;
+        record
+    }
+
+    fn segment(epochs: &[f64], jds_end: f64) -> SpkSegmentType1 {
+        let records: Vec<f64> = epochs.iter().flat_map(|&t| linear_record(t)).collect();
+        SpkSegmentType1::new_array(
+            1000,
+            10,
+            1,
+            &records,
+            epochs,
+            epochs[0] - 100.0,
+            jds_end,
+            "type 1",
+        )
+        .unwrap()
+        .try_into()
+        .unwrap()
+    }
+
+    #[test]
+    fn type1_evaluates_and_clamps_to_the_last_record() {
+        let seg = segment(&[0.0, 100.0], 200.0);
+        let (pos, vel) = seg.try_get_pos_vel(90.0).unwrap();
+        assert!((pos[0] * AU_KM - 990.0).abs() < 1e-9);
+        assert!((vel[0] * AU_KM / 86400.0 - 1.0).abs() < 1e-12);
+        // A time past the last epoch uses the last record.
+        let (pos, _) = seg.try_get_pos_vel(150.0).unwrap();
+        assert!((pos[0] * AU_KM - 1050.0).abs() < 1e-9);
+    }
+
+    /// Check that the writer repeats every 100th epoch in a directory, as
+    /// SPKW01 does.
+    #[test]
+    fn type1_writes_the_epoch_directory() {
+        let epochs: Vec<f64> = (0..250).map(f64::from).collect();
+        let seg = segment(&epochs, 249.0);
+        let data = &seg.array.daf.data;
+        assert_eq!(data.len(), 250 * 72 + 2 + 1);
+        assert_eq!(data[250 * 72], 99.0);
+        assert_eq!(data[250 * 72 + 1], 199.0);
     }
 }

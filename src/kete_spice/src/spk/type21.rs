@@ -65,10 +65,12 @@ impl SpkSegmentType21 {
                 record_len
             )));
         }
-        // Layout: [n*record_len records][n epochs][n_coef][n_records]
-        let mut data = Vec::with_capacity(n * record_len + n + 2);
+        // Layout: [n*record_len records][n epochs][every 100th epoch]
+        //         [n_coef][n_records]
+        let mut data = Vec::with_capacity(n * record_len + n + n / 100 + 2);
         data.extend_from_slice(records);
         data.extend_from_slice(epochs);
+        data.extend(epochs.iter().skip(99).step_by(100));
         data.push(n_coef as f64);
         data.push(n as f64);
 
@@ -124,10 +126,11 @@ impl SpkSegmentType21 {
         // we need to find the first record which has a time greater than or equal
         // to the target jd.
 
+        // A time after the epoch of the last record uses the last record.
         let start_idx = self
             .get_times()
-            .binary_search_by(|probe| probe.total_cmp(&jds))
-            .unwrap_or_else(|c| c);
+            .partition_point(|&t| t < jds)
+            .min(self.n_records - 1);
 
         let record = self.get_record(start_idx);
 
@@ -231,5 +234,67 @@ impl TryFrom<SpkArray> for SpkSegmentType21 {
             n_records,
             record_len,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const N_COEF: usize = 3;
+
+    /// Build one difference line with no difference terms.
+    ///
+    /// SPKE21 evaluates this line as linear motion from its reference state.
+    /// The state is x = 1000 km, moving at 1 km/s.
+    fn linear_record(epoch: f64) -> Vec<f64> {
+        let mut record = vec![0.0; 4 * N_COEF + 11];
+        record[0] = epoch;
+        record[1..=N_COEF].fill(1.0);
+        record[N_COEF + 1] = 1000.0;
+        record[N_COEF + 2] = 1.0;
+        record[4 * N_COEF + 7] = 2.0;
+        record
+    }
+
+    fn segment(epochs: &[f64], jds_end: f64) -> SpkSegmentType21 {
+        let records: Vec<f64> = epochs.iter().flat_map(|&t| linear_record(t)).collect();
+        SpkSegmentType21::new_array(
+            1000,
+            10,
+            1,
+            &records,
+            epochs,
+            N_COEF,
+            epochs[0] - 100.0,
+            jds_end,
+            "type 21",
+        )
+        .unwrap()
+        .try_into()
+        .unwrap()
+    }
+
+    #[test]
+    fn type21_evaluates_and_clamps_to_the_last_record() {
+        let seg = segment(&[0.0, 100.0], 200.0);
+        let (pos, vel) = seg.try_get_pos_vel(90.0).unwrap();
+        assert!((pos[0] * AU_KM - 990.0).abs() < 1e-9);
+        assert!((vel[0] * AU_KM / 86400.0 - 1.0).abs() < 1e-12);
+        let (pos, _) = seg.try_get_pos_vel(150.0).unwrap();
+        assert!((pos[0] * AU_KM - 1050.0).abs() < 1e-9);
+    }
+
+    /// Check that the writer repeats every 100th epoch in a directory, as
+    /// SPKW21 does.
+    #[test]
+    fn type21_writes_the_epoch_directory() {
+        let epochs: Vec<f64> = (0..250).map(f64::from).collect();
+        let seg = segment(&epochs, 249.0);
+        let data = &seg.array.daf.data;
+        let record_len = 4 * N_COEF + 11;
+        assert_eq!(data.len(), 250 * (record_len + 1) + 2 + 2);
+        assert_eq!(data[250 * (record_len + 1)], 99.0);
+        assert_eq!(data[250 * (record_len + 1) + 1], 199.0);
     }
 }
