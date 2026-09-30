@@ -3,7 +3,7 @@
 //! <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/spk.html#Type%2013:%20Hermite%20Interpolation%20---%20Unequal%20Time%20Steps>
 
 use super::SpkArray;
-use super::type9::window_start;
+use super::type9::{read_control, window_start};
 use crate::interpolation::hermite_interpolation;
 use crate::jd_to_spice_jd;
 use kete_core::constants::AU_KM;
@@ -34,11 +34,9 @@ impl SpkSegmentType13 {
     /// * `degree`       - Hermite polynomial degree, must be ODD and in `[1, 27]`.
     /// * `segment_name` - Name stored in the DAF name record (max 40 chars).
     ///
-    /// # Panics
-    /// Panics if `states` is empty.
-    ///
     /// # Errors
-    /// Returns an error if `degree` is not odd or outside `[1, 27]`.
+    /// Returns an error if `states` is empty, or `degree` is not odd or outside
+    /// `[1, 27]`.
     pub fn new_array(
         object_id: i32,
         center_id: i32,
@@ -47,8 +45,12 @@ impl SpkSegmentType13 {
         degree: u32,
         segment_name: &str,
     ) -> KeteResult<SpkArray> {
-        let jds_start = states.first().unwrap().0;
-        let jds_end = states.last().unwrap().0;
+        let (Some(first), Some(last)) = (states.first(), states.last()) else {
+            return Err(Error::ValueError(
+                "Type 13: need at least one state.".into(),
+            ));
+        };
+        let (jds_start, jds_end) = (first.0, last.0);
 
         let n = states.len();
         if !(1..=27).contains(&degree) || degree.is_multiple_of(2) {
@@ -101,22 +103,29 @@ impl SpkSegmentType13 {
 
     /// Create a Type 13 SPK array from [`State`] objects.
     ///
-    /// Positions and velocities are converted from AU / AU/day to km / km/s.
-    /// The `object_id` and `center_id` are taken from the first state.
-    ///
-    /// # Panics
-    /// Panics if `states` is empty.
+    /// The function converts epochs to TDB seconds from J2000, positions from
+    /// AU to km, and velocities from AU/day to km/s. It takes the object ID and
+    /// the center ID from the first state. [`Self::new_array`] describes
+    /// `frame_id`, `degree`, and `segment_name`.
     ///
     /// # Errors
-    /// Returns an error if `degree` is not odd, outside `[1, 27]`, or the first
-    /// state's designation is not a NAIF integer ID.
+    /// Returns [`Error::ValueError`] in these cases:
+    /// - `states` is empty.
+    /// - The designation of the first state is not a NAIF integer ID.
+    /// - `degree` is even or outside `[1, 27]`.
+    /// - `states` holds fewer than `(degree + 1) / 2` entries.
+    /// - The epochs are not strictly increasing.
     pub fn from_states<T: InertialFrame>(
         states: &[State<T>],
         frame_id: i32,
         degree: u32,
         segment_name: &str,
     ) -> KeteResult<SpkArray> {
-        let first = states.first().unwrap();
+        let Some(first) = states.first() else {
+            return Err(Error::ValueError(
+                "Type 13: need at least one state.".into(),
+            ));
+        };
         #[allow(
             clippy::wildcard_enum_match_arm,
             reason = "Only NAIF IDs are valid here."
@@ -216,16 +225,11 @@ struct Type13RecordView<'a> {
 impl TryFrom<SpkArray> for SpkSegmentType13 {
     type Error = Error;
 
-    #[allow(
-        clippy::cast_sign_loss,
-        reason = "This is correct as long as the file is correct."
-    )]
     fn try_from(array: SpkArray) -> KeteResult<Self> {
-        let n_records = array.daf[array.daf.len() - 1] as usize;
-
         // CSPICE stores (winsiz - 1) at data[len-2], where winsiz = (degree+1)/2.
         // The CSPICE reader (spkr09.c) adds 1 to recover the true window size.
-        let window_size = array.daf[array.daf.len() - 2] as usize + 1;
+        let (stored, n_records) = read_control(&array, "13")?;
+        let window_size = stored + 1;
 
         if window_size > n_records {
             return Err(Error::IOError(format!(

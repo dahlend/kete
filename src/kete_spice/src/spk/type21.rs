@@ -6,6 +6,12 @@
 //! <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/spk.html#Type%2021:%20Extended%20Modified%20Difference%20Arrays>
 
 use super::SpkArray;
+
+/// Largest number of difference coefficients per component.
+///
+/// This is the MAXTRM limit of the SPICE type 21 format.
+const MAX_DIM: usize = 25;
+use super::type1::difference_orders;
 use kete_core::constants::AU_KM;
 use kete_core::errors::Error;
 use kete_core::prelude::KeteResult;
@@ -88,6 +94,9 @@ impl SpkSegmentType21 {
 
     #[inline(always)]
     fn get_record(&self, idx: usize) -> &[f64] {
+        // SAFETY: `try_from` checked that the array holds `n_records` records
+        // of `record_len` values, followed by the epochs. The only caller
+        // clamps `idx` to `n_records - 1`.
         unsafe {
             self.array
                 .daf
@@ -98,6 +107,9 @@ impl SpkSegmentType21 {
 
     #[inline(always)]
     fn get_times(&self) -> &[f64] {
+        // SAFETY: `try_from` checked that the array holds at least
+        // `n_records * (record_len + 1) + 2` values, so the epochs lie inside
+        // it.
         unsafe {
             self.array.daf.data.get_unchecked(
                 self.n_records * self.record_len..self.n_records * (self.record_len + 1),
@@ -141,17 +153,20 @@ impl SpkSegmentType21 {
 
         let divided_diff_array = &record[self.n_coef + 7..4 * self.n_coef + 7];
 
-        let kq_max1 = record[4 * self.n_coef + 7] as usize;
-        let kq = &record[4 * self.n_coef + 8..4 * self.n_coef + 11];
+        let (kq_max1, kq) = difference_orders(
+            record[4 * self.n_coef + 7],
+            &record[4 * self.n_coef + 8..4 * self.n_coef + 11],
+            self.n_coef,
+        )?;
 
         // in the spice code ref_time is in seconds from j2000
         let dt = jds - ref_time;
 
-        let mut fc = Vec::<f64>::with_capacity(self.n_coef);
-        let mut wc = Vec::<f64>::with_capacity(self.n_coef);
+        let mut fc = [0.0; MAX_DIM];
+        let mut wc = [0.0; MAX_DIM];
 
         let mut tp = dt;
-        for f in func_vec.iter().take(kq_max1 - 2) {
+        for (idx, f) in func_vec.iter().take(kq_max1 - 2).enumerate() {
             if *f == 0.0 {
                 // don't divide by 0 below, file was built incorrectly.
                 return Err(Error::IOError(
@@ -159,12 +174,15 @@ impl SpkSegmentType21 {
                 ));
             }
 
-            fc.push(tp / f);
-            wc.push(dt / f);
+            fc[idx] = tp / f;
+            wc[idx] = dt / f;
             tp = dt + f;
         }
 
-        let mut w: Box<[f64]> = (0..kq_max1).map(|x| (x as f64 + 1.0).recip()).collect();
+        let mut w = [0.0; MAX_DIM + 2];
+        for (idx, w) in w.iter_mut().take(kq_max1).enumerate() {
+            *w = (idx as f64 + 1.0).recip();
+        }
 
         let mut ks = kq_max1 - 1;
         let mut jx = 0;
@@ -181,7 +199,7 @@ impl SpkSegmentType21 {
 
         // position interpolation
         let pos = std::array::from_fn(|idx| {
-            let sum: f64 = (1..=(kq[idx] as usize))
+            let sum: f64 = (1..=kq[idx])
                 .rev()
                 .map(|j| divided_diff_array[idx * self.n_coef + j - 1] * w[j + ks - 1])
                 .sum();
@@ -196,7 +214,7 @@ impl SpkSegmentType21 {
 
         // velocity interpolation
         let vel = std::array::from_fn(|idx| {
-            let sum: f64 = (1..=(kq[idx] as usize))
+            let sum: f64 = (1..=kq[idx])
                 .rev()
                 .map(|j| divided_diff_array[idx * self.n_coef + j - 1] * w[j + ks - 1])
                 .sum();
@@ -212,19 +230,37 @@ impl TryFrom<SpkArray> for SpkSegmentType21 {
 
     #[allow(
         clippy::cast_sign_loss,
-        reason = "This is correct as long as the file is correct."
+        clippy::cast_possible_truncation,
+        reason = "Values are checked to be positive whole numbers first."
     )]
     fn try_from(array: SpkArray) -> KeteResult<Self> {
-        let n_records = array.daf[array.daf.len() - 1] as usize;
-        let n_coef = array.daf[array.daf.len() - 2] as usize;
+        let len = array.daf.len();
+        let (n_coef, n_records) = if len < 2 {
+            (0.0, 0.0)
+        } else {
+            (array.daf[len - 2], array.daf[len - 1])
+        };
+        let count = |x: f64| x.is_finite() && x >= 1.0 && x.fract() == 0.0;
+        if !(count(n_coef) && count(n_records)) {
+            return Err(Error::IOError(format!(
+                "SPK Type 21: invalid control words [{n_coef}, {n_records}]."
+            )));
+        }
+        let (n_coef, n_records) = (n_coef as usize, n_records as usize);
+        if n_coef > MAX_DIM {
+            return Err(Error::IOError(format!(
+                "SPK Type 21: {n_coef} difference coefficients exceeds the limit of {MAX_DIM}."
+            )));
+        }
         let record_len = 4 * n_coef + 11;
 
-        if array.daf.data.len() < n_records * record_len + n_records + 2 {
+        if n_records
+            .checked_mul(record_len + 1)
+            .is_none_or(|x| x + 2 > len)
+        {
             return Err(Error::IOError(format!(
-                "SPK Type 21: data length ({}) too short for {} records of length {}",
-                array.daf.data.len(),
-                n_records,
-                record_len
+                "SPK Type 21: data length ({len}) too short for {n_records} records of \
+                 length {record_len}"
             )));
         }
 
@@ -296,5 +332,17 @@ mod tests {
         assert_eq!(data.len(), 250 * (record_len + 1) + 2 + 2);
         assert_eq!(data[250 * (record_len + 1)], 99.0);
         assert_eq!(data[250 * (record_len + 1) + 1], 199.0);
+    }
+
+    /// Check that the reader rejects more than 25 difference coefficients per
+    /// component.
+    #[test]
+    fn type21_rejects_too_many_coefficients() {
+        let seg = segment(&[0.0, 100.0], 100.0);
+        let mut data = seg.array.daf.data.to_vec();
+        let n = data.len();
+        data[n - 2] = 2.0_f64.powi(62);
+        let array = SpkArray::new(1000, 10, 1, 21, 0.0, 100.0, data, "bad".into());
+        assert!(SpkSegmentType21::try_from(array).is_err());
     }
 }

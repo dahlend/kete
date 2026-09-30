@@ -33,11 +33,8 @@ impl SpkSegmentType9 {
     /// * `degree`       - Lagrange polynomial degree, in `[1, 27]`.
     /// * `segment_name` - Name stored in the DAF name record (max 40 chars).
     ///
-    /// # Panics
-    /// Panics if `states` is empty.
-    ///
     /// # Errors
-    /// Returns an error if `degree` is outside `[1, 27]`.
+    /// Returns an error if `states` is empty or `degree` is outside `[1, 27]`.
     pub fn new_array(
         object_id: i32,
         center_id: i32,
@@ -46,8 +43,10 @@ impl SpkSegmentType9 {
         degree: u32,
         segment_name: &str,
     ) -> KeteResult<SpkArray> {
-        let jds_start = states.first().unwrap().0;
-        let jds_end = states.last().unwrap().0;
+        let (Some(first), Some(last)) = (states.first(), states.last()) else {
+            return Err(Error::ValueError("Type 9: need at least one state.".into()));
+        };
+        let (jds_start, jds_end) = (first.0, last.0);
 
         let n = states.len();
         if !(1..=27).contains(&degree) {
@@ -98,22 +97,27 @@ impl SpkSegmentType9 {
 
     /// Create a Type 9 SPK array from [`State`] objects.
     ///
-    /// Positions and velocities are converted from AU / AU/day to km / km/s.
-    /// The `object_id` and `center_id` are taken from the first state.
-    ///
-    /// # Panics
-    /// Panics if `states` is empty.
+    /// The function converts epochs to TDB seconds from J2000, positions from
+    /// AU to km, and velocities from AU/day to km/s. It takes the object ID and
+    /// the center ID from the first state. [`Self::new_array`] describes
+    /// `frame_id`, `degree`, and `segment_name`.
     ///
     /// # Errors
-    /// Returns an error if `degree` is outside `[1, 27]` or the first state's
-    /// designation is not a NAIF integer ID.
+    /// Returns [`Error::ValueError`] in these cases:
+    /// - `states` is empty.
+    /// - The designation of the first state is not a NAIF integer ID.
+    /// - `degree` is outside `[1, 27]`.
+    /// - `states` holds fewer than `degree + 1` entries.
+    /// - The epochs are not strictly increasing.
     pub fn from_states<T: InertialFrame>(
         states: &[State<T>],
         frame_id: i32,
         degree: u32,
         segment_name: &str,
     ) -> KeteResult<SpkArray> {
-        let first = states.first().unwrap();
+        let Some(first) = states.first() else {
+            return Err(Error::ValueError("Type 9: need at least one state.".into()));
+        };
         #[allow(
             clippy::wildcard_enum_match_arm,
             reason = "Only NAIF IDs are valid here."
@@ -211,18 +215,13 @@ struct Type9RecordView<'a> {
 impl TryFrom<SpkArray> for SpkSegmentType9 {
     type Error = Error;
 
-    #[allow(
-        clippy::cast_sign_loss,
-        reason = "This is correct as long as the file is correct."
-    )]
     fn try_from(array: SpkArray) -> KeteResult<Self> {
-        let n_records = array.daf[array.daf.len() - 1] as usize;
-        let poly_degree = array.daf[array.daf.len() - 2] as usize;
-
-        if poly_degree + 1 > n_records {
+        let (poly_degree, n_records) = read_control(&array, "9")?;
+        let window_size = poly_degree + 1;
+        if window_size > n_records {
             return Err(Error::IOError(format!(
-                "SPK Type 9: polynomial degree ({poly_degree}) requires at least {} records, but only {n_records} present",
-                poly_degree + 1
+                "SPK Type 9: polynomial degree ({poly_degree}) requires at least \
+                 {window_size} records, but only {n_records} present"
             )));
         }
 
@@ -232,6 +231,50 @@ impl TryFrom<SpkArray> for SpkSegmentType9 {
             n_records,
         })
     }
+}
+
+/// Read and check the two control words at the end of a type 9 or 13 segment.
+///
+/// The control words are `[value, N]`. `value` is the polynomial degree for
+/// type 9, and the window size minus 1 for type 13. `N` is the number of
+/// states. `kind` names the segment type in error messages. The function
+/// returns `(value, N)`.
+///
+/// # Errors
+/// Returns [`Error::IOError`] in these cases:
+/// - The array holds fewer than 2 values.
+/// - A control word is not a non-negative whole number.
+/// - `value` is not less than `N`.
+/// - The array holds fewer than `7 * N + 2` values.
+#[allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    reason = "Values are checked to be non-negative whole numbers first."
+)]
+pub(in crate::spk) fn read_control(array: &SpkArray, kind: &str) -> KeteResult<(usize, usize)> {
+    let len = array.daf.len();
+    if len < 2 {
+        return Err(Error::IOError(format!(
+            "SPK Type {kind}: segment is truncated."
+        )));
+    }
+    let value = array.daf[len - 2];
+    let n_records = array.daf[len - 1];
+    let valid = |x: f64| x.is_finite() && x >= 0.0 && x.fract() == 0.0;
+    if !(valid(value) && valid(n_records)) {
+        return Err(Error::IOError(format!(
+            "SPK Type {kind}: invalid control words [{value}, {n_records}]."
+        )));
+    }
+    let (value, n_records) = (value as usize, n_records as usize);
+    // A window must fit in the states, so the degree (type 9) or the window
+    // size minus 1 (type 13) must be less than the number of states.
+    if value >= n_records || n_records.checked_mul(7).is_none_or(|x| x + 2 > len) {
+        return Err(Error::IOError(format!(
+            "SPK Type {kind}: segment holds {len} values, too few for {n_records} states."
+        )));
+    }
+    Ok((value, n_records))
 }
 
 /// Return the first index of the interpolation window for SPK types 9 and 13.
@@ -245,7 +288,7 @@ impl TryFrom<SpkArray> for SpkSegmentType9 {
 ///
 /// # Panics
 /// With overflow checks on, panics if `window_size` is 0 or greater than
-/// `times.len()`. The segment readers check the window size when they are built.
+/// `times.len()`. The callers pass a window size that [`read_control`] checked.
 pub(in crate::spk) fn window_start(times: &[f64], jds: f64, window_size: usize) -> usize {
     let n = times.len();
     let n_before = times.partition_point(|&t| t < jds);

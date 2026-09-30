@@ -31,11 +31,16 @@ pub struct SpkSegmentType1 {
 impl SpkSegmentType1 {
     #[inline(always)]
     fn get_record(&self, idx: usize) -> &[f64] {
+        // SAFETY: `try_from` checked that the array holds `n_records` records
+        // of 71 values, followed by the epochs. The only caller clamps `idx` to
+        // `n_records - 1`.
         unsafe { self.array.daf.data.get_unchecked(idx * 71..(idx + 1) * 71) }
     }
 
     #[inline(always)]
     fn get_times(&self) -> &[f64] {
+        // SAFETY: `try_from` checked that the array holds at least
+        // `72 * n_records + 1` values, so the epochs lie inside it.
         unsafe {
             self.array
                 .daf
@@ -75,8 +80,7 @@ impl SpkSegmentType1 {
 
         let divided_diff_array = &record[22..67];
 
-        let kq_max1 = record[67] as usize;
-        let kq = &record[68..71];
+        let (kq_max1, kq) = difference_orders(record[67], &record[68..71], 15)?;
 
         // in the spice code ref_time is in seconds from j2000
         let dt = jds - ref_time;
@@ -99,7 +103,10 @@ impl SpkSegmentType1 {
             tp = dt + f;
         }
 
-        let mut w: Box<[f64]> = { (0..kq_max1).map(|x| (x as f64 + 1.0).recip()).collect() };
+        let mut w = [0.0; 17];
+        for (idx, w) in w.iter_mut().take(kq_max1).enumerate() {
+            *w = (idx as f64 + 1.0).recip();
+        }
 
         let mut ks = kq_max1 - 1;
         let mut jx = 0;
@@ -116,7 +123,7 @@ impl SpkSegmentType1 {
 
         // position interpolation
         let pos = std::array::from_fn(|idx| {
-            let sum: f64 = (1..=(kq[idx] as usize))
+            let sum: f64 = (1..=kq[idx])
                 .rev()
                 .map(|j| divided_diff_array[15 * idx + j - 1] * w[j + ks - 1])
                 .sum();
@@ -131,7 +138,7 @@ impl SpkSegmentType1 {
 
         // velocity interpolation
         let vel = std::array::from_fn(|idx| {
-            let sum: f64 = (1..=(kq[idx] as usize))
+            let sum: f64 = (1..=kq[idx])
                 .rev()
                 .map(|j| divided_diff_array[15 * idx + j - 1] * w[j + ks - 1])
                 .sum();
@@ -202,19 +209,62 @@ impl TryFrom<SpkArray> for SpkSegmentType1 {
 
     #[allow(
         clippy::cast_sign_loss,
-        reason = "This is correct as long as the file is correct."
+        clippy::cast_possible_truncation,
+        reason = "The count is checked to be a positive whole number first."
     )]
     fn try_from(array: SpkArray) -> KeteResult<Self> {
-        let n_records = array.daf[array.daf.len() - 1] as usize;
-        if array.daf.data.len() < n_records * 71 + n_records + 1 {
+        let len = array.daf.len();
+        let n_records = if len == 0 { 0.0 } else { array.daf[len - 1] };
+        if !(n_records.is_finite() && n_records >= 1.0 && n_records.fract() == 0.0)
+            || (n_records as usize)
+                .checked_mul(72)
+                .is_none_or(|x| x + 1 > len)
+        {
             return Err(Error::IOError(format!(
-                "SPK Type 1: data length ({}) too short for {} records",
-                array.daf.data.len(),
-                n_records
+                "SPK Type 1: data length ({len}) inconsistent with {n_records} records"
             )));
         }
-        Ok(Self { array, n_records })
+        Ok(Self {
+            array,
+            n_records: n_records as usize,
+        })
     }
+}
+
+/// Read and check the integration orders of a type 1 or 21 difference line.
+///
+/// `kq_max1` is the maximum integration order plus 1. `kq` holds the three
+/// integration orders, one per component. `max_dim` is the number of difference
+/// coefficients per component. The function returns the orders as integers.
+///
+/// # Errors
+/// Returns [`Error::IOError`] in these cases:
+/// - `kq_max1` is not a whole number in `[2, max_dim + 2]`.
+/// - `kq` does not hold exactly 3 values.
+/// - A value in `kq` is not a whole number in `[0, min(max_dim, kq_max1 - 1)]`.
+#[allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    reason = "Values are checked to be whole numbers in range first."
+)]
+pub(in crate::spk) fn difference_orders(
+    kq_max1: f64,
+    kq: &[f64],
+    max_dim: usize,
+) -> KeteResult<(usize, [usize; 3])> {
+    let whole = |x: f64, hi: usize| x.fract() == 0.0 && (0.0..=hi as f64).contains(&x);
+    if !whole(kq_max1, max_dim + 2) || kq_max1 < 2.0 {
+        return Err(Error::IOError(format!(
+            "SPK difference line has invalid maximum order {kq_max1}."
+        )));
+    }
+    let kq_max1 = kq_max1 as usize;
+    if kq.len() != 3 || kq.iter().any(|&k| !whole(k, max_dim.min(kq_max1 - 1))) {
+        return Err(Error::IOError(format!(
+            "SPK difference line has invalid integration orders {kq:?}."
+        )));
+    }
+    Ok((kq_max1, [kq[0] as usize, kq[1] as usize, kq[2] as usize]))
 }
 
 #[cfg(test)]
@@ -273,5 +323,25 @@ mod tests {
         assert_eq!(data.len(), 250 * 72 + 2 + 1);
         assert_eq!(data[250 * 72], 99.0);
         assert_eq!(data[250 * 72 + 1], 199.0);
+    }
+
+    #[test]
+    fn type1_rejects_invalid_orders() {
+        assert!(difference_orders(2.0, &[0.0, 0.0, 0.0], 15).is_ok());
+        assert!(difference_orders(17.0, &[15.0, 15.0, 15.0], 15).is_ok());
+        assert!(difference_orders(1.0, &[0.0, 0.0, 0.0], 15).is_err());
+        assert!(difference_orders(18.0, &[0.0, 0.0, 0.0], 15).is_err());
+        assert!(difference_orders(3.0, &[3.0, 0.0, 0.0], 15).is_err());
+        assert!(difference_orders(3.0, &[f64::NAN, 0.0, 0.0], 15).is_err());
+    }
+
+    #[test]
+    fn type1_rejects_inconsistent_trailer() {
+        let seg = segment(&[0.0, 100.0], 100.0);
+        let mut data = seg.array.daf.data.to_vec();
+        let n = data.len();
+        data[n - 1] = 3.0;
+        let array = SpkArray::new(1000, 10, 1, 1, 0.0, 100.0, data, "bad".into());
+        assert!(SpkSegmentType1::try_from(array).is_err());
     }
 }

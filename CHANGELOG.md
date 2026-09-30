@@ -79,6 +79,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SPK types 9 and 13 no longer shift even-sized interpolation windows by one point.
 - SPK type 18 chooses its interpolation window as SPICE does, and rejects windows
   and segments SPICE rejects.
+- Malformed SPK type 1, 9, 13 and 21 segments raise an error instead of panicking.
 - SPK type 1 and 21 writers include the epoch directory SPICE expects, and a query
   past the last record no longer reads past the segment data.
 
