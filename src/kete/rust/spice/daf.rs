@@ -13,17 +13,23 @@ pub fn daf_header_info_py(filename: &str) -> PyResult<String> {
 
 /// Convert a big-endian DAF/SPK file to a little-endian copy.
 ///
-/// Some very old NAIF-distributed SPK files (e.g., Spitzer) are stored in
-/// big-endian byte order, which kete cannot read directly. This function
-/// reads the input file, byte-swaps all numeric values, and writes a
-/// little-endian copy to ``output_filename``.
+/// Some old SPK files from NAIF, for example Spitzer, are big-endian. kete
+/// reads these files and converts them in memory on each load. This function
+/// byte-swaps all numeric values of the input file. It writes the
+/// little-endian copy to ``output_filename`` once.
 ///
 /// Parameters
 /// ----------
-/// input_filename :
-///     Path to the big-endian DAF/SPK file.
-/// output_filename :
-///     Path to write the converted little-endian file.
+/// input_filename : str
+///   Path to the big-endian DAF/SPK file.
+/// output_filename : str
+///   Path to write the converted little-endian file.
+///
+/// Raises
+/// ------
+/// ValueError
+///   If the input file cannot be read, is not a valid big-endian DAF file, or
+///   if the output file cannot be written.
 #[pyfunction]
 #[pyo3(name = "daf_convert_big_to_little_endian")]
 pub fn daf_convert_be_py(input_filename: &str, output_filename: &str) -> PyResult<()> {

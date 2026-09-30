@@ -29,22 +29,23 @@ pub struct SpkSegmentType21 {
 }
 
 impl SpkSegmentType21 {
-    /// Create a Type 21 (Extended Modified Difference Arrays) SPK array from raw records.
+    /// Create a Type 21 (Extended Modified Difference Arrays) SPK array.
     ///
-    /// # Arguments
-    /// * `object_id`    - NAIF ID of the body.
-    /// * `center_id`    - NAIF ID of the center body.
-    /// * `frame_id`     - NAIF frame ID.
-    /// * `records`      - Flat slice of `n * (4*n_coef+11)` pre-computed values.
-    /// * `epochs`       - n epoch values (SPICE seconds from J2000).
-    /// * `n_coef`       - Number of coefficients per component.
-    /// * `jds_start`    - Segment start, TDB seconds from J2000.
-    /// * `jds_end`      - Segment end, TDB seconds from J2000.
-    /// * `segment_name` - Name stored in the DAF name record (max 40 chars).
+    /// `object_id` is the NAIF ID of the body, and `center_id` is the NAIF ID
+    /// of the center body. `frame_id` is the NAIF frame ID. `records` is a flat
+    /// slice of `4 * n_coef + 11` difference-line values per record. `epochs`
+    /// holds one epoch per record, in TDB seconds from J2000. `n_coef` is the
+    /// number of difference coefficients per component. `jds_start` and
+    /// `jds_end` are the segment start and end, in TDB seconds from J2000.
+    /// `segment_name` is the name stored in the DAF name record, which holds at
+    /// most 40 characters.
+    ///
+    /// The reader rejects a segment with an `n_coef` of 0 or greater than 25.
+    /// This function does not check that limit.
     ///
     /// # Errors
-    /// Returns an error if `records` length is not `n * (4 * n_coef + 11)` where
-    /// `n = epochs.len()`.
+    /// Returns [`Error::ValueError`] if `epochs` is empty, or if the length of
+    /// `records` is not `(4 * n_coef + 11) * epochs.len()`.
     pub fn new_array(
         object_id: i32,
         center_id: i32,

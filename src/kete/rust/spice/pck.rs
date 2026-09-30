@@ -110,8 +110,12 @@ pub fn pck_reset_py() {
     LOADED_PCK.write().unwrap().reset()
 }
 
-/// Return a list of all loaded objects in the PCK singleton.
-/// This is a list of the center NAIF IDs of the segments.
+/// Return the frame IDs of all loaded segments in the PCK singleton.
+///
+/// Returns
+/// -------
+/// list of int
+///   Unique frame IDs of the loaded segments, in no particular order.
 #[pyfunction]
 #[pyo3(name = "pck_loaded")]
 pub fn pck_loaded_objects_py() -> Vec<i32> {

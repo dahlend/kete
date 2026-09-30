@@ -25,16 +25,20 @@ pub struct SpkSegmentType9 {
 impl SpkSegmentType9 {
     /// Create a Type 9 (Lagrange interpolation, unequal time steps) SPK array.
     ///
-    /// # Arguments
-    /// * `object_id`    - NAIF ID of the body.
-    /// * `center_id`    - NAIF ID of the center body.
-    /// * `frame_id`     - NAIF frame ID.
-    /// * `states`       - `(epoch, [x,y,z] km, [vx,vy,vz] km/s)`, epochs in TDB seconds from J2000, strictly increasing.
-    /// * `degree`       - Lagrange polynomial degree, in `[1, 27]`.
-    /// * `segment_name` - Name stored in the DAF name record (max 40 chars).
+    /// `object_id` is the NAIF ID of the body, and `center_id` is the NAIF ID
+    /// of the center body. `frame_id` is the NAIF frame ID. Each entry of
+    /// `states` is `(epoch, [x, y, z], [vx, vy, vz])`. The epoch is in TDB
+    /// seconds from J2000, the position is in km, and the velocity is in km/s.
+    /// The segment covers the first epoch to the last epoch. `degree` is the
+    /// Lagrange polynomial degree. `segment_name` is the name stored in the DAF
+    /// name record, which holds at most 40 characters.
     ///
     /// # Errors
-    /// Returns an error if `states` is empty or `degree` is outside `[1, 27]`.
+    /// Returns [`Error::ValueError`] in these cases:
+    /// - `states` is empty.
+    /// - `degree` is outside `[1, 27]`.
+    /// - `states` holds fewer than `degree + 1` entries.
+    /// - The epochs are not strictly increasing.
     pub fn new_array(
         object_id: i32,
         center_id: i32,
