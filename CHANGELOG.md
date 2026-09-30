@@ -91,6 +91,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SpkCollection::build_mapping` is removed.
 - `kernel_reload` loads the cache before the default kernels, so the defaults and
   then the given files take precedence.
+- `repack_spk` checks every output record against `threshold_km` and raises where it
+  cannot fit, rather than leaving gaps or unchecked records.
+- `repack_spk` fits the input file's data where the core kernels also cover the object.
 - SPK type 1 and 21 writers include the epoch directory SPICE expects, and a query
   past the last record no longer reads past the segment data.
 

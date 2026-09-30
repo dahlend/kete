@@ -326,45 +326,53 @@ impl PySpkBuilder {
 
 /// Repack an SPK file into a compact output file.
 ///
-/// Loads the input file, fits the positions in the Equatorial J2000 frame
-/// to each object, and writes the result to ``output_filename``.
+/// The function fits the positions of each object in the Equatorial J2000
+/// frame. It writes the result to ``output_filename``. The coverage of each
+/// object is the coverage of its segments in the input file.
 ///
-/// The input file is loaded into the SPK singleton so that center-body chain
-/// lookups work correctly.  It remains loaded after this call.
+/// The function loads the input file into the SPK singleton, where it stays
+/// after the call. The fit reads the loaded kernels, which provide the
+/// center-body chains. The input file loads last, so where another kernel also
+/// covers an object, the fit uses the input file.
 ///
 /// Parameters
 /// ----------
-/// input_filename :
-///     Path to the source ``.bsp`` file to repack.
-/// output_filename :
-///     Destination path for the output ``.bsp`` file. Must not already exist.
-/// object_ids :
-///     NAIF IDs to repack. If ``None``, all objects found in the input file are
-///     repacked.
-/// center_id :
-///     NAIF ID of the reference center body (default 10 = Sun).
-/// threshold_km :
-///     Maximum allowable position error in km (default 0.5).
-/// degree :
-///     Polynomial degree. For Type 2: 1 to 27 (default 15). For Type 13: must
-///     be odd and in 1 to 27 (default 7).
-/// output_type :
-///     SPK segment type: 2 (Chebyshev) or 13 (Hermite). Default 2.
+/// input_filename : str
+///   Path to the source ``.bsp`` file to repack.
+/// output_filename : str
+///   Destination path for the output ``.bsp`` file. The file must not exist.
+/// object_ids : list of int, optional
+///   NAIF IDs to repack. If ``None`` (default), the function repacks all
+///   objects in the input file.
+/// center_id : int, optional
+///   NAIF ID of the center body of the output. If ``None`` (default), each
+///   object uses the center of its first segment in the input file. An object
+///   that is not in the input file uses 10 (Sun).
+/// threshold_km : float, optional
+///   Maximum position error of the output, in km. Default is 0.5.
+/// degree : int, optional
+///   Polynomial degree. For Type 2, 1 to 27, and ``None`` gives 15. For
+///   Type 13, an odd number from 1 to 27, and ``None`` gives 7. Default is
+///   ``None``.
+/// output_type : int, optional
+///   SPK segment type: 2 (Chebyshev) or 13 (Hermite). Default is 2.
 ///
 /// Returns
 /// -------
 /// list[tuple[int, int, int, float]]
-///     Tuples of (object_id, n_segments, n_records_total, max_error_km)
-///     for each repacked object.
+///   One tuple of (object_id, n_segments, n_records_total, threshold_km) for
+///   each repacked object.
 ///
 /// Raises
 /// ------
 /// FileExistsError
-///     If the output file already exists.
+///   If the output file already exists.
 /// ValueError
-///     If no objects are found, or a repack fails for any object.
-/// IOError
-///     If reading the input file or writing the output file fails.
+///   If no objects are found, if ``output_type`` is not 2 or 13, or if the
+///   repack fails for any object.
+/// OSError
+///   If the input file cannot be loaded, or if the output file cannot be
+///   written.
 #[pyfunction]
 #[pyo3(name = "repack_spk", signature = (input_filename, output_filename, object_ids=None, center_id=None, threshold_km=0.5, degree=None, output_type=2))]
 #[allow(clippy::too_many_arguments)]
@@ -434,23 +442,22 @@ pub fn repack_spk_py(
         repack_comment.push_str(orig);
     }
 
-    // Load the input file and core planetary kernels into the singleton so
-    // center-chain lookups work (e.g. WISE center=399 needs de440s for
-    // 399->3->0->10).  load_core() calls build_mapping() internally.
-    {
-        let mut singleton = LOADED_SPK
-            .write()
-            .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("SPK lock poisoned"))?;
-        singleton.load_file(input_filename).map_err(|e| {
+    // The fit reads the loaded kernels, so center chains can use any kernel the
+    // user loaded. The input file loads last, so its data takes precedence over
+    // every other kernel that covers the object.
+    LOADED_SPK
+        .write()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("SPK lock poisoned"))?
+        .load_file(input_filename)
+        .map_err(|e| {
             pyo3::exceptions::PyIOError::new_err(format!(
                 "Failed to load SPK file '{}': {}",
                 input_filename, e
             ))
         })?;
-        singleton.load_core().map_err(|e| {
-            pyo3::exceptions::PyIOError::new_err(format!("Failed to load core kernels: {e}"))
-        })?;
-    }
+    let spk = LOADED_SPK
+        .read()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("SPK lock poisoned"))?;
 
     let ids: Vec<i32> = match object_ids {
         Some(ids) => ids,
@@ -466,10 +473,6 @@ pub fn repack_spk_py(
             "No objects found to repack.",
         ));
     }
-
-    let spk = LOADED_SPK
-        .try_read()
-        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("SPK lock poisoned"))?;
 
     let mut daf = DafFile::new_spk("kete repack", &repack_comment);
     let mut summary = Vec::with_capacity(ids.len());
@@ -509,7 +512,6 @@ pub fn repack_spk_py(
         }
     }
 
-    drop(spk);
     daf.write_file(output_filename).map_err(|e| {
         pyo3::exceptions::PyIOError::new_err(format!(
             "Failed to write SPK file '{}': {}",
