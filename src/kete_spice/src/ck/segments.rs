@@ -30,6 +30,8 @@
 use super::CkArray;
 use super::type2::CkSegmentType2;
 use super::type3::CkSegmentType3;
+use super::type5::CkSegmentType5;
+use super::type6::CkSegmentType6;
 use kete_core::errors::{Error, KeteResult};
 use kete_core::frames::NonInertialFrame;
 use kete_core::time::{TDB, Time};
@@ -38,6 +40,8 @@ use kete_core::time::{TDB, Time};
 pub(crate) enum CkSegment {
     Type2(CkSegmentType2),
     Type3(CkSegmentType3),
+    Type5(CkSegmentType5),
+    Type6(CkSegmentType6),
 }
 
 impl CkSegment {
@@ -57,6 +61,8 @@ impl CkSegment {
         match self {
             Self::Type3(seg) => seg.try_get_orientation(time),
             Self::Type2(seg) => seg.try_get_orientation(time),
+            Self::Type5(seg) => seg.try_get_orientation(time),
+            Self::Type6(seg) => seg.try_get_orientation(time),
         }
     }
 }
@@ -70,6 +76,8 @@ impl CkSegment {
         match self {
             Self::Type2(seg) => seg.has_data_at(tick),
             Self::Type3(seg) => seg.has_data_at(tick),
+            Self::Type5(seg) => seg.has_data_at(tick),
+            Self::Type6(seg) => seg.has_data_at(tick),
         }
     }
 }
@@ -79,6 +87,8 @@ impl<'a> From<&'a CkSegment> for &'a CkArray {
         match value {
             CkSegment::Type3(seg) => &seg.array,
             CkSegment::Type2(seg) => &seg.array,
+            CkSegment::Type5(seg) => &seg.array,
+            CkSegment::Type6(seg) => &seg.array,
         }
     }
 }
@@ -88,6 +98,8 @@ impl From<CkSegment> for CkArray {
         match value {
             CkSegment::Type3(seg) => seg.array,
             CkSegment::Type2(seg) => seg.array,
+            CkSegment::Type5(seg) => seg.array,
+            CkSegment::Type6(seg) => seg.array,
         }
     }
 }
@@ -99,6 +111,8 @@ impl TryFrom<CkArray> for CkSegment {
         match array.segment_type {
             2 => Ok(Self::Type2(array.try_into()?)),
             3 => Ok(Self::Type3(array.try_into()?)),
+            5 => Ok(Self::Type5(array.try_into()?)),
+            6 => Ok(Self::Type6(array.try_into()?)),
             v => Err(Error::IOError(format!(
                 "CK Segment type {v:?} not supported.",
             ))),

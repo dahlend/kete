@@ -405,14 +405,33 @@ pub(crate) fn chebyshev_fit(x_samples: &[f64], y_samples: &[f64], z_samples: &[f
     out
 }
 
-/// Interpolate using lagrange interpolation.
+/// Interpolate using Lagrange interpolation.
 ///
-/// # Arguments
+/// `x` holds the sample times, and `y` holds the function values at those
+/// times. The function overwrites `y` with the divided differences.
+/// `eval_time` is the time at which to evaluate the interpolating polynomial.
 ///
-/// * `times` - Times where the function `f` is evaluated at.
-/// * `y_vals` - The values of the function `f` at the specified times.
-/// * `eval_time` - Time at which to evaluate the interpolation function.
+/// # Panics
+/// Panics if `x` is empty, or if `y` is shorter than `x`. Debug builds also
+/// panic if the lengths differ.
 pub(crate) fn lagrange_interpolation(x: &[f64], y: &mut [f64], eval_time: f64) -> f64 {
+    lagrange_interpolation_both(x, y, eval_time).0
+}
+
+/// Interpolate using Lagrange interpolation, and return the derivative too.
+///
+/// The function returns `(value, derivative)`. The derivative is the derivative
+/// of the interpolating polynomial. The CK type 5 reader uses it as the
+/// quaternion rate for subtypes 1 and 3.
+///
+/// `x` holds the sample times, and `y` holds the function values at those
+/// times. The function overwrites `y` with the divided differences.
+/// `eval_time` is the time at which to evaluate the interpolating polynomial.
+///
+/// # Panics
+/// Panics if `x` is empty, or if `y` is shorter than `x`. Debug builds also
+/// panic if the lengths differ.
+pub(crate) fn lagrange_interpolation_both(x: &[f64], y: &mut [f64], eval_time: f64) -> (f64, f64) {
     debug_assert_eq!(x.len(), y.len(), "Input lengths must match");
 
     // implementation of newton interpolation
@@ -421,12 +440,17 @@ pub(crate) fn lagrange_interpolation(x: &[f64], y: &mut [f64], eval_time: f64) -
             y[idy] = (y[idy] - y[idx - 1]) / (x[idy] - x[idx - 1]);
         }
     }
+    // Evaluate the Newton form with Horner's rule. The derivative follows from
+    // the same recurrence.
     let deg = x.len() - 1;
     let mut val = y[deg];
+    let mut der = 0.0_f64;
     for k in 1..=deg {
-        val = y[deg - k] + (eval_time - x[deg - k]) * val;
+        let dt = eval_time - x[deg - k];
+        der = der.mul_add(dt, val);
+        val = y[deg - k] + dt * val;
     }
-    val
+    (val, der)
 }
 
 #[cfg(test)]

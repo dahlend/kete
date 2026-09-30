@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `NonGravModel.with_free` to warm-start non-grav fits.
 - `DiffuseState.mean_eta` and `max_unresolved_weight`.
 - SPK segment type 19 (ESOC/DDID piecewise interpolation).
+- CK segment types 5 and 6 (MEX/Rosetta attitude interpolation).
 
 ### Changed
 

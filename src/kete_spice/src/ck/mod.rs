@@ -39,10 +39,14 @@ pub(crate) mod segments;
 pub mod type2;
 /// CK Type 3: Discrete pointing, linear interpolation.
 pub mod type3;
+pub mod type5;
+pub mod type6;
 
 pub use array::CkArray;
 pub use type2::CkSegmentType2;
 pub use type3::CkSegmentType3;
+pub use type5::CkSegmentType5;
+pub use type6::CkSegmentType6;
 
 use kete_core::{
     errors::{Error, KeteResult},
@@ -110,6 +114,8 @@ impl CkCollection {
     /// - [`Error::ValueError`] if no SCLK clock is loaded for the spacecraft.
     /// - [`Error::Bounds`] if no loaded segment holds pointing for the
     ///   instrument at `jd`.
+    /// - [`Error::IOError`] or [`Error::ValueError`] if the selected segment
+    ///   is a type 6 segment with a malformed mini-segment.
     pub fn try_get_frame(
         &self,
         jd: f64,
