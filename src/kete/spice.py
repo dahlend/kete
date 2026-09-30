@@ -90,40 +90,60 @@ def kernel_reload(
     filenames: list[str] | None = None, include_cache=False, include_planets=True
 ):
     """
-    Load the specified spice kernels into memory, this resets the currently loaded
-    kernels.
+    Reset all loaded kernels, then load the specified kernels into memory.
 
-    If `include_cache` is true, this will reload the kernels contained within the
-    kete cache folder as well.
+    The reset clears the SPK, PCK, CK, and SCLK kernels. The function identifies
+    the type of each file from its header, not its extension. It supports binary
+    SPK, PCK, and CK files, and text SCLK files. Other kernel types, such as
+    frame, instrument, and text PCK kernels, raise a ValueError, and then none
+    of ``filenames`` load. A file of a supported type that fails to load prints
+    a message and is skipped.
+
+    Where kernels overlap in time for the same object, the kernel loaded last is
+    used. The load order is the cache, then the default planetary kernels, then
+    ``filenames`` in the order given. Thus the files in ``filenames`` take
+    precedence over all other kernels. The default planetary kernels take
+    precedence over the cache. For an object in both, the cache supplies data
+    only outside the time range of the default planetary kernels.
 
     Parameters
     ----------
-    filenames :
-        Paths to the specified files to load, this must be a list of filenames.
-    include_cache:
-        This decides if all of the files contained within the kete cache should
-        be loaded in addition to the specified files.
-    include_planets:
-        This decides if the default planetary kernels should be loaded in
-        addition. This includes the de440s, the WISE kernel, and 5 largest main
-        belt asteroids. If these files are not present, they will be downloaded.
+    filenames : list of str, optional
+      Paths of the files to load. The list can mix SPK, PCK, CK, and SCLK
+      files. Default is ``None``, which loads no additional files.
+    include_cache : bool, optional
+      If ``True``, also load the SPK kernels in the kete cache folder. Default
+      is ``False``.
+    include_planets : bool, optional
+      If ``True`` (default), also load the default planetary kernels. These
+      are the de440s planetary ephemeris, the WISE, Spitzer, and SPHEREx
+      spacecraft kernels, the 5 largest main-belt asteroids, and the core PCK
+      files. The function tries to download any missing file.
+
+    Raises
+    ------
+    ValueError
+      If a file in ``filenames`` cannot be read, or does not have the header of
+      a supported kernel type.
     """
     _core.spk_reset()
     _core.pck_reset()
     _core.ck_reset()
+    _core.sclk_reset()
 
-    # Where kernels overlap, the kernel loaded last is used, so the cache loads
-    # first and the given files load last.
+    if include_planets:
+        _download_core_files()
+
+    # The load order sets precedence. Where kernels overlap, the kernel loaded
+    # last is used.
     if include_cache:
         _core.spk_load_cache()
 
     if include_planets:
-        _download_core_files()
         _core.spk_load_core()
         _core.pck_load_core()
 
-    if filenames:
-        _core.spk_load(filenames)
+    _core.kernel_load(filenames or [])
 
 
 def _download_core_files():

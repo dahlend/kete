@@ -40,7 +40,67 @@ pub mod prelude {
     pub use crate::propagation::{SpkNBody, compute_state_transition};
 }
 
+use kete_core::errors::{Error, KeteResult};
 use kete_core::time::{TDB, Time};
+use std::io::Read;
+
+/// Load kernel files of any supported type into their singletons.
+///
+/// The type of each file comes from its first 8 bytes: binary SPK, PCK, and CK
+/// files, and text SCLK files. All headers are read before any file loads, so a
+/// file of an unsupported type loads nothing. A file of a supported type that
+/// fails to load prints a message to stderr and is skipped, as the directory
+/// loaders do.
+///
+/// # Errors
+/// - [`Error::IOError`] if a file cannot be opened or read.
+/// - [`Error::ValueError`] if a file does not have the header of a supported
+///   kernel type.
+/// - [`Error::LockFailed`] if a singleton lock cannot be acquired.
+pub fn load_kernels(filenames: &[String]) -> KeteResult<()> {
+    let mut kinds = Vec::with_capacity(filenames.len());
+    for filename in filenames {
+        // A file shorter than 8 bytes has a shorter header, which matches no type.
+        let mut header = Vec::with_capacity(8);
+        let _ = std::fs::File::open(filename)
+            .and_then(|f| f.take(8).read_to_end(&mut header))
+            .map_err(|e| Error::IOError(format!("{filename}: {e}")))?;
+        match header.as_slice() {
+            b"DAF/SPK " | b"DAF/PCK " | b"DAF/CK  " | b"KPL/SCLK" => kinds.push(header),
+            _ => {
+                return Err(Error::ValueError(format!(
+                    "{filename} has header {:?}, which is not a supported kernel type. \
+                     Supported types are binary SPK, PCK, and CK, and text SCLK.",
+                    String::from_utf8_lossy(&header)
+                )));
+            }
+        }
+    }
+    for (filename, kind) in filenames.iter().zip(kinds) {
+        let load = match kind.as_slice() {
+            b"DAF/SPK " => spk::LOADED_SPK
+                .write()
+                .map_err(|_| Error::LockFailed)?
+                .load_file(filename),
+            b"DAF/PCK " => pck::LOADED_PCK
+                .write()
+                .map_err(|_| Error::LockFailed)?
+                .load_file(filename),
+            b"DAF/CK  " => ck::LOADED_CK
+                .write()
+                .map_err(|_| Error::LockFailed)?
+                .load_file(filename),
+            _ => sclk::LOADED_SCLK
+                .write()
+                .map_err(|_| Error::LockFailed)?
+                .load_file(filename),
+        };
+        if let Err(err) = load {
+            eprintln!("{filename} failed to load. {err}");
+        }
+    }
+    Ok(())
+}
 
 /// Add the segments of a newly loaded file to the front of a segment list.
 ///
@@ -146,6 +206,23 @@ mod tests {
     /// the position that a segment comes from.
     fn keys(v: &[(i32, &'static str)]) -> Vec<&'static str> {
         v.iter().map(|x| x.1).collect()
+    }
+
+    /// An unsupported or short header is an error, and a missing file names itself.
+    #[test]
+    fn load_kernels_rejects_unsupported_files() {
+        let path = std::env::temp_dir().join("kete_load_kernels_test.tf");
+        std::fs::write(&path, "KPL/FK\n").unwrap();
+        let path = path.to_str().unwrap().to_string();
+        assert!(matches!(
+            load_kernels(std::slice::from_ref(&path)),
+            Err(Error::ValueError(_))
+        ));
+        let missing = format!("{path}.missing");
+        assert!(matches!(
+            load_kernels(std::slice::from_ref(&missing)),
+            Err(Error::IOError(msg)) if msg.contains(&missing)
+        ));
     }
 
     #[test]

@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `DiffuseState.mean_eta` and `max_unresolved_weight`.
 - SPK segment type 19 (ESOC/DDID piecewise interpolation).
 - CK segment types 5 and 6 (MEX/Rosetta attitude interpolation).
+- `kernel_reload` also loads CK and SCLK kernels, detecting each file's type from
+  its header, and raises `ValueError` for unsupported kernel types.
 
 ### Changed
 
@@ -104,6 +106,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   frames defined relative to another CK frame, and a bare list passed to
   `instrument_equatorial_to_frame` is equatorial, not ecliptic.
 - Malformed CK type 2 and 3 segments raise an error instead of panicking.
+- `kernel_reload` also clears loaded SCLK kernels.
 - SPK type 1 and 21 writers include the epoch directory SPICE expects, and a query
   past the last record no longer reads past the segment data.
 
