@@ -73,6 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `compute_stm` and `propagate_covariance` use the input state's frame.
 - Non-grav lower bounds were applied to the wrong parameter with some held fixed.
 - `fit_orbit` no longer stalls on a non-grav parameter at its lower bound.
+- Fixed outlier rejection and convergence in `fit_orbit`, priors in `fit_orbit_mcmc`, and epochs in the orbit filter.
 - `fit_orbit_ranging` uses the full RA/Dec covariance, scores an orbit only against
   every observation, and raises SPICE errors rather than hiding them.
 - `fit_orbit_ranging` overlaps its attributable windows, redraws invalid samples, and

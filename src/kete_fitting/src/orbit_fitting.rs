@@ -626,22 +626,15 @@ fn solve_with_rejection(
             mask,
             &sweep_ng_values,
         )?;
-        // CMC leverage uses the Fisher inverse C_0 = (H^T W H)^+, which is
-        // stored directly in cov_matrix (no chi-square scaling applied).
-        let cov_fisher = &fit.uncertain_state.cov_matrix;
+        // CMC leverage uses the Fisher inverse C_0 = (H^T W H)^+ (no chi-square
+        // scaling applied), in the cartesian coordinates of the design matrix; the
+        // state holds it in element coordinates. Re-centering does not change it.
+        let cov_fisher = &fit.uncertain_state.cartesian_covariance::<Equatorial>()?;
 
         let mut z_scores: Vec<f64> = Vec::with_capacity(sweep.len());
         for entry in &sweep {
             let m = entry.weight_matrix.nrows();
-            // Parameter-space design block: H_i = h_local * phi_cum (m x d).
-            let h_full: DMatrix<f64> = &entry.h_local * &entry.phi_cum;
-            let hch: DMatrix<f64> = &h_full * cov_fisher * h_full.transpose();
-            // leverage = tr(H C_0 H^T W)  (full matrix trace for non-diagonal W).
-            // A fit that did not converge may have no covariance (NaN); it is then
-            // scored without the leverage correction.
-            let leverage: f64 = Some((&hch * &entry.weight_matrix).trace())
-                .filter(|l| l.is_finite())
-                .unwrap_or(0.0);
+            let leverage = cmc_leverage(entry, cov_fisher);
             // chi2 = r^T W r  (full weight matrix, includes timing correction).
             let wr = &entry.weight_matrix * &entry.residual;
             let chi2: f64 = entry.residual.dot(&wr);
@@ -737,6 +730,21 @@ fn solve_with_rejection(
     }
 
     Ok(fit)
+}
+
+/// CMC leverage of one observation, `tr(H C_0 H^T W)` (the full trace, for a
+/// non-diagonal `W`), with `cov_fisher` the Fisher inverse in the cartesian
+/// coordinates of the design matrix.
+///
+/// A fit that did not converge may have no covariance (NaN); its observations
+/// are then scored without the leverage correction, a leverage of 0.
+fn cmc_leverage(entry: &StmObs, cov_fisher: &DMatrix<f64>) -> f64 {
+    // Parameter-space design block: H_i = h_local * phi_cum (m x d).
+    let h_full: DMatrix<f64> = &entry.h_local * &entry.phi_cum;
+    let hch: DMatrix<f64> = &h_full * cov_fisher * h_full.transpose();
+    Some((&hch * &entry.weight_matrix).trace())
+        .filter(|l| l.is_finite())
+        .unwrap_or(0.0)
 }
 
 /// Adaptive wrapper around [`solve_with_rejection`] that widens the
@@ -954,6 +962,14 @@ fn iterate_to_convergence(
         let dx = solve_damped_within_ng_bounds(&info_mat, &rhs_vec, lambda, mask, &ng_values)?;
         let dx = limit_correction(dx);
         let dx = backtrack_to_ng_bounds(dx, mask, &ng_values);
+        // Damping shrinks the step anywhere, so convergence is judged on the
+        // undamped step.
+        let dx_undamped = if lambda > 0.0 {
+            let step = solve_damped_within_ng_bounds(&info_mat, &rhs_vec, 0.0, mask, &ng_values)?;
+            backtrack_to_ng_bounds(limit_correction(step), mask, &ng_values)
+        } else {
+            dx.clone()
+        };
 
         // Convergence test. The raw `dx.norm()` (mixed units of AU,
         // AU/day, and arbitrary non-grav coefficients) is dominated
@@ -964,11 +980,11 @@ fn iterate_to_convergence(
         // error" units (sqrt(|N_ii|) times the step), which is scale-
         // invariant. Both criteria must hold.
         let mut max_scaled_step = 0.0_f64;
-        for i in 0..dx.len() {
+        for i in 0..dx_undamped.len() {
             let s = info_mat[(i, i)].abs().sqrt();
-            max_scaled_step = max_scaled_step.max((dx[i] * s).abs());
+            max_scaled_step = max_scaled_step.max((dx_undamped[i] * s).abs());
         }
-        let converged = dx.norm() < tol && max_scaled_step < 1e-3;
+        let converged = dx_undamped.norm() < tol && max_scaled_step < 1e-3;
 
         // Build trial state.
         let mut trial_state = state_epoch.clone();
@@ -2054,6 +2070,46 @@ mod tests {
             v_earth * t.cos() * incl.sin(),
         ];
         (pos, vel)
+    }
+
+    /// The CMC leverages of all the observations sum to the number of fit
+    /// parameters, `tr(C N) = n`, which holds only for the covariance in the
+    /// coordinates of the design matrix.
+    #[test]
+    fn test_cmc_leverage_sums_to_parameter_count() {
+        ensure_test_spk();
+        let r = 1.5;
+        let v = (GMS / r).sqrt();
+        let state = make_state([r, 0.0, 0.0], [0.0, v, 0.0], 2460000.5);
+        let epochs: Vec<f64> = (0..15).map(|i| 2460000.5 + f64::from(i) * 6.0).collect();
+        let observations = synth_observations(&state, &epochs, earth_observer, 1e-7, None);
+        let included = vec![true; observations.len()];
+        let fit = iterate_to_convergence(
+            &state,
+            &observations,
+            &included,
+            false,
+            None,
+            Vec::new(),
+            30,
+            1e-10,
+        )
+        .unwrap();
+        let sweep = stm_sweep(
+            &ssb_state(&fit.uncertain_state).unwrap(),
+            &observations,
+            &included,
+            false,
+            None,
+            &[],
+        )
+        .unwrap();
+        let cov = fit
+            .uncertain_state
+            .cartesian_covariance::<Equatorial>()
+            .unwrap();
+        let total: f64 = sweep.iter().map(|entry| cmc_leverage(entry, &cov)).sum();
+        assert!((total - 6.0).abs() < 1e-6, "leverage sum {total}");
     }
 
     #[test]

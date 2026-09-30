@@ -41,6 +41,7 @@ use kete_core::forces::{NonGravMask, ParameterizedForce};
 use kete_core::frames::{CenterBody, Equatorial, SSB};
 use kete_core::kepler::light_time_correct;
 use kete_core::prelude::{Error, KeteResult, State, UncertainState};
+use kete_core::time::{TDB, Time};
 use kete_spice::prelude::{LOADED_SPK, compute_state_transition};
 use nalgebra::{DMatrix, DVector};
 
@@ -56,6 +57,9 @@ struct FilterEpoch {
     p_predicted: DMatrix<f64>,
     /// STM from the *previous* epoch to this one.
     phi: DMatrix<f64>,
+    /// Epoch of the states: the observation's, or the previous entry's when the
+    /// propagation to the observation failed.
+    epoch: Time<TDB>,
 }
 
 /// Pack a [`State`] (and optional non-grav params) into a state vector.
@@ -169,6 +173,7 @@ fn push_skipped_epoch(
     xv_pred: &DVector<f64>,
     cov_pred: &DMatrix<f64>,
     phi: DMatrix<f64>,
+    epoch: Time<TDB>,
 ) {
     epochs.push(FilterEpoch {
         x_filtered: xv_pred.clone(),
@@ -176,6 +181,7 @@ fn push_skipped_epoch(
         x_predicted: xv_pred.clone(),
         p_predicted: cov_pred.clone(),
         phi,
+        epoch,
     });
     accepted_flags.push(false);
 }
@@ -315,11 +321,14 @@ pub fn fit_orbit_filter(
         let (xv_smoothed, cov_smoothed) = backward_pass(&epochs, xv_fwd, cov_fwd, dim);
 
         // The smoothed state at the first epoch becomes the new initial state.
+        // The change is measured at that epoch, where the previous initial
+        // state's forward pass also stored its first state.
         let new_xv = &xv_smoothed[0];
-        let change = (new_xv - state_to_vec(&iter_state, non_grav, &ng_values)).norm();
+        let change = (new_xv - &epochs[0].x_predicted).norm();
 
         // Update initial state for next iteration.
         iter_state = vec_to_state(new_xv, &iter_state, non_grav, &mut ng_values);
+        iter_state.epoch = epochs[0].epoch;
 
         // Update covariance for the next iteration: inflate the smoothed
         // covariance so subsequent passes start with a tighter (but still
@@ -419,7 +428,14 @@ fn forward_pass(
                 // State remains at the current epoch; the next observation
                 // will attempt a longer propagation from here.
                 let phi = DMatrix::identity(dim, dim);
-                push_skipped_epoch(&mut epochs, &mut accepted_flags, &xv, &cov, phi);
+                push_skipped_epoch(
+                    &mut epochs,
+                    &mut accepted_flags,
+                    &xv,
+                    &cov,
+                    phi,
+                    state_cur.epoch,
+                );
                 continue;
             }
         } else {
@@ -435,6 +451,7 @@ fn forward_pass(
                 &xv_pred,
                 &cov_pred,
                 phi_full,
+                new_state.epoch,
             );
             xv = xv_pred;
             cov = cov_pred;
@@ -450,6 +467,7 @@ fn forward_pass(
                 &xv_pred,
                 &cov_pred,
                 phi_full,
+                new_state.epoch,
             );
             xv = xv_pred;
             cov = cov_pred;
@@ -463,6 +481,7 @@ fn forward_pass(
                 &xv_pred,
                 &cov_pred,
                 phi_full,
+                new_state.epoch,
             );
             xv = xv_pred;
             cov = cov_pred;
@@ -476,6 +495,7 @@ fn forward_pass(
                 &xv_pred,
                 &cov_pred,
                 phi_full,
+                new_state.epoch,
             );
             xv = xv_pred;
             cov = cov_pred;
@@ -496,6 +516,7 @@ fn forward_pass(
                 &xv_pred,
                 &cov_pred,
                 phi_full,
+                new_state.epoch,
             );
             xv = xv_pred;
             cov = cov_pred;
@@ -514,6 +535,7 @@ fn forward_pass(
                 &xv_pred,
                 &cov_pred,
                 phi_full,
+                new_state.epoch,
             );
             xv = xv_pred;
             cov = cov_pred;
@@ -531,6 +553,7 @@ fn forward_pass(
                 &xv_pred,
                 &cov_pred,
                 phi_full,
+                new_state.epoch,
             );
             xv = xv_pred;
             cov = cov_pred;
@@ -559,6 +582,7 @@ fn forward_pass(
             x_predicted: xv_pred,
             p_predicted: cov_pred,
             phi: phi_full,
+            epoch: new_state.epoch,
         });
         accepted_flags.push(true);
 
@@ -639,7 +663,7 @@ fn build_result(
     let final_p = &cov_smoothed[0];
 
     let mut result_state = vec_to_state(final_x, initial_state, mask, ng_values);
-    result_state.epoch = sorted[0].epoch();
+    result_state.epoch = epochs[0].epoch;
 
     let free_params = ng_values.clone();
     // The filter solves in cartesian parameters and converts its covariance into element
@@ -812,6 +836,32 @@ mod tests {
         let state = make_state([1.0, 0.0, 0.0], [0.0, 0.01, 0.0], 2_451_545.0);
         let result = fit_orbit_filter(&state, &[], true, None, 16.0, 0.0);
         assert!(result.is_err());
+    }
+
+    /// A starting state at an epoch before the first observation: the fit is at
+    /// the first observation's epoch, and every iteration after the first starts
+    /// from the smoothed state at that epoch.
+    #[test]
+    fn test_filter_initial_epoch_before_first_observation() {
+        ensure_test_spk();
+        let radius = 1.5;
+        let vel = (GMS / radius).sqrt();
+        let true_state = make_state([radius, 0.0, 0.0], [0.0, vel, 0.0], 2_460_000.5);
+        let epochs: Vec<f64> = (0..20).map(|i| 2_460_000.5 + f64::from(i) * 6.0).collect();
+        let observations = synth_observations(&true_state, &epochs, 1e-6);
+
+        let spk = LOADED_SPK.try_read().unwrap();
+        let start = true_state
+            .clone()
+            .propagate_with(&SpkNBody::new(&spk, false), Time::<TDB>::new(2_459_995.5))
+            .unwrap();
+        drop(spk);
+
+        let fit = fit_orbit_filter(&start, &observations, false, None, 100.0, 0.0).unwrap();
+        let fitted = crate::orbit_fitting::ssb_state(&fit.uncertain_state).unwrap();
+        assert!((fitted.epoch.jd - 2_460_000.5).abs() < 1e-9);
+        let pos_err = (fitted.pos - true_state.pos).norm();
+        assert!(pos_err < 1e-6, "Position error {pos_err:.6e} too large");
     }
 
     /// EKF+RTS should recover a circular orbit from synthetic observations

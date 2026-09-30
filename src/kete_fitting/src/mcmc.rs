@@ -113,9 +113,9 @@ impl LogpError for PropagationError {
     }
 }
 
-/// Minimum barycentric distance (AU) before penalty ramps up.
+/// Minimum heliocentric distance (AU) before penalty ramps up.
 const PRIOR_R_MIN: f64 = 0.01;
-/// Maximum barycentric distance (AU) before penalty ramps up.
+/// Maximum heliocentric distance (AU) before penalty ramps up.
 const PRIOR_R_MAX: f64 = 1000.0;
 /// Steepness of the logistic barrier.
 const PRIOR_K: f64 = 100.0;
@@ -123,8 +123,8 @@ const PRIOR_K: f64 = 100.0;
 /// Smooth physical prior: penalizes unphysical orbits with differentiable
 /// logistic barriers so the gradient is always well-defined.
 ///
-/// Penalties:
-///   - barycentric distance below `PRIOR_R_MIN` or above `PRIOR_R_MAX`
+/// Penalties, on the heliocentric state:
+///   - distance below `PRIOR_R_MIN` or above `PRIOR_R_MAX`
 ///   - orbital eccentricity `e >= 1` (unbound / hyperbolic orbits)
 ///
 /// The eccentricity barrier uses `e^2` (via the eccentricity vector) rather
@@ -271,6 +271,9 @@ struct OrbitalPosterior {
     ng_mask: Option<NonGravMask>,
     /// Seed non-grav parameter values (empty when `ng_mask` is `None`).
     ng_seed_values: Vec<f64>,
+    /// SSB position and velocity of the Sun at the reference epoch; the unbound
+    /// wall and the physical prior apply to the heliocentric state.
+    sun: ([f64; 3], [f64; 3]),
 }
 
 impl OrbitalPosterior {
@@ -378,8 +381,11 @@ impl CpuLogpFunc for OrbitalPosterior {
     fn logp(&mut self, position: &[f64], gradient: &mut [f64]) -> Result<f64, Self::LogpError> {
         let cart_full = self.xi_to_cart(position);
         let (trial_state, trial_ng_values, pos, vel) = self.vec_to_state(&cart_full);
+        let (sun_pos, sun_vel) = self.sun;
+        let pos: [f64; 3] = std::array::from_fn(|i| pos[i] - sun_pos[i]);
+        let vel: [f64; 3] = std::array::from_fn(|i| vel[i] - sun_vel[i]);
 
-        // Hard wall: reject unbound (hyperbolic) proposals.
+        // Hard wall: reject unbound (hyperbolic) proposals about the Sun.
         // Two-body energy: E = v^2/2 - mu/r.  Bound <=> E < 0 <=> v^2 < 2*mu/r.
         let r2 = pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2];
         let v2 = vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2];
@@ -577,6 +583,13 @@ pub fn fit_orbit_mcmc(
             spk.try_to_ssb(propagated)
         })
         .collect::<KeteResult<Vec<_>>>()?;
+    let sun = {
+        let helio = spk.try_to_sun(seeds[0].clone())?;
+        (
+            (seeds[0].pos - helio.pos).into(),
+            (seeds[0].vel - helio.vel).into(),
+        )
+    };
     drop(spk);
 
     // Sort observations once and share across chains.
@@ -645,6 +658,7 @@ pub fn fit_orbit_mcmc(
                 maxdepth,
                 target_accept,
                 rng_seed,
+                sun,
             );
             (seed_idx, result)
         })
@@ -688,6 +702,7 @@ fn run_single_chain(
     maxdepth: u64,
     target_accept: f64,
     chain_idx: u64,
+    sun: ([f64; 3], [f64; 3]),
 ) -> KeteResult<(Vec<Vec<f64>>, Vec<bool>, Vec<f64>)> {
     let np = ng_values.len();
     let d = 6 + np;
@@ -706,16 +721,24 @@ fn run_single_chain(
         seed_vec[6 + k] = ng_values[k];
     }
 
-    // If the seed orbit is hyperbolic, project velocity to make it
-    // marginally bound and fall back to the diagonal heuristic.
-    let r = (pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]).sqrt();
-    let v = (vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2]).sqrt();
+    // If the seed orbit is hyperbolic about the Sun, scale its heliocentric
+    // velocity to make it marginally bound and fall back to the diagonal
+    // heuristic.
+    let (sun_pos, sun_vel) = sun;
+    let r = (0..3)
+        .map(|i| (pos[i] - sun_pos[i]).powi(2))
+        .sum::<f64>()
+        .sqrt();
+    let v = (0..3)
+        .map(|i| (vel[i] - sun_vel[i]).powi(2))
+        .sum::<f64>()
+        .sqrt();
     let v_esc = (2.0 * GMS / r.max(1e-15)).sqrt();
     let whiten_l = if v >= v_esc {
         let scale = 0.95 * v_esc / v;
-        seed_vec[3] *= scale;
-        seed_vec[4] *= scale;
-        seed_vec[5] *= scale;
+        for i in 0..3 {
+            seed_vec[3 + i] = sun_vel[i] + (vel[i] - sun_vel[i]) * scale;
+        }
         diagonal_heuristic_whiten_cart(seed, np)
     } else {
         whiten_l.clone()
@@ -730,6 +753,7 @@ fn run_single_chain(
         include_asteroids,
         ng_mask: mask.cloned(),
         ng_seed_values: ng_values.to_vec(),
+        sun,
     };
 
     let mut settings = LowRankNutsSettings {
@@ -964,6 +988,7 @@ mod tests {
             include_asteroids: false,
             ng_mask: None,
             ng_seed_values: vec![],
+            sun: ([0.0; 3], [0.0; 3]),
         };
 
         // Evaluate at a small offset from the seed.
@@ -997,6 +1022,43 @@ mod tests {
                 (grad[i] - fd).abs()
             );
         }
+    }
+
+    /// The unbound wall and the prior apply to the heliocentric state: an orbit
+    /// bound about the Sun is accepted even where its barycentric velocity is not.
+    #[test]
+    fn logp_is_heliocentric() {
+        use kete_core::desigs::Desig;
+
+        // Bound about the Sun at 1.5 AU (escape speed ~0.0199 AU/day); the Sun's
+        // velocity is exaggerated so the barycentric speed is past escape.
+        let sun = ([0.005, -0.003, 0.0], [0.0, 0.03, 0.0]);
+        let seed_pos = [1.505, -0.003, 0.0];
+        let seed_vel = [0.0, 0.044, 0.0];
+        let seed_state: State<Equatorial, SSB> = State {
+            desig: Desig::Empty,
+            epoch: 2460000.5.into(),
+            pos: seed_pos.into(),
+            vel: seed_vel.into(),
+            center: SSB,
+        };
+        let seed_vec = DVector::from_iterator(6, seed_pos.into_iter().chain(seed_vel));
+        let mut posterior = OrbitalPosterior {
+            seed_state,
+            whiten_l: DMatrix::<f64>::identity(6, 6),
+            seed_vec,
+            obs: Vec::new().into(),
+            included: vec![],
+            include_asteroids: false,
+            ng_mask: None,
+            ng_seed_values: vec![],
+            sun,
+        };
+        let mut grad = [0.0_f64; 6];
+        let lp = posterior.logp(&[0.0; 6], &mut grad).unwrap();
+        assert!(lp.is_finite() && lp > -1.0, "logp = {lp}");
+        posterior.sun = ([0.0; 3], [0.0; 3]);
+        assert!(posterior.logp(&[0.0; 6], &mut grad).is_err());
     }
 
     #[test]
@@ -1050,6 +1112,7 @@ mod tests {
             include_asteroids: false,
             ng_mask: None,
             ng_seed_values: vec![],
+            sun: ([0.0; 3], [0.0; 3]),
         };
 
         // Evaluate at a moderate offset in whitened space.
