@@ -28,7 +28,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use super::PckArray;
-use crate::interpolation::chebyshev_evaluate_both;
+use crate::interpolation::{ChebyshevLayout, chebyshev_evaluate_both};
 use crate::spice_jd_to_jd;
 use crate::spk::type2::build_type2_data;
 use kete_core::errors::Error;
@@ -42,18 +42,20 @@ use kete_core::prelude::KeteResult;
 #[derive(Debug)]
 pub struct PckSegmentType2 {
     pub(in crate::pck) array: PckArray,
-    jd_step: f64,
-    n_coef: usize,
-    record_len: usize,
+    layout: ChebyshevLayout,
 }
 
 impl PckSegmentType2 {
     fn get_record(&self, idx: usize) -> &[f64] {
+        let record_len = self.layout.record_len;
+        // SAFETY: `ChebyshevLayout::from_array` checked that the array holds
+        // `n_records` records of `record_len` values. The only caller takes
+        // `idx` from `record_index`, which returns at most `n_records - 1`.
         unsafe {
             self.array
                 .daf
                 .data
-                .get_unchecked(idx * self.record_len..(idx + 1) * self.record_len)
+                .get_unchecked(idx * record_len..(idx + 1) * record_len)
         }
     }
 
@@ -72,20 +74,15 @@ impl PckSegmentType2 {
         //
         // Rate of change for each of these values can be calculated by using the
         // derivative of chebyshev of the first kind, which is done below.
-        let jds_start = self.array.jds_start;
-        #[allow(
-            clippy::cast_sign_loss,
-            reason = "safe as long as file is correctly formatted."
-        )]
-        let record_index = ((jds - jds_start) / self.jd_step).floor() as usize;
-        let record = self.get_record(record_index);
+        let record = self.get_record(self.layout.record_index(jds));
         let t_mid = record[0];
         let t_step = record[1];
         let t = (jds - t_mid) / t_step;
 
-        let ra_coef = &record[2..(self.n_coef + 2)];
-        let dec_coef = &record[(self.n_coef + 2)..(2 * self.n_coef + 2)];
-        let w_coef = &record[(2 * self.n_coef + 2)..(3 * self.n_coef + 2)];
+        let n_coef = self.layout.n_coef;
+        let ra_coef = &record[2..(n_coef + 2)];
+        let dec_coef = &record[(n_coef + 2)..(2 * n_coef + 2)];
+        let w_coef = &record[(2 * n_coef + 2)..(3 * n_coef + 2)];
 
         let ([ra, dec, w], [ra_der, dec_der, w_der]) =
             chebyshev_evaluate_both(t, ra_coef, dec_coef, w_coef)?;
@@ -111,21 +108,22 @@ impl PckSegmentType2 {
 
     /// Create a Type 2 (Chebyshev Euler angles, fixed intervals) PCK array.
     ///
-    /// # Arguments
-    /// * `frame_id`          - Body-fixed frame ID (e.g., 3000 for Earth).
-    /// * `reference_frame_id`- Reference inertial frame (e.g., 17 for Ecliptic).
-    /// * `cdata`             - Flat Chebyshev coefficients, `(polydg+1)*3` values per record
-    ///   arranged as `[RA_0..RA_d, DEC_0..DEC_d, W_0..W_d]`.
-    /// * `n_records`         - Number of records.
-    /// * `btime`             - Begin time of first interval (SPICE seconds from J2000).
-    /// * `intlen`            - Length of each interval (seconds). Must be > 0.
-    /// * `polydg`            - Polynomial degree, in `[0, 27]`.
-    /// * `jds_start`         - Segment start, TDB seconds from J2000.
-    /// * `jds_end`           - Segment end, TDB seconds from J2000.
-    /// * `segment_name`      - Name stored in the DAF name record (max 40 chars).
+    /// `frame_id` is the body-fixed frame ID, such as 3000 for Earth.
+    /// `reference_frame_id` is the inertial reference frame ID, such as 17 for
+    /// Ecliptic. `cdata` holds the flat Chebyshev coefficients,
+    /// `3 * (polydg + 1)` values per record, in the order
+    /// `[RA_0..RA_d, DEC_0..DEC_d, W_0..W_d]`. `n_records` is the number of
+    /// records. `btime` is the start of the first interval, in TDB seconds from
+    /// J2000. `intlen` is the length of each interval, in seconds. `polydg` is
+    /// the polynomial degree. `jds_start` and `jds_end` are the segment start
+    /// and end, in TDB seconds from J2000. `segment_name` is the name stored in
+    /// the DAF name record.
     ///
     /// # Errors
-    /// Returns an error if the data builder rejects the inputs.
+    /// Returns [`Error::ValueError`] in these cases:
+    /// - `polydg` is greater than 27.
+    /// - `intlen` is zero or negative.
+    /// - The length of `cdata` is not `3 * (polydg + 1) * n_records`.
     pub fn new_array(
         frame_id: i32,
         reference_frame_id: i32,
@@ -154,33 +152,9 @@ impl PckSegmentType2 {
 impl TryFrom<PckArray> for PckSegmentType2 {
     type Error = Error;
 
-    #[allow(
-        clippy::cast_sign_loss,
-        reason = "cast should work except when file is incorrectly formatted"
-    )]
     fn try_from(array: PckArray) -> Result<Self, Self::Error> {
-        let n_records = array.daf[array.daf.len() - 1] as usize;
-        let record_len = array.daf[array.daf.len() - 2] as usize;
-        let jd_step = array.daf[array.daf.len() - 3];
-
-        let n_coef = (record_len - 2) / 3;
-
-        // Type 2 layout: [n_records * record_len] [btime, intlen, rsize, n]
-        let expected_len = record_len * n_records + 4;
-
-        if expected_len != array.daf.len() {
-            Err(Error::IOError(format!(
-                "PCK type 2 format error: expected data length {expected_len}, found {}.",
-                array.daf.len()
-            )))?;
-        }
-
-        Ok(Self {
-            array,
-            jd_step,
-            n_coef,
-            record_len,
-        })
+        let layout = ChebyshevLayout::from_array(&array.daf, 3)?;
+        Ok(Self { array, layout })
     }
 }
 
@@ -230,5 +204,44 @@ mod tests {
 
         let pck: PckArray = daf.arrays.into_iter().next().unwrap().try_into().unwrap();
         assert_eq!(pck.frame_id, 3000);
+
+        let seg = PckSegmentType2::try_from(pck).unwrap();
+        assert!(seg.try_get_orientation(1.5 * intlen).is_ok());
+    }
+
+    /// Check that the final instant of the segment uses the last record.
+    ///
+    /// Each record holds constant angles. The angles of the third record are
+    /// 0.2, 0.25, and 0.3 rad.
+    #[test]
+    fn pck_type2_final_instant_uses_the_last_record() {
+        let polydg = 1;
+        let n = 3;
+        let intlen = 86400.0;
+        let mut cdata = Vec::new();
+        for k in 0..n {
+            let k = f64::from(k);
+            for angle in [0.1 * k, 0.05 + 0.1 * k, 0.1 + 0.1 * k] {
+                cdata.extend_from_slice(&[angle, 0.0]);
+            }
+        }
+        let array = PckSegmentType2::new_array(
+            3000,
+            17,
+            &cdata,
+            3,
+            0.0,
+            intlen,
+            polydg,
+            0.0,
+            3.0 * intlen,
+            "constant records",
+        )
+        .unwrap();
+        let seg = PckSegmentType2::try_from(array).unwrap();
+        let frame = seg.try_get_orientation(3.0 * intlen).unwrap();
+        let expected =
+            NonInertialFrame::from_euler::<'Z', 'X', 'Z'>(0.0, [0.2, 0.25, 0.3], [0.0; 3], 17);
+        assert!((frame.rotation.matrix() - expected.rotation.matrix()).norm() < 1e-14);
     }
 }

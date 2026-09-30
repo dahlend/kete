@@ -1,6 +1,6 @@
-//! Interpolation methods used by Spice SPK Files.
+//! Interpolation methods and record layouts for the SPICE kernel readers.
 //!
-//! It is unlikely to be useful outside of reading these files.
+//! The SPK, PCK, and CK readers in this crate use these functions.
 //!
 // BSD 3-Clause License
 //
@@ -32,6 +32,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+use crate::daf::DafArray;
 use kete_core::{errors::Error, prelude::KeteResult};
 use nalgebra::DVector;
 
@@ -61,10 +62,14 @@ pub(crate) fn chebyshev_evaluate_both(
     let n_coef = coefx.len();
 
     if n_coef < 2 {
-        Err(Error::IOError(
-            "File not formatted correctly. Chebyshev polynomial must be greater than order 2."
-                .into(),
-        ))?;
+        // One coefficient is a constant series. No coefficients is a malformed
+        // file.
+        return match (coefx.first(), coefy.first(), coefz.first()) {
+            (Some(x), Some(y), Some(z)) => Ok(([*x, *y, *z], [0.0; 3])),
+            _ => Err(Error::IOError(
+                "File not formatted correctly. Chebyshev polynomial has no coefficients.".into(),
+            )),
+        };
     }
     let x2 = 2.0 * t;
 
@@ -132,10 +137,14 @@ pub(crate) fn chebyshev_evaluate(
     let n_coef = coefx.len();
 
     if n_coef < 2 {
-        Err(Error::IOError(
-            "File not formatted correctly. Chebyshev polynomial must be greater than order 2."
-                .into(),
-        ))?;
+        // One coefficient is a constant series. No coefficients is a malformed
+        // file.
+        return match (coefx.first(), coefy.first(), coefz.first()) {
+            (Some(x), Some(y), Some(z)) => Ok([*x, *y, *z]),
+            _ => Err(Error::IOError(
+                "File not formatted correctly. Chebyshev polynomial has no coefficients.".into(),
+            )),
+        };
     }
     let x2 = 2.0 * t;
 
@@ -159,6 +168,118 @@ pub(crate) fn chebyshev_evaluate(
     }
 
     Ok(val)
+}
+
+/// Record layout of a fixed-interval Chebyshev segment.
+///
+/// SPK types 2 and 3 and PCK type 2 use this layout. The segment holds `N`
+/// records of `RSIZE` values. The segment then ends with the four values
+/// `[INIT, INTLEN, RSIZE, N]`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ChebyshevLayout {
+    /// Start of the first record, in seconds from J2000 TDB.
+    init: f64,
+
+    /// Length of each record, in seconds.
+    intlen: f64,
+
+    /// Number of records.
+    pub(crate) n_records: usize,
+
+    /// Number of values in each record.
+    pub(crate) record_len: usize,
+
+    /// Number of coefficients in each Chebyshev series of a record.
+    pub(crate) n_coef: usize,
+}
+
+impl ChebyshevLayout {
+    /// Read and validate the final four values of a segment.
+    ///
+    /// `n_series` is the number of Chebyshev series in each record. The series
+    /// follow the midpoint and radius of the record.
+    ///
+    /// # Errors
+    /// Returns [`Error::IOError`] in these cases:
+    /// - The array holds fewer than four values.
+    /// - `INIT` or `INTLEN` is not finite, or `INTLEN` is not positive.
+    /// - `RSIZE` or `N` is not a whole number of at least 1.
+    /// - `RSIZE` does not hold `n_series` series after the midpoint and radius.
+    /// - The array length is not `RSIZE * N + 4`.
+    pub(crate) fn from_array(daf: &DafArray, n_series: usize) -> KeteResult<Self> {
+        let len = daf.len();
+        if len < 4 {
+            return Err(Error::IOError(
+                "Chebyshev segment is too short to hold its layout.".into(),
+            ));
+        }
+        let init = daf[len - 4];
+        let intlen = daf[len - 3];
+        let record_len = daf[len - 2];
+        let n_records = daf[len - 1];
+
+        let valid_count = |x: f64| x.is_finite() && x >= 1.0 && x.fract() == 0.0;
+        let valid = valid_count(record_len)
+            && valid_count(n_records)
+            && init.is_finite()
+            && intlen.is_finite()
+            && intlen > 0.0;
+        if !valid {
+            return Err(Error::IOError(format!(
+                "Chebyshev segment layout is invalid: init={init}, intlen={intlen}, \
+                 rsize={record_len}, n={n_records}."
+            )));
+        }
+        #[allow(
+            clippy::cast_sign_loss,
+            clippy::cast_possible_truncation,
+            reason = "Checked above to be positive whole numbers."
+        )]
+        let (record_len, n_records) = (record_len as usize, n_records as usize);
+
+        let n_coef = record_len.saturating_sub(2) / n_series;
+        if n_coef == 0 || n_series * n_coef + 2 != record_len {
+            return Err(Error::IOError(format!(
+                "Chebyshev segment record size {record_len} does not hold {n_series} \
+                 series."
+            )));
+        }
+        if record_len
+            .checked_mul(n_records)
+            .and_then(|x| x.checked_add(4))
+            != Some(len)
+        {
+            return Err(Error::IOError(format!(
+                "Chebyshev segment holds {len} values, expected {n_records} records of \
+                 {record_len} plus 4 layout values."
+            )));
+        }
+        Ok(Self {
+            init,
+            intlen,
+            n_records,
+            record_len,
+            n_coef,
+        })
+    }
+
+    /// Compute the index of the record that covers `jds`.
+    ///
+    /// `jds` is the time in TDB seconds from J2000. The index counts from
+    /// `INIT`. `INIT` can precede the segment start when the segment was cut
+    /// from a larger one. A time before `INIT` gives the first record. A time
+    /// on or after the end of the last record gives the last record.
+    #[inline(always)]
+    pub(crate) fn record_index(&self, jds: f64) -> usize {
+        // The cast saturates, so a time before INIT gives record 0.
+        #[allow(
+            clippy::cast_sign_loss,
+            clippy::cast_possible_truncation,
+            reason = "The cast saturates, and the result is bounded by n_records."
+        )]
+        let idx = ((jds - self.init) / self.intlen).floor() as usize;
+        idx.min(self.n_records - 1)
+    }
 }
 
 /// Interpolate using Hermite interpolation.
