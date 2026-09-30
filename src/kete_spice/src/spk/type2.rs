@@ -7,7 +7,6 @@ use crate::interpolation::chebyshev_evaluate_both;
 use kete_core::constants::AU_KM;
 use kete_core::errors::Error;
 use kete_core::prelude::KeteResult;
-use kete_core::time::{TDB, Time};
 
 /// Chebyshev Polynomials (Position Only)
 ///
@@ -95,8 +94,8 @@ impl SpkSegmentType2 {
     /// * `btime`        - Begin time of first interval (SPICE seconds from J2000).
     /// * `intlen`       - Length of each interval (seconds). Must be > 0.
     /// * `polydg`       - Polynomial degree, in `[0, 27]`.
-    /// * `jd_start`     - Segment start epoch.
-    /// * `jd_end`       - Segment end epoch.
+    /// * `jds_start`    - Segment start, TDB seconds from J2000.
+    /// * `jds_end`      - Segment end, TDB seconds from J2000.
     /// * `segment_name` - Name stored in the DAF name record (max 40 chars).
     ///
     /// # Errors
@@ -111,8 +110,8 @@ impl SpkSegmentType2 {
         btime: f64,
         intlen: f64,
         polydg: usize,
-        jd_start: Time<TDB>,
-        jd_end: Time<TDB>,
+        jds_start: f64,
+        jds_end: f64,
         segment_name: &str,
     ) -> KeteResult<SpkArray> {
         let data = build_type2_data(cdata, n_records, btime, intlen, polydg)?;
@@ -121,8 +120,8 @@ impl SpkSegmentType2 {
             center_id,
             frame_id,
             2,
-            jd_start,
-            jd_end,
+            jds_start,
+            jds_end,
             data,
             segment_name.to_string(),
         ))

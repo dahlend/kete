@@ -9,7 +9,6 @@ use super::SpkArray;
 use kete_core::constants::AU_KM;
 use kete_core::errors::Error;
 use kete_core::prelude::KeteResult;
-use kete_core::time::{TDB, Time};
 
 /// Extended Modified Difference Arrays
 ///
@@ -33,8 +32,8 @@ impl SpkSegmentType21 {
     /// * `records`      - Flat slice of `n * (4*n_coef+11)` pre-computed values.
     /// * `epochs`       - n epoch values (SPICE seconds from J2000).
     /// * `n_coef`       - Number of coefficients per component.
-    /// * `jd_start`     - Segment start epoch.
-    /// * `jd_end`       - Segment end epoch.
+    /// * `jds_start`    - Segment start, TDB seconds from J2000.
+    /// * `jds_end`      - Segment end, TDB seconds from J2000.
     /// * `segment_name` - Name stored in the DAF name record (max 40 chars).
     ///
     /// # Errors
@@ -47,8 +46,8 @@ impl SpkSegmentType21 {
         records: &[f64],
         epochs: &[f64],
         n_coef: usize,
-        jd_start: Time<TDB>,
-        jd_end: Time<TDB>,
+        jds_start: f64,
+        jds_end: f64,
         segment_name: &str,
     ) -> KeteResult<SpkArray> {
         let record_len = 4 * n_coef + 11;
@@ -78,8 +77,8 @@ impl SpkSegmentType21 {
             center_id,
             frame_id,
             21,
-            jd_start,
-            jd_end,
+            jds_start,
+            jds_end,
             data,
             segment_name.to_string(),
         ))

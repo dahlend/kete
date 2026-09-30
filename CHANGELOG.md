@@ -45,6 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   covariance instead of zeros.
 - `fit_orbit_ranging` refines for up to 12 rounds, up from 4.
 - `fit_orbit_ranging` is faster on multi-night arcs.
+- Rust: SPK and PCK writers take coverage and epochs in TDB seconds from J2000
+  rather than `Time<TDB>`.
 
 ### Fixed
 

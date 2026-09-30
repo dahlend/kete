@@ -20,7 +20,6 @@ use kete_core::constants::AU_KM;
 use kete_core::errors::Error;
 use kete_core::frames::Equatorial;
 use kete_core::prelude::KeteResult;
-use kete_core::time::{TDB, Time};
 use rayon::prelude::*;
 
 use super::SpkArray;
@@ -163,24 +162,18 @@ fn fit_subrange(
         threshold_km,
         degree,
         segments,
+    ) && let Ok(array) = fit_range(
+        source,
+        object_id,
+        center_id,
+        t_start,
+        t_end,
+        step,
+        degree,
+        threshold_km,
+        segments,
     ) {
-        let jd_start = spice_jd_to_jd(t_start);
-        let jd_end = spice_jd_to_jd(t_end);
-        if let Ok(array) = fit_range(
-            source,
-            object_id,
-            center_id,
-            t_start,
-            t_end,
-            step,
-            degree,
-            threshold_km,
-            jd_start,
-            jd_end,
-            segments,
-        ) {
-            return Ok(vec![array]);
-        }
+        return Ok(vec![array]);
     }
 
     // At max recursion depth, force-fit at minimum step size (no validation)
@@ -262,8 +255,6 @@ fn force_fit(
         cdata.extend_from_slice(&coeffs);
     }
 
-    let jd_start = spice_jd_to_jd(t_start);
-    let jd_end = spice_jd_to_jd(t_end);
     SpkSegmentType2::new_array(
         object_id,
         center_id,
@@ -273,8 +264,8 @@ fn force_fit(
         t_start,
         actual_step,
         degree,
-        jd_start,
-        jd_end,
+        round_through_jd(t_start),
+        round_through_jd(t_end),
         &format!("REPACK {object_id}"),
     )
 }
@@ -400,8 +391,6 @@ fn fit_range(
     initial_step: f64,
     degree: usize,
     threshold_km: f64,
-    jd_start: Time<TDB>,
-    jd_end: Time<TDB>,
     segments: &[(f64, f64)],
 ) -> KeteResult<SpkArray> {
     let mut step = initial_step;
@@ -443,8 +432,8 @@ fn fit_range(
                 t_start,
                 actual_step,
                 degree,
-                jd_start,
-                jd_end,
+                round_through_jd(t_start),
+                round_through_jd(t_end),
                 &format!("REPACK {object_id}"),
             );
         }
@@ -686,13 +675,13 @@ fn t13_force_fit(
     let n_nodes = ((range / step).ceil() as usize + 1).max(min_nodes);
     let actual_step = range / (n_nodes - 1) as f64;
 
-    let states: Vec<KeteResult<(Time<TDB>, [f64; 3], [f64; 3])>> = (0..n_nodes)
+    let states: Vec<KeteResult<(f64, [f64; 3], [f64; 3])>> = (0..n_nodes)
         .into_par_iter()
         .with_min_len(RAYON_MIN_LEN)
         .map(|i| {
             let t = t_start + i as f64 * actual_step;
             let state = safe_query(source, object_id, center_id, t, segments)?;
-            let jd = state.epoch;
+            let jd = jd_to_spice_jd(state.epoch);
             let pos_au: [f64; 3] = state.pos.into();
             let vel_au: [f64; 3] = state.vel.into();
             Ok((
@@ -903,13 +892,13 @@ fn t13_fit_range(
         let n_nodes = n_nodes.max(2);
         let actual_step = (t_end - t_start) / (n_nodes - 1) as f64;
 
-        let states: Vec<KeteResult<(Time<TDB>, [f64; 3], [f64; 3])>> = (0..n_nodes)
+        let states: Vec<KeteResult<(f64, [f64; 3], [f64; 3])>> = (0..n_nodes)
             .into_par_iter()
             .with_min_len(RAYON_MIN_LEN)
             .map(|i| {
                 let t = t_start + i as f64 * actual_step;
                 let state = safe_query(source, object_id, center_id, t, segments)?;
-                let jd = state.epoch;
+                let jd = jd_to_spice_jd(state.epoch);
                 let pos_au: [f64; 3] = state.pos.into();
                 let vel_au: [f64; 3] = state.vel.into();
                 Ok((
@@ -976,7 +965,7 @@ fn t13_validate_sampled(
     object_id: i32,
     center_id: i32,
     degree: usize,
-    sampled: &[(Time<TDB>, [f64; 3], [f64; 3])],
+    sampled: &[(f64, [f64; 3], [f64; 3])],
     threshold_km: f64,
     segments: &[(f64, f64)],
 ) -> KeteResult<f64> {
@@ -985,10 +974,7 @@ fn t13_validate_sampled(
     let mut max_err = 0.0_f64;
     let boundaries = segment_boundary_times(segments);
 
-    let spice_times: Vec<f64> = sampled
-        .iter()
-        .map(|(jd, _, _)| jd_to_spice_jd(*jd))
-        .collect();
+    let spice_times: Vec<f64> = sampled.iter().map(|(t, _, _)| *t).collect();
 
     for i in 0..n_nodes - 1 {
         let t0 = spice_times[i];
@@ -1200,6 +1186,13 @@ fn safe_query(
     source.try_get_state_with_center::<Equatorial>(object_id, jd, center_id)
 }
 
+/// `t`, TDB seconds from J2000, rounded through a Julian date, so that the coverage
+/// of a repacked segment contains the times [`SpkCollection`](super::SpkCollection)
+/// lookups compute from its Julian date bounds.
+fn round_through_jd(t: f64) -> f64 {
+    jd_to_spice_jd(spice_jd_to_jd(t))
+}
+
 /// Obtain raw segment boundaries: from `explicit_ranges` if provided,
 /// otherwise from the source's loaded segments.
 fn raw_boundaries(
@@ -1226,6 +1219,7 @@ fn raw_boundaries(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kete_core::time::{TDB, Time};
     use std::io::Cursor;
 
     /// Integration test: repack `20000042.bsp` (Type 21) to Type 2, verify

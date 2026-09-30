@@ -10,7 +10,6 @@ use crate::interpolation::{hermite_interpolation, lagrange_interpolation};
 use kete_core::constants::AU_KM;
 use kete_core::errors::Error;
 use kete_core::prelude::KeteResult;
-use kete_core::time::{TDB, Time};
 
 /// Type 18 Record
 ///
@@ -45,8 +44,8 @@ impl SpkSegmentType18 {
     /// * `epochs`        - n epoch values (SPICE seconds from J2000), strictly increasing.
     /// * `subtype`       - 0 for Hermite, 1 for Lagrange.
     /// * `window_size`   - Interpolation window size, must be <= n.
-    /// * `jd_start`      - Segment start epoch.
-    /// * `jd_end`        - Segment end epoch.
+    /// * `jds_start`     - Segment start, TDB seconds from J2000.
+    /// * `jds_end`       - Segment end, TDB seconds from J2000.
     /// * `segment_name`  - Name stored in the DAF name record (max 40 chars).
     ///
     /// # Errors
@@ -60,8 +59,8 @@ impl SpkSegmentType18 {
         epochs: &[f64],
         subtype: u32,
         window_size: u32,
-        jd_start: Time<TDB>,
-        jd_end: Time<TDB>,
+        jds_start: f64,
+        jds_end: f64,
         segment_name: &str,
     ) -> KeteResult<SpkArray> {
         let record_size: usize = match subtype {
@@ -113,8 +112,8 @@ impl SpkSegmentType18 {
             center_id,
             frame_id,
             18,
-            jd_start,
-            jd_end,
+            jds_start,
+            jds_end,
             data,
             segment_name.to_string(),
         ))

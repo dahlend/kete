@@ -34,7 +34,6 @@ use crate::spk::type2::build_type2_data;
 use kete_core::errors::Error;
 use kete_core::frames::NonInertialFrame;
 use kete_core::prelude::KeteResult;
-use kete_core::time::{TDB, Time};
 
 /// Chebyshev polynomials (Euler angles only)
 ///
@@ -121,8 +120,8 @@ impl PckSegmentType2 {
     /// * `btime`             - Begin time of first interval (SPICE seconds from J2000).
     /// * `intlen`            - Length of each interval (seconds). Must be > 0.
     /// * `polydg`            - Polynomial degree, in `[0, 27]`.
-    /// * `jd_start`          - Segment start epoch.
-    /// * `jd_end`            - Segment end epoch.
+    /// * `jds_start`         - Segment start, TDB seconds from J2000.
+    /// * `jds_end`           - Segment end, TDB seconds from J2000.
     /// * `segment_name`      - Name stored in the DAF name record (max 40 chars).
     ///
     /// # Errors
@@ -135,8 +134,8 @@ impl PckSegmentType2 {
         btime: f64,
         intlen: f64,
         polydg: usize,
-        jd_start: Time<TDB>,
-        jd_end: Time<TDB>,
+        jds_start: f64,
+        jds_end: f64,
         segment_name: &str,
     ) -> KeteResult<PckArray> {
         let data = build_type2_data(cdata, n_records, btime, intlen, polydg)?;
@@ -144,8 +143,8 @@ impl PckSegmentType2 {
             frame_id,
             reference_frame_id,
             2,
-            jd_start,
-            jd_end,
+            jds_start,
+            jds_end,
             data,
             segment_name.to_string(),
         ))
@@ -200,8 +199,8 @@ mod tests {
         let btime = 0.0;
         let intlen = 86400.0;
         let cdata: Vec<f64> = (0..ninrec * n).map(|i| i as f64 * 0.01).collect();
-        let jd_start: Time<TDB> = 2451545.0.into();
-        let jd_end: Time<TDB> = (2451545.0 + 3.0).into();
+        let jds_start = 0.0;
+        let jds_end = 3.0 * 86400.0;
 
         let mut daf = DafFile::new_pck("test pck", "pck round trip test");
         let pck_arr = PckSegmentType2::new_array(
@@ -212,8 +211,8 @@ mod tests {
             btime,
             intlen,
             polydg,
-            jd_start,
-            jd_end,
+            jds_start,
+            jds_end,
             "Earth orientation",
         )
         .unwrap();

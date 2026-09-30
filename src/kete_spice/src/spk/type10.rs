@@ -67,15 +67,13 @@ impl SpkSegmentType10 {
         segment_name: &str,
     ) -> KeteResult<SpkArray> {
         let data = Self::build_data(consts, elements, epochs)?;
-        let jd_start = spice_jd_to_jd(epochs[0]);
-        let jd_end = spice_jd_to_jd(*epochs.last().unwrap());
         Ok(SpkArray::new(
             object_id,
             center_id,
             frame_id,
             10,
-            jd_start,
-            jd_end,
+            epochs[0],
+            *epochs.last().unwrap(),
             data,
             segment_name.to_string(),
         ))

@@ -9,7 +9,6 @@ use kete_core::constants::AU_KM;
 use kete_core::errors::Error;
 use kete_core::frames::InertialFrame;
 use kete_core::prelude::{Desig, KeteResult, State};
-use kete_core::time::{TDB, Time};
 
 /// Hermite Interpolation (Uneven Time Steps)
 ///
@@ -30,7 +29,7 @@ impl SpkSegmentType13 {
     /// * `object_id`    - NAIF ID of the body.
     /// * `center_id`    - NAIF ID of the center body.
     /// * `frame_id`     - NAIF frame ID.
-    /// * `states`       - `(epoch, [x,y,z] km, [vx,vy,vz] km/s)`, strictly increasing epochs.
+    /// * `states`       - `(epoch, [x,y,z] km, [vx,vy,vz] km/s)`, epochs in TDB seconds from J2000, strictly increasing.
     /// * `degree`       - Hermite polynomial degree, must be ODD and in `[1, 27]`.
     /// * `segment_name` - Name stored in the DAF name record (max 40 chars).
     ///
@@ -43,17 +42,12 @@ impl SpkSegmentType13 {
         object_id: i32,
         center_id: i32,
         frame_id: i32,
-        states: &[(Time<TDB>, [f64; 3], [f64; 3])],
+        states: &[(f64, [f64; 3], [f64; 3])],
         degree: u32,
         segment_name: &str,
     ) -> KeteResult<SpkArray> {
-        let jd_start = states.first().unwrap().0;
-        let jd_end = states.last().unwrap().0;
-
-        let states: Vec<(f64, [f64; 3], [f64; 3])> = states
-            .iter()
-            .map(|&(t, p, v)| (jd_to_spice_jd(t), p, v))
-            .collect();
+        let jds_start = states.first().unwrap().0;
+        let jds_end = states.last().unwrap().0;
 
         let n = states.len();
         if !(1..=27).contains(&degree) || degree.is_multiple_of(2) {
@@ -78,11 +72,11 @@ impl SpkSegmentType13 {
         // Layout: [6*n states] [n epochs] [directory] [winsiz-1] [n]
         let n_dir = if n > 100 { (n - 1) / 100 } else { 0 };
         let mut data = Vec::with_capacity(7 * n + n_dir + 2);
-        for &(_, pos, vel) in &states {
+        for &(_, pos, vel) in states {
             data.extend_from_slice(&pos);
             data.extend_from_slice(&vel);
         }
-        for &(epoch, _, _) in &states {
+        for &(epoch, _, _) in states {
             data.push(epoch);
         }
         for i in 1..=n_dir {
@@ -97,8 +91,8 @@ impl SpkSegmentType13 {
             center_id,
             frame_id,
             13,
-            jd_start,
-            jd_end,
+            jds_start,
+            jds_end,
             data,
             segment_name.to_string(),
         ))
@@ -135,13 +129,13 @@ impl SpkSegmentType13 {
             }
         };
         let center_id = first.center_id();
-        let raw_states: Vec<(Time<TDB>, [f64; 3], [f64; 3])> = states
+        let raw_states: Vec<(f64, [f64; 3], [f64; 3])> = states
             .iter()
             .map(|s| {
                 let pos: [f64; 3] = s.pos.into();
                 let vel: [f64; 3] = s.vel.into();
                 (
-                    s.epoch,
+                    jd_to_spice_jd(s.epoch),
                     [pos[0] * AU_KM, pos[1] * AU_KM, pos[2] * AU_KM],
                     [
                         vel[0] * AU_KM / 86400.0,

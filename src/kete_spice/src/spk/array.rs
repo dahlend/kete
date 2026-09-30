@@ -11,10 +11,10 @@ pub struct SpkArray {
     /// The internal representation of the DAF array.
     pub daf: DafArray,
 
-    /// JD Time in spice units of seconds from J2000.
+    /// Start of the coverage, in TDB seconds from J2000.
     pub jds_start: f64,
 
-    /// JD Time in spice units of seconds from J2000.
+    /// End of the coverage, in TDB seconds from J2000.
     pub jds_end: f64,
 
     /// The reference NAIF ID for the object in this Array.
@@ -38,25 +38,28 @@ impl SpkArray {
         (jds >= self.jds_start) && (jds <= self.jds_end)
     }
 
-    /// Construct a new SPK array from high-level parameters and data.
+    /// Construct a new SPK array from summary values and data.
     ///
-    /// `data` is the raw f64 array contents as defined by the SPK segment type
-    /// specification (caller is responsible for formatting data correctly for the
-    /// chosen segment type). The array start/end addresses are set to placeholder
-    /// values (0) and filled in during file writing.
+    /// `object_id` and `center_id` are the NAIF IDs of the object and its
+    /// center. `frame_id` is the SPICE frame ID, and `segment_type` is the SPK
+    /// segment type. The coverage `jds_start` to `jds_end` is in TDB seconds
+    /// from J2000, as the file stores it. `name` is the name of the array.
+    ///
+    /// `data` holds the raw contents of the array, in the layout of the SPK
+    /// segment type. This function does not check the layout. The caller must
+    /// format `data` for the segment type. The start and end addresses of the
+    /// array are placeholder values (0). File writing sets them.
     #[must_use]
     pub fn new(
         object_id: i32,
         center_id: i32,
         frame_id: i32,
         segment_type: i32,
-        jd_start: Time<TDB>,
-        jd_end: Time<TDB>,
+        jds_start: f64,
+        jds_end: f64,
         data: Vec<f64>,
         name: String,
     ) -> Self {
-        let jds_start = jd_to_spice_jd(jd_start);
-        let jds_end = jd_to_spice_jd(jd_end);
         let summary_floats: Box<[f64]> = vec![jds_start, jds_end].into();
         let summary_ints: Box<[i32]> =
             vec![object_id, center_id, frame_id, segment_type, 0, 0].into();
@@ -148,11 +151,11 @@ mod tests {
     fn spk_type9_round_trip() {
         use std::io::Cursor;
 
-        let jd_start: Time<TDB> = 2451545.0.into(); // J2000
-        let states: Vec<(Time<TDB>, [f64; 3], [f64; 3])> = (0..10)
+        // Daily states from J2000, in TDB seconds.
+        let states: Vec<(f64, [f64; 3], [f64; 3])> = (0..10)
             .map(|i| {
-                let jd: Time<TDB> = (jd_start.jd + f64::from(i)).into();
-                (jd, [1.0 + f64::from(i), 2.0, 3.0], [0.01, 0.02, 0.03])
+                let jds = f64::from(i) * 86400.0;
+                (jds, [1.0 + f64::from(i), 2.0, 3.0], [0.01, 0.02, 0.03])
             })
             .collect();
 
@@ -173,20 +176,18 @@ mod tests {
         assert_eq!(spk.center_id, 10);
         assert_eq!(spk.frame_id, 1);
         assert_eq!(spk.segment_type, 9);
-        assert_eq!(spk.jds_start, jd_to_spice_jd(jd_start));
-        let jd_end: Time<TDB> = (jd_start.jd + 9.0).into();
-        assert_eq!(spk.jds_end, jd_to_spice_jd(jd_end));
+        assert_eq!(spk.jds_start, 0.0);
+        assert_eq!(spk.jds_end, 9.0 * 86400.0);
     }
 
     #[test]
     fn spk_type13_round_trip() {
         use std::io::Cursor;
 
-        let jd_start: Time<TDB> = 2460000.0.into();
-        let states: Vec<(Time<TDB>, [f64; 3], [f64; 3])> = (0..20)
+        let states: Vec<(f64, [f64; 3], [f64; 3])> = (0..20)
             .map(|i| {
-                let jd: Time<TDB> = (jd_start.jd + f64::from(i) * 0.5).into();
-                (jd, [100.0 * f64::from(i), 200.0, 300.0], [1.0, 2.0, 3.0])
+                let jds = 730_512_000.0 + f64::from(i) * 43200.0;
+                (jds, [100.0 * f64::from(i), 200.0, 300.0], [1.0, 2.0, 3.0])
             })
             .collect();
 
@@ -217,9 +218,6 @@ mod tests {
         let btime = 0.0;
         let intlen = 86400.0;
         let cdata: Vec<f64> = (0..ninrec * n).map(|i| i as f64 * 0.1).collect();
-        let jd_start: Time<TDB> = 2451545.0.into();
-        let jd_end: Time<TDB> = (2451545.0 + 3.0).into();
-
         let mut daf = DafFile::new_spk("test type 2", "chebyshev test");
         let spk_arr = SpkSegmentType2::new_array(
             -77777,
@@ -230,8 +228,8 @@ mod tests {
             btime,
             intlen,
             polydg,
-            jd_start,
-            jd_end,
+            0.0,
+            3.0 * 86400.0,
             "Cheby Segment",
         )
         .unwrap();
@@ -253,18 +251,11 @@ mod tests {
     fn spk_multiple_segments() {
         use std::io::Cursor;
 
-        let jd_start: Time<TDB> = 2451545.0.into();
-        let states9: Vec<(Time<TDB>, [f64; 3], [f64; 3])> = (0..5)
-            .map(|i| {
-                let jd: Time<TDB> = (jd_start.jd + f64::from(i)).into();
-                (jd, [1.0; 3], [0.01; 3])
-            })
+        let states9: Vec<(f64, [f64; 3], [f64; 3])> = (0..5)
+            .map(|i| (f64::from(i) * 86400.0, [1.0; 3], [0.01; 3]))
             .collect();
-        let states13: Vec<(Time<TDB>, [f64; 3], [f64; 3])> = (0..8)
-            .map(|i| {
-                let jd: Time<TDB> = (jd_start.jd + f64::from(i) * 2.0).into();
-                (jd, [2.0; 3], [0.02; 3])
-            })
+        let states13: Vec<(f64, [f64; 3], [f64; 3])> = (0..8)
+            .map(|i| (f64::from(i) * 2.0 * 86400.0, [2.0; 3], [0.02; 3]))
             .collect();
 
         let mut daf = DafFile::new_spk("multi-seg", "two segments");
