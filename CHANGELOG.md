@@ -71,6 +71,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every observation, and raises SPICE errors rather than hiding them.
 - `fit_orbit_ranging` overlaps its attributable windows, redraws invalid samples, and
   requires 3 optical observations.
+- Malformed DAF files raise an error instead of panicking or hanging, and a DAF
+  damaged by a text mode transfer is detected.
 
 ## [3.2.2]
 
