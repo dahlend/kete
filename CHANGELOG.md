@@ -43,6 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Recenter` and `StateLike` are removed.
 - `fit_orbit` raises on unconstrained parameters; non-converged fits report a NaN
   covariance instead of zeros.
+- `fit_orbit_ranging` refines for up to 12 rounds, up from 4.
+- `fit_orbit_ranging` is faster on multi-night arcs.
 
 ### Fixed
 
@@ -65,6 +67,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `compute_stm` and `propagate_covariance` use the input state's frame.
 - Non-grav lower bounds were applied to the wrong parameter with some held fixed.
 - `fit_orbit` no longer stalls on a non-grav parameter at its lower bound.
+- `fit_orbit_ranging` uses the full RA/Dec covariance, scores an orbit only against
+  every observation, and raises SPICE errors rather than hiding them.
+- `fit_orbit_ranging` overlaps its attributable windows, redraws invalid samples, and
+  requires 3 optical observations.
 
 ## [3.2.2]
 

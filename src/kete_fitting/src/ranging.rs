@@ -13,14 +13,15 @@ use kete_core::constants::GMS;
 use kete_core::frames::{Equatorial, SSB, Vector};
 use kete_core::kepler::{light_time_correct, propagate_two_body};
 use kete_core::prelude::{Error, KeteResult, State};
-use kete_core::time::Time;
+use kete_core::time::{TDB, Time};
 use kete_spice::prelude::LOADED_SPK;
 use kete_spice::spk::SpkCollection;
-use nalgebra::{DMatrix, DVector};
-use nuts_rs::rand::SeedableRng;
+use nalgebra::{Cholesky, Matrix4, Vector4};
+use rand::SeedableRng;
 use rand::distr::Uniform;
 use rand::prelude::Distribution;
 use rayon::prelude::*;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 // ---------------------------------------------------------------------------
 // Grid constants
@@ -35,18 +36,18 @@ const LOG_RHO_MAX: f64 = 6.9078;
 /// large grids for impactor-range distances.
 const RHO_DOT_ABS_MAX: f64 = 2.0; // ~3460 km/s
 
-/// Energy multiplier controlling the `rho_dot` scan range (parabolic boundary).
-///
-/// `ENERGY_MULT = 2` -> strict bound orbits only (e < 1).
-/// `ENERGY_MULT = 8` -> tangential orbits up to e ~ 7; typical non-radial
-///   orbits up to e ~ 2--3.  Comfortably covers interstellar-like e ~ 1--2.
+/// Energy multiplier controlling the `rho_dot` scan range, in units of
+/// `v^2 * r / GMS`, which is 2 on the parabolic boundary.  A value of 2 would scan
+/// bound orbits only; 5 reaches tangential orbits of eccentricity 4, which covers
+/// interstellar-like orbits.
 const ENERGY_MULT: f64 = 5.0;
 
 /// Energy multiplier for the physical-validity hard ceiling.  Acts as a
 /// runaway guard; the actual posterior shape at the parabolic boundary is
 /// produced by the soft energy prior (see `ENERGY_PRIOR_SIGMA`), not by this
-/// cutoff.  Set well past `ENERGY_PRIOR_SIGMA` so the soft taper kills cells
-/// long before they hit this ceiling.
+/// cutoff.  The coarse scan stops at `ENERGY_MULT` times its padding squared, which
+/// is below this ceiling, so the ceiling only acts on refinement margins, half-step
+/// probes, and jittered draws.
 const ENERGY_MULT_VALID: f64 = 20.0;
 
 /// Sigma of the Gaussian energy prior past the parabolic boundary, expressed
@@ -67,7 +68,10 @@ const MAX_HALF_STEP_LOG_CHANGE: f64 = 1.0;
 const MAX_LINEAR_MODEL_SHIFT_SIGMA: f64 = 0.5;
 /// Best-orbit chi^2 above `dof + FIT_CHI2_SIGMAS * sqrt(2 dof)` raises a warning.
 const FIT_CHI2_SIGMAS: f64 = 5.0;
-const MAX_REFINE: usize = 4;
+/// Most refinement rounds.  Each round narrows the cell steps by up to `N_SUB`, and a
+/// round is only run while the grid is unresolved, so this bounds the ratio between the
+/// coarse step and the narrowest posterior that can be resolved, not the usual cost.
+const MAX_REFINE: usize = 12;
 /// Cells whose log weight is more than this below the maximum are dropped.
 const LOG_W_FLOOR: f64 = 50.0;
 
@@ -77,7 +81,7 @@ const LOG_W_FLOOR: f64 = 50.0;
 
 /// Orbit samples from the weighted ranging grid.
 ///
-/// Each draw is a `[x, y, z, vx, vy, vz]` state in AU/AU*day,
+/// Each draw is a `[x, y, z, vx, vy, vz]` state in AU and AU/day,
 /// SSB Equatorial frame, at `epoch`.  Draws are distributed according to the
 /// posterior and are equally weighted.
 #[derive(Debug, Clone)]
@@ -86,7 +90,7 @@ pub struct RangingSamples {
     /// state is constructed at its own light-time-corrected emission epoch and
     /// propagated two-body to this epoch.
     pub epoch: f64,
-    /// Orbit draws: `[num_draws][6]`, SSB Equatorial AU/AU*day.
+    /// Orbit draws: `[num_draws][6]`, SSB Equatorial, AU and AU/day.
     pub draws: Vec<Vec<f64>>,
     /// Log posterior density per unit `(rho, rho_dot)` of the grid cell each draw
     /// came from, as a natural log relative to the maximum across draws.  This
@@ -130,8 +134,6 @@ struct Attributable {
 
 struct Cell {
     log_w: f64,
-    /// Tempered 4x4 attributable normal matrix `N / T`, `N = H^4^T W H^4`.
-    attr_info: DMatrix<f64>,
     /// Best-fit attributable correction `N^-1 b` at this cell's `(rho, rho_dot)`,
     /// ordered `[alpha, delta, alpha_dot, delta_dot]`.
     attr_delta: [f64; 4],
@@ -156,80 +158,122 @@ impl Cell {
 }
 
 // ---------------------------------------------------------------------------
-// Attributable computation
+// The attributable model
 // ---------------------------------------------------------------------------
 
-/// Fit `(alpha0, delta0, alpha_dot, delta_dot)` at the first observation epoch by weighted LS of
-/// (RA, Dec) vs time.  Returns `None` when fewer than 2 optical observations
-/// are available.
+impl Attributable {
+    /// The line of sight at `t_ref` and its rate of change.
+    fn los_and_rate(&self) -> (Vector<Equatorial>, Vector<Equatorial>) {
+        let (sin_a, cos_a) = self.alpha.sin_cos();
+        let (sin_d, cos_d) = self.delta.sin_cos();
+        let los = Vector::<Equatorial>::new([cos_d * cos_a, cos_d * sin_a, sin_d]);
+        let los_da = Vector::<Equatorial>::new([-sin_a * cos_d, cos_a * cos_d, 0.0]);
+        let los_dd = Vector::<Equatorial>::new([-cos_a * sin_d, -sin_a * sin_d, cos_d]);
+        (los, los_da * self.alpha_dot + los_dd * self.delta_dot)
+    }
+
+    /// This attributable shifted by `d`, ordered `[alpha, delta, alpha_dot, delta_dot]`.
+    fn corrected(&self, d: [f64; 4]) -> Self {
+        Self {
+            alpha: self.alpha + d[0],
+            delta: self.delta + d[1],
+            alpha_dot: self.alpha_dot + d[2],
+            delta_dot: self.delta_dot + d[3],
+            t_ref: self.t_ref,
+            observer: self.observer.clone(),
+        }
+    }
+}
+
+/// The 2x2 weight (inverse covariance) of an optical observation, as
+/// `[w_aa, w_ad, w_dd]` in the (RA, Dec) coordinate directions.
+///
+/// This is the base weight: the RA/Dec correlation is carried, the timing
+/// uncertainty is not.
+fn optical_weight(obs: &AstrometricObservation) -> [f64; 3] {
+    let w = obs.base_weight_matrix();
+    [w[(0, 0)], w[(0, 1)], w[(1, 1)]]
+}
+
+/// Contribution of one observation to the normal matrix `N = H^T W H` of the linear
+/// attributable model `H = [[1, 0, dt, 0], [0, 1, 0, dt]]`, parameters ordered
+/// `[alpha, delta, alpha_dot, delta_dot]`.
+fn normal_matrix_term(dt: f64, w: [f64; 3]) -> Matrix4<f64> {
+    let [aa, ad, dd] = w;
+    let (t, t2) = (dt, dt * dt);
+    Matrix4::new(
+        aa,
+        ad,
+        t * aa,
+        t * ad, //
+        ad,
+        dd,
+        t * ad,
+        t * dd, //
+        t * aa,
+        t * ad,
+        t2 * aa,
+        t2 * ad, //
+        t * ad,
+        t * dd,
+        t2 * ad,
+        t2 * dd,
+    )
+}
+
+/// Contribution of one observation to the right-hand side `b = H^T W y`, for the same
+/// model as [`normal_matrix_term`], with `y` a pair of (RA, Dec) values.
+fn rhs_term(dt: f64, w: [f64; 3], y: [f64; 2]) -> Vector4<f64> {
+    let [aa, ad, dd] = w;
+    let (ga, gd) = (aa * y[0] + ad * y[1], ad * y[0] + dd * y[1]);
+    Vector4::new(ga, gd, dt * ga, dt * gd)
+}
+
+/// Wrap an angle difference into `[-pi, pi]`.
+fn wrap_pi(mut angle: f64) -> f64 {
+    if angle > std::f64::consts::PI {
+        angle -= std::f64::consts::TAU;
+    }
+    if angle < -std::f64::consts::PI {
+        angle += std::f64::consts::TAU;
+    }
+    angle
+}
+
+/// Fit `(alpha0, delta0, alpha_dot, delta_dot)` at the first observation epoch by weighted
+/// LS of (RA, Dec) vs time, with the full 2x2 weight of each observation.  Returns
+/// `None` when fewer than 2 optical observations are available, or they do not span
+/// more than one epoch.
 ///
 /// The stored observer keeps the first observation's position but carries the
 /// secant velocity across the arc, so that it describes the same averaged motion
 /// as the fitted rates.  See the comment at the end of the function.
 fn compute_attributable(sorted_obs: &[AstrometricObservation]) -> Option<Attributable> {
-    struct Entry {
-        dt: f64,
-        ra: f64,
-        dec: f64,
-        w_alpha: f64,
-        w_delta: f64,
-    }
-
     let t_ref = sorted_obs.first()?.epoch().jd;
-    let entries: Vec<Entry> = sorted_obs
+    let optical: Vec<(f64, f64, f64, [f64; 3])> = sorted_obs
         .iter()
         .filter_map(|obs| {
             let (ra, dec, _) = obs.as_optical().ok()?;
-            let w = obs.base_weight_matrix();
-            Some(Entry {
-                dt: obs.epoch().jd - t_ref,
-                ra,
-                dec,
-                w_alpha: w[(0, 0)],
-                w_delta: w[(1, 1)],
-            })
+            Some((obs.epoch().jd - t_ref, ra, dec, optical_weight(obs)))
         })
         .collect();
-
-    if entries.len() < 2 {
+    if optical.len() < 2 {
         return None;
     }
 
-    let ra0 = entries[0].ra;
-    let (mut sw_a, mut swt_a, mut swt2_a, mut swra_a, mut swrat_a) = (0.0_f64, 0.0, 0.0, 0.0, 0.0);
-    let (mut sw_d, mut swt_d, mut swt2_d, mut swdec_d, mut swdect_d) =
-        (0.0_f64, 0.0, 0.0, 0.0, 0.0);
-
-    for e in &entries {
-        let mut dra = e.ra - ra0;
-        if dra > std::f64::consts::PI {
-            dra -= std::f64::consts::TAU;
-        }
-        if dra < -std::f64::consts::PI {
-            dra += std::f64::consts::TAU;
-        }
-        sw_a += e.w_alpha;
-        swt_a += e.w_alpha * e.dt;
-        swt2_a += e.w_alpha * e.dt * e.dt;
-        swra_a += e.w_alpha * dra;
-        swrat_a += e.w_alpha * dra * e.dt;
-        sw_d += e.w_delta;
-        swt_d += e.w_delta * e.dt;
-        swt2_d += e.w_delta * e.dt * e.dt;
-        swdec_d += e.w_delta * e.dec;
-        swdect_d += e.w_delta * e.dec * e.dt;
+    // RA is fit as an offset from the first observation so that a wrap through 0 does
+    // not enter the fit.
+    let ra0 = optical[0].1;
+    let mut normal = Matrix4::<f64>::zeros();
+    let mut rhs = Vector4::<f64>::zeros();
+    for &(dt, ra, dec, w) in &optical {
+        normal += normal_matrix_term(dt, w);
+        rhs += rhs_term(dt, w, [wrap_pi(ra - ra0), dec]);
     }
-
-    let det_a = sw_a * swt2_a - swt_a * swt_a;
-    let det_d = sw_d * swt2_d - swt_d * swt_d;
-    if det_a.abs() < 1e-30 || det_d.abs() < 1e-30 {
+    let fit = Cholesky::new(normal)?.solve(&rhs);
+    if !fit.iter().all(|v| v.is_finite()) {
         return None;
     }
-
-    let alpha0 = ra0 + (swt2_a * swra_a - swt_a * swrat_a) / det_a;
-    let alpha_dot = (sw_a * swrat_a - swt_a * swra_a) / det_a;
-    let delta0 = (swt2_d * swdec_d - swt_d * swdect_d) / det_d;
-    let delta_dot = (sw_d * swdect_d - swt_d * swdec_d) / det_d;
 
     let (_, _, observer) = sorted_obs.first()?.as_optical().ok()?;
     let mut observer = observer.clone();
@@ -263,12 +307,122 @@ fn compute_attributable(sorted_obs: &[AstrometricObservation]) -> Option<Attribu
 
     Some(Attributable {
         t_ref,
-        alpha: alpha0,
-        delta: delta0,
-        alpha_dot,
-        delta_dot,
+        alpha: ra0 + fit[0],
+        delta: fit[1],
+        alpha_dot: fit[2],
+        delta_dot: fit[3],
         observer,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Observation table
+// ---------------------------------------------------------------------------
+
+/// One optical observation, reduced to what scoring an orbit against it needs.
+struct ObsEntry {
+    epoch: Time<TDB>,
+    /// Observation epoch minus the attributable epoch (days).
+    dt: f64,
+    /// Observed RA and Dec (radians).
+    ra: f64,
+    dec: f64,
+    /// Weight, as returned by [`optical_weight`].
+    w: [f64; 3],
+    /// Observer position relative to the SSB and to the Sun.
+    obs_ssb: Vector<Equatorial>,
+    obs_sun: Vector<Equatorial>,
+}
+
+/// Everything about the observations that does not depend on the orbit being scored.
+///
+/// Built once per attributable, since `dt` is measured from its epoch.  The normal
+/// matrix of the linear attributable model depends only on the weights and epochs, so
+/// it and its factorization are shared by every cell.
+struct ObsTable {
+    entries: Vec<ObsEntry>,
+    /// Untempered normal matrix `N = H^T W H` over all entries.
+    normal: Matrix4<f64>,
+    /// Cholesky factorization of `normal`.
+    normal_chol: Cholesky<f64, nalgebra::U4>,
+    /// Factorizations of the normal matrix over the first `k` entries, as `(k, factor)`
+    /// with `k` doubling from 4; see [`residual_sums`].
+    checkpoints: Vec<(usize, Cholesky<f64, nalgebra::U4>)>,
+}
+
+impl ObsTable {
+    /// Reduce the optical observations of `sorted_obs` against the epoch `t_ref`.
+    ///
+    /// # Errors
+    /// Returns an error if fewer than 3 optical observations are present, an observer
+    /// cannot be referred to the Sun, or the observations do not constrain all four
+    /// attributable parameters (they share one epoch).
+    fn new(
+        spk: &SpkCollection,
+        sorted_obs: &[AstrometricObservation],
+        t_ref: f64,
+    ) -> KeteResult<Self> {
+        let mut entries = Vec::with_capacity(sorted_obs.len());
+        let mut normal = Matrix4::<f64>::zeros();
+        let mut checkpoints = Vec::new();
+        let mut next_checkpoint = 4;
+        for obs in sorted_obs {
+            let Ok((ra, dec, obs_ssb)) = obs.as_optical() else {
+                continue;
+            };
+            let dt = obs.epoch().jd - t_ref;
+            let w = optical_weight(obs);
+            normal += normal_matrix_term(dt, w);
+            entries.push(ObsEntry {
+                epoch: obs.epoch(),
+                dt,
+                ra,
+                dec,
+                w,
+                obs_ssb: obs_ssb.pos,
+                obs_sun: spk.try_to_sun(obs_ssb.clone())?.pos,
+            });
+            if entries.len() == next_checkpoint {
+                next_checkpoint *= 2;
+                // A prefix within one epoch does not constrain the rates and has no
+                // factorization; it is not a checkpoint.
+                if let Some(chol) = Cholesky::new(normal) {
+                    checkpoints.push((entries.len(), chol));
+                }
+            }
+        }
+        // The last entry is covered by the full factorization.
+        checkpoints.retain(|(k, _)| *k < entries.len());
+        if entries.len() < 3 {
+            return Err(Error::ValueError(format!(
+                "ranging requires at least 3 optical observations, found {}",
+                entries.len()
+            )));
+        }
+        let normal_chol = Cholesky::new(normal).ok_or_else(|| {
+            Error::ValueError(
+                "ranging: the observations do not constrain an attributable; they must \
+                 span more than one epoch"
+                    .into(),
+            )
+        })?;
+        Ok(Self {
+            entries,
+            normal,
+            normal_chol,
+            checkpoints,
+        })
+    }
+
+    /// Lower Cholesky factor of the covariance of the attributable correction at
+    /// `temperature`, `(N / T + R)^-1`, with `R` the weak regularizer [`ATTR_REG_INV`].
+    /// `None` if the covariance cannot be factored, in which case draws carry no
+    /// attributable noise.
+    fn attr_noise(&self, temperature: f64) -> Option<Matrix4<f64>> {
+        let info = self.normal / temperature + Matrix4::identity() * ATTR_REG_INV;
+        let cov = info.try_inverse()?;
+        Some(Cholesky::new(cov)?.l())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -279,12 +433,7 @@ fn compute_attributable(sorted_obs: &[AstrometricObservation]) -> Option<Attribu
 ///
 /// Per Scout section 2, the epoch is light-time corrected by `rho/c`.
 fn state_from_rho(attr: &Attributable, rho: f64, rho_dot: f64) -> State<Equatorial, SSB> {
-    let (sin_a, cos_a) = attr.alpha.sin_cos();
-    let (sin_d, cos_d) = attr.delta.sin_cos();
-    let los = Vector::<Equatorial>::new([cos_d * cos_a, cos_d * sin_a, sin_d]);
-    let los_da = Vector::<Equatorial>::new([-sin_a * cos_d, cos_a * cos_d, 0.0]);
-    let los_dd = Vector::<Equatorial>::new([-cos_a * sin_d, -sin_a * sin_d, cos_d]);
-    let los_dot = los_da * attr.alpha_dot + los_dd * attr.delta_dot;
+    let (los, los_dot) = attr.los_and_rate();
 
     let pos_ssb = attr.observer.pos + los * rho;
     let vel_ssb = attr.observer.vel + los * rho_dot + los_dot * rho;
@@ -322,76 +471,57 @@ fn is_physically_valid(pos_helio: Vector<Equatorial>, vel_helio: Vector<Equatori
 // Scout scoring: constrained attributable LS
 // ---------------------------------------------------------------------------
 
-/// Residual of one optical observation against a two-body orbit.
-struct Residual {
-    /// Observation epoch minus the attributable epoch (days).
-    dt: f64,
-    /// Observed minus predicted RA (radians, RA coordinate direction).
-    nu_alpha: f64,
-    /// Observed minus predicted Dec (radians).
-    nu_delta: f64,
-    /// RA weight, the diagonal of the base weight matrix.
-    w_alpha: f64,
-    /// Dec weight, the diagonal of the base weight matrix.
-    w_delta: f64,
-}
-
-/// Residuals of `state`, propagated two-body and light-time corrected, against every
-/// optical observation that can be evaluated.  Returns `None` if the state cannot be
-/// referred to the Sun.
-fn optical_residuals(
+/// Sums over the residuals of `state`, propagated two-body and light-time corrected,
+/// against every observation in `table`: `(nu^T W nu, H^T W nu)`, with `nu` observed
+/// minus predicted (RA, Dec) in the coordinate directions.
+///
+/// Returns `None` if any observation cannot be evaluated.  A sum over a subset would be
+/// a smaller chi^2 than the same orbit scored on every observation, so an orbit that
+/// cannot be compared with all of the data is not compared at all.
+///
+/// Also returns `None` once the orbit is known to have a constrained chi^2 above
+/// `chi2_limit`.  The constrained chi^2 `nu^T W nu - b^T N^-1 b` over the first `k`
+/// observations is the minimum of a sum of non-negative terms over the attributable
+/// correction, and adding observations adds terms, so it can only grow with `k`.  It
+/// is evaluated at the table's checkpoints, and an orbit already over the limit there
+/// is abandoned without propagating to the remaining observations.  On a multi-night
+/// arc nearly every cell of a scan is abandoned this way.  Pass `f64::INFINITY` to
+/// always evaluate every observation.
+fn residual_sums(
     spk: &SpkCollection,
     state: &State<Equatorial, SSB>,
-    sorted_obs: &[AstrometricObservation],
-    t_ref: f64,
-) -> Option<Vec<Residual>> {
+    table: &ObsTable,
+    chi2_limit: f64,
+) -> Option<(f64, Vector4<f64>)> {
     let sun_state = spk.try_to_sun(state.clone()).ok()?;
-    let mut entries = Vec::with_capacity(sorted_obs.len());
+    let mut chi2_raw = 0.0;
+    let mut rhs = Vector4::<f64>::zeros();
+    let mut checkpoints = table.checkpoints.iter().peekable();
 
-    for obs in sorted_obs {
-        let Ok((alpha_obs, delta_obs, obs_ssb)) = obs.as_optical() else {
-            continue;
-        };
-        let Ok(prop) = propagate_two_body(&sun_state, obs.epoch()) else {
-            continue;
-        };
-        let Ok(obs_sun) = spk.try_to_sun(obs_ssb.clone()) else {
-            continue;
-        };
-        let Ok(lt_sun) = light_time_correct(&prop, &obs_sun.pos) else {
-            continue;
-        };
-        let lt_pos = differential_light_deflect(&obs_sun.pos, lt_sun.pos);
-        let Some(lt_ssb) = spk
+    for (idx, e) in table.entries.iter().enumerate() {
+        if let Some((_, chol)) = checkpoints.next_if(|(k, _)| *k == idx)
+            && chi2_raw - rhs.dot(&chol.solve(&rhs)) > chi2_limit
+        {
+            return None;
+        }
+        let prop = propagate_two_body(&sun_state, e.epoch).ok()?;
+        let lt_sun = light_time_correct(&prop, &e.obs_sun).ok()?;
+        let lt_pos = differential_light_deflect(&e.obs_sun, lt_sun.pos);
+        let lt_ssb = spk
             .try_to_ssb(State {
                 pos: lt_pos,
                 ..lt_sun
             })
-            .ok()
-        else {
-            continue;
-        };
+            .ok()?;
 
-        let (alpha_pred, delta_pred) = (lt_ssb.pos - obs_ssb.pos).to_ra_dec();
-        let mut nu_a = alpha_obs - alpha_pred;
-        if nu_a > std::f64::consts::PI {
-            nu_a -= std::f64::consts::TAU;
-        }
-        if nu_a < -std::f64::consts::PI {
-            nu_a += std::f64::consts::TAU;
-        }
-
-        let w = obs.base_weight_matrix();
-        entries.push(Residual {
-            dt: obs.epoch().jd - t_ref,
-            nu_alpha: nu_a,
-            nu_delta: delta_obs - delta_pred,
-            w_alpha: w[(0, 0)],
-            w_delta: w[(1, 1)],
-        });
+        let (alpha_pred, delta_pred) = (lt_ssb.pos - e.obs_ssb).to_ra_dec();
+        let nu = [wrap_pi(e.ra - alpha_pred), e.dec - delta_pred];
+        let [aa, ad, dd] = e.w;
+        chi2_raw += aa * nu[0] * nu[0] + 2.0 * ad * nu[0] * nu[1] + dd * nu[1] * nu[1];
+        rhs += rhs_term(e.dt, e.w, nu);
     }
 
-    Some(entries)
+    Some((chi2_raw, rhs))
 }
 
 /// Score a `(rho, rho_dot)` cell using Scout's constrained attributable LS.
@@ -407,98 +537,30 @@ fn optical_residuals(
 ///
 /// `Q_min` measures curvature  -- deviation from linear on-sky motion  -- a
 /// smooth function of `(rho, rho_dot)` that a coarse grid can resolve (Farnocchia
-/// et al. 2015, Eq. 1).  Also returns the tempered information `N / T` for
-/// within-cell sampling and the
-/// best-fit correction `N^-1 b`, which `draw_samples` adds to the attributable
-/// so that the drawn states are the constrained LS solutions rather than the
-/// uncorrected straight-line attributable.  The correction absorbs curvature
+/// et al. 2015, Eq. 1).  `W` is the full 2x2 weight of each observation, so an RA/Dec
+/// correlation couples the RA and Dec blocks of `N`.
+///
+/// Also returns the best-fit correction `N^-1 b`, which `draw_samples` adds to the
+/// attributable so that the drawn states are the constrained LS solutions rather than
+/// the uncorrected straight-line attributable.  The correction absorbs curvature
 /// over the arc and any mismatch between the attributable's reference observer
 /// state and the per-observation observer states the residuals are computed
 /// against.
 ///
-/// Requires >= 3 observations (>= 1 dof per coordinate after 2-parameter fit).
-/// `spk` is passed in so that one read guard covers a whole scan.
+/// Returns `None` if any observation cannot be evaluated, or the score is known to be
+/// below `log_w_floor` before every observation has been evaluated; see
+/// [`residual_sums`].  A score below the floor may still be returned.
 fn scout_score(
     spk: &SpkCollection,
     state: &State<Equatorial, SSB>,
-    sorted_obs: &[AstrometricObservation],
-    t_ref: f64,
+    table: &ObsTable,
     temperature: f64,
-) -> Option<(f64, DMatrix<f64>, [f64; 4])> {
-    let entries = optical_residuals(spk, state, sorted_obs, t_ref)?;
-    if entries.len() < 3 {
-        return None;
-    }
-
-    // Accumulate chi2_raw and the normal equation components for the 4-parameter
-    // attributable model H^4 = [[1,0,deltat,0],[0,1,0,deltat]] per observation.
-    // The RA and Dec blocks are decoupled (uncorrelated observations).
-    let (mut chi2_raw, mut sw_a, mut swt_a, mut swt2_a, mut swnu_a, mut swnut_a) =
-        (0.0_f64, 0.0, 0.0, 0.0, 0.0, 0.0);
-    let (mut sw_d, mut swt_d, mut swt2_d, mut swnu_d, mut swnut_d) = (0.0_f64, 0.0, 0.0, 0.0, 0.0);
-
-    for e in &entries {
-        chi2_raw += e.nu_alpha * e.nu_alpha * e.w_alpha + e.nu_delta * e.nu_delta * e.w_delta;
-        sw_a += e.w_alpha;
-        swt_a += e.w_alpha * e.dt;
-        swt2_a += e.w_alpha * e.dt * e.dt;
-        swnu_a += e.w_alpha * e.nu_alpha;
-        swnut_a += e.w_alpha * e.nu_alpha * e.dt;
-        sw_d += e.w_delta;
-        swt_d += e.w_delta * e.dt;
-        swt2_d += e.w_delta * e.dt * e.dt;
-        swnu_d += e.w_delta * e.nu_delta;
-        swnut_d += e.w_delta * e.nu_delta * e.dt;
-    }
-
-    // b^T N^{-1} b and N^{-1} b for RA: analytic 2x2 inverse.
-    let det_a = sw_a * swt2_a - swt_a * swt_a;
-    let (chi2_attr_a, d_alpha, d_alpha_dot) = if det_a > 1e-30 {
-        (
-            (swt2_a * swnu_a * swnu_a - 2.0 * swt_a * swnu_a * swnut_a + sw_a * swnut_a * swnut_a)
-                / det_a,
-            (swt2_a * swnu_a - swt_a * swnut_a) / det_a,
-            (sw_a * swnut_a - swt_a * swnu_a) / det_a,
-        )
-    } else if sw_a > 1e-30 {
-        (swnu_a * swnu_a / sw_a, swnu_a / sw_a, 0.0)
-    } else {
-        (0.0, 0.0, 0.0)
-    };
-
-    let det_d = sw_d * swt2_d - swt_d * swt_d;
-    let (chi2_attr_d, d_delta, d_delta_dot) = if det_d > 1e-30 {
-        (
-            (swt2_d * swnu_d * swnu_d - 2.0 * swt_d * swnu_d * swnut_d + sw_d * swnut_d * swnut_d)
-                / det_d,
-            (swt2_d * swnu_d - swt_d * swnut_d) / det_d,
-            (sw_d * swnut_d - swt_d * swnu_d) / det_d,
-        )
-    } else if sw_d > 1e-30 {
-        (swnu_d * swnu_d / sw_d, swnu_d / sw_d, 0.0)
-    } else {
-        (0.0, 0.0, 0.0)
-    };
-
-    let chi2_min = (chi2_raw - chi2_attr_a - chi2_attr_d).max(0.0);
-
-    // 4x4 attributable normal matrix N.  Layout: [alpha0, delta0, alpha_dot, delta_dot] -> indices [0,1,2,3].
-    // Block-diagonal (RA and Dec decouple for uncorrelated observations).
-    let mut n_attr = DMatrix::<f64>::zeros(4, 4);
-    n_attr[(0, 0)] = sw_a;
-    n_attr[(0, 2)] = swt_a;
-    n_attr[(2, 0)] = swt_a;
-    n_attr[(2, 2)] = swt2_a;
-    n_attr[(1, 1)] = sw_d;
-    n_attr[(1, 3)] = swt_d;
-    n_attr[(3, 1)] = swt_d;
-    n_attr[(3, 3)] = swt2_d;
-
-    Some((
-        -chi2_min / (2.0 * temperature),
-        n_attr / temperature,
-        [d_alpha, d_delta, d_alpha_dot, d_delta_dot],
-    ))
+    log_w_floor: f64,
+) -> Option<(f64, [f64; 4])> {
+    let (chi2_raw, rhs) = residual_sums(spk, state, table, -2.0 * temperature * log_w_floor)?;
+    let delta = table.normal_chol.solve(&rhs);
+    let chi2_min = (chi2_raw - rhs.dot(&delta)).max(0.0);
+    Some((-chi2_min / (2.0 * temperature), delta.into()))
 }
 
 // ---------------------------------------------------------------------------
@@ -514,38 +576,42 @@ fn scout_score(
 ///
 /// Cell extents are the spacing between grid points, so `n_rho` and every row's
 /// point count must be at least 2; rows with fewer points are skipped and a
-/// patch with `n_rho < 2` is empty.  Returns no cells if the SPK cannot be read.
-/// One SPK read guard is held for the whole scan.
+/// patch with `n_rho < 2` is empty.
+///
+/// Cells more than `LOG_W_FLOOR` below the best score are dropped by every caller, so a
+/// cell known to be that far below the best score seen so far is abandoned part way
+/// through its observations; see [`residual_sums`].  The best score seen so far is never
+/// above the final best, so this only drops cells that would be dropped anyway.
+/// `best_so_far` seeds it with a score already known to be reached, from an earlier scan
+/// whose cells these will be compared with; pass `f64::NEG_INFINITY` for none.  Cells
+/// below the floor that were scored before a better one was found are still returned.
+///
+/// # Errors
+/// Returns an error if the attributable's observer cannot be referred to the Sun.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one scan has this many independent inputs"
+)]
 fn score_patch(
-    sorted_obs: &[AstrometricObservation],
+    spk: &SpkCollection,
+    table: &ObsTable,
     attr: &Attributable,
     log_rho_range: (f64, f64),
     rho_dot_range: Option<&(dyn Fn(usize) -> Option<(f64, f64, usize)> + Sync)>,
     n_rho: usize,
     n_rdot: usize,
     temperature: f64,
-) -> Vec<Cell> {
+    best_so_far: f64,
+) -> KeteResult<Vec<Cell>> {
     if n_rho < 2 {
-        return vec![];
+        return Ok(vec![]);
     }
-    let Ok(spk_guard) = LOADED_SPK.try_read() else {
-        return vec![];
-    };
-    let spk: &SpkCollection = &spk_guard;
-    let (sun_pos_ssb, sun_vel_ssb, obs_helio_pos, obs_helio_vel, los, los_dot) = {
-        let Ok(obs_helio) = spk.try_to_sun(attr.observer.clone()) else {
-            return vec![];
-        };
-        let sun_pos = attr.observer.pos - obs_helio.pos;
-        let sun_vel = attr.observer.vel - obs_helio.vel;
-        let (sin_a, cos_a) = attr.alpha.sin_cos();
-        let (sin_d, cos_d) = attr.delta.sin_cos();
-        let los = Vector::<Equatorial>::new([cos_d * cos_a, cos_d * sin_a, sin_d]);
-        let los_da = Vector::<Equatorial>::new([-sin_a * cos_d, cos_a * cos_d, 0.0]);
-        let los_dd = Vector::<Equatorial>::new([-cos_a * sin_d, -sin_a * sin_d, cos_d]);
-        let los_dot = los_da * attr.alpha_dot + los_dd * attr.delta_dot;
-        (sun_pos, sun_vel, obs_helio.pos, obs_helio.vel, los, los_dot)
-    };
+    // Best score seen so far, as the bits of an `f64`, shared by the rows of the scan.
+    let best = AtomicU64::new(best_so_far.to_bits());
+    let sun_ssb = sun_ssb_state(spk, attr)?;
+    let obs_helio_pos = attr.observer.pos - sun_ssb.0;
+    let obs_helio_vel = attr.observer.vel - sun_ssb.1;
+    let (los, los_dot) = attr.los_and_rate();
 
     let (la_min, la_max) = log_rho_range;
     let log_rho_step = (la_max - la_min) / (n_rho - 1) as f64;
@@ -599,20 +665,19 @@ fn score_patch(
             for id in 0..n_row {
                 let frac_d = id as f64 / (n_row - 1) as f64;
                 let rho_dot = rd_min + (rd_max - rd_min) * frac_d;
-                let Some((log_w, attr_info, attr_delta)) = score_point(
-                    spk,
-                    sorted_obs,
-                    attr,
-                    rho,
-                    rho_dot,
-                    temperature,
-                    (sun_pos_ssb, sun_vel_ssb),
-                ) else {
+                let floor = f64::from_bits(best.load(Ordering::Relaxed)) - LOG_W_FLOOR;
+                let Some((log_w, attr_delta)) =
+                    score_point(spk, table, attr, rho, rho_dot, temperature, sun_ssb, floor)
+                else {
                     continue;
                 };
+                // Raise the shared best.  A lost race only leaves it lower than it could
+                // be, which abandons fewer cells and changes no result.
+                let _ = best.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |bits| {
+                    (log_w > f64::from_bits(bits)).then_some(log_w.to_bits())
+                });
                 row_cells.push(Cell {
                     log_w,
-                    attr_info,
                     attr_delta,
                     rho,
                     rho_dot,
@@ -624,31 +689,49 @@ fn score_patch(
         })
         .collect();
 
-    cells
+    Ok(cells)
+}
+
+/// The Sun's SSB `(position, velocity)` paired with the attributable's observer.
+///
+/// The velocity is relative to the observer's stored (secant) velocity, so that
+/// `state - sun` is the heliocentric state of an orbit built by [`state_from_rho`].
+fn sun_ssb_state(
+    spk: &SpkCollection,
+    attr: &Attributable,
+) -> KeteResult<(Vector<Equatorial>, Vector<Equatorial>)> {
+    let obs_helio = spk.try_to_sun(attr.observer.clone())?;
+    Ok((
+        attr.observer.pos - obs_helio.pos,
+        attr.observer.vel - obs_helio.vel,
+    ))
 }
 
 /// Score a single `(rho, rho_dot)` point: the tempered constrained attributable
 /// log-likelihood from [`scout_score`] plus the soft energy prior.
 ///
 /// `sun_ssb` is the Sun's SSB `(position, velocity)` at the attributable epoch.
-/// Returns `None` for physically invalid orbits or failed scoring.
+/// Returns `None` for physically invalid orbits, failed scoring, or a score known to be
+/// below `log_w_floor`; see [`scout_score`].
 fn score_point(
     spk: &SpkCollection,
-    sorted_obs: &[AstrometricObservation],
+    table: &ObsTable,
     attr: &Attributable,
     rho: f64,
     rho_dot: f64,
     temperature: f64,
     sun_ssb: (Vector<Equatorial>, Vector<Equatorial>),
-) -> Option<(f64, DMatrix<f64>, [f64; 4])> {
+    log_w_floor: f64,
+) -> Option<(f64, [f64; 4])> {
     let state = state_from_rho(attr, rho, rho_dot);
     let pos_helio = state.pos - sun_ssb.0;
     let vel_helio = state.vel - sun_ssb.1;
     if !is_physically_valid(pos_helio, vel_helio) {
         return None;
     }
-    let (log_w, attr_info, attr_delta) =
-        scout_score(spk, &state, sorted_obs, attr.t_ref, temperature)?;
+    // The energy prior below only lowers the score, so the floor applies to the
+    // likelihood alone.
+    let (log_w, attr_delta) = scout_score(spk, &state, table, temperature, log_w_floor)?;
     if !log_w.is_finite() {
         return None;
     }
@@ -664,7 +747,7 @@ fn score_point(
     } else {
         0.0
     };
-    Some((log_w + log_prior_energy, attr_info, attr_delta))
+    Some((log_w + log_prior_energy, attr_delta))
 }
 
 // ---------------------------------------------------------------------------
@@ -753,35 +836,20 @@ struct LinearModelCheck {
 /// normalization and does not move the posterior; only its variation across cells
 /// does, which is what the shift measures.
 ///
-/// Returns `None` if the SPK cannot be read or no cell can be evaluated.
+/// Returns `None` if no dominant cell can be evaluated.
 fn linear_model_check(
+    spk: &SpkCollection,
     cells: &[Cell],
-    sorted_obs: &[AstrometricObservation],
+    table: &ObsTable,
     attr: &Attributable,
     temperature: f64,
 ) -> Option<LinearModelCheck> {
     const MAX_ITER: usize = 6;
     const SETTLE_CHI2: f64 = 0.2;
 
-    let spk_guard = LOADED_SPK.try_read().ok()?;
-    let spk: &SpkCollection = &spk_guard;
     let chi2_of = |a: &Attributable, rho: f64, rho_dot: f64| -> Option<f64> {
-        let entries =
-            optical_residuals(spk, &state_from_rho(a, rho, rho_dot), sorted_obs, a.t_ref)?;
-        Some(
-            entries
-                .iter()
-                .map(|e| e.nu_alpha * e.nu_alpha * e.w_alpha + e.nu_delta * e.nu_delta * e.w_delta)
-                .sum(),
-        )
-    };
-    let corrected = |a: &Attributable, d: [f64; 4]| Attributable {
-        alpha: a.alpha + d[0],
-        delta: a.delta + d[1],
-        alpha_dot: a.alpha_dot + d[2],
-        delta_dot: a.delta_dot + d[3],
-        t_ref: a.t_ref,
-        observer: a.observer.clone(),
+        residual_sums(spk, &state_from_rho(a, rho, rho_dot), table, f64::INFINITY)
+            .map(|(chi2, _)| chi2)
     };
 
     let dominant = dominant_cells(cells);
@@ -790,25 +858,25 @@ fn linear_model_check(
     let rows: Vec<(&Cell, f64, f64, f64, bool)> = dominant
         .par_iter()
         .filter_map(|c| {
-            let (log_w, _, delta) = scout_score(
+            let (log_w, delta) = scout_score(
                 spk,
                 &state_from_rho(attr, c.rho, c.rho_dot),
-                sorted_obs,
-                attr.t_ref,
+                table,
                 temperature,
+                f64::NEG_INFINITY,
             )?;
-            let mut a = corrected(attr, delta);
+            let mut a = attr.corrected(delta);
             let mut chi2 = chi2_of(&a, c.rho, c.rho_dot)?;
             let mut settled = false;
             for _ in 0..MAX_ITER {
-                let (_, _, d) = scout_score(
+                let (_, d) = scout_score(
                     spk,
                     &state_from_rho(&a, c.rho, c.rho_dot),
-                    sorted_obs,
-                    a.t_ref,
+                    table,
                     temperature,
+                    f64::NEG_INFINITY,
                 )?;
-                let next = corrected(&a, d);
+                let next = a.corrected(d);
                 let next_chi2 = chi2_of(&next, c.rho, c.rho_dot)?;
                 let change = (chi2 - next_chi2).abs();
                 if next_chi2 < chi2 {
@@ -886,26 +954,19 @@ fn linear_model_check(
 /// detect this, since a well-spread but under-resolved grid can have high ESS.
 ///
 /// Offset points that are physically invalid or fail to score are skipped.
-/// Returns infinity if the SPK cannot be read.
+///
+/// # Errors
+/// Returns an error if the attributable's observer cannot be referred to the Sun.
 fn max_half_step_change(
+    spk: &SpkCollection,
     cells: &[Cell],
-    sorted_obs: &[AstrometricObservation],
+    table: &ObsTable,
     attr: &Attributable,
     temperature: f64,
-) -> f64 {
-    let Ok(spk_guard) = LOADED_SPK.try_read() else {
-        return f64::INFINITY;
-    };
-    let spk: &SpkCollection = &spk_guard;
-    let Ok(obs_helio) = spk.try_to_sun(attr.observer.clone()) else {
-        return f64::INFINITY;
-    };
-    let sun_ssb = (
-        attr.observer.pos - obs_helio.pos,
-        attr.observer.vel - obs_helio.vel,
-    );
+) -> KeteResult<f64> {
+    let sun_ssb = sun_ssb_state(spk, attr)?;
 
-    dominant_cells(cells)
+    Ok(dominant_cells(cells)
         .par_iter()
         .map(|c| {
             let lr = c.rho.ln();
@@ -918,12 +979,21 @@ fn max_half_step_change(
             offsets
                 .iter()
                 .filter_map(|&(rho, rho_dot)| {
-                    score_point(spk, sorted_obs, attr, rho, rho_dot, temperature, sun_ssb)
+                    score_point(
+                        spk,
+                        table,
+                        attr,
+                        rho,
+                        rho_dot,
+                        temperature,
+                        sun_ssb,
+                        f64::NEG_INFINITY,
+                    )
                 })
-                .map(|(log_w, _, _)| (log_w - c.log_w).abs())
+                .map(|(log_w, _)| (log_w - c.log_w).abs())
                 .fold(0.0, f64::max)
         })
-        .reduce(|| 0.0, f64::max)
+        .reduce(|| 0.0, f64::max))
 }
 
 /// Adaptively refine until ESS >= `TARGET_ESS` and [`max_half_step_change`] is
@@ -956,12 +1026,16 @@ fn max_half_step_change(
 /// outside it carry negligible mass.
 ///
 /// Returns the cells, their ESS, and their final [`max_half_step_change`].
+///
+/// # Errors
+/// Returns an error if the attributable's observer cannot be referred to the Sun.
 fn refine(
+    spk: &SpkCollection,
     cells: Vec<Cell>,
-    sorted_obs: &[AstrometricObservation],
+    table: &ObsTable,
     attr: &Attributable,
     temperature: f64,
-) -> (Vec<Cell>, f64, f64) {
+) -> KeteResult<(Vec<Cell>, f64, f64)> {
     const N_SUB: f64 = 5.0;
     const REFINE_WINDOW: f64 = 15.0;
     const REFINE_MARGIN: f64 = 2.0;
@@ -978,7 +1052,7 @@ fn refine(
     }
 
     let mut cells = cells;
-    let mut resolution = max_half_step_change(&cells, sorted_obs, attr, temperature);
+    let mut resolution = max_half_step_change(spk, &cells, table, attr, temperature)?;
     for _ in 0..MAX_REFINE {
         if ess(&cells) >= TARGET_ESS && resolution <= MAX_HALF_STEP_LOG_CHANGE {
             break;
@@ -1059,17 +1133,19 @@ fn refine(
         }
 
         // Score the new region before touching the existing cells.  An empty result
-        // (SPK unreadable, or no valid orbit anywhere in the region) leaves the
-        // current cells in place rather than deleting the region's mass.
+        // (no valid orbit anywhere in the region) leaves the current cells in place
+        // rather than deleting the region's mass.
         let new_cells = score_patch(
-            sorted_obs,
+            spk,
+            table,
             attr,
             (lr_lo, lr_hi),
             Some(&|i: usize| rows[i]),
             rows.len(),
             0,
             temperature,
-        );
+            max_lw,
+        )?;
         if new_cells.is_empty() {
             break;
         }
@@ -1105,17 +1181,18 @@ fn refine(
             .map(|c| c.log_w)
             .fold(f64::NEG_INFINITY, f64::max);
         cells.retain(|c| c.log_w > max_lw - LOG_W_FLOOR);
-        resolution = max_half_step_change(&cells, sorted_obs, attr, temperature);
+        resolution = max_half_step_change(spk, &cells, table, attr, temperature)?;
     }
     let final_ess = ess(&cells);
-    (cells, final_ess, resolution)
+    Ok((cells, final_ess, resolution))
 }
 
 // ---------------------------------------------------------------------------
 // Sampling
 // ---------------------------------------------------------------------------
 
-/// Weak diagonal regularizer for the 4x4 attributable information matrix.
+/// Weak diagonal regularizer for the 4x4 attributable information matrix, added in
+/// [`ObsTable::attr_noise`].
 /// sigma = 1e-4 rad (~20 arc-seconds) for both position and rate parameters.
 const ATTR_REG_INV: f64 = 1.0 / (1e-4 * 1e-4);
 
@@ -1124,16 +1201,30 @@ const ATTR_REG_INV: f64 = 1.0 / (1e-4 * 1e-4);
 /// Selects cells proportional to their posterior mass ([`Cell::log_mass`]),
 /// applies Gaussian jitter (sigma = half cell width) within each cell's
 /// `(log_rho, rho_dot)` extent, shifts the attributable by the cell's constrained
-/// LS correction, and perturbs it by `N(0, Gamma_A)` using the stored tempered
-/// information.  Each state is built at its emission epoch `t_ref - rho/c` and
+/// LS correction, and perturbs it by `N(0, Gamma_A)`, with `attr_noise` the lower
+/// Cholesky factor of `Gamma_A` from [`ObsTable::attr_noise`] (`None` for no
+/// perturbation).  Each state is built at its emission epoch `t_ref - rho/c` and
 /// propagated two-body to `t_ref`, so all draws share one epoch.
+///
+/// The jitter and the perturbation are unbounded, so a draw from a cell at the edge of
+/// the scored region can land outside it.  A draw that is not physically valid is
+/// redrawn from the same cell, up to `MAX_ATTEMPTS` times.
+///
 /// Fully parallelized via rayon; no `scout_score` calls at draw time.
+///
+/// # Errors
+/// Returns an error if a draw cannot be referred to the Sun or propagated to the
+/// reference epoch, or no valid draw is found for a cell in `MAX_ATTEMPTS` attempts.
 fn draw_samples(
+    spk: &SpkCollection,
     cells: &[Cell],
     num_draws: usize,
     rng: &mut impl rand::Rng,
     attr: &Attributable,
+    attr_noise: Option<&Matrix4<f64>>,
 ) -> KeteResult<(Vec<Vec<f64>>, Vec<f64>)> {
+    const MAX_ATTEMPTS: usize = 64;
+
     if cells.is_empty() || num_draws == 0 {
         return Ok((vec![], vec![]));
     }
@@ -1167,6 +1258,9 @@ fn draw_samples(
     let seeds: Vec<u64> = (0..num_draws).map(|_| rng.next_u64()).collect();
 
     let uniform = Uniform::new(0.0_f64, 1.0_f64).unwrap();
+    let normal = |rng: &mut rand::rngs::SmallRng| -> f64 {
+        <rand_distr::StandardNormal as Distribution<f64>>::sample(&rand_distr::StandardNormal, rng)
+    };
 
     let mut results: Vec<(Vec<f64>, f64)> = seeds
         .into_par_iter()
@@ -1178,70 +1272,45 @@ fn draw_samples(
             let idx = cdf.partition_point(|&c| c < u).min(cells.len() - 1);
             let cell = &cells[idx];
 
-            // Jitter within the cell with a Gaussian (sigma = half cell width).
-            // Adjacent cells' Gaussian densities overlap and blend across their shared
-            // boundaries, eliminating the polygonal staircase that uniform jitter
-            // produces at the surviving-cell boundary.
-            let dz_log = <rand_distr::StandardNormal as Distribution<f64>>::sample(
-                &rand_distr::StandardNormal,
-                &mut local_rng,
-            );
-            let dz_rd = <rand_distr::StandardNormal as Distribution<f64>>::sample(
-                &rand_distr::StandardNormal,
-                &mut local_rng,
-            );
-            let log_rho_j = cell.rho.ln() + 0.5 * cell.log_rho_step * dz_log;
-            let rho_j = log_rho_j.exp();
-            let rho_dot_j = cell.rho_dot + 0.5 * cell.rho_dot_step * dz_rd;
+            for _ in 0..MAX_ATTEMPTS {
+                // Jitter within the cell with a Gaussian (sigma = half cell width).
+                // Adjacent cells' Gaussian densities overlap and blend across their
+                // shared boundaries, eliminating the polygonal staircase that uniform
+                // jitter produces at the surviving-cell boundary.
+                let dz_log = normal(&mut local_rng);
+                let dz_rd = normal(&mut local_rng);
+                let rho_j = (cell.rho.ln() + 0.5 * cell.log_rho_step * dz_log).exp();
+                let rho_dot_j = cell.rho_dot + 0.5 * cell.rho_dot_step * dz_rd;
 
-            // Center on the cell's constrained LS solution, then add N(0, Gamma_A)
-            // noise using the cell's Fisher info.
-            let mut p_attr = Attributable {
-                alpha: attr.alpha + cell.attr_delta[0],
-                delta: attr.delta + cell.attr_delta[1],
-                alpha_dot: attr.alpha_dot + cell.attr_delta[2],
-                delta_dot: attr.delta_dot + cell.attr_delta[3],
-                t_ref: attr.t_ref,
-                observer: attr.observer.clone(),
-            };
-            let mut n_reg = cell.attr_info.clone();
-            n_reg[(0, 0)] += ATTR_REG_INV;
-            n_reg[(1, 1)] += ATTR_REG_INV;
-            n_reg[(2, 2)] += ATTR_REG_INV;
-            n_reg[(3, 3)] += ATTR_REG_INV;
-            if let Some(gamma_a) = n_reg.try_inverse()
-                && let Some(chol) = gamma_a.cholesky()
-            {
-                let z = DVector::from_vec(
-                    (0..4)
-                        .map(|_| {
-                            <rand_distr::StandardNormal as Distribution<f64>>::sample(
-                                &rand_distr::StandardNormal,
-                                &mut local_rng,
-                            )
-                        })
-                        .collect::<Vec<_>>(),
-                );
-                let d_attr = chol.l() * z;
-                p_attr.alpha += d_attr[0];
-                p_attr.delta += d_attr[1];
-                p_attr.alpha_dot += d_attr[2];
-                p_attr.delta_dot += d_attr[3];
+                // Center on the cell's constrained LS solution, then add N(0, Gamma_A)
+                // noise.
+                let mut d_attr = Vector4::from(cell.attr_delta);
+                if let Some(l) = attr_noise {
+                    let z = Vector4::from_fn(|_, _| normal(&mut local_rng));
+                    d_attr += l * z;
+                }
+                let p_attr = attr.corrected(d_attr.into());
+
+                // `state_from_rho` returns the state at the emission epoch, which
+                // depends on rho; bring every draw to the common epoch `t_ref`.
+                let helio = spk.try_to_sun(state_from_rho(&p_attr, rho_j, rho_dot_j))?;
+                if !is_physically_valid(helio.pos, helio.vel) {
+                    continue;
+                }
+                let at_ref = propagate_two_body(&helio, Time::from(attr.t_ref))?;
+                let ps = spk.try_to_ssb(at_ref)?;
+                return Ok((
+                    vec![
+                        ps.pos[0], ps.pos[1], ps.pos[2], ps.vel[0], ps.vel[1], ps.vel[2],
+                    ],
+                    cell.log_w,
+                ));
             }
-
-            // `state_from_rho` returns the state at the emission epoch, which
-            // depends on rho; bring every draw to the common epoch `t_ref`.
-            let emitted = state_from_rho(&p_attr, rho_j, rho_dot_j);
-            let spk = LOADED_SPK.try_read()?;
-            let helio = spk.try_to_sun(emitted)?;
-            let at_ref = propagate_two_body(&helio, Time::from(attr.t_ref))?;
-            let ps = spk.try_to_ssb(at_ref)?;
-            Ok((
-                vec![
-                    ps.pos[0], ps.pos[1], ps.pos[2], ps.vel[0], ps.vel[1], ps.vel[2],
-                ],
-                cell.log_w,
-            ))
+            Err(Error::ValueError(format!(
+                "fit_orbit_ranging: no physically valid draw in {MAX_ATTEMPTS} attempts \
+                 from the cell at rho = {:e} AU, rho_dot = {:e} AU/day",
+                cell.rho, cell.rho_dot
+            )))
         })
         .collect::<KeteResult<_>>()?;
 
@@ -1271,8 +1340,9 @@ fn draw_samples(
 /// where the posterior is a ridge or multi-modal.  For well-constrained arcs use
 /// [`fit_orbit_mcmc`].
 ///
-/// A short sliding window is swept across each observer's observations to find
-/// the attributable epoch where the linear-motion approximation best fits.  Each
+/// A short sliding window, stepped by half its width, is swept across each observer's
+/// observations to find the attributable epoch where the linear-motion approximation
+/// best fits.  Each
 /// window holds observations from a single observer, identified by the
 /// designation of its observer state (the observatory code for MPC data); all
 /// observations from every observer are used for chi^2 scoring regardless of
@@ -1284,11 +1354,17 @@ fn draw_samples(
 /// * `obs` -- At least 3 optical observations (any order, sorted internally).
 /// * `num_draws` -- Number of orbit samples to return.
 /// * `temperature` -- Likelihood temperature (1.0 = nominal). Higher values broaden coverage.
-/// * `seed` -- RNG seed; identical inputs + seed -> identical draws.
+/// * `seed` -- RNG seed; identical inputs + seed -> identical draws for a given build
+///   of kete.  The generator is not guaranteed to be the same across versions of its
+///   dependencies or across platforms.
+///
+/// Observations are weighted by their RA/Dec uncertainties and correlation.  The
+/// timing uncertainty of an observation is not used.
 ///
 /// # Errors
-/// Returns an error if fewer than 3 optical observations are provided, no valid
-/// cells survive scoring, or a draw cannot be propagated to the reference epoch.
+/// Returns an error if fewer than 3 optical observations are provided, the SPK
+/// kernels cannot be read, no valid cells survive scoring, or a draw cannot be
+/// propagated to the reference epoch.
 pub fn fit_orbit_ranging(
     obs: &[AstrometricObservation],
     num_draws: usize,
@@ -1296,21 +1372,21 @@ pub fn fit_orbit_ranging(
     seed: u64,
 ) -> KeteResult<RangingSamples> {
     const ATTR_WINDOW_DAYS: f64 = 0.1;
-    const WINDOW_STEP_DAYS: f64 = 0.1;
 
-    if obs.len() < 3 {
-        return Err(Error::ValueError(
-            "fit_orbit_ranging requires at least 3 observations".into(),
-        ));
+    let n_optical = obs.iter().filter(|o| o.as_optical().is_ok()).count();
+    if n_optical < 3 {
+        return Err(Error::ValueError(format!(
+            "fit_orbit_ranging requires at least 3 optical observations, found {n_optical}"
+        )));
     }
 
+    // One read guard for the whole call: every scan, check and draw below reads the
+    // same kernels, and a failure to read them is reported once, as itself.
+    let spk_guard = LOADED_SPK.try_read()?;
+    let spk: &SpkCollection = &spk_guard;
+
     let mut sorted = obs.to_vec();
-    sorted.sort_by(|a, b| {
-        a.epoch()
-            .jd
-            .partial_cmp(&b.epoch().jd)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    sorted.sort_by(|a, b| a.epoch().jd.total_cmp(&b.epoch().jd));
 
     // Attributables are built from one observer at a time.  The attributable is a
     // straight-line fit of RA/Dec against time paired with the secant velocity of
@@ -1332,8 +1408,7 @@ pub fn fit_orbit_ranging(
     // Select the window with the highest peak log-weight (lowest chi^2_min).
     // Selecting by ESS is wrong: a biased attributable produces a wider,
     // shallower posterior with high ESS while the correct one has a sharp peak.
-    let mut best_cells: Vec<Cell> = Vec::new();
-    let mut best_attr: Option<Attributable> = None;
+    let mut best: Option<(Vec<Cell>, Attributable, ObsTable)> = None;
     let mut best_peak_lw = f64::NEG_INFINITY;
 
     for (_, group) in &groups {
@@ -1343,8 +1418,9 @@ pub fn fit_orbit_ranging(
         let t0 = group[0].epoch().jd;
         let arc = group[group.len() - 1].epoch().jd - t0;
 
-        // Widen the window if this observer's observations are more spread than
-        // ATTR_WINDOW_DAYS.
+        // A window must be able to hold two observations.  If even the closest pair
+        // of this observer's observations is further apart than ATTR_WINDOW_DAYS,
+        // widen the window to reach across that pair.
         let min_obs_gap = group
             .windows(2)
             .filter_map(|w| {
@@ -1356,7 +1432,9 @@ pub fn fit_orbit_ranging(
             continue;
         }
         let effective_window = ATTR_WINDOW_DAYS.max(min_obs_gap * 1.5);
-        let effective_step = WINDOW_STEP_DAYS.max(effective_window / 2.0);
+        // Windows overlap by half, so a tracklet that straddles the edge of one
+        // window lies whole inside the next.
+        let effective_step = effective_window / 2.0;
 
         let n_windows = if arc <= effective_window {
             1
@@ -1372,36 +1450,56 @@ pub fn fit_orbit_ranging(
             n + 1
         };
 
-        for i in 0..n_windows {
-            let w_start = t0 + i as f64 * effective_step;
-            let w_end = w_start + effective_window;
-            let window_obs: Vec<AstrometricObservation> = group
-                .iter()
-                .filter(|o| {
-                    let jd = o.epoch().jd;
-                    jd >= w_start && jd <= w_end
-                })
-                .cloned()
-                .collect();
-            if window_obs.len() < 2 {
-                continue;
-            }
+        // Each window is a contiguous run `group[lo..hi]`.  Overlapping windows often
+        // hold the same observations, or a subset of a neighbor's: the attributable
+        // depends on nothing but the observations, and a subset gives the same fit over
+        // a shorter baseline.  Only the maximal runs are scanned.
+        let mut runs: Vec<(usize, usize)> = (0..n_windows)
+            .map(|i| {
+                let w_start = t0 + i as f64 * effective_step;
+                let w_end = w_start + effective_window;
+                (
+                    group.partition_point(|o| o.epoch().jd < w_start),
+                    group.partition_point(|o| o.epoch().jd <= w_end),
+                )
+            })
+            .filter(|&(lo, hi)| hi >= lo + 2)
+            .collect();
+        runs.dedup();
+        let maximal: Vec<(usize, usize)> = runs
+            .iter()
+            .copied()
+            .filter(|&(lo, hi)| {
+                !runs
+                    .iter()
+                    .any(|&(a, b)| (a, b) != (lo, hi) && a <= lo && hi <= b)
+            })
+            .collect();
+
+        for (lo, hi) in maximal {
+            let window_obs = &group[lo..hi];
             let w_span = window_obs[window_obs.len() - 1].epoch().jd - window_obs[0].epoch().jd;
             if w_span < 1e-5 {
                 continue;
             }
-            let Some(attr) = compute_attributable(&window_obs) else {
+            let Some(attr) = compute_attributable(window_obs) else {
                 continue;
             };
+            let table = ObsTable::new(spk, &sorted, attr.t_ref)?;
             let cells = score_patch(
-                &sorted,
+                spk,
+                &table,
                 &attr,
                 (LOG_RHO_MIN, LOG_RHO_MAX),
                 None,
                 N_RHO,
                 N_RHO_DOT,
                 temperature,
-            );
+                // A window wins on its peak score, so cells that far below an earlier
+                // window's peak belong either to a window that loses or below the
+                // floor of one that wins.
+                best_peak_lw,
+            )?;
             if cells.is_empty() {
                 continue;
             }
@@ -1411,20 +1509,19 @@ pub fn fit_orbit_ranging(
                 .fold(f64::NEG_INFINITY, f64::max);
             if peak_lw > best_peak_lw {
                 best_peak_lw = peak_lw;
-                best_cells = cells;
-                best_attr = Some(attr);
+                best = Some((cells, attr, table));
             }
         }
     }
 
-    let attr = best_attr.ok_or_else(|| {
+    let (cells, attr, table) = best.ok_or_else(|| {
         Error::ValueError(
-            "fit_orbit_ranging: no valid cells found for any window; an attributable \
-             needs at least two observations from the same observer"
+            "fit_orbit_ranging: no valid cells found for any window. An attributable \
+             needs at least two observations from the same observer, and an orbit is \
+             scored only if it can be compared with every observation."
                 .into(),
         )
     })?;
-    let cells = best_cells;
 
     let max_lw = cells
         .iter()
@@ -1433,7 +1530,7 @@ pub fn fit_orbit_ranging(
     let mut cells = cells;
     cells.retain(|c| c.log_w > max_lw - LOG_W_FLOOR);
 
-    let (cells, final_ess, resolution) = refine(cells, &sorted, &attr, temperature);
+    let (cells, final_ess, resolution) = refine(spk, cells, &table, &attr, temperature)?;
 
     let mut warnings = Vec::new();
     if final_ess < TARGET_ESS {
@@ -1449,7 +1546,7 @@ pub fn fit_orbit_ranging(
              posterior structure."
         ));
     }
-    if let Some(check) = linear_model_check(&cells, &sorted, &attr, temperature) {
+    if let Some(check) = linear_model_check(spk, &cells, &table, &attr, temperature) {
         if check.unconverged > 0 || check.shift_sigma > MAX_LINEAR_MODEL_SHIFT_SIGMA {
             warnings.push(format!(
                 "The linear attributable model does not describe these observations: \
@@ -1461,7 +1558,6 @@ pub fn fit_orbit_ranging(
                 check.shift_sigma, check.unconverged
             ));
         }
-        let n_optical = sorted.iter().filter(|o| o.as_optical().is_ok()).count();
         #[allow(clippy::cast_precision_loss, reason = "observation counts are small")]
         let dof = (2 * n_optical).saturating_sub(6) as f64;
         if dof > 0.0 && check.best_chi2 > dof + FIT_CHI2_SIGMAS * (2.0 * dof).sqrt() {
@@ -1476,7 +1572,9 @@ pub fn fit_orbit_ranging(
     let convergence_warning = (!warnings.is_empty()).then(|| warnings.join(" "));
 
     let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
-    let (draws, log_posterior) = draw_samples(&cells, num_draws, &mut rng, &attr)?;
+    let attr_noise = table.attr_noise(temperature);
+    let (draws, log_posterior) =
+        draw_samples(spk, &cells, num_draws, &mut rng, &attr, attr_noise.as_ref())?;
 
     Ok(RangingSamples {
         epoch: attr.t_ref,
@@ -1501,6 +1599,11 @@ mod tests {
     use kete_core::kepler::propagate_two_body;
     use kete_core::time::{TDB, Time};
     use kete_spice::test_data::ensure_test_spk;
+
+    /// The observation table of `obs` against the epoch of `attr`.
+    fn table(obs: &[AstrometricObservation], attr: &Attributable) -> ObsTable {
+        ObsTable::new(&LOADED_SPK.try_read().unwrap(), obs, attr.t_ref).expect("table")
+    }
 
     fn make_ssb_state(pos: [f64; 3], vel: [f64; 3], jd: f64) -> State<Equatorial, SSB> {
         State {
@@ -1748,20 +1851,19 @@ mod tests {
         let rho = rho_of(0);
         let rho_dot = (rho_of(8) - rho_of(0)) / (epochs[8] - epochs[0]);
         let state = state_from_rho(&attr, rho, rho_dot);
-        let (log_w, _, attr_delta) = scout_score(
+        let (log_w, attr_delta) = scout_score(
             &LOADED_SPK.try_read().unwrap(),
             &state,
-            &obs,
-            attr.t_ref,
+            &table(&obs, &attr),
             1.0,
+            f64::NEG_INFINITY,
         )
         .expect("scout_score must succeed");
 
-        // Negligible cell extent and an effectively infinite Fisher information so
+        // Negligible cell extent and no attributable noise so
         // the draw is deterministic: attributable + correction, nothing else.
         let cell = Cell {
             log_w,
-            attr_info: DMatrix::<f64>::identity(4, 4) * 1e30,
             attr_delta,
             rho,
             rho_dot,
@@ -1769,8 +1871,15 @@ mod tests {
             rho_dot_step: 1e-15,
         };
         let mut rng = rand::rngs::SmallRng::seed_from_u64(3);
-        let (draws, _) =
-            draw_samples(std::slice::from_ref(&cell), 4, &mut rng, &attr).expect("draws");
+        let (draws, _) = draw_samples(
+            &LOADED_SPK.try_read().unwrap(),
+            std::slice::from_ref(&cell),
+            4,
+            &mut rng,
+            &attr,
+            None,
+        )
+        .expect("draws");
         assert_eq!(draws.len(), 4);
 
         let t_emit = attr.t_ref - rho * kete_core::constants::C_AU_PER_DAY_INV;
@@ -1827,14 +1936,17 @@ mod tests {
         let obs = synth_obs(&obj, &epochs, 1.0_f64.to_radians() / 3600.0);
         let attr = compute_attributable(&obs).expect("attributable must succeed");
         let mut cells = score_patch(
-            &obs,
+            &LOADED_SPK.try_read().unwrap(),
+            &table(&obs, &attr),
             &attr,
             (LOG_RHO_MIN, LOG_RHO_MAX),
             None,
             N_RHO,
             N_RHO_DOT,
             temperature,
-        );
+            f64::NEG_INFINITY,
+        )
+        .unwrap();
         let max_lw = cells
             .iter()
             .map(|c| c.log_w)
@@ -1914,14 +2026,17 @@ mod tests {
         let rd_hi = fold(f64::max, f64::NEG_INFINITY, &|c| c.rho_dot);
         let pad = 0.1 * (rd_hi - rd_lo);
         let fine = score_patch(
-            &obs,
+            &LOADED_SPK.try_read().unwrap(),
+            &table(&obs, &attr),
             &attr,
             (lr_lo - 0.05, lr_hi + 0.05),
             Some(&|_| Some((rd_lo - pad, rd_hi + pad, 1500))),
             200,
             1500,
             10.0,
-        );
+            f64::NEG_INFINITY,
+        )
+        .unwrap();
 
         let reference = mean_log_rho(&fine).exp();
         let coarse_mean = mean_log_rho(&coarse).exp();
@@ -2002,16 +2117,26 @@ mod tests {
             c.rho_dot + 8.0 * c.rho_dot_step
         });
         let reference = score_patch(
-            &obs,
+            &LOADED_SPK.try_read().unwrap(),
+            &table(&obs, &attr),
             &attr,
             (lr_lo, lr_hi),
             Some(&|_| Some((rd_lo, rd_hi, 500))),
             500,
             500,
             1.0,
-        );
+            f64::NEG_INFINITY,
+        )
+        .unwrap();
 
-        let (refined, final_ess, _) = refine(cells, &obs, &attr, 1.0);
+        let (refined, final_ess, _) = refine(
+            &LOADED_SPK.try_read().unwrap(),
+            cells,
+            &table(&obs, &attr),
+            &attr,
+            1.0,
+        )
+        .unwrap();
         assert!(final_ess >= TARGET_ESS, "ESS {final_ess:.1}");
         let unique: std::collections::HashSet<_> = refined.iter().map(cell_key).collect();
         assert_eq!(unique.len(), refined.len(), "refinement repeats cells");
@@ -2041,25 +2166,33 @@ mod tests {
             .max_by(|a, b| a.log_w.total_cmp(&b.log_w))
             .expect("cells");
         let state = state_from_rho(&attr, best.rho, best.rho_dot);
-        let (lw1, n1, d1) = scout_score(
+        let (lw1, d1) = scout_score(
             &LOADED_SPK.try_read().unwrap(),
             &state,
-            &obs,
-            attr.t_ref,
+            &table(&obs, &attr),
             1.0,
+            f64::NEG_INFINITY,
         )
         .expect("score");
-        let (lw4, n4, d4) = scout_score(
+        let (lw4, d4) = scout_score(
             &LOADED_SPK.try_read().unwrap(),
             &state,
-            &obs,
-            attr.t_ref,
+            &table(&obs, &attr),
             4.0,
+            f64::NEG_INFINITY,
         )
         .expect("score");
         assert!((lw1 - 4.0 * lw4).abs() <= 1e-9 * lw1.abs().max(1.0));
-        assert!((&n1 - &n4 * 4.0).norm() <= 1e-9 * n1.norm());
         assert_eq!(d1, d4, "the LS correction does not depend on temperature");
+
+        // The attributable noise is the square root of a covariance `(N / T + R)^-1`,
+        // so it grows as `sqrt(T)` up to the weak regularizer `R`.
+        let table = table(&obs, &attr);
+        let l1 = table.attr_noise(1.0).expect("noise");
+        let l4 = table.attr_noise(4.0).expect("noise");
+        let rel = (l4 - l1 * 2.0).norm() / l4.norm();
+        println!("attributable noise at T = 4 against twice T = 1: relative difference {rel:e}");
+        assert!(rel < 1e-2, "relative difference {rel:e}");
     }
 
     /// Nine NEOCP observations of `P12pZsW` (F51 and H21, 2026-09-13 to 09-16).
@@ -2276,20 +2409,30 @@ mod tests {
             .collect();
         let attr = compute_attributable(&first_night).expect("attributable");
         let mut cells = score_patch(
-            &obs,
+            &LOADED_SPK.try_read().unwrap(),
+            &table(&obs, &attr),
             &attr,
             (LOG_RHO_MIN, LOG_RHO_MAX),
             None,
             N_RHO,
             N_RHO_DOT,
             TEMPERATURE,
-        );
+            f64::NEG_INFINITY,
+        )
+        .unwrap();
         let max_lw = cells
             .iter()
             .map(|c| c.log_w)
             .fold(f64::NEG_INFINITY, f64::max);
         cells.retain(|c| c.log_w > max_lw - LOG_W_FLOOR);
-        let coarse_resolution = max_half_step_change(&cells, &obs, &attr, TEMPERATURE);
+        let coarse_resolution = max_half_step_change(
+            &LOADED_SPK.try_read().unwrap(),
+            &cells,
+            &table(&obs, &attr),
+            &attr,
+            TEMPERATURE,
+        )
+        .unwrap();
         assert!(ess(&cells) >= TARGET_ESS, "test needs high coarse ESS");
         assert!(
             coarse_resolution > MAX_HALF_STEP_LOG_CHANGE,
@@ -2327,14 +2470,17 @@ mod tests {
             .fold(f64::NEG_INFINITY, f64::max)
             + 3e-3;
         let reference = score_patch(
-            &obs,
+            &LOADED_SPK.try_read().unwrap(),
+            &table(&obs, &attr),
             &attr,
             (lr_lo, lr_hi),
             Some(&|_| Some((rd_lo, rd_hi, 800))),
             800,
             0,
             TEMPERATURE,
-        );
+            f64::NEG_INFINITY,
+        )
+        .unwrap();
         let ref_lm = reference
             .iter()
             .map(Cell::log_mass)
@@ -2359,7 +2505,14 @@ mod tests {
             "coarse grid should smear across the ridge: ratio {coarse_ratio:.3}"
         );
 
-        let (refined, _, resolution) = refine(cells, &obs, &attr, TEMPERATURE);
+        let (refined, _, resolution) = refine(
+            &LOADED_SPK.try_read().unwrap(),
+            cells,
+            &table(&obs, &attr),
+            &attr,
+            TEMPERATURE,
+        )
+        .unwrap();
         assert!(
             resolution <= MAX_HALF_STEP_LOG_CHANGE,
             "refinement left a log change of {resolution:.2} over half a cell"
@@ -2473,14 +2626,10 @@ mod tests {
             2_460_000.5 + 0.06,
         ];
         let obs = synth_obs(&obj, &epochs, 1.0_f64.to_radians() / 3600.0);
-        let (log_w, _, _) = scout_score(
-            &LOADED_SPK.try_read().unwrap(),
-            &obj,
-            &obs,
-            2_460_000.5,
-            1.0,
-        )
-        .expect("scout_score must succeed");
+        let spk = LOADED_SPK.try_read().unwrap();
+        let table = ObsTable::new(&spk, &obs, 2_460_000.5).expect("table");
+        let (log_w, _) = scout_score(&spk, &obj, &table, 1.0, f64::NEG_INFINITY)
+            .expect("scout_score must succeed");
         assert!(
             log_w > -0.5,
             "log_w = {log_w:.6} for true state; expected near-zero curvature"
@@ -2686,5 +2835,148 @@ mod tests {
             "log_posteriors appear constant (max={max_lp:.4}, min={min_lp:.4}); \
              curvature chi^2 should differentiate cells on a 3-day arc"
         );
+    }
+
+    /// The per-observation terms are `H^T W H` and `H^T W y` for the linear attributable
+    /// model, with a full (correlated) 2x2 weight.
+    #[test]
+    fn normal_terms_match_dense_weighted_least_squares() {
+        use nalgebra::{Matrix2, Matrix2x4, Vector2};
+        let dt = 0.37;
+        let w = [2.0, 0.7, 1.5];
+        let y = [0.3, -1.1];
+
+        let h = Matrix2x4::new(1.0, 0.0, dt, 0.0, 0.0, 1.0, 0.0, dt);
+        let w_dense = Matrix2::new(w[0], w[1], w[1], w[2]);
+        let normal = h.transpose() * w_dense * h;
+        let rhs = h.transpose() * w_dense * Vector2::new(y[0], y[1]);
+
+        assert!((normal_matrix_term(dt, w) - normal).norm() < 1e-14);
+        assert!((rhs_term(dt, w, y) - rhs).norm() < 1e-14);
+    }
+
+    /// With an RA/Dec correlation the chi^2 of an orbit is `nu^T Sigma^-1 nu` with the
+    /// full inverse covariance.  Two observation sets that differ only in the sign of
+    /// the correlation weight the cross term with opposite signs, so their chi^2
+    /// differ, and both differ from the uncorrelated value by more than the diagonal
+    /// inflation alone.
+    #[test]
+    fn correlation_enters_the_chi2_through_the_cross_term() {
+        ensure_test_spk();
+        let (obs, attr, cells) = coarse_cells(6, 2.0, 1.0);
+        let spk = LOADED_SPK.try_read().unwrap();
+        // A cell off the peak, so the residuals are not all near zero.
+        let cell = cells
+            .iter()
+            .min_by(|a, b| a.log_w.total_cmp(&b.log_w))
+            .expect("cells");
+        let state = state_from_rho(&attr, cell.rho, cell.rho_dot);
+
+        let with_corr = |c: f64| {
+            let mut obs = obs.clone();
+            for o in &mut obs {
+                if let AstrometricObservation::Optical { sigma_corr, .. } = o {
+                    *sigma_corr = c;
+                }
+            }
+            let table = ObsTable::new(&spk, &obs, attr.t_ref).expect("table");
+            residual_sums(&spk, &state, &table, f64::INFINITY)
+                .expect("sums")
+                .0
+        };
+        let (plain, pos, neg) = (with_corr(0.0), with_corr(0.6), with_corr(-0.6));
+        println!("chi2: uncorrelated {plain:.4}, corr +0.6 {pos:.4}, corr -0.6 {neg:.4}");
+
+        // chi2(c) = (A - 2 c C + D) / (1 - c^2) in units where the sigmas are 1, so the
+        // mean of the two signs is the uncorrelated value inflated by 1 / (1 - c^2),
+        // and their difference is the cross term.
+        let inflated = plain / (1.0 - 0.6 * 0.6);
+        assert!((f64::midpoint(pos, neg) - inflated).abs() < 1e-9 * inflated);
+        assert!((pos - neg).abs() > 1e-6 * inflated, "cross term is missing");
+    }
+
+    /// An orbit is scored only if it can be compared with every observation.  Scoring
+    /// on the observations that happen to evaluate would give a smaller chi^2 than the
+    /// same orbit scored on all of them.
+    #[test]
+    fn orbit_is_not_scored_on_a_subset_of_observations() {
+        ensure_test_spk();
+        let (obs, attr, cells) = coarse_cells(6, 2.0, 1.0);
+        let spk = LOADED_SPK.try_read().unwrap();
+        let best = cells
+            .iter()
+            .max_by(|a, b| a.log_w.total_cmp(&b.log_w))
+            .expect("cells");
+        let state = state_from_rho(&attr, best.rho, best.rho_dot);
+
+        let mut table = ObsTable::new(&spk, &obs, attr.t_ref).expect("table");
+        assert!(residual_sums(&spk, &state, &table, f64::INFINITY).is_some());
+
+        // One observation at an epoch no kernel covers cannot be evaluated.
+        let first = &table.entries[0];
+        table.entries.push(ObsEntry {
+            epoch: Time::from(1e8),
+            dt: first.dt,
+            ra: first.ra,
+            dec: first.dec,
+            w: first.w,
+            obs_ssb: first.obs_ssb,
+            obs_sun: first.obs_sun,
+        });
+        assert!(residual_sums(&spk, &state, &table, f64::INFINITY).is_none());
+        assert!(scout_score(&spk, &state, &table, 1.0, f64::NEG_INFINITY).is_none());
+    }
+
+    /// Fewer than three optical observations is an error that says so.
+    #[test]
+    fn requires_three_optical_observations() {
+        ensure_test_spk();
+        let obs = arc_obs(2, 0.05);
+        let err = fit_orbit_ranging(&obs, 10, 1.0, 0).expect_err("two observations");
+        assert!(
+            err.to_string().contains("at least 3 optical observations"),
+            "{err}"
+        );
+    }
+
+    /// Abandoning an orbit part way through its observations is sound: whenever
+    /// `residual_sums` gives up against a limit, the constrained chi^2 over all of the
+    /// observations is above that limit.  It is also effective: on a multi-night arc
+    /// most orbits are abandoned against the limit the scan would use.
+    #[test]
+    fn abandoned_orbits_are_over_the_limit() {
+        ensure_test_spk();
+        let obs = arc_obs(24, 6.0);
+        let spk = LOADED_SPK.try_read().unwrap();
+        let attr = compute_attributable(&obs[..3]).expect("attributable");
+        let table = ObsTable::new(&spk, &obs, attr.t_ref).expect("table");
+        assert!(
+            !table.checkpoints.is_empty(),
+            "24 observations have checkpoints"
+        );
+
+        let full_chi2 = |state: &State<Equatorial, SSB>| {
+            let (raw, rhs) = residual_sums(&spk, state, &table, f64::INFINITY)?;
+            Some(raw - rhs.dot(&table.normal_chol.solve(&rhs)))
+        };
+        let (mut abandoned, mut scored) = (0, 0);
+        for i in 0..40 {
+            for j in 0..40 {
+                let rho = (-3.0 + 0.15 * f64::from(i)).exp();
+                let rho_dot = -0.02 + 0.001 * f64::from(j);
+                let state = state_from_rho(&attr, rho, rho_dot);
+                let Some(chi2) = full_chi2(&state) else {
+                    continue;
+                };
+                scored += 1;
+                let limit = 2.0 * LOG_W_FLOOR;
+                if residual_sums(&spk, &state, &table, limit).is_none() {
+                    abandoned += 1;
+                    assert!(chi2 > limit, "abandoned at chi2 = {chi2:.3}, limit {limit}");
+                }
+            }
+        }
+        println!("abandoned {abandoned} of {scored} orbits");
+        assert!(2 * abandoned > scored, "abandoned {abandoned} of {scored}");
     }
 }

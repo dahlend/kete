@@ -1189,7 +1189,11 @@ impl PyRangingSamples {
 ///
 /// The attributable comes from a short window of observations from a single
 /// observer, chosen where the linear-motion approximation fits best. All
-/// observations are used to score the cells.
+/// observations are used to score the cells, and an orbit that cannot be compared
+/// with every one of them is not scored.
+///
+/// Observations are weighted by their RA/Dec uncertainties and correlation
+/// (``sigma_corr``). The timing uncertainty ``time_sigma`` is not used.
 ///
 /// This is the appropriate tool when the arc is short and MCMC cannot explore
 /// the ridge, or when multiple orbital families may be consistent with the data.
@@ -1197,7 +1201,8 @@ impl PyRangingSamples {
 /// Parameters
 /// ----------
 /// observations : list
-///     At least 3 :class:`~kete.fitting.Observation` objects.
+///     At least 3 optical :class:`~kete.fitting.Observation` objects. Radar
+///     observations are ignored.
 /// num_draws : int
 ///     Number of orbit samples to return. Default 1000.
 /// temperature : float
@@ -1206,7 +1211,8 @@ impl PyRangingSamples {
 ///     less statistically rigorous. Default is 10.0, producing results similar to
 ///     JPL Scout.
 /// seed : int
-///     RNG seed for reproducibility. Default 0.
+///     RNG seed. The same observations and seed give the same draws for a given
+///     build of kete. Default 0.
 ///
 /// Returns
 /// -------
