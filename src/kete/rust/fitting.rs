@@ -620,12 +620,13 @@ impl PyOrbitFit {
         PyNonGravModel::from_force(f.inner(), f.fixed_values().ok()?)
     }
 
-    /// Whether the solver achieved strict convergence.
+    /// Whether the solver converged.
     ///
-    /// When ``False`` the fit is the best found within the iteration
-    /// limit but the correction norm did not drop below `tol`, and the
-    /// covariance is NaN when it could not be computed or the observations
-    /// do not constrain every parameter.
+    /// The fit has converged when the full Gauss-Newton step from it would
+    /// reduce chi-squared by less than 1e-4, a step of about 0.01 sigma. When
+    /// ``False`` the fit is the best found within the iteration limit, and the
+    /// covariance is NaN when it could not be computed or the observations do
+    /// not constrain every parameter.
     #[getter]
     fn converged(&self) -> bool {
         self.inner.converged
@@ -742,8 +743,7 @@ pub fn fit_orbit_py(
         &obs,
         include_asteroids,
         ng_fit.as_ref(),
-        50,   // max_iter
-        1e-8, // tol
+        50, // max_iter
         chi2_threshold,
         max_reject_passes,
         ng_start.as_deref(),

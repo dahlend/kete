@@ -110,6 +110,11 @@ const LM_LAMBDA_MAX: f64 = 1e12;
 /// getting stuck at near-zero lambda that never damps enough).
 const LM_LAMBDA_RESET_THRESHOLD: f64 = 1e-6;
 
+/// Convergence threshold on the Newton decrement, in chi-squared units: the fit
+/// has converged when the undamped Gauss-Newton step would reduce chi-squared by
+/// less than this. `1e-4` is a step of about 0.01 sigma in the joint metric.
+const NEWTON_DECREMENT_TOL: f64 = 1e-4;
+
 /// Singular values of the diagonally scaled information matrix at or below this
 /// are directions the observations do not constrain.
 const PSEUDO_INVERSE_CUTOFF: f64 = 1e-12;
@@ -152,8 +157,8 @@ pub struct OrbitFit {
     /// Divided by degrees of freedom (`n_measurements` - `n_params`).
     pub rms: f64,
 
-    /// Whether the solver achieved strict convergence (correction norm
-    /// dropped below `tol`). When `false` the fit is the best found
+    /// Whether the solver converged: the undamped Gauss-Newton step would reduce
+    /// chi-squared by less than `NEWTON_DECREMENT_TOL`. When `false` the fit is the best found
     /// within the iteration limit but may not be fully converged, and its
     /// covariance is NaN when it could not be computed or the observations
     /// do not constrain every parameter.
@@ -221,8 +226,6 @@ pub(crate) fn ssb_state(uncertain: &UncertainState) -> KeteResult<State<Equatori
 /// * `include_asteroids` - When true, include asteroid masses in the force model.
 /// * `non_grav` - Optional non-gravitational model.
 /// * `max_iter` - Maximum iterations per convergence pass.
-/// * `tol` - Convergence tolerance on the state correction norm (AU for
-///   position, AU/day for velocity).
 /// * `chi2_threshold` - Per-observation z-score threshold for outlier
 ///   rejection. An observation is rejected when its weighted
 ///   chi-squared exceeds this multiple of the leverage-corrected
@@ -250,7 +253,6 @@ pub fn fit_orbit(
     include_asteroids: bool,
     non_grav: Option<&NonGravMask>,
     max_iter: usize,
-    tol: f64,
     chi2_threshold: f64,
     max_reject_passes: usize,
     non_grav_start: Option<&[f64]>,
@@ -371,7 +373,6 @@ pub fn fit_orbit(
             expansion_mask.as_ref(),
             &[],
             max_iter,
-            tol,
             chi2_threshold,
             max_reject_passes,
         ) && let Ok(candidate) = ssb_state(&result.uncertain_state)
@@ -435,7 +436,6 @@ pub fn fit_orbit(
         ng_values,
         non_grav_start.is_some(),
         max_iter,
-        tol,
         chi2_threshold,
         max_reject_passes,
     )?;
@@ -476,7 +476,6 @@ fn fit_orbit_raw(
     ng_values: Vec<f64>,
     warm_start: bool,
     max_iter: usize,
-    tol: f64,
     chi2_threshold: f64,
     max_reject_passes: usize,
 ) -> KeteResult<OrbitFit> {
@@ -490,7 +489,6 @@ fn fit_orbit_raw(
             None,
             &[],
             max_iter,
-            tol,
             chi2_threshold,
             max_reject_passes,
         );
@@ -507,7 +505,6 @@ fn fit_orbit_raw(
             mask,
             &ng_values,
             max_iter,
-            tol,
             chi2_threshold,
             max_reject_passes,
         );
@@ -524,7 +521,6 @@ fn fit_orbit_raw(
         None,
         &[],
         max_iter,
-        tol,
         chi2_threshold,
         max_reject_passes,
     ) else {
@@ -537,7 +533,6 @@ fn fit_orbit_raw(
             mask,
             &ng_values,
             max_iter,
-            tol,
             chi2_threshold,
             max_reject_passes,
         );
@@ -553,7 +548,6 @@ fn fit_orbit_raw(
         mask,
         ng_values,
         max_iter,
-        tol,
     )
 }
 
@@ -586,7 +580,6 @@ fn solve_with_rejection(
     mask: Option<&NonGravMask>,
     ng_values: &[f64],
     max_iter: usize,
-    tol: f64,
     chi2_threshold: f64,
     max_reject_passes: usize,
 ) -> KeteResult<OrbitFit> {
@@ -599,7 +592,6 @@ fn solve_with_rejection(
         mask,
         ng_values.to_vec(),
         max_iter,
-        tol,
     )?;
 
     let np = fit.uncertain_state.free_params.len();
@@ -725,7 +717,6 @@ fn solve_with_rejection(
             mask,
             fit.uncertain_state.free_params.clone(),
             max_iter,
-            tol,
         )?;
     }
 
@@ -773,7 +764,6 @@ fn solve_with_rejection_adaptive(
     mask: Option<&NonGravMask>,
     ng_values: &[f64],
     max_iter: usize,
-    tol: f64,
     chi2_threshold: f64,
     max_reject_passes: usize,
 ) -> KeteResult<OrbitFit> {
@@ -786,7 +776,6 @@ fn solve_with_rejection_adaptive(
             mask,
             ng_values,
             max_iter,
-            tol,
             chi2_threshold,
             max_reject_passes,
         );
@@ -809,7 +798,6 @@ fn solve_with_rejection_adaptive(
             mask,
             ng_values,
             max_iter,
-            tol,
             threshold,
             max_reject_passes,
         )?;
@@ -928,7 +916,6 @@ fn iterate_to_convergence(
     mask: Option<&NonGravMask>,
     mut ng_values: Vec<f64>,
     max_iter: usize,
-    tol: f64,
 ) -> KeteResult<OrbitFit> {
     let mut state_epoch: State<Equatorial, SSB> = initial_state.clone();
     // Start with non-zero damping when fitting non-grav parameters.
@@ -959,32 +946,22 @@ fn iterate_to_convergence(
     };
 
     for _ in 0..max_iter {
-        let dx = solve_damped_within_ng_bounds(&info_mat, &rhs_vec, lambda, mask, &ng_values)?;
+        // Convergence test: the Newton decrement, `dx^T N dx` for the undamped
+        // Gauss-Newton step, is the chi-squared the model predicts that step would
+        // remove (Boyd & Vandenberghe, Convex Optimization, sec. 9.5.1). It does not
+        // depend on the units or scaling of the parameters, it accounts for their
+        // correlations, and damping cannot shrink it. At a minimum where numerical
+        // noise rejects every trial step it is still small.
+        let dx_newton = solve_damped_within_ng_bounds(&info_mat, &rhs_vec, 0.0, mask, &ng_values)?;
+        let converged = dx_newton.dot(&(&info_mat * &dx_newton)) < NEWTON_DECREMENT_TOL;
+
+        let dx = if lambda > 0.0 {
+            solve_damped_within_ng_bounds(&info_mat, &rhs_vec, lambda, mask, &ng_values)?
+        } else {
+            dx_newton
+        };
         let dx = limit_correction(dx);
         let dx = backtrack_to_ng_bounds(dx, mask, &ng_values);
-        // Damping shrinks the step anywhere, so convergence is judged on the
-        // undamped step.
-        let dx_undamped = if lambda > 0.0 {
-            let step = solve_damped_within_ng_bounds(&info_mat, &rhs_vec, 0.0, mask, &ng_values)?;
-            backtrack_to_ng_bounds(limit_correction(step), mask, &ng_values)
-        } else {
-            dx.clone()
-        };
-
-        // Convergence test. The raw `dx.norm()` (mixed units of AU,
-        // AU/day, and arbitrary non-grav coefficients) is dominated
-        // by the largest-magnitude parameters and can leave small
-        // parameters (velocity ~1e-2, non-grav down to ~1e-12) far
-        // from optimum when convergence is declared. We additionally
-        // require each component's step to be small in "standard
-        // error" units (sqrt(|N_ii|) times the step), which is scale-
-        // invariant. Both criteria must hold.
-        let mut max_scaled_step = 0.0_f64;
-        for i in 0..dx_undamped.len() {
-            let s = info_mat[(i, i)].abs().sqrt();
-            max_scaled_step = max_scaled_step.max((dx_undamped[i] * s).abs());
-        }
-        let converged = dx_undamped.norm() < tol && max_scaled_step < 1e-3;
 
         // Build trial state.
         let mut trial_state = state_epoch.clone();
@@ -2092,7 +2069,6 @@ mod tests {
             None,
             Vec::new(),
             30,
-            1e-10,
         )
         .unwrap();
         let sweep = stm_sweep(
@@ -2129,18 +2105,7 @@ mod tests {
         // Perturbed initial state (5% error in position, 3% in velocity).
         let perturbed = make_state([r * 1.05, 0.0, 0.0], [0.0, v * 0.97, 0.0], 2460000.5);
 
-        let fit = fit_orbit(
-            &perturbed,
-            &observations,
-            false,
-            None,
-            20,
-            1e-8,
-            9.0,
-            0,
-            None,
-        )
-        .unwrap();
+        let fit = fit_orbit(&perturbed, &observations, false, None, 20, 9.0, 0, None).unwrap();
 
         // Check that the fit converged near the true state.
         let pos_err = (ssb_state(&fit.uncertain_state).unwrap().pos - true_state.pos).norm();
@@ -2184,18 +2149,7 @@ mod tests {
             2460000.5,
         );
 
-        let fit = fit_orbit(
-            &perturbed,
-            &observations,
-            false,
-            None,
-            20,
-            1e-8,
-            9.0,
-            0,
-            None,
-        )
-        .unwrap();
+        let fit = fit_orbit(&perturbed, &observations, false, None, 20, 9.0, 0, None).unwrap();
 
         let pos_err = (ssb_state(&fit.uncertain_state).unwrap().pos - true_state.pos).norm();
 
@@ -2230,7 +2184,6 @@ mod tests {
             false,
             None,
             20,
-            1e-8,
             9.0,
             3,
             None,
@@ -2279,7 +2232,6 @@ mod tests {
             false,
             Some(&init_ng.0),
             30,
-            1e-10,
             9.0,
             0,
             None,
@@ -2344,7 +2296,6 @@ mod tests {
             false,
             Some(&mask),
             30,
-            1e-10,
             9.0,
             0,
             None,
@@ -2392,7 +2343,6 @@ mod tests {
             false,
             Some(&init_ng.0),
             30,
-            1e-10,
             9.0,
             0,
             None,
@@ -2440,18 +2390,7 @@ mod tests {
         // Perturb initial state by 10% position and 5% velocity.
         let perturbed = make_state([r * 1.10, 0.0, 0.0], [0.0, v * 0.95, 0.0], 2460000.5);
 
-        let fit = fit_orbit(
-            &perturbed,
-            &observations,
-            false,
-            None,
-            50,
-            1e-8,
-            9.0,
-            3,
-            None,
-        )
-        .unwrap();
+        let fit = fit_orbit(&perturbed, &observations, false, None, 50, 9.0, 3, None).unwrap();
 
         let pos_err = (ssb_state(&fit.uncertain_state).unwrap().pos - true_state.pos).norm();
         assert!(
@@ -2488,18 +2427,7 @@ mod tests {
             *ra += 50.0 * sigma;
         }
 
-        let fit = fit_orbit(
-            &true_state,
-            &observations,
-            false,
-            None,
-            50,
-            1e-8,
-            9.0,
-            5,
-            None,
-        )
-        .unwrap();
+        let fit = fit_orbit(&true_state, &observations, false, None, 50, 9.0, 5, None).unwrap();
 
         // The corrupted observation should be rejected.
         let n_total = 20;
@@ -2693,7 +2621,6 @@ mod tests {
             false,
             Some(&init_ng.0),
             30,
-            1e-10,
             9.0,
             0,
             None,
@@ -2733,7 +2660,6 @@ mod tests {
             false,
             Some(&free.0),
             30,
-            1e-10,
             9.0,
             0,
             Some(&start),
@@ -2752,7 +2678,6 @@ mod tests {
                 false,
                 mask,
                 30,
-                1e-10,
                 9.0,
                 0,
                 Some(start),
@@ -2788,7 +2713,6 @@ mod tests {
                 false,
                 Some(&dust_fit(0.0).0),
                 30,
-                1e-10,
                 9.0,
                 0,
                 Some(&[beta]),
@@ -2881,7 +2805,6 @@ mod tests {
             false,
             Some(&init_ng.0),
             30,
-            1e-10,
             9.0,
             0,
             None,
@@ -2918,18 +2841,7 @@ mod tests {
         let observations = synth_observations(&true_state, &epochs, earth_observer, sigma, None);
         let included = vec![true; observations.len()];
 
-        let fit = fit_orbit(
-            &true_state,
-            &observations,
-            false,
-            None,
-            20,
-            1e-10,
-            9.0,
-            0,
-            None,
-        )
-        .unwrap();
+        let fit = fit_orbit(&true_state, &observations, false, None, 20, 9.0, 0, None).unwrap();
 
         // Evaluate normal equations at the converged state.
         let fit_state = ssb_state(&fit.uncertain_state).unwrap();
@@ -3006,18 +2918,7 @@ mod tests {
             }
         }
 
-        let fit = fit_orbit(
-            &true_state,
-            &observations,
-            false,
-            None,
-            30,
-            1e-10,
-            4.5,
-            3,
-            None,
-        )
-        .unwrap();
+        let fit = fit_orbit(&true_state, &observations, false, None, 30, 4.5, 3, None).unwrap();
 
         let n_included = fit.included.iter().filter(|&&v| v).count();
         let n_total = observations.len();
@@ -3050,18 +2951,7 @@ mod tests {
             *ra += 100.0 * sigma;
         }
 
-        let fit = fit_orbit(
-            &true_state,
-            &observations,
-            false,
-            None,
-            20,
-            1e-10,
-            4.5,
-            3,
-            None,
-        )
-        .unwrap();
+        let fit = fit_orbit(&true_state, &observations, false, None, 20, 4.5, 3, None).unwrap();
 
         // Observation 3 should be rejected, all others kept.
         assert!(!fit.included[3], "100-sigma outlier should remain rejected");
@@ -3101,18 +2991,7 @@ mod tests {
             }
         }
 
-        let fit = fit_orbit(
-            &true_state,
-            &observations,
-            false,
-            None,
-            30,
-            1e-10,
-            9.0,
-            0,
-            None,
-        )
-        .unwrap();
+        let fit = fit_orbit(&true_state, &observations, false, None, 30, 9.0, 0, None).unwrap();
 
         assert!(
             fit.rms > 0.5,
@@ -3197,20 +3076,9 @@ mod tests {
             })
             .collect();
 
-        let fit_uncorr = fit_orbit(
-            &true_state,
-            &obs_uncorr,
-            false,
-            None,
-            20,
-            1e-10,
-            9.0,
-            0,
-            None,
-        )
-        .unwrap();
-        let fit_corr =
-            fit_orbit(&true_state, &obs_corr, false, None, 20, 1e-10, 9.0, 0, None).unwrap();
+        let fit_uncorr =
+            fit_orbit(&true_state, &obs_uncorr, false, None, 20, 9.0, 0, None).unwrap();
+        let fit_corr = fit_orbit(&true_state, &obs_corr, false, None, 20, 9.0, 0, None).unwrap();
 
         // The states should agree (injected residuals are zero in both).
         let pos_diff = (ssb_state(&fit_uncorr.uncertain_state).unwrap().pos
