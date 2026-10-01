@@ -7,6 +7,7 @@ use crate::interpolation::{ChebyshevLayout, chebyshev_evaluate};
 use kete_core::constants::AU_KM;
 use kete_core::errors::Error;
 use kete_core::prelude::KeteResult;
+use kete_core::time::{TDB, Time};
 
 /// Type 3 - Chebyshev Polynomials (Position & Velocity)
 ///
@@ -64,13 +65,14 @@ impl SpkSegmentType3 {
     }
 
     #[inline(always)]
-    pub(crate) fn try_get_pos_vel(&self, jds: f64) -> KeteResult<([f64; 3], [f64; 3])> {
+    pub(crate) fn try_get_pos_vel(&self, time: Time<TDB>) -> KeteResult<([f64; 3], [f64; 3])> {
+        let jds = time.j2000_seconds();
         let record_index = self.layout.record_index(jds);
         let record = self.get_record(record_index);
 
         let t_step = record.t_step;
 
-        let t = (jds - record.t_mid) / t_step;
+        let t = time.j2000_seconds_minus(*record.t_mid) / t_step;
 
         let t_scaled = 86400.0 / AU_KM;
 

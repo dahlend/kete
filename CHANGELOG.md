@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `Time` holds whole days plus a fraction of a day, about 10 ps resolution at any epoch,
+  and ephemeris, attitude and Earth-rotation lookups use it. Rust: `Time.jd` is now `jd()`.
+- Rust: `Time + f64` adds days on the time's own scale; `Time + Duration` adds elapsed
+  TDB time.
 - Updated the MPC observatory code table.
 - `kete.shape.TriangleEllipsoid` is built from `TriMesh`. All facets wind outward,
   and invalid scales raise `ValueError`.
@@ -54,6 +58,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Leap seconds took effect 36-37 s before 00:00 UTC, so UTC conversions were 1 s off
+  in that window.
+- `Time(jd, scaling="tt")` and `Time.from_mjd(mjd, "tt")` treated TT as TDB.
+- `Time - number` returns the Time that many days earlier, matching `Time + number`; it
+  returned days to the number read as a JD. `Time + Time` raises `TypeError`.
 - `TT` is now its own time scale rather than an alias of `TDB`. UTC and TAI to TDB
   conversions now include the periodic TDB-TT term, up to 1.7 ms.
 - RA/Dec sexagesimal strings no longer show 60 seconds, and invalid RA/Dec values

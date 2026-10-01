@@ -19,11 +19,11 @@
 //! The output frame is Equatorial J2000 (`frame_id = 1`).
 
 use crate::interpolation::{chebyshev_fit, hermite_interpolation};
-use crate::spice_jd_to_jd;
 use kete_core::constants::AU_KM;
 use kete_core::errors::Error;
 use kete_core::frames::Equatorial;
 use kete_core::prelude::KeteResult;
+use kete_core::time::{TDB, Time};
 use rayon::prelude::*;
 
 use super::SpkArray;
@@ -235,8 +235,8 @@ fn unfit_error(
     Error::ValueError(format!(
         "Repacking NAIF {object_id} (Type {output_type}): could not meet the \
          {threshold_km} km threshold with degree {degree} between JD {:.6} and {:.6}.",
-        spice_jd_to_jd(t_start).jd,
-        spice_jd_to_jd(t_end).jd,
+        Time::<TDB>::from_j2000_seconds(t_start).jd(),
+        Time::<TDB>::from_j2000_seconds(t_end).jd(),
     ))
 }
 
@@ -755,9 +755,9 @@ fn t13_probe_max_error(
         let state = safe_query(source, object_id, center_id, t_mid, segments)?;
         let orig_pos: [f64; 3] = state.pos.into();
 
-        let (ix, _) = hermite_interpolation(&times, &px, &vx, t_mid);
-        let (iy, _) = hermite_interpolation(&times, &py, &vy, t_mid);
-        let (iz, _) = hermite_interpolation(&times, &pz, &vz, t_mid);
+        let (ix, _) = hermite_interpolation(&times, &px, &vx, t_mid - times[0]);
+        let (iy, _) = hermite_interpolation(&times, &py, &vy, t_mid - times[0]);
+        let (iz, _) = hermite_interpolation(&times, &pz, &vz, t_mid - times[0]);
 
         let err = ((ix - orig_pos[0] * AU_KM).powi(2)
             + (iy - orig_pos[1] * AU_KM).powi(2)
@@ -890,7 +890,7 @@ fn t13_validate_sampled(
 
             let orig = safe_query(source, object_id, center_id, t, segments)?;
             let orig_pos: [f64; 3] = orig.pos.into();
-            let (pos, _) = segment.try_get_pos_vel(t);
+            let (pos, _) = segment.try_get_pos_vel(Time::from_j2000_seconds(t));
 
             let err = (0..3)
                 .map(|k| ((pos[k] - orig_pos[k]) * AU_KM).powi(2))
@@ -1063,8 +1063,11 @@ fn safe_query(
     segments: &[(f64, f64)],
 ) -> KeteResult<kete_core::state::State<Equatorial>> {
     let tc = clamp_to_coverage(t, segments);
-    let mut state =
-        source.try_get_state_with_center::<Equatorial>(object_id, spice_jd_to_jd(tc), center_id)?;
+    let mut state = source.try_get_state_with_center::<Equatorial>(
+        object_id,
+        Time::<TDB>::from_j2000_seconds(tc),
+        center_id,
+    )?;
     if tc != t {
         state.pos += state.vel * ((t - tc) / 86400.0);
     }
@@ -1272,7 +1275,7 @@ mod tests {
         for i in 0..100 {
             #[allow(clippy::cast_precision_loss, reason = "i in [0,99]; exact in f64.")]
             let frac = f64::from(i) / 99.0;
-            let jd = Time::<TDB>::new(jd_start.jd + frac * (jd_end.jd - jd_start.jd));
+            let jd = jd_start + frac * (jd_end - jd_start).elapsed;
 
             let orig = spk
                 .try_get_state_with_center::<Equatorial>(object_id, jd, center_id)
@@ -1291,7 +1294,7 @@ mod tests {
             assert!(
                 err_km < threshold_km,
                 "Position error {err_km:.6} km exceeds threshold at JD {}",
-                jd.jd
+                jd.jd()
             );
         }
         eprintln!(
@@ -1413,7 +1416,11 @@ mod tests {
                 (jump + 600.0, 1.0e8 + 1000.0),
             ] {
                 let state = repacked
-                    .try_get_state_with_center::<Equatorial>(1000, spice_jd_to_jd(t), 10)
+                    .try_get_state_with_center::<Equatorial>(
+                        1000,
+                        Time::<TDB>::from_j2000_seconds(t),
+                        10,
+                    )
                     .unwrap();
                 assert!(
                     (state.pos[0] * AU_KM - x_km).abs() < 0.01,
@@ -1474,7 +1481,7 @@ mod tests {
         for i in 0..100 {
             #[allow(clippy::cast_precision_loss, reason = "i in [0,99]; exact in f64.")]
             let frac = f64::from(i) / 99.0;
-            let jd = Time::<TDB>::new(jd_start.jd + frac * (jd_end.jd - jd_start.jd));
+            let jd = jd_start + frac * (jd_end - jd_start).elapsed;
 
             let orig = spk
                 .try_get_state_with_center::<Equatorial>(object_id, jd, center_id)
@@ -1493,7 +1500,7 @@ mod tests {
             assert!(
                 err_km < threshold_km,
                 "Position error {err_km:.6} km exceeds threshold at JD {}",
-                jd.jd
+                jd.jd()
             );
         }
         eprintln!(

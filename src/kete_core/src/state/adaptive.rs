@@ -887,10 +887,10 @@ fn validate(mixture: &DiffuseState, config: &SplitConfig, jd: Time<TDB>) -> Kete
             mixture.n_components()
         )));
     }
-    if !jd.jd.is_finite() {
+    if !jd.jd().is_finite() {
         return Err(Error::ValueError(format!(
             "target epoch must be finite, got {}",
-            jd.jd
+            jd.jd()
         )));
     }
     if mixture.weights.len() != mixture.components.len() {
@@ -941,7 +941,7 @@ fn validate(mixture: &DiffuseState, config: &SplitConfig, jd: Time<TDB>) -> Kete
 /// both numbers and a bound could only be enforced by silently running a step other than
 /// the one asked for.
 fn leg_grid(step_days: f64, start: Time<TDB>, end: Time<TDB>) -> Vec<Time<TDB>> {
-    let arc = end.jd - start.jd;
+    let arc = (end - start).elapsed;
     if arc == 0.0 || !arc.is_finite() {
         return Vec::new();
     }
@@ -962,10 +962,7 @@ fn leg_grid(step_days: f64, start: Time<TDB>, end: Time<TDB>) -> Vec<Time<TDB>> 
     }
     offsets.reverse();
 
-    let mut grid: Vec<Time<TDB>> = offsets
-        .into_iter()
-        .map(|offset| Time::new(start.jd + offset))
-        .collect();
+    let mut grid: Vec<Time<TDB>> = offsets.into_iter().map(|offset| start + offset).collect();
     grid.push(end);
     grid
 }
@@ -1003,12 +1000,12 @@ where
 /// them.  A mismatched set would still produce a number, measured against an anchor that no
 /// longer exists, so it is an error rather than a silent reseed.
 fn check_probes(component: &UncertainState, probes: &ProbeSet) -> KeteResult<()> {
-    if probes.epoch() != component.elements.epoch {
+    if !probes.epoch().same_instant(&component.elements.epoch) {
         return Err(Error::ValueError(format!(
             "component at epoch {} carries probes at epoch {}; probes belong to the \
              component they were seeded from",
-            component.elements.epoch.jd,
-            probes.epoch().jd
+            component.elements.epoch.jd(),
+            probes.epoch().jd()
         )));
     }
     let expected = 6 + component.free_params.len();
@@ -1030,9 +1027,9 @@ mod tests {
     /// Leg endpoints as offsets in days from the start of the arc.
     fn grid(step: f64, span: f64) -> Vec<f64> {
         let start = Time::<TDB>::new(2_460_000.5);
-        leg_grid(step, start, Time::new(start.jd + span))
+        leg_grid(step, start, start + span)
             .into_iter()
-            .map(|t| t.jd - start.jd)
+            .map(|t| (t - start).elapsed)
             .collect()
     }
 

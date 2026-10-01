@@ -46,6 +46,7 @@ use kete_core::forces::{NonGravMask, ParameterizedForce};
 use kete_core::frames::{Equatorial, SSB};
 use kete_core::kepler::propagate_two_body;
 use kete_core::prelude::{Error, KeteResult, State};
+use kete_core::time::{TDB, Time};
 use nalgebra::{DMatrix, DVector};
 use nuts_rs::rand::SeedableRng;
 use nuts_rs::{
@@ -77,8 +78,8 @@ const STUDENT_NU: f64 = 5.0;
 pub struct OrbitSamples {
     /// Designator of the object being fitted.
     pub desig: String,
-    /// Common reference epoch (JD, TDB).
-    pub epoch: f64,
+    /// Common reference epoch.
+    pub epoch: Time<TDB>,
     /// Draws: `[total_draws][6 + Np]`.
     ///
     /// Each inner vector is `[x, y, z, vx, vy, vz, ng_params...]` in the
@@ -575,7 +576,7 @@ pub fn fit_orbit_mcmc(
         .iter()
         .map(|s| -> KeteResult<State<Equatorial, SSB>> {
             let sun_s = spk.try_to_sun(s.clone())?;
-            let propagated = if (sun_s.epoch.jd - epoch.jd).abs() > 1e-12 {
+            let propagated = if (sun_s.epoch - epoch).elapsed.abs() > 1e-12 {
                 propagate_two_body(&sun_s, epoch)?
             } else {
                 sun_s
@@ -596,8 +597,8 @@ pub fn fit_orbit_mcmc(
     let mut sorted_obs = obs.to_vec();
     sorted_obs.sort_by(|a, b| {
         a.epoch()
-            .jd
-            .partial_cmp(&b.epoch().jd)
+            .jd()
+            .partial_cmp(&b.epoch().jd())
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     let sorted_obs: Arc<[AstrometricObservation]> = sorted_obs.into();
@@ -681,7 +682,7 @@ pub fn fit_orbit_mcmc(
 
     Ok(OrbitSamples {
         desig: seeds[0].desig.to_string(),
-        epoch: epoch.jd,
+        epoch,
         draws: all_draws,
         seed_id: all_seed_id,
         divergent: all_divergent,

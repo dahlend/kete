@@ -207,7 +207,7 @@ impl NeosVisit {
                 || ccd.subloop_id != subloop_id
                 || ccd.exposure_id != exposure_id
                 || ccd.rotation != rotation
-                || ccd.observer().epoch != observer.epoch
+                || !ccd.observer().epoch.same_instant(&observer.epoch)
                 || ccd.band != band
             {
                 Err(Error::ValueError(

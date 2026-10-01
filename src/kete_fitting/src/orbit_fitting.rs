@@ -274,7 +274,6 @@ pub fn fit_orbit(
             "No observations with finite observer states".into(),
         ));
     }
-    let ref_jd = initial_state.epoch.jd;
 
     // Geometric window radii (days) centered on the reference epoch.
     // Each stage bootstraps from the previous converged solution.
@@ -283,7 +282,7 @@ pub fn fit_orbit(
     // prevents the large jumps that cause convergence failure on long arcs.
     let arc_radius = sorted
         .iter()
-        .map(|ob| (ob.epoch().jd - ref_jd).abs())
+        .map(|ob| (ob.epoch() - initial_state.epoch).elapsed.abs())
         .fold(0.0_f64, f64::max);
     let mut windows: Vec<f64> = Vec::new();
     let mut radius = EXPANSION_INITIAL_RADIUS_DAYS;
@@ -338,7 +337,7 @@ pub fn fit_orbit(
     for &radius in &windows[..windows.len() - 1] {
         let windowed: Vec<AstrometricObservation> = sorted
             .iter()
-            .filter(|ob| (ob.epoch().jd - ref_jd).abs() <= radius)
+            .filter(|ob| (ob.epoch() - initial_state.epoch).elapsed.abs() <= radius)
             .map(|ob| ob.with_sigma_floor(expansion_floor))
             .collect();
         let n_in_window = windowed.len();
@@ -831,7 +830,7 @@ fn included_arc_span(obs: &[AstrometricObservation], included: &[bool]) -> f64 {
         if !included[i] {
             continue;
         }
-        let jd = ob.epoch().jd;
+        let jd = ob.epoch().jd();
         if jd < min_jd {
             min_jd = jd;
         }
@@ -851,8 +850,8 @@ fn sort_by_epoch(obs: &[AstrometricObservation]) -> Vec<AstrometricObservation> 
     let mut sorted = obs.to_vec();
     sorted.sort_by(|a, b| {
         a.epoch()
-            .jd
-            .partial_cmp(&b.epoch().jd)
+            .jd()
+            .partial_cmp(&b.epoch().jd())
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     sorted
@@ -1249,7 +1248,7 @@ fn stm_sweep_inner(
     for (i, observation) in obs.iter().enumerate() {
         let obs_epoch = observation.epoch();
 
-        if (obs_epoch.jd - state_cur.epoch.jd).abs() > 1e-12 {
+        if (obs_epoch - state_cur.epoch).elapsed.abs() > 1e-12 {
             let (new_state, phi_k) = compute_state_transition(
                 &state_cur,
                 obs_epoch,
@@ -1344,7 +1343,8 @@ pub(crate) fn stm_sweep(
     const SEGMENTS_PER_THREAD: usize = 4;
 
     debug_assert!(
-        obs.windows(2).all(|w| w[0].epoch().jd <= w[1].epoch().jd),
+        obs.windows(2)
+            .all(|w| w[0].epoch().jd() <= w[1].epoch().jd()),
         "stm_sweep: observations must be sorted by epoch"
     );
 
@@ -1365,16 +1365,15 @@ pub(crate) fn stm_sweep(
     // asteroid data: a segment coinciding with a dense opposition burst
     // (many observations hours apart) finishes instantly, while one that
     // spans a multi-year gap runs much longer, leaving cores idle.
-    let t_start = obs[0].epoch().jd;
-    let t_end = obs[obs.len() - 1].epoch().jd;
-    let t_span = t_end - t_start;
+    let t_start = obs[0].epoch();
+    let t_span = (obs[obs.len() - 1].epoch() - t_start).elapsed;
 
     let segment_ranges: Vec<(usize, usize)> = if n_segs_candidate > 1 && t_span > 0.0 {
         let dt = t_span / n_segs_candidate as f64;
         let mut starts: Vec<usize> = vec![0];
         for s in 1..n_segs_candidate {
             let t_boundary = t_start + s as f64 * dt;
-            let idx = obs.partition_point(|o| o.epoch().jd < t_boundary);
+            let idx = obs.partition_point(|o| o.epoch() < t_boundary);
             if idx > *starts.last().unwrap() && idx < obs.len() {
                 starts.push(idx);
             }
@@ -1438,7 +1437,7 @@ pub(crate) fn stm_sweep(
     let mut cur: State<Equatorial, SSB> = state_epoch.clone();
     for &(_, end) in &segment_ranges[..n_segments - 1] {
         let target_epoch = obs[end - 1].epoch();
-        if (target_epoch.jd - cur.epoch.jd).abs() > 1e-12 {
+        if (target_epoch - cur.epoch).elapsed.abs() > 1e-12 {
             cur = propagate_helio(
                 cur.clone(),
                 target_epoch,
@@ -1885,7 +1884,7 @@ fn compute_residuals(
         let obs_epoch = observation.epoch();
 
         // Propagate to observation epoch (6-dim, no STM).
-        if (obs_epoch.jd - state_cur.epoch.jd).abs() > 1e-12 {
+        if (obs_epoch - state_cur.epoch).elapsed.abs() > 1e-12 {
             state_cur = propagate_helio(
                 state_cur.clone(),
                 obs_epoch,
@@ -2761,7 +2760,7 @@ mod tests {
         let observations = synth_observations(&state, &epochs, earth_observer, 1e-7, None);
         let included = vec![true; observations.len()];
         let mask = ParameterMask::all_free(NonGravKind::RampedThrust(
-            RampedThrustNonGrav::new(2460000.5, None).unwrap(),
+            RampedThrustNonGrav::new(2460000.5.into(), None).unwrap(),
         ));
         let fit = make_non_converged_result(
             &state,

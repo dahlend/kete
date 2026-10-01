@@ -194,7 +194,7 @@ where
             "Input planet states must contain the correct number of states.".into(),
         ))?;
     }
-    if planet_states.first().unwrap().epoch != jd_init {
+    if !planet_states.first().unwrap().epoch.same_instant(&jd_init) {
         Err(Error::ValueError(
             "Planet states JD must match JD of input state.".into(),
         ))?;
@@ -206,7 +206,7 @@ where
     }
 
     for state in states {
-        if jd_init != state.epoch {
+        if !jd_init.same_instant(&state.epoch) {
             Err(Error::ValueError(
                 "All input states must have the same JD".into(),
             ))?;

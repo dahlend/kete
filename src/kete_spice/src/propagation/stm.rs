@@ -152,7 +152,7 @@ mod tests {
         const TOL: f64 = 1e-5;
 
         let (elem, sun_ssb, epoch) = setup();
-        let epoch_final = Time::<TDB>::new(epoch.jd + 400.0);
+        let epoch_final = epoch + 400.0;
         let spk = LOADED_SPK.try_read().unwrap();
         let force = SpkNBody::new(&spk, false);
 
@@ -278,14 +278,9 @@ mod tests {
         let spk = LOADED_SPK.try_read().unwrap();
         let force = SpkNBody::new(&spk, false);
 
-        sun_ssb.epoch = Time::<TDB>::new(epoch.jd + 100.0);
-        let result = propagate_elements_with_sensitivity(
-            &force,
-            &elem,
-            &sun_ssb,
-            &[],
-            Time::<TDB>::new(epoch.jd + 400.0),
-        );
+        sun_ssb.epoch = epoch + 100.0;
+        let result =
+            propagate_elements_with_sensitivity(&force, &elem, &sun_ssb, &[], epoch + 400.0);
         assert!(result.is_err());
     }
 
@@ -296,7 +291,7 @@ mod tests {
         const TOL: f64 = 1e-5;
 
         let (elem, sun_ssb, epoch) = setup();
-        let epoch_final = Time::<TDB>::new(epoch.jd + 200.0);
+        let epoch_final = epoch + 200.0;
         let spk = LOADED_SPK.try_read().unwrap();
         let force = SpkNBody::with_non_grav(&spk, false, Some(JplCometNonGrav::standard_comet()));
         let params = [2.0e-9, 5.0e-10, -1.0e-10];
@@ -451,7 +446,7 @@ mod tests {
         let period = elem.orbital_period();
 
         for &arc in arcs {
-            let epoch_final = Time::<TDB>::new(epoch.jd + arc);
+            let epoch_final = epoch + arc;
             let (pos_f, vel_f, phi_full) =
                 propagate_with_stm(force, pos_0, vel_0, &[], epoch, epoch_final).unwrap();
             let phi: Matrix6<f64> = phi_full.fixed_view::<6, 6>(0, 0).into();
@@ -614,7 +609,7 @@ mod tests {
         let (elem, sun_ssb, epoch) = setup();
         let spk = LOADED_SPK.try_read().unwrap();
         let force = SpkNBody::new(&spk, false);
-        let epoch_final = Time::<TDB>::new(epoch.jd + 400.0);
+        let epoch_final = epoch + 400.0;
 
         // A realistic fitted-orbit shape: shape and orientation to parts in 1e8,
         // along-track timing to fifteen minutes, carried out to cartesian.
@@ -720,7 +715,7 @@ mod tests {
         );
 
         for arc in [400.0_f64, 1600.0, 6400.0, 12800.0] {
-            let target = Time::<TDB>::new(epoch.jd + arc);
+            let target = epoch + arc;
             let (stepped, _) =
                 step_diffuse_state(&mixture, &force, target, &measure_only, &resolver).unwrap();
             let eta = stepped.max_eta().unwrap();
@@ -761,7 +756,7 @@ mod tests {
     ) -> (EquinoctialElements, Time<TDB>) {
         let encounter = Time::<TDB>::new(2_451_545.0 + 3000.0);
         let lead = 200.0;
-        let epoch = Time::<TDB>::new(encounter.jd - lead);
+        let epoch = encounter - lead;
 
         // Place the object near the Earth at the encounter, on an Earth-crossing orbit.
         let earth = spk
@@ -812,9 +807,9 @@ mod tests {
 
         // Report the encounter actually achieved, by walking the nominal trajectory.
         let (mut walk_pos, mut walk_vel) = (pos_epoch, vel_epoch);
-        let (mut walk_time, mut closest, mut closest_at) = (epoch.jd, f64::INFINITY, epoch.jd);
+        let (mut walk_time, mut closest, mut closest_at) = (epoch.jd(), f64::INFINITY, epoch.jd());
         #[allow(unused_assignments, reason = "reported below")]
-        while walk_time < epoch.jd + 400.0 {
+        while walk_time < epoch.jd() + 400.0 {
             let next = walk_time + 2.0;
             let stepped = propagate_state(
                 force,
@@ -842,7 +837,7 @@ mod tests {
                 "Constructed NEO: closest approach {closest:.5} AU ({:.1} lunar distances) \
                  at epoch + {:.0} d",
                 closest / 0.00257,
-                closest_at - epoch.jd
+                closest_at - epoch.jd()
             );
         }
         (elem, epoch)
@@ -932,7 +927,7 @@ mod tests {
             let (out, _) = propagate_diffuse_state(
                 &mixture,
                 &force,
-                Time::<TDB>::new(epoch.jd + 205.0),
+                epoch + 205.0,
                 &config,
                 DEFAULT_STEP_DAYS,
                 &resolver,
@@ -1002,7 +997,7 @@ mod tests {
             "arc (d)", "parent eta", "worst child", "ratio"
         );
         for arc in [195.0_f64, 200.0, 205.0, 400.0] {
-            let target = Time::<TDB>::new(neo_epoch.jd + arc);
+            let target = neo_epoch + arc;
             let Ok((parent, _)) = step_diffuse_state(&base, &force, target, &unsplit, &resolver)
             else {
                 println!("{arc:>8.0}  parent propagation failed");
@@ -1265,7 +1260,7 @@ mod tests {
         let (quiet_split, quiet_unsplit) = mixture_vs_ensemble(
             "42 Isis, 1600 day arc, density calibration:",
             &component,
-            Time::<TDB>::new(epoch.jd + 1600.0),
+            epoch + 1600.0,
             n_clones,
             &config,
             &force,
@@ -1298,7 +1293,7 @@ mod tests {
         let (enc_split, enc_unsplit) = mixture_vs_ensemble(
             "Constructed NEO, 0.003 AU miss, 5 days past closest approach:",
             &neo_component,
-            Time::<TDB>::new(neo_epoch.jd + 205.0),
+            neo_epoch + 205.0,
             n_clones,
             &neo_config,
             &force,
@@ -1324,7 +1319,7 @@ mod tests {
         let (stall_split, stall_unsplit) = mixture_vs_ensemble(
             "Same encounter, sigma scale 0.001, density calibration (stall regime):",
             &stall_component,
-            Time::<TDB>::new(neo_epoch.jd + 205.0),
+            neo_epoch + 205.0,
             n_clones,
             &SplitConfig::default(),
             &force,

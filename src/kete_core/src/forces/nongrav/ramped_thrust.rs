@@ -45,23 +45,24 @@ use crate::time::{TDB, Time};
 /// `accel` expects `pos`/`vel` Sun-relative.
 #[derive(Debug, Clone)]
 pub struct RampedThrustNonGrav {
-    /// Reference epoch of the ramp and of the phase, JD (TDB).
-    pub t0: f64,
+    /// Reference epoch of the ramp and of the phase.
+    pub t0: Time<TDB>,
 
     /// Period of the turning part, days; `None` for a thrust without one.
     pub period: Option<f64>,
 }
 
 impl RampedThrustNonGrav {
-    /// Build with the reference epoch `t0`, JD (TDB), and the period of the turning
-    /// part in days, if any.
+    /// Build with the reference epoch `t0` and the period of the turning part in
+    /// days, if any.
     ///
     /// # Errors
     /// Fails if `t0` is not finite, or the period is not positive and finite.
-    pub fn new(t0: f64, period: Option<f64>) -> KeteResult<Self> {
-        if !t0.is_finite() {
+    pub fn new(t0: Time<TDB>, period: Option<f64>) -> KeteResult<Self> {
+        if !t0.jd().is_finite() {
             return Err(Error::ValueError(format!(
-                "RampedThrustNonGrav reference epoch must be finite, found {t0}."
+                "RampedThrustNonGrav reference epoch must be finite, found {}.",
+                t0.jd()
             )));
         }
         if let Some(p) = period
@@ -75,24 +76,24 @@ impl RampedThrustNonGrav {
     }
 
     /// The ramp factor `1 + rate (t - t0)`, before clamping at zero.
-    fn ramp(&self, jd: f64, rate: f64) -> f64 {
-        1.0 + rate * (jd - self.t0)
+    fn ramp(&self, time: Time<TDB>, rate: f64) -> f64 {
+        1.0 + rate * (time - self.t0).elapsed
     }
 
-    /// `(cos(phi), sin(phi))` of the turning part at `jd`; `(0, 0)` without a period.
-    fn phase(&self, jd: f64) -> (f64, f64) {
+    /// `(cos(phi), sin(phi))` of the turning part at `time`; `(0, 0)` without a period.
+    fn phase(&self, time: Time<TDB>) -> (f64, f64) {
         match self.period {
             Some(p) => {
-                let (s, c) = (TAU * (jd - self.t0) / p).sin_cos();
+                let (s, c) = (TAU * (time - self.t0).elapsed / p).sin_cos();
                 (c, s)
             }
             None => (0.0, 0.0),
         }
     }
 
-    /// Check the parameter count and return `(A, rate)` at `jd`, with `A` the RTN
+    /// Check the parameter count and return `(A, rate)` at `time`, with `A` the RTN
     /// components of the thrust before the ramp.
-    fn unpack(&self, jd: f64, free_params: &[f64]) -> KeteResult<(Vector3<f64>, f64)> {
+    fn unpack(&self, time: Time<TDB>, free_params: &[f64]) -> KeteResult<(Vector3<f64>, f64)> {
         if free_params.len() != self.n_free_params() {
             return Err(Error::ValueError(format!(
                 "RampedThrustNonGrav expects {} free parameters ({}), got {}",
@@ -103,7 +104,7 @@ impl RampedThrustNonGrav {
         }
         let mut a = Vector3::new(free_params[0], free_params[1], free_params[2]);
         if self.period.is_some() {
-            let (cos, sin) = self.phase(jd);
+            let (cos, sin) = self.phase(time);
             let b = Vector3::new(free_params[4], free_params[5], free_params[6]);
             let c = Vector3::new(free_params[7], free_params[8], free_params[9]);
             a += b * cos + c * sin;
@@ -138,8 +139,8 @@ impl ParameterizedForce for RampedThrustNonGrav {
         _meta: &mut Self::Meta,
         _exact_eval: bool,
     ) -> KeteResult<Vector<Equatorial>> {
-        let (a, rate) = self.unpack(time.jd, free_params)?;
-        let factor = self.ramp(time.jd, rate).max(0.0);
+        let (a, rate) = self.unpack(time, free_params)?;
+        let factor = self.ramp(time, rate).max(0.0);
         let pos: Vector3<f64> = (*pos).into();
         let vel: Vector3<f64> = (*vel).into();
         let (r_hat, t_hat, n_hat) = rtn_dirs(&pos, &vel);
@@ -158,14 +159,14 @@ impl ParameterizedForce for RampedThrustNonGrav {
         // Linear in a, b and c at a fixed rate; the rate column is the thrust before
         // the ramp times (t - t0) where the ramp is positive, and zero where it is
         // clamped.
-        let (a, rate) = self.unpack(time.jd, free_params)?;
-        let ramp = self.ramp(time.jd, rate);
+        let (a, rate) = self.unpack(time, free_params)?;
+        let ramp = self.ramp(time, rate);
         let pos: Vector3<f64> = (*pos).into();
         let vel: Vector3<f64> = (*vel).into();
         let dirs = rtn_dirs(&pos, &vel);
         let dirs = [dirs.0, dirs.1, dirs.2];
         let factor = ramp.max(0.0);
-        let (cos, sin) = self.phase(time.jd);
+        let (cos, sin) = self.phase(time);
         let mut out = Matrix3xX::<f64>::zeros(self.n_free_params());
         for (i, dir) in dirs.iter().enumerate() {
             out.set_column(i, &(dir * factor));
@@ -176,7 +177,7 @@ impl ParameterizedForce for RampedThrustNonGrav {
         }
         if ramp > 0.0 {
             let thrust = dirs[0] * a.x + dirs[1] * a.y + dirs[2] * a.z;
-            out.set_column(3, &(thrust * (time.jd - self.t0)));
+            out.set_column(3, &(thrust * (time - self.t0).elapsed));
         }
         Ok(out)
     }
@@ -210,7 +211,7 @@ mod tests {
     /// With the rate at zero this is the JPL comet model with g(r) = 1.
     #[test]
     fn zero_rate_matches_jpl_comet() {
-        let ramped = RampedThrustNonGrav::new(2_451_545.0, None).unwrap();
+        let ramped = RampedThrustNonGrav::new(2_451_545.0.into(), None).unwrap();
         let comet = JplCometNonGrav::new(1.0, 1.0, 0.0, 0.0, 0.0, 0.0);
         let a = [1e-8, -3e-9, 5e-10];
         for jd in [2_451_500.0, 2_451_545.0, 2_451_600.0] {
@@ -234,7 +235,7 @@ mod tests {
     #[test]
     fn ramp_scales_the_thrust() {
         let t0 = 2_451_545.0;
-        let f = RampedThrustNonGrav::new(t0, None).unwrap();
+        let f = RampedThrustNonGrav::new(t0.into(), None).unwrap();
         let params = [1e-8, -3e-9, 5e-10, 0.5];
         let at_t0 = accel_at(&f, t0, &params);
         let later = accel_at(&f, t0 + 2.0, &params);
@@ -245,7 +246,7 @@ mod tests {
     #[test]
     fn thrust_is_off_before_the_ramp_starts() {
         let t0 = 2_451_545.0;
-        let f = RampedThrustNonGrav::new(t0, Some(0.5)).unwrap();
+        let f = RampedThrustNonGrav::new(t0.into(), Some(0.5)).unwrap();
         let params = [1e-8, -3e-9, 5e-10, 0.5, 1e-9, 0.0, 0.0, 0.0, 2e-9, 0.0];
         assert_eq!(accel_at(&f, t0 - 3.0, &params).norm(), 0.0);
         let jac = f
@@ -267,8 +268,8 @@ mod tests {
     fn turning_part_follows_its_phase() {
         let t0 = 2_451_545.0;
         let period = 0.5;
-        let f = RampedThrustNonGrav::new(t0, Some(period)).unwrap();
-        let steady = RampedThrustNonGrav::new(t0, None).unwrap();
+        let f = RampedThrustNonGrav::new(t0.into(), Some(period)).unwrap();
+        let steady = RampedThrustNonGrav::new(t0.into(), None).unwrap();
         let a = [1e-8, -3e-9, 5e-10];
         let b = [2e-9, 1e-9, 0.0];
         let c = [0.0, -1e-9, 3e-9];
@@ -307,7 +308,7 @@ mod tests {
             ),
         ];
         for (period, params) in cases {
-            let f = RampedThrustNonGrav::new(t0, period).unwrap();
+            let f = RampedThrustNonGrav::new(t0.into(), period).unwrap();
             for jd in [t0 - 1.0, t0, t0 + 0.37, t0 + 3.0] {
                 let jac = f
                     .parameter_jacobian(
@@ -338,16 +339,16 @@ mod tests {
 
     #[test]
     fn rejects_bad_epoch_and_period() {
-        assert!(RampedThrustNonGrav::new(f64::NAN, None).is_err());
+        assert!(RampedThrustNonGrav::new(f64::NAN.into(), None).is_err());
         for p in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-            assert!(RampedThrustNonGrav::new(2_451_545.0, Some(p)).is_err());
+            assert!(RampedThrustNonGrav::new(2_451_545.0.into(), Some(p)).is_err());
         }
     }
 
     #[test]
     fn rejects_wrong_parameter_count() {
         let jd = Time::<TDB>::new(2_451_545.0);
-        let f = RampedThrustNonGrav::new(2_451_545.0, None).unwrap();
+        let f = RampedThrustNonGrav::new(2_451_545.0.into(), None).unwrap();
         assert!(
             f.accel(
                 jd,
@@ -359,7 +360,7 @@ mod tests {
             )
             .is_err()
         );
-        let f = RampedThrustNonGrav::new(2_451_545.0, Some(0.5)).unwrap();
+        let f = RampedThrustNonGrav::new(2_451_545.0.into(), Some(0.5)).unwrap();
         assert_eq!(f.free_param_names().len(), 10);
         assert!(
             f.accel(

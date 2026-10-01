@@ -309,7 +309,7 @@ impl KeteRead for Vector<Equatorial> {
 
 impl KeteWrite for Time<TDB> {
     fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        self.jd.write_to(w)
+        self.jd().write_to(w)
     }
 }
 
@@ -1107,7 +1107,7 @@ fn read_non_grav<R: Read>(r: &mut R) -> KeteResult<ParameterMask<NonGravKind>> {
             Vector::read_from(r)?,
         )?),
         NONGRAV_RAMPED_THRUST => {
-            let t0 = f64::read_from(r)?;
+            let t0 = Time::<TDB>::read_from(r)?;
             let period = Option::<f64>::read_from(r)?;
             NonGravKind::RampedThrust(RampedThrustNonGrav::new(t0, period)?)
         }
@@ -1601,7 +1601,7 @@ mod tests {
     /// parameters are free.
     #[test]
     fn test_ramped_thrust_non_grav_round_trip() {
-        let model = RampedThrustNonGrav::new(2_457_310.25, Some(0.52)).unwrap();
+        let model = RampedThrustNonGrav::new(2_457_310.25.into(), Some(0.52)).unwrap();
         let mut values = vec![None; 10];
         values[2] = Some(0.0);
         values[3] = Some(0.1);
@@ -1613,7 +1613,7 @@ mod tests {
         let NonGravKind::RampedThrust(recovered) = got.inner() else {
             panic!("expected a ramped thrust model");
         };
-        assert_eq!(recovered.t0, 2_457_310.25);
+        assert_eq!(recovered.t0.jd(), 2_457_310.25);
         assert_eq!(recovered.period, Some(0.52));
     }
 
@@ -2043,7 +2043,7 @@ mod tests {
         ss.write_to(&mut buf).unwrap();
         let mut cursor = Cursor::new(&buf);
         let recovered = SimultaneousStates::read_from(&mut cursor).unwrap();
-        assert_eq!(ss.epoch().jd, recovered.epoch().jd);
+        assert_eq!(ss.epoch().jd(), recovered.epoch().jd());
         assert_eq!(ss.center_id(), recovered.center_id());
         assert_eq!(ss.states.len(), recovered.states.len());
         assert!(recovered.fov.is_some());
@@ -2068,7 +2068,7 @@ mod tests {
         let data = read_kete_file(&mut cursor).unwrap();
         match data {
             KeteFileType::Single(recovered) => {
-                assert_eq!(entry.epoch().jd, recovered.epoch().jd);
+                assert_eq!(entry.epoch().jd(), recovered.epoch().jd());
                 assert_eq!(entry.center_id(), recovered.center_id());
                 assert_eq!(entry.states.len(), recovered.states.len());
                 assert!(recovered.fov.is_some());
@@ -2118,7 +2118,7 @@ mod tests {
             KeteFileType::Vec(recovered) => {
                 assert_eq!(entries.len(), recovered.len());
                 for (orig, rec) in entries.iter().zip(recovered.iter()) {
-                    assert_eq!(orig.epoch().jd, rec.epoch().jd);
+                    assert_eq!(orig.epoch().jd(), rec.epoch().jd());
                     assert_eq!(orig.center_id(), rec.center_id());
                     assert_eq!(orig.states.len(), rec.states.len());
                 }

@@ -305,23 +305,9 @@ where
         let mut next_step_size = integrator.initial_step_size()?;
         let mut first_step = true;
 
-        // Convergence tolerance scales with the JD magnitude to stay above
-        // f64 precision.  Absolute tolerance of 1e-12 is finer than the ULP
-        // of cur_time.jd around modern epochs (JD ~2.5e6 has ULP ~5.5e-10),
-        // so an absolute check could never be satisfied and the loop would
-        // never terminate.  Use a relative tolerance scaled by max(|cur|,
-        // |final|) with an absolute floor for the JD=0 case.
-        let convergence_tol = {
-            let scale = integrator
-                .cur_time
-                .jd
-                .abs()
-                .max(integrator.final_time.jd.abs());
-            // Absolute floor of 1e-12 covers the small-JD limit; relative
-            // factor of 1e-13 leaves ~3 orders of magnitude of headroom
-            // above f64 ULP at any reasonable JD.
-            (scale * 1e-13).max(1e-12)
-        };
+        // The last step is sized to land on `final_time`, which `Time` resolves to
+        // about 1e-16 day at any epoch, so the loop ends within this tolerance of it.
+        let convergence_tol = 1e-12;
 
         let mut step_failures = 0;
         loop {
@@ -359,7 +345,7 @@ where
                         // Taylor the state onto the target epoch. Returning it at
                         // whatever sub-tolerance time the loop stopped at costs a meter
                         // of along-track position.
-                        let dt = integrator.final_time.jd - integrator.cur_time.jd
+                        let dt = (integrator.final_time - integrator.cur_time).elapsed
                             + integrator.comp_time;
                         for idx in 0..integrator.cur_state.len() {
                             let der = integrator.cur_state_der[idx];
@@ -433,7 +419,7 @@ where
             + &self.cur_state_der_der * (0.5 * dt * dt);
         let vel = &self.cur_state_der + &self.cur_state_der_der * (dir * dt);
         let accel = (self.func)(
-            (self.cur_time.jd + dir * dt).into(),
+            self.cur_time + dir * dt,
             &pos,
             &vel,
             &mut self.metadata,
@@ -521,7 +507,7 @@ where
                     self.eval_scratch.set_column(
                         0,
                         &(self.func)(
-                            (self.cur_time.jd + gauss_radau_frac * step_size).into(),
+                            self.cur_time + gauss_radau_frac * step_size,
                             &self.state_scratch,
                             &self.state_der_scratch,
                             &mut self.metadata,
@@ -625,9 +611,9 @@ where
                     }
                 }
                 let y_t = step_size - self.comp_time;
-                let t_t = self.cur_time.jd + y_t;
-                self.comp_time = (t_t - self.cur_time.jd) - y_t;
-                self.cur_time.jd = t_t;
+                let t_t = self.cur_time + y_t;
+                self.comp_time = (t_t - self.cur_time).elapsed - y_t;
+                self.cur_time = t_t;
                 self.cur_state_der_der = (self.func)(
                     self.cur_time,
                     &self.cur_state,
@@ -789,8 +775,8 @@ mod tests {
                      evals: &mut Vec<(f64, bool)>,
                      exact_eval: bool|
          -> KeteResult<Vector1<f64>> {
-            evals.push((time.jd, exact_eval));
-            Ok(Vector1::new(1.0 + C * time.jd.powi(8)))
+            evals.push((time.jd(), exact_eval));
+            Ok(Vector1::new(1.0 + C * time.jd().powi(8)))
         };
         let t_final = 1000.0;
         let (pos, _vel, evals) = RadauIntegrator::integrate(
@@ -915,18 +901,11 @@ mod tests {
     /// Two neighboring trajectories separate by what the dynamics says, not by a
     /// fixed floor set by where each happened to stop in time.
     ///
-    /// The loop terminates once `cur_time` is within `convergence_tol` of the
-    /// target and then reports the state at the target epoch. Without
-    /// the epoch correction the leftover sub-ULP time offset - a Julian date near
-    /// 2.45e6 has an ULP of about 40 microseconds - becomes an along-track
-    /// position error of `velocity * dt`, roughly a meter at 30 km/s. Two
-    /// trajectories that reached the target through different step sequences get
-    /// different offsets, so differencing them cancels the dynamics but not the
-    /// timing, and the difference floors.
-    ///
-    /// That floor is what made the sigma-point residual unmeasurable for tight
-    /// covariances. It was invariant under four decades of `EPSILON` and 99%
-    /// along-velocity, which is how it was told apart from truncation.
+    /// The loop ends once `cur_time` is within `convergence_tol` of the target and
+    /// then reports the state at the target epoch, so two trajectories that reached
+    /// it through different step sequences are compared at the same time. A
+    /// leftover time offset would become an along-track difference of
+    /// `velocity * dt` that differencing does not cancel.
     ///
     /// The check: the response to a tiny offset must stay proportional to that
     /// offset. A floor shows up as the ratio blowing up for the smallest ones.

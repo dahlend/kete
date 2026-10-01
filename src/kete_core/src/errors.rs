@@ -72,7 +72,7 @@ impl fmt::Display for Error {
                 write!(f, "{s}")
             }
             Self::Impact(s, t) => {
-                let t = t.jd;
+                let t = t.jd();
                 write!(f, "Propagation detected an impact with {s} at time {t}")
             }
             Self::LockFailed => {
@@ -117,7 +117,7 @@ impl From<Error> for PyErr {
             }
 
             Error::Impact(s, t) => Self::new::<exceptions::PyValueError, _>({
-                let t = t.jd;
+                let t = t.jd();
                 format!("Propagation detected an impact with {s} at time {t}")
             }),
         }

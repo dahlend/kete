@@ -12,6 +12,7 @@ use kete_core::frames::{Equatorial, SSB, SunCenter};
 use kete_core::geometry::Contains;
 use kete_core::kepler::light_time_correct;
 use kete_core::prelude::{KeteResult, SimultaneousStates, State};
+use kete_core::time::{TDB, Time};
 
 use crate::propagation::SpkNBody;
 use crate::spk::LOADED_SPK;
@@ -168,7 +169,7 @@ pub fn check_visible<F: FovLike>(
     // The linear check compares positions directly, so each state moves to the
     // center of the observer. States usually share a center and an epoch. Thus
     // the offset between the two centers is kept for reuse by the next state.
-    let mut center_offset: Option<(i32, f64, State<Equatorial>)> = None;
+    let mut center_offset: Option<(i32, Time<TDB>, State<Equatorial>)> = None;
 
     let final_states: Vec<(usize, State<Equatorial>)> = states
         .iter()
@@ -178,8 +179,8 @@ pub fn check_visible<F: FovLike>(
 
             if non_grav.is_none() && (state.epoch - obs_state.epoch).elapsed.abs() < dt_limit {
                 let offset = match &center_offset {
-                    Some((center, jd, offset))
-                        if *center == state.center_id() && *jd == state.epoch.jd =>
+                    Some((center, epoch, offset))
+                        if *center == state.center_id() && *epoch == state.epoch =>
                     {
                         offset
                     }
@@ -194,7 +195,7 @@ pub fn check_visible<F: FovLike>(
                         spk.try_change_center(&mut offset, obs_state.center_id())
                             .ok()?;
                         &center_offset
-                            .insert((state.center_id(), state.epoch.jd, offset))
+                            .insert((state.center_id(), state.epoch, offset))
                             .2
                     }
                 };
@@ -374,7 +375,9 @@ mod tests {
             assert!(two_body.is_ok());
             let (_, _, two_body) = two_body.unwrap();
             let dist = (two_body.pos - observer.pos).norm();
-            assert!((observer.epoch.jd - two_body.epoch.jd - dist * C_AU_PER_DAY_INV).abs() < 1e-6);
+            assert!(
+                ((observer.epoch - two_body.epoch).elapsed - dist * C_AU_PER_DAY_INV).abs() < 1e-6
+            );
             let exact = spk
                 .try_get_state_with_center(20000042, two_body.epoch, 10)
                 .unwrap();
@@ -386,7 +389,9 @@ mod tests {
             let n_body = check_n_body(&fov, asteroid_ssb, None, false);
             assert!(n_body.is_ok());
             let (_, _, n_body) = n_body.unwrap();
-            assert!((observer.epoch.jd - n_body.epoch.jd - dist * C_AU_PER_DAY_INV).abs() < 1e-6);
+            assert!(
+                ((observer.epoch - n_body.epoch).elapsed - dist * C_AU_PER_DAY_INV).abs() < 1e-6
+            );
             let exact = spk
                 .try_get_state_with_center(20000042, n_body.epoch, 10)
                 .unwrap();
@@ -398,7 +403,7 @@ mod tests {
             assert!(spk_check.is_some());
             let spk_check = &spk_check.as_ref().unwrap().states[0];
             assert!(
-                (observer.epoch.jd - spk_check.epoch.jd - dist * C_AU_PER_DAY_INV).abs() < 1e-6
+                ((observer.epoch - spk_check.epoch).elapsed - dist * C_AU_PER_DAY_INV).abs() < 1e-6
             );
             let exact = spk
                 .try_get_state_with_center(20000042, spk_check.epoch, 10)

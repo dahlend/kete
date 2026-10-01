@@ -127,7 +127,7 @@ pub fn check_linear<F: FovLike>(
     let rel_pos = pos - obs_pos;
 
     // This also accounts for first order light delay.
-    let dt = obs.epoch.jd - state.epoch.jd - rel_pos.norm() * C_AU_PER_DAY_INV;
+    let dt = (obs.epoch - state.epoch).elapsed - rel_pos.norm() * C_AU_PER_DAY_INV;
     let new_pos = pos + vel * dt;
     let new_rel_pos = new_pos - obs_pos;
     let (idx, contains) = fov.contains(&new_rel_pos);

@@ -329,7 +329,7 @@ impl PacketSeries<'_> {
                         let dq: Box<[f64]> = (0..size)
                             .map(|i| self.packet(start + i)[idx + 4] * rate)
                             .collect();
-                        let (v, dv) = hermite_interpolation(times, &q, &dq, tick);
+                        let (v, dv) = hermite_interpolation(times, &q, &dq, tick - times[0]);
                         quat[idx] = v;
                         dquat[idx] = dv / rate;
                     }
@@ -340,7 +340,7 @@ impl PacketSeries<'_> {
                             let da: Box<[f64]> = (0..size)
                                 .map(|i| self.packet(start + i)[idx + 11] * rate)
                                 .collect();
-                            *out = hermite_interpolation(times, &a, &da, tick).0;
+                            *out = hermite_interpolation(times, &a, &da, tick - times[0]).0;
                         }
                     }
                 }
@@ -355,7 +355,7 @@ impl PacketSeries<'_> {
                         let mut q: Box<[f64]> = (0..size)
                             .map(|i| self.packet(start + i)[idx] * signs[i])
                             .collect();
-                        let (v, dv) = lagrange_interpolation_both(times, &mut q, tick);
+                        let (v, dv) = lagrange_interpolation_both(times, &mut q, tick - times[0]);
                         quat[idx] = v;
                         dquat[idx] = dv / rate;
                     }
@@ -363,7 +363,7 @@ impl PacketSeries<'_> {
                         for (idx, out) in rates.iter_mut().enumerate() {
                             let mut a: Box<[f64]> =
                                 (0..size).map(|i| self.packet(start + i)[idx + 4]).collect();
-                            *out = lagrange_interpolation_both(times, &mut a, tick).0;
+                            *out = lagrange_interpolation_both(times, &mut a, tick - times[0]).0;
                         }
                     }
                 }

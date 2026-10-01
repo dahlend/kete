@@ -38,7 +38,6 @@ use super::type18::SpkSegmentType18;
 use super::type19::SpkSegmentType19;
 use super::type21::SpkSegmentType21;
 use crate::daf::DafArray;
-use crate::jd_to_spice_jd;
 use kete_core::errors::Error;
 use kete_core::frames::{Ecliptic, Equatorial, FK4, Galactic, InertialFrame};
 use kete_core::prelude::{Desig, KeteResult};
@@ -122,7 +121,7 @@ impl SpkSegment {
     ) -> KeteResult<State<T>> {
         let arr_ref: &SpkArray = self.into();
 
-        let jds = jd_to_spice_jd(jd);
+        let jds = jd.j2000_seconds();
 
         // this is faster than calling contains, probably because the || instead of &&
         if jds < arr_ref.jds_start || jds > arr_ref.jds_end {
@@ -132,15 +131,15 @@ impl SpkSegment {
         }
 
         let (pos, vel) = match &self {
-            Self::Type1(v) => v.try_get_pos_vel(jds)?,
-            Self::Type2(v) => v.try_get_pos_vel(jds)?,
-            Self::Type3(v) => v.try_get_pos_vel(jds)?,
-            Self::Type9(v) => v.try_get_pos_vel(jds),
-            Self::Type10(v) => v.try_get_pos_vel(jds)?,
-            Self::Type13(v) => v.try_get_pos_vel(jds),
-            Self::Type18(v) => v.try_get_pos_vel(jds),
-            Self::Type19(v) => v.try_get_pos_vel(jds)?,
-            Self::Type21(v) => v.try_get_pos_vel(jds)?,
+            Self::Type1(v) => v.try_get_pos_vel(jd)?,
+            Self::Type2(v) => v.try_get_pos_vel(jd)?,
+            Self::Type3(v) => v.try_get_pos_vel(jd)?,
+            Self::Type9(v) => v.try_get_pos_vel(jd),
+            Self::Type10(v) => v.try_get_pos_vel(jd)?,
+            Self::Type13(v) => v.try_get_pos_vel(jd),
+            Self::Type18(v) => v.try_get_pos_vel(jd),
+            Self::Type19(v) => v.try_get_pos_vel(jd)?,
+            Self::Type21(v) => v.try_get_pos_vel(jd)?,
         };
 
         match arr_ref.frame_id {

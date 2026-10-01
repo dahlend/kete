@@ -306,7 +306,7 @@ impl PySymplecticSim {
     /// Current epoch of the simulation as a TDB scaled JD.
     #[getter]
     pub fn jd(&self) -> f64 {
-        self.sim.epoch().jd
+        self.sim.epoch().jd()
     }
 
     /// Fixed step size in days.
@@ -382,7 +382,7 @@ impl PySymplecticSim {
                 };
                 (
                     lost.desig.clone().try_naif_id_to_name().to_string(),
-                    lost.epoch.jd,
+                    lost.epoch.jd(),
                     reason.into(),
                 )
             })
@@ -403,7 +403,7 @@ impl PySymplecticSim {
                 enc.first.clone().try_naif_id_to_name().to_string(),
                 enc.second.clone().try_naif_id_to_name().to_string(),
                 enc.hill_ratio,
-                enc.epoch.jd,
+                enc.epoch.jd(),
             )
         })
     }
@@ -436,7 +436,7 @@ impl PySymplecticSim {
         format!(
             "SymplecticSim(jd={:.2}, dt={}, n_massive={}, n_test_particles={}, \
              include_gr={}, include_j2={}, use_correctors={})",
-            self.sim.epoch().jd,
+            self.sim.epoch().jd(),
             self.sim.dt(),
             self.sim.n_massive(),
             self.sim.n_test_particles(),

@@ -43,14 +43,11 @@ use nom::{
 };
 use std::{collections::HashMap, fs, str::FromStr};
 
-use crate::spice_jd_to_jd;
 use kete_core::{
     cache::cache_path,
     errors::{Error, KeteResult},
-    time::{TDB, TT, Time, TimeScale},
+    time::{TDB, TT, Time},
 };
-
-use crate::jd_to_spice_jd;
 
 /// A collection of segments.
 #[derive(Debug, Default)]
@@ -258,31 +255,36 @@ impl Sclk {
     }
 
     /// Convert a spacecraft clock tick (SCLK time) into a [`Time<TDB>`].
+    ///
+    /// The parallel time is seconds past J2000 on the clock's time system, so it is
+    /// read on that scale and converted to TDB afterward.
     fn tick_to_time(&self, tick: f64) -> Time<TDB> {
         let clock_rate = self.find_tick_rate(tick);
 
         let par_time =
             (tick - clock_rate[0]) * (clock_rate[2] / (self.tick_rates[0] as f64)) + clock_rate[1];
-
-        let parallel = spice_jd_to_jd(par_time);
         if self.parallel_is_tdb {
-            parallel
+            Time::<TDB>::from_j2000_seconds(par_time)
         } else {
-            Time::<TDB>::new(TT::to_tdb(parallel.jd))
+            Time::<TT>::from_j2000_seconds(par_time).tdb()
         }
     }
 
     /// Convert time in TDB to a spacecraft clock tick count.
+    ///
+    /// The offset from the rate's reference time is taken from the split time, so the
+    /// tick keeps the precision of `time` up to the resolution of an f64 tick count.
     fn time_to_tick(&self, time: Time<TDB>) -> f64 {
-        let parallel = if self.parallel_is_tdb {
-            time
+        let (clock_rate, offset) = if self.parallel_is_tdb {
+            let clock_rate = self.find_parallel_time_rate(time.j2000_seconds());
+            (clock_rate, time.j2000_seconds_minus(clock_rate[1]))
         } else {
-            Time::<TDB>::new(TT::from_tdb(time.jd))
+            let tt = time.tt();
+            let clock_rate = self.find_parallel_time_rate(tt.j2000_seconds());
+            (clock_rate, tt.j2000_seconds_minus(clock_rate[1]))
         };
-        let par_time = jd_to_spice_jd(parallel);
-        let clock_rate = self.find_parallel_time_rate(par_time);
 
-        (par_time - clock_rate[1]) * ((self.tick_rates[0] as f64) / clock_rate[2]) + clock_rate[0]
+        offset * ((self.tick_rates[0] as f64) / clock_rate[2]) + clock_rate[0]
     }
 
     /// Convert a spacecraft clock string into the partition and tick count.
@@ -1090,5 +1092,34 @@ mod tests {
         assert_eq!(clock.string_to_tick("1/100:1").unwrap(), (1, 25600.0));
         assert_eq!(clock.string_to_tick("1/100:256").unwrap(), (1, 25855.0));
         assert!(clock.string_to_tick("1/100:0").is_err());
+    }
+
+    /// On a TT clock, a tick far from the rate's reference epoch converts to the
+    /// time it came from. The TDB - TT term differs between the two epochs by
+    /// milliseconds, so the parallel time must be read on TT before converting.
+    #[test]
+    fn tt_clock_round_trips_far_from_reference() {
+        let input = r"
+            KPL/SCLK
+            \begindata
+            SCLK_KERNEL_ID            = ( @2004-MAR-02 )
+            SCLK_DATA_TYPE_226        = ( 1 )
+            SCLK01_TIME_SYSTEM_226    = ( 2 )
+            SCLK01_N_FIELDS_226       = ( 2 )
+            SCLK01_MODULI_226         = ( 4294967296 65536 )
+            SCLK01_OFFSETS_226        = ( 0 0 )
+            SCLK01_OUTPUT_DELIM_226   = ( 1 )
+            SCLK_PARTITION_START_226  = ( 0.0 )
+            SCLK_PARTITION_END_226    = ( 2.8147497671065E+14 )
+            SCLK01_COEFFICIENTS_226   = ( 0.0 1.3146108418400E+08 1.0 )
+            \begintext";
+        let (_, tokens) = parse_sclk_string(input).unwrap();
+        let clock = Sclk::try_from(tokens).unwrap();
+        assert!(!clock.parallel_is_tdb);
+
+        let time = Time::<TDB>::new(2_457_316.8);
+        let back = clock.tick_to_time(clock.time_to_tick(time));
+        let err_s = (back - time).elapsed.abs() * 86400.0;
+        assert!(err_s < 1e-6, "round trip error {err_s} s");
     }
 }

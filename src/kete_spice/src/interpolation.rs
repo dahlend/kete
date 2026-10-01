@@ -289,13 +289,15 @@ impl ChebyshevLayout {
 /// * `times` - Times where the function `f` is evaluated at.
 /// * `y_vals` - The values of the function `f` at the specified times.
 /// * `dy` - The values of the derivative of the function `f`.
-/// * `eval_time` - Time at which to evaluate the interpolation function.
+/// * `offset` - Time at which to evaluate the interpolation function, as an offset
+///   from `times[0]`. The caller forms it from a time of higher precision than a
+///   single f64, so the interpolation never subtracts two large times.
 #[inline(always)]
 pub(crate) fn hermite_interpolation(
     times: &[f64],
     y: &[f64],
     dy: &[f64],
-    eval_time: f64,
+    offset: f64,
 ) -> (f64, f64) {
     debug_assert_eq!(times.len(), y.len(), "Input lengths must match");
     debug_assert_eq!(times.len(), dy.len(), "Input lengths must match");
@@ -310,8 +312,8 @@ pub(crate) fn hermite_interpolation(
     }
 
     for idx in 1..n {
-        let c1 = times[idx] - eval_time;
-        let c2 = eval_time - times[idx - 1];
+        let c1 = (times[idx] - times[0]) - offset;
+        let c2 = offset - (times[idx - 1] - times[0]);
         let denom = times[idx] - times[idx - 1];
 
         let prev = 2 * idx - 2;
@@ -321,20 +323,20 @@ pub(crate) fn hermite_interpolation(
         d_work[prev] = work[cur];
         d_work[cur] = (work[next] - work[prev]) / denom;
 
-        let tmp = work[cur] * (eval_time - times[idx - 1]) + work[prev];
+        let tmp = work[cur] * c2 + work[prev];
         work[cur] = (c1 * work[prev] + c2 * work[next]) / denom;
         work[prev] = tmp;
     }
 
     d_work[2 * n - 2] = work[2 * n - 1];
-    work[2 * n - 2] += work[2 * n - 1] * (eval_time - times[n - 1]);
+    work[2 * n - 2] += work[2 * n - 1] * (offset - (times[n - 1] - times[0]));
 
     for idj in 2..(2 * n) {
         for idi in 1..=(2 * n - idj) {
             let xi = idi.div_ceil(2);
             let xij = (idi + idj).div_ceil(2);
-            let c1 = times[xij - 1] - eval_time;
-            let c2 = eval_time - times[xi - 1];
+            let c1 = (times[xij - 1] - times[0]) - offset;
+            let c2 = offset - (times[xi - 1] - times[0]);
             let denom = times[xij - 1] - times[xi - 1];
 
             d_work[idi - 1] =
@@ -409,13 +411,14 @@ pub(crate) fn chebyshev_fit(x_samples: &[f64], y_samples: &[f64], z_samples: &[f
 ///
 /// `x` holds the sample times, and `y` holds the function values at those
 /// times. The function overwrites `y` with the divided differences.
-/// `eval_time` is the time at which to evaluate the interpolating polynomial.
+/// `offset` is the time at which to evaluate the interpolating polynomial, as an
+/// offset from `x[0]`.
 ///
 /// # Panics
 /// Panics if `x` is empty, or if `y` is shorter than `x`. Debug builds also
 /// panic if the lengths differ.
-pub(crate) fn lagrange_interpolation(x: &[f64], y: &mut [f64], eval_time: f64) -> f64 {
-    lagrange_interpolation_both(x, y, eval_time).0
+pub(crate) fn lagrange_interpolation(x: &[f64], y: &mut [f64], offset: f64) -> f64 {
+    lagrange_interpolation_both(x, y, offset).0
 }
 
 /// Interpolate using Lagrange interpolation, and return the derivative too.
@@ -426,12 +429,13 @@ pub(crate) fn lagrange_interpolation(x: &[f64], y: &mut [f64], eval_time: f64) -
 ///
 /// `x` holds the sample times, and `y` holds the function values at those
 /// times. The function overwrites `y` with the divided differences.
-/// `eval_time` is the time at which to evaluate the interpolating polynomial.
+/// `offset` is the time at which to evaluate the interpolating polynomial, as an
+/// offset from `x[0]`.
 ///
 /// # Panics
 /// Panics if `x` is empty, or if `y` is shorter than `x`. Debug builds also
 /// panic if the lengths differ.
-pub(crate) fn lagrange_interpolation_both(x: &[f64], y: &mut [f64], eval_time: f64) -> (f64, f64) {
+pub(crate) fn lagrange_interpolation_both(x: &[f64], y: &mut [f64], offset: f64) -> (f64, f64) {
     debug_assert_eq!(x.len(), y.len(), "Input lengths must match");
 
     // implementation of newton interpolation
@@ -446,7 +450,7 @@ pub(crate) fn lagrange_interpolation_both(x: &[f64], y: &mut [f64], eval_time: f
     let mut val = y[deg];
     let mut der = 0.0_f64;
     for k in 1..=deg {
-        let dt = eval_time - x[deg - k];
+        let dt = offset - (x[deg - k] - x[0]);
         der = der.mul_add(dt, val);
         val = y[deg - k] + dt * val;
     }
@@ -532,7 +536,7 @@ mod tests {
 
         for v in 0..100 {
             let eval_time = f64::from(v) / 100. * 9.0;
-            let interp = lagrange_interpolation(&times, &mut y.clone(), eval_time);
+            let interp = lagrange_interpolation(&times, &mut y.clone(), eval_time - times[0]);
             assert!((interp - eval_time).abs() < 1e-12);
         }
 
@@ -544,7 +548,7 @@ mod tests {
         for v in 0..100 {
             let x = f64::from(v) / 100. * 9.0;
             let expected = x + 1.75 * x.powi(2) - 3.0 * x.powi(3) - 11.0 * x.powi(4);
-            let interp = lagrange_interpolation(&times, &mut y1.clone(), x);
+            let interp = lagrange_interpolation(&times, &mut y1.clone(), x - times[0]);
             assert!(
                 (interp - expected).abs() < 1e-10,
                 "x={} interp={} expected={} diff={}",

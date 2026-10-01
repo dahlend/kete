@@ -918,8 +918,8 @@ mod tests {
             vel_m[idx - 3] -= eps;
         }
 
-        let obj_p = make_state(pos_p, vel_p, obj.epoch.jd);
-        let obj_m = make_state(pos_m, vel_m, obj.epoch.jd);
+        let obj_p = make_state(pos_p, vel_p, obj.epoch.jd());
+        let obj_m = make_state(pos_m, vel_m, obj.epoch.jd());
 
         (predictor(&obj_p) - predictor(&obj_m)) * (1.0 / (2.0 * eps))
     }
@@ -1070,7 +1070,7 @@ mod tests {
 
         // Corrected epoch should be earlier
         let tau = 2.0 * C_AU_PER_DAY_INV;
-        assert!((corrected.epoch.jd - (2460000.5 - tau)).abs() < 1e-12);
+        assert!((corrected.epoch.jd() - (2460000.5 - tau)).abs() < 1e-12);
 
         // Position should be slightly different due to back-propagation
         assert!((corrected.pos[0] - obj.pos[0]).abs() < 1e-4);

@@ -207,7 +207,7 @@ where
         let mut prev_time = t0;
 
         for i in 1..ORDER {
-            let target_time: Time<TDB> = (t0.jd - i as f64 * h).into();
+            let target_time: Time<TDB> = t0 - i as f64 * h;
             let (p, v, m) = RadauIntegrator::integrate(
                 func,
                 prev_pos_out,
@@ -332,7 +332,7 @@ where
         let vel_pred = &self.cur_vel + &ab_sum * h;
 
         // ---- EVALUATE at predicted state ----
-        let t_next: Time<TDB> = (self.cur_time.jd + h).into();
+        let t_next: Time<TDB> = self.cur_time + h;
         let mut f_new = (self.func)(t_next, &pos_pred, &vel_pred, &mut self.metadata, true)?;
 
         // ---- CORRECT (iterated PECE) ----
@@ -408,9 +408,9 @@ where
 
         // Apply time update with Kahan summation.
         let y_t = h - self.comp_time;
-        let t_t = self.cur_time.jd + y_t;
-        self.comp_time = (t_t - self.cur_time.jd) - y_t;
-        self.cur_time = t_t.into();
+        let t_t = self.cur_time + y_t;
+        self.comp_time = (t_t - self.cur_time).elapsed - y_t;
+        self.cur_time = t_t;
 
         Ok(())
     }

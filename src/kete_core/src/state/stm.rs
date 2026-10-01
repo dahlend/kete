@@ -276,11 +276,12 @@ where
 {
     // The offset is a function of time, so one taken at the wrong epoch is wrong by the
     // central body's own motion over the difference, and nothing downstream would notice.
-    if center_state.epoch != elements.epoch {
+    if !center_state.epoch.same_instant(&elements.epoch) {
         return Err(Error::ValueError(format!(
             "Center state is at epoch {} but the elements are at {}. The offset between \
              centers is time dependent and must be evaluated at the element epoch.",
-            center_state.epoch.jd, elements.epoch.jd
+            center_state.epoch.jd(),
+            elements.epoch.jd()
         )));
     }
 

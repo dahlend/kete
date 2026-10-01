@@ -3,12 +3,11 @@
 //! <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/spk.html#Type%2010:%20Space%20Command%20Two-Line%20Elements>
 
 use super::SpkArray;
-use crate::{jd_to_spice_jd, spice_jd_to_jd};
 use kete_core::constants::AU_KM;
 use kete_core::errors::Error;
 use kete_core::frames::teme_frame;
 use kete_core::prelude::KeteResult;
-use kete_core::time::{Time, UTC};
+use kete_core::time::{TDB, Time, UTC};
 use nalgebra::Vector3;
 use sgp4::{
     Constants, Geopotential, MinutesSinceEpoch, Orbit,
@@ -176,7 +175,9 @@ impl SpkSegmentType10 {
             let unix_days = (unix.timestamp() as f64
                 + f64::from(unix.timestamp_subsec_nanos()) * 1e-9)
                 / 86400.0;
-            let et = jd_to_spice_jd(Time::<UTC>::new(unix_days + 2_440_587.5).tdb());
+            let et = Time::<UTC>::from_parts(unix_days, 2_440_587.5)
+                .tdb()
+                .j2000_seconds();
             flat_elements.push(elem.mean_motion_dot * MMDT_TO_RAD_PER_MIN2);
             flat_elements.push(elem.mean_motion_ddot * MMDT2_TO_RAD_PER_MIN3);
             flat_elements.push(elem.drag_term);
@@ -260,7 +261,11 @@ impl SpkSegmentType10 {
     /// Returns [`Error::ValueError`] if the epoch of the element set cannot be
     /// converted to a UTC date, if the elements are invalid, or if SGP4 fails
     /// to propagate.
-    pub(in crate::spk) fn try_get_pos_vel(&self, jds: f64) -> KeteResult<([f64; 3], [f64; 3])> {
+    pub(in crate::spk) fn try_get_pos_vel(
+        &self,
+        time: Time<TDB>,
+    ) -> KeteResult<([f64; 3], [f64; 3])> {
+        let jds = time.j2000_seconds();
         let times = self.get_times();
         let n_before = times.partition_point(|&t| t < jds);
         let idx = if n_before == 0 {
@@ -276,13 +281,13 @@ impl SpkSegmentType10 {
         let record = self.get_record(idx)?;
         let prediction = record
             .propagate(MinutesSinceEpoch(
-                (jds - self.array.get_packet::<15>(idx)[10]) / 60.0,
+                time.j2000_seconds_minus(self.array.get_packet::<15>(idx)[10]) / 60.0,
             ))
             .map_err(|e| Error::ValueError(format!("SGP4 propagation failed: {e}")))?;
         let pos = Vector3::from(prediction.position);
         let vel = Vector3::from(prediction.velocity);
 
-        let rot = teme_frame(spice_jd_to_jd(jds)).rotation;
+        let rot = teme_frame(Time::<TDB>::from_j2000_seconds(jds)).rotation;
         let pos = rot * pos / AU_KM;
         let vel = rot * vel / AU_KM * 86400.0;
         Ok((pos.into(), vel.into()))
@@ -409,7 +414,10 @@ impl SpkSegmentType10 {
         // The stored epoch is TDB. SGP4 expects the TLE epoch in UTC, so the
         // epoch converts back to UTC.
         let epoch = julian_years_since_j2000_afspc_compatibility_mode(
-            &spice_jd_to_jd(epoch).utc().to_datetime()?.naive_utc(),
+            &Time::<TDB>::from_j2000_seconds(epoch)
+                .utc()
+                .to_datetime()?
+                .naive_utc(),
         );
 
         // use the provided goepotential even if it is not correct.
@@ -807,11 +815,14 @@ ISS (ZARYA)
                 .propagate(MinutesSinceEpoch((jds - epoch) / 60.0))
                 .unwrap()
                 .position;
-            *teme_frame(spice_jd_to_jd(jds)).rotation.matrix() * Vector3::from(p)
+            *teme_frame(Time::<TDB>::from_j2000_seconds(jds))
+                .rotation
+                .matrix()
+                * Vector3::from(p)
         };
         let mid = f64::midpoint(t1, t2);
         for (jds, idx) in [(t1, 0), (mid - 60.0, 0), (mid + 60.0, 1), (t2, 1)] {
-            let (pos, _) = seg.try_get_pos_vel(jds).unwrap();
+            let (pos, _) = seg.try_get_pos_vel(Time::from_j2000_seconds(jds)).unwrap();
             let err = (Vector3::from(pos) * AU_KM - predict(idx, jds)).norm();
             assert!(err < 1e-6, "{jds}: {err} km");
         }

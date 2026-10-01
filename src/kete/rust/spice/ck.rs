@@ -80,7 +80,7 @@ pub fn ck_sc_frame_to_equatorial(
     let (time, frame) = LOADED_CK
         .try_read()
         .unwrap()
-        .try_get_frame(jd.0.jd, instrument_id)?;
+        .try_get_frame(jd.0, instrument_id)?;
 
     // A CK frame can be defined relative to another CK frame, such as a camera
     // relative to its spacecraft. The full chain resolves that case.
@@ -131,7 +131,7 @@ pub fn ck_sc_equatorial_to_frame(
     let (time, frame) = LOADED_CK
         .try_read()
         .unwrap()
-        .try_get_frame(jd.0.jd, instrument_id)?;
+        .try_get_frame(jd.0, instrument_id)?;
 
     // A CK frame can be defined relative to another CK frame, such as a camera
     // relative to its spacecraft. The full chain resolves that case.

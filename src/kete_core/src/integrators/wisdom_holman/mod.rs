@@ -564,10 +564,12 @@ impl<T: InertialFrame> WisdomHolman<T> {
             )))?;
         }
         for state in massive.iter().chain(test_particles) {
-            if (state.epoch.jd - epoch0.jd).abs() > EPOCH_TOL {
+            if (state.epoch - epoch0).elapsed.abs() > EPOCH_TOL {
                 Err(Error::ValueError(format!(
                     "State {:?} has epoch {} which does not match the Sun's epoch {}.",
-                    state.desig, state.epoch.jd, epoch0.jd
+                    state.desig,
+                    state.epoch.jd(),
+                    epoch0.jd()
                 )))?;
             }
             if !state.is_finite() {
@@ -742,13 +744,13 @@ impl<T: InertialFrame> WisdomHolman<T> {
     /// Returns an error if the target time is behind the current epoch with
     /// respect to the sign of `dt`, or if stepping fails (see [`Self::step`]).
     pub fn integrate_to(&mut self, time: Time<TDB>) -> KeteResult<()> {
-        let n_steps = (time.jd - self.epoch().jd) / self.dt;
+        let n_steps = (time - self.epoch()).elapsed / self.dt;
         if n_steps < -0.5 {
             Err(Error::ValueError(format!(
                 "Target time {} is behind the current epoch {} for dt = {}; construct the \
                  integrator with the opposite sign of dt to integrate in that direction.",
-                time.jd,
-                self.epoch().jd,
+                time.jd(),
+                self.epoch().jd(),
                 self.dt
             )))?;
         }
@@ -763,7 +765,7 @@ impl<T: InertialFrame> WisdomHolman<T> {
 
     /// Current epoch, computed as `epoch0 + steps * dt`.
     pub fn epoch(&self) -> Time<TDB> {
-        Time::new(self.epoch0.jd + self.elapsed())
+        self.epoch0 + self.elapsed()
     }
 
     /// Fixed step size in days.
@@ -1240,13 +1242,15 @@ impl<T: InertialFrame> WisdomHolman<T> {
             match reason {
                 Some(LostReason::SunImpact) => Err(Error::ValueError(format!(
                     "Massive body {:?} hit the Sun at jd = {}, the simulation cannot continue.",
-                    self.desigs[idx], epoch.jd
+                    self.desigs[idx],
+                    epoch.jd()
                 )))?,
                 Some(LostReason::KeplerFailure) => Err(Error::Convergence(format!(
                     "Kepler drift failed to converge for massive body {:?} at jd = {}. \
                      The state is likely extreme, such as a deep close encounter; \
                      a smaller dt may help.",
-                    self.desigs[idx], epoch.jd
+                    self.desigs[idx],
+                    epoch.jd()
                 )))?,
                 None => {}
             }

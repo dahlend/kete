@@ -154,7 +154,7 @@ fn wh_position_after(
     let n_steps = (t_final / dt).round() as u64;
     sim.integrate_n_steps(n_steps).unwrap();
     assert!(
-        (sim.epoch().jd - (J2000 + t_final)).abs() < 1e-6,
+        (sim.epoch().jd() - (J2000 + t_final)).abs() < 1e-6,
         "step count did not land on the target time"
     );
     sim.massive_states()[idx].pos.into()
@@ -855,7 +855,7 @@ fn j2_precession() {
             let node = Vector3::new(-h.y, h.x, 0.0).normalize();
             let e_hat = ecc_vector(&pos, &vel).normalize();
             let h_hat = h.normalize();
-            times.push(sim.epoch().jd - J2000);
+            times.push(sim.epoch().jd() - J2000);
             nodes.push(node.y.atan2(node.x));
             // Argument of perihelion as a smooth signed angle from the node,
             // well behaved even though the orbit starts with omega = 0.
@@ -991,7 +991,7 @@ fn measure_drift(sim: &mut WisdomHolman<Ecliptic>, n_samples: usize, steps_per_s
         let massive = sim.massive_states();
         let particle = &sim.test_particle_states()[0];
         let (pos, vel) = heliocentric(particle, &massive[0]);
-        times.push(sim.epoch().jd - J2000);
+        times.push(sim.epoch().jd() - J2000);
         axes.push(compute_semi_major(&pos, &vel, GMS));
         sim.integrate_n_steps(steps_per_sample).unwrap();
     }
@@ -1508,7 +1508,7 @@ fn dust_pr_inspiral_rate() {
     for _ in 0..200 {
         let g = &sim.test_particle_states()[0];
         let (pos, vel) = heliocentric(g, sun_state);
-        times.push(sim.epoch().jd - J2000);
+        times.push(sim.epoch().jd() - J2000);
         a_sq.push(compute_semi_major(&pos, &vel, mu_eff).powi(2));
         sim.integrate_n_steps(u64::from(steps_per_orbit)).unwrap();
     }
@@ -1809,7 +1809,7 @@ fn sun_impact_loss() {
     assert_eq!(sim.lost_particles()[0].desig, Desig::Perm(1000));
     println!(
         "sun_impact_loss: particle removed at jd = {}",
-        sim.lost_particles()[0].epoch.jd
+        sim.lost_particles()[0].epoch.jd()
     );
 }
 
@@ -1920,7 +1920,7 @@ fn integrate_to_whole_steps() {
     let mut sim = WisdomHolman::new(&states, &gms, &[], &[], 10.0, false, false, false).unwrap();
     sim.integrate_to(Time::new(J2000 + 1004.0)).unwrap();
     assert_eq!(sim.steps_taken(), 100);
-    assert!((sim.epoch().jd - (J2000 + 1000.0)).abs() < 1e-9);
+    assert!((sim.epoch().jd() - (J2000 + 1000.0)).abs() < 1e-9);
     // Asking for a time behind the current epoch errors.
     assert!(sim.integrate_to(Time::new(J2000)).is_err());
 }

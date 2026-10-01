@@ -102,26 +102,24 @@ impl CkCollection {
         *self = Self::default();
     }
 
-    /// Return the pointing of an instrument at a TDB JD.
+    /// Return the pointing of an instrument at a time.
     ///
-    /// `jd` is the TDB Julian date. `instrument_id` is the NAIF ID of the
-    /// instrument. The spacecraft clock ID is `instrument_id / 1000`. The
+    /// `instrument_id` is the NAIF ID of the instrument. The spacecraft clock ID is `instrument_id / 1000`. The
     /// function uses the first segment in precedence order that holds pointing
-    /// at `jd`. It returns the time of the pointing and the instrument frame.
+    /// at `time`. It returns the time of the pointing and the instrument frame.
     ///
     /// # Errors
     /// - [`Error::LockFailed`] if the SCLK singleton lock is not available.
     /// - [`Error::ValueError`] if no SCLK clock is loaded for the spacecraft.
     /// - [`Error::Bounds`] if no loaded segment holds pointing for the
-    ///   instrument at `jd`.
+    ///   instrument at `time`.
     /// - [`Error::IOError`] or [`Error::ValueError`] if the selected segment
     ///   is a type 6 segment with a malformed mini-segment.
     pub fn try_get_frame(
         &self,
-        jd: f64,
+        time: Time<TDB>,
         instrument_id: i32,
     ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
-        let time = Time::<TDB>::new(jd);
         let sclk = LOADED_SCLK.try_read()?;
         let spice_id = instrument_id / 1000;
         let tick = sclk.try_time_to_tick(spice_id, time)?;
@@ -278,7 +276,7 @@ mod tests {
     }
 
     fn angle_at(cks: &CkCollection, jd: f64) -> f64 {
-        let (_, frame) = cks.try_get_frame(jd, -999_000).unwrap();
+        let (_, frame) = cks.try_get_frame(Time::new(jd), -999_000).unwrap();
         let rot = Rotation3::from_matrix(frame.rotation.matrix());
         rot.angle()
     }
@@ -328,8 +326,8 @@ mod tests {
             let angle = angle_at(&cks, jd0 + dt);
             assert!((angle - expected).abs() < 1e-9, "dt={dt}: {angle}");
         }
-        assert!(cks.try_get_frame(jd0 + 3.0, -999_000).is_err());
-        assert!(cks.try_get_frame(jd0 + 6.5, -999_000).is_err());
+        assert!(cks.try_get_frame(Time::new(jd0 + 3.0), -999_000).is_err());
+        assert!(cks.try_get_frame(Time::new(jd0 + 6.5), -999_000).is_err());
     }
 
     /// A later segment with gaps takes precedence inside its intervals.
@@ -365,7 +363,7 @@ mod tests {
         // extrapolate.
         let mut alone = CkCollection::default();
         alone.load_file(&newer).unwrap();
-        assert!(alone.try_get_frame(jd0 + 4.0, -999_000).is_err());
+        assert!(alone.try_get_frame(Time::new(jd0 + 4.0), -999_000).is_err());
         assert!((angle_at(&alone, jd0 + 6.5) - 0.7).abs() < 1e-12);
 
         // With the load order reversed, the older file takes precedence at all
@@ -462,11 +460,17 @@ mod tests {
         ];
         for (seconds, c_matrix) in expected {
             let jd = SPIN_JD0 + seconds / 86400.0;
-            let (_, frame) = cks.try_get_frame(jd, -999_000).unwrap();
+            let (_, frame) = cks.try_get_frame(Time::new(jd), -999_000).unwrap();
             let err = (frame.rotation.inverse().matrix() - c_matrix).abs().max();
             assert!(err < 1e-8, "{seconds} s: C-matrix error {err:e}");
 
-            let rotation_at = |jd| *cks.try_get_frame(jd, -999_000).unwrap().1.rotation.matrix();
+            let rotation_at = |jd| {
+                *cks.try_get_frame(Time::new(jd), -999_000)
+                    .unwrap()
+                    .1
+                    .rotation
+                    .matrix()
+            };
             let numeric = rate_by_difference(rotation_at, jd, 1e-3);
             let err = (frame.rotation_rate.unwrap() - numeric).abs().max();
             assert!(err < 1e-4, "{seconds} s: rotation rate error {err:e}");
@@ -494,7 +498,7 @@ mod tests {
             let (_, frame) = LOADED_CK
                 .read()
                 .unwrap()
-                .try_get_frame(jd, -999_011)
+                .try_get_frame(Time::new(jd), -999_011)
                 .unwrap();
             crate::frame_ext::rotations_to_equatorial_full(&frame).unwrap()
         };

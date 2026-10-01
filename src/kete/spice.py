@@ -332,7 +332,7 @@ def moon_illumination_frac(jd: float | Time, observer: str = "399"):
     having the observer located at the geocenter of the Earth.
 
     >>> float(kete.spice.moon_illumination_frac(Time.from_ymd(2024, 2, 24)))
-    0.9964936478732302
+    0.9964936480162188
 
     Parameters
     ----------

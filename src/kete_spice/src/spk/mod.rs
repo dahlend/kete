@@ -73,7 +73,6 @@ pub use type21::SpkSegmentType21;
 use crate::daf::DAFType;
 use crate::daf::DafFile;
 use crate::prepend_by_precedence;
-use crate::spice_jd_to_jd;
 use kete_core::cache::cache_path;
 use kete_core::desigs::{NaifId, naif_ids_from_name};
 use kete_core::errors::Error;
@@ -242,7 +241,7 @@ impl SpkCollection {
                     Error::Bounds(format!(
                         "SPK files are missing information to be able to map from obj \
                          {old_center} to obj {new_center} at JD {}.",
-                        epoch.jd
+                        epoch.jd()
                     ))
                 })?
         };
@@ -300,7 +299,7 @@ impl SpkCollection {
         Err(Error::ValueError(format!(
             "SPK segments covering JD {} form a cycle, or a chain of more than \
              {MAX_CHAIN} centers, from object {id}.",
-            jd.jd
+            jd.jd()
         )))
     }
 
@@ -346,8 +345,8 @@ impl SpkCollection {
                 let jds_start = spk_array_ref.jds_start;
                 let jds_end = spk_array_ref.jds_end;
                 segment_info.push((
-                    spice_jd_to_jd(jds_start),
-                    spice_jd_to_jd(jds_end),
+                    Time::<TDB>::from_j2000_seconds(jds_start),
+                    Time::<TDB>::from_j2000_seconds(jds_end),
                     spk_array_ref.center_id,
                     spk_array_ref.frame_id,
                     spk_array_ref.segment_type,
@@ -361,8 +360,8 @@ impl SpkCollection {
                 let jds_start = spk_array_ref.jds_start;
                 let jds_end = spk_array_ref.jds_end;
                 segment_info.push((
-                    spice_jd_to_jd(jds_start),
-                    spice_jd_to_jd(jds_end),
+                    Time::<TDB>::from_j2000_seconds(jds_start),
+                    Time::<TDB>::from_j2000_seconds(jds_end),
                     spk_array_ref.center_id,
                     spk_array_ref.frame_id,
                     spk_array_ref.segment_type,
@@ -373,7 +372,7 @@ impl SpkCollection {
             return segment_info;
         }
 
-        segment_info.sort_by(|a, b| (a.0.jd).total_cmp(&b.0.jd));
+        segment_info.sort_by(|a, b| (a.0.jd()).total_cmp(&b.0.jd()));
 
         let mut avail_times = Vec::<(Time<TDB>, Time<TDB>, i32, i32, i32)>::new();
 
@@ -381,11 +380,11 @@ impl SpkCollection {
         for segment in segment_info.iter().skip(1) {
             // if the segments are overlapped or nearly overlapped, join them together
             // 1e-8 is approximately a millisecond
-            if cur_segment.1.jd <= (segment.0.jd - 1e-8) {
+            if cur_segment.1 <= segment.0 - 1e-8 {
                 avail_times.push(cur_segment);
                 cur_segment = *segment;
-            } else {
-                cur_segment.1.jd = segment.1.jd.max(cur_segment.1.jd);
+            } else if segment.1 > cur_segment.1 {
+                cur_segment.1 = segment.1;
             }
         }
         avail_times.push(cur_segment);

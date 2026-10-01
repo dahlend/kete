@@ -10,6 +10,7 @@ use crate::interpolation::{hermite_interpolation, lagrange_interpolation};
 use kete_core::constants::AU_KM;
 use kete_core::errors::Error;
 use kete_core::prelude::KeteResult;
+use kete_core::time::{TDB, Time};
 
 /// Type 18 Record
 ///
@@ -136,7 +137,7 @@ impl SpkSegmentType18 {
     }
 
     #[inline(always)]
-    pub(crate) fn try_get_pos_vel(&self, jds: f64) -> ([f64; 3], [f64; 3]) {
+    pub(crate) fn try_get_pos_vel(&self, time: Time<TDB>) -> ([f64; 3], [f64; 3]) {
         PacketSeries {
             packets: &self.array.daf.data[..self.n_records * self.record_size],
             epochs: &self.array.daf.data
@@ -145,7 +146,7 @@ impl SpkSegmentType18 {
             window_size: self.window_size,
             record_size: self.record_size,
         }
-        .try_get_pos_vel(jds)
+        .try_get_pos_vel(time)
     }
 }
 
@@ -206,9 +207,11 @@ impl PacketSeries<'_> {
     }
 
     #[inline(always)]
-    pub(in crate::spk) fn try_get_pos_vel(&self, jds: f64) -> ([f64; 3], [f64; 3]) {
+    pub(in crate::spk) fn try_get_pos_vel(&self, time: Time<TDB>) -> ([f64; 3], [f64; 3]) {
+        let jds = time.j2000_seconds();
         let (start, window) = self.window(jds);
         let times = &self.epochs[start..start + window];
+        let offset = time.j2000_seconds_minus(times[0]);
 
         let mut pos = [0.0; 3];
         let mut vel = [0.0; 3];
@@ -221,7 +224,7 @@ impl PacketSeries<'_> {
                     let dp: Box<[f64]> = (0..window)
                         .map(|i| self.record(i + start)[idx + 3])
                         .collect();
-                    let (p, _) = hermite_interpolation(times, &p, &dp, jds);
+                    let (p, _) = hermite_interpolation(times, &p, &dp, offset);
                     pos[idx] = p / AU_KM;
 
                     let v: Box<[f64]> = (0..window)
@@ -230,7 +233,7 @@ impl PacketSeries<'_> {
                     let dv: Box<[f64]> = (0..window)
                         .map(|i| self.record(i + start)[idx + 9])
                         .collect();
-                    let (v, _) = hermite_interpolation(times, &v, &dv, jds);
+                    let (v, _) = hermite_interpolation(times, &v, &dv, offset);
                     vel[idx] = v / AU_KM * 86400.;
                 }
                 // The packets hold no derivative data. Position and velocity
@@ -241,8 +244,8 @@ impl PacketSeries<'_> {
                     let mut v: Box<[f64]> = (0..window)
                         .map(|i| self.record(i + start)[idx + 3])
                         .collect();
-                    pos[idx] = lagrange_interpolation(times, &mut p, jds) / AU_KM;
-                    vel[idx] = lagrange_interpolation(times, &mut v, jds) / AU_KM * 86400.;
+                    pos[idx] = lagrange_interpolation(times, &mut p, offset) / AU_KM;
+                    vel[idx] = lagrange_interpolation(times, &mut v, offset) / AU_KM * 86400.;
                 }
                 // The stored velocity is the derivative for the Hermite fit of
                 // the position. One fit gives both position and velocity.
@@ -251,7 +254,7 @@ impl PacketSeries<'_> {
                     let dp: Box<[f64]> = (0..window)
                         .map(|i| self.record(i + start)[idx + 3])
                         .collect();
-                    let (p, v) = hermite_interpolation(times, &p, &dp, jds);
+                    let (p, v) = hermite_interpolation(times, &p, &dp, offset);
                     pos[idx] = p / AU_KM;
                     vel[idx] = v / AU_KM * 86400.;
                 }

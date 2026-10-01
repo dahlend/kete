@@ -93,7 +93,7 @@ def test_MPCObservation():
     assert obs.discovery is False
     assert obs.note1 == ""
     assert obs.note2 == "S"
-    assert obs.jd == 2455452.157066001
+    assert obs.jd == 2455452.1570660006
     _ = obs.sc2obj
 
 

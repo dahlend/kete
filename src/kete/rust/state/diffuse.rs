@@ -220,7 +220,7 @@ impl PyDiffuseState {
     /// Common epoch shared by all components.
     #[getter]
     fn epoch(&self) -> PyTime {
-        self.mixture.epoch().jd.into()
+        self.mixture.epoch().into()
     }
 
     /// Number of mixture components.
@@ -664,13 +664,13 @@ impl PyDiffuseState {
                 "DiffuseState(n_components={}, cov_dim={}, epoch={:.6}, max_eta={eta:.4})",
                 self.mixture.n_components(),
                 self.mixture.cov_dim(),
-                self.mixture.epoch().jd,
+                self.mixture.epoch().jd(),
             ),
             None => format!(
                 "DiffuseState(n_components={}, cov_dim={}, epoch={:.6})",
                 self.mixture.n_components(),
                 self.mixture.cov_dim(),
-                self.mixture.epoch().jd,
+                self.mixture.epoch().jd(),
             ),
         }
     }

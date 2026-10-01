@@ -114,7 +114,6 @@ impl CometElements {
         center_id: i32,
         gm_sqrt: f64,
     ) -> Self {
-        let epoch = epoch.jd;
         let vel_scaled = vel / gm_sqrt;
         let v_mag2 = vel_scaled.norm_squared();
         let p_mag = pos.norm();
@@ -162,7 +161,7 @@ impl CometElements {
             }
         };
 
-        let peri_time: f64 = {
+        let peri_time: Time<TDB> = {
             if (ecc - 1.0).abs() < PARABOLIC_ECC_LIMIT {
                 // Parabolic
                 let mut true_anomaly = ecc_vec.angle(pos);
@@ -205,11 +204,11 @@ impl CometElements {
 
         Self {
             desig,
-            epoch: epoch.into(),
+            epoch,
             eccentricity: ecc,
             inclination: incl,
             lon_of_ascending: lon_of_asc,
-            peri_time: peri_time.into(),
+            peri_time,
             peri_arg,
             peri_dist,
             center_id,

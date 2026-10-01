@@ -86,10 +86,10 @@ const LOG_W_FLOOR: f64 = 50.0;
 /// posterior and are equally weighted.
 #[derive(Debug, Clone)]
 pub struct RangingSamples {
-    /// Epoch of every draw (JD TDB): the attributable reference epoch.  Each
+    /// Epoch of every draw: the attributable reference epoch.  Each
     /// state is constructed at its own light-time-corrected emission epoch and
     /// propagated two-body to this epoch.
-    pub epoch: f64,
+    pub epoch: Time<TDB>,
     /// Orbit draws: `[num_draws][6]`, SSB Equatorial, AU and AU/day.
     pub draws: Vec<Vec<f64>>,
     /// Log posterior density per unit `(rho, rho_dot)` of the grid cell each draw
@@ -119,7 +119,7 @@ pub struct RangingSamples {
 #[derive(Clone)]
 struct Attributable {
     /// Reference observation epoch (JD TDB).
-    t_ref: f64,
+    t_ref: Time<TDB>,
     /// RA at `t_ref` (radians).
     alpha: f64,
     /// Dec at `t_ref` (radians).
@@ -249,12 +249,12 @@ fn wrap_pi(mut angle: f64) -> f64 {
 /// secant velocity across the arc, so that it describes the same averaged motion
 /// as the fitted rates.  See the comment at the end of the function.
 fn compute_attributable(sorted_obs: &[AstrometricObservation]) -> Option<Attributable> {
-    let t_ref = sorted_obs.first()?.epoch().jd;
+    let t_ref = sorted_obs.first()?.epoch();
     let optical: Vec<(f64, f64, f64, [f64; 3])> = sorted_obs
         .iter()
         .filter_map(|obs| {
             let (ra, dec, _) = obs.as_optical().ok()?;
-            Some((obs.epoch().jd - t_ref, ra, dec, optical_weight(obs)))
+            Some(((obs.epoch() - t_ref).elapsed, ra, dec, optical_weight(obs)))
         })
         .collect();
     if optical.len() < 2 {
@@ -299,7 +299,7 @@ fn compute_attributable(sorted_obs: &[AstrometricObservation]) -> Option<Attribu
         .rev()
         .find_map(|obs| obs.as_optical().ok().map(|(_, _, obs)| obs));
     if let Some(last) = last_optical {
-        let dt = last.epoch.jd - t_ref;
+        let dt = (last.epoch - t_ref).elapsed;
         if dt > 0.0 {
             observer.vel = (last.pos - observer.pos) / dt;
         }
@@ -360,7 +360,7 @@ impl ObsTable {
     fn new(
         spk: &SpkCollection,
         sorted_obs: &[AstrometricObservation],
-        t_ref: f64,
+        t_ref: Time<TDB>,
     ) -> KeteResult<Self> {
         let mut entries = Vec::with_capacity(sorted_obs.len());
         let mut normal = Matrix4::<f64>::zeros();
@@ -370,7 +370,7 @@ impl ObsTable {
             let Ok((ra, dec, obs_ssb)) = obs.as_optical() else {
                 continue;
             };
-            let dt = obs.epoch().jd - t_ref;
+            let dt = (obs.epoch() - t_ref).elapsed;
             let w = optical_weight(obs);
             normal += normal_matrix_term(dt, w);
             entries.push(ObsEntry {
@@ -441,7 +441,7 @@ fn state_from_rho(attr: &Attributable, rho: f64, rho_dot: f64) -> State<Equatori
     let tau = rho * kete_core::constants::C_AU_PER_DAY_INV;
     State::<Equatorial, SSB> {
         desig: kete_core::desigs::Desig::Empty,
-        epoch: Time::from(attr.t_ref - tau),
+        epoch: attr.t_ref - tau,
         pos: pos_ssb,
         vel: vel_ssb,
         center: SSB,
@@ -1297,7 +1297,7 @@ fn draw_samples(
                 if !is_physically_valid(helio.pos, helio.vel) {
                     continue;
                 }
-                let at_ref = propagate_two_body(&helio, Time::from(attr.t_ref))?;
+                let at_ref = propagate_two_body(&helio, attr.t_ref)?;
                 let ps = spk.try_to_ssb(at_ref)?;
                 return Ok((
                     vec![
@@ -1386,7 +1386,7 @@ pub fn fit_orbit_ranging(
     let spk: &SpkCollection = &spk_guard;
 
     let mut sorted = obs.to_vec();
-    sorted.sort_by(|a, b| a.epoch().jd.total_cmp(&b.epoch().jd));
+    sorted.sort_by(|a, b| a.epoch().jd().total_cmp(&b.epoch().jd()));
 
     // Attributables are built from one observer at a time.  The attributable is a
     // straight-line fit of RA/Dec against time paired with the secant velocity of
@@ -1415,8 +1415,8 @@ pub fn fit_orbit_ranging(
         if group.len() < 2 {
             continue;
         }
-        let t0 = group[0].epoch().jd;
-        let arc = group[group.len() - 1].epoch().jd - t0;
+        let t0 = group[0].epoch().jd();
+        let arc = group[group.len() - 1].epoch().jd() - t0;
 
         // A window must be able to hold two observations.  If even the closest pair
         // of this observer's observations is further apart than ATTR_WINDOW_DAYS,
@@ -1424,7 +1424,7 @@ pub fn fit_orbit_ranging(
         let min_obs_gap = group
             .windows(2)
             .filter_map(|w| {
-                let dt = w[1].epoch().jd - w[0].epoch().jd;
+                let dt = (w[1].epoch() - w[0].epoch()).elapsed;
                 if dt > 1e-9 { Some(dt) } else { None }
             })
             .fold(f64::INFINITY, f64::min);
@@ -1459,8 +1459,8 @@ pub fn fit_orbit_ranging(
                 let w_start = t0 + i as f64 * effective_step;
                 let w_end = w_start + effective_window;
                 (
-                    group.partition_point(|o| o.epoch().jd < w_start),
-                    group.partition_point(|o| o.epoch().jd <= w_end),
+                    group.partition_point(|o| o.epoch().jd() < w_start),
+                    group.partition_point(|o| o.epoch().jd() <= w_end),
                 )
             })
             .filter(|&(lo, hi)| hi >= lo + 2)
@@ -1478,7 +1478,7 @@ pub fn fit_orbit_ranging(
 
         for (lo, hi) in maximal {
             let window_obs = &group[lo..hi];
-            let w_span = window_obs[window_obs.len() - 1].epoch().jd - window_obs[0].epoch().jd;
+            let w_span = (window_obs[window_obs.len() - 1].epoch() - window_obs[0].epoch()).elapsed;
             if w_span < 1e-5 {
                 continue;
             }
@@ -1792,7 +1792,8 @@ mod tests {
         // Reconstructing the object's velocity from the averaged rates works with
         // the secant velocity and fails with the instantaneous one.  Both use the
         // same (rho, rho_dot), so the only difference is the pairing.
-        let rho_of = |k: usize| (obj_at_epoch(&obj, epochs[k]).pos - observers[k].pos).norm();
+        let rho_of =
+            |k: usize| (obj_at_epoch(&obj, epochs[k].into()).pos - observers[k].pos).norm();
         let rho = rho_of(0);
         let rho_dot = (rho_of(8) - rho_of(0)) / dt;
 
@@ -1841,10 +1842,10 @@ mod tests {
         // Cell at the true (rho, rho_dot), light-time corrected range.
         let rho_of = |k: usize| {
             let obs_pos = observers[k].pos;
-            let mut rho = (obj_at_epoch(&obj, epochs[k]).pos - obs_pos).norm();
+            let mut rho = (obj_at_epoch(&obj, epochs[k].into()).pos - obs_pos).norm();
             for _ in 0..3 {
                 let t_emit = epochs[k] - rho * kete_core::constants::C_AU_PER_DAY_INV;
-                rho = (obj_at_epoch(&obj, t_emit).pos - obs_pos).norm();
+                rho = (obj_at_epoch(&obj, t_emit.into()).pos - obs_pos).norm();
             }
             rho
         };
@@ -2369,7 +2370,7 @@ mod tests {
                 },
             )
             .collect();
-        obs.sort_by(|a, b| a.epoch().jd.total_cmp(&b.epoch().jd));
+        obs.sort_by(|a, b| a.epoch().jd().total_cmp(&b.epoch().jd()));
         obs
     }
 
@@ -2404,7 +2405,7 @@ mod tests {
         let obs = p12pzsw_obs();
         let first_night: Vec<AstrometricObservation> = obs
             .iter()
-            .filter(|o| o.epoch().jd < obs[0].epoch().jd + 0.1)
+            .filter(|o| o.epoch().jd() < obs[0].epoch().jd() + 0.1)
             .cloned()
             .collect();
         let attr = compute_attributable(&first_night).expect("attributable");
@@ -2578,10 +2579,10 @@ mod tests {
     }
 
     /// Position of the object at `jd`, two-body.
-    fn obj_at_epoch(obj: &State<Equatorial, SSB>, jd: f64) -> State<Equatorial, SSB> {
+    fn obj_at_epoch(obj: &State<Equatorial, SSB>, epoch: Time<TDB>) -> State<Equatorial, SSB> {
         let spk = LOADED_SPK.try_read().unwrap();
         let obj_sun = spk.try_to_sun(obj.clone()).unwrap();
-        let moved = propagate_two_body(&obj_sun, Time::<TDB>::new(jd)).unwrap();
+        let moved = propagate_two_body(&obj_sun, epoch).unwrap();
         spk.try_to_ssb(moved).unwrap()
     }
 
@@ -2627,7 +2628,7 @@ mod tests {
         ];
         let obs = synth_obs(&obj, &epochs, 1.0_f64.to_radians() / 3600.0);
         let spk = LOADED_SPK.try_read().unwrap();
-        let table = ObsTable::new(&spk, &obs, 2_460_000.5).expect("table");
+        let table = ObsTable::new(&spk, &obs, 2_460_000.5.into()).expect("table");
         let (log_w, _) = scout_score(&spk, &obj, &table, 1.0, f64::NEG_INFINITY)
             .expect("scout_score must succeed");
         assert!(
@@ -2674,7 +2675,7 @@ mod tests {
         let spk = LOADED_SPK.try_read().unwrap();
         let obj_sun = spk.try_to_sun(obj.clone()).unwrap();
         let truth = spk
-            .try_to_ssb(propagate_two_body(&obj_sun, Time::<TDB>::new(samples.epoch)).unwrap())
+            .try_to_ssb(propagate_two_body(&obj_sun, samples.epoch).unwrap())
             .unwrap();
         let best = samples
             .draws

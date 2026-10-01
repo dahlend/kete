@@ -402,7 +402,7 @@ fn forward_pass(
 
     for observation in sorted {
         let obs_epoch = observation.epoch();
-        let dt = obs_epoch.jd - state_cur.epoch.jd;
+        let dt = (obs_epoch - state_cur.epoch).elapsed;
 
         // -- Prediction --------------------------------------------
         // EKF: propagate the state nonlinearly; use the STM only for
@@ -741,8 +741,8 @@ fn sort_by_epoch(obs: &[AstrometricObservation]) -> Vec<AstrometricObservation> 
         .collect();
     sorted.sort_by(|aa, bb| {
         aa.epoch()
-            .jd
-            .partial_cmp(&bb.epoch().jd)
+            .jd()
+            .partial_cmp(&bb.epoch().jd())
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     sorted
@@ -859,7 +859,7 @@ mod tests {
 
         let fit = fit_orbit_filter(&start, &observations, false, None, 100.0, 0.0).unwrap();
         let fitted = crate::orbit_fitting::ssb_state(&fit.uncertain_state).unwrap();
-        assert!((fitted.epoch.jd - 2_460_000.5).abs() < 1e-9);
+        assert!((fitted.epoch.jd() - 2_460_000.5).abs() < 1e-9);
         let pos_err = (fitted.pos - true_state.pos).norm();
         assert!(pos_err < 1e-6, "Position error {pos_err:.6e} too large");
     }

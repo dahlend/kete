@@ -3,7 +3,6 @@ mod tests {
     use kete_core::desigs::Desig;
     use kete_core::frames::Equatorial;
     use kete_core::prelude::{State, UncertainState};
-    use kete_core::time::Time;
     use nalgebra::Vector3;
 
     use kete_core::state::{
@@ -554,7 +553,7 @@ mod tests {
         }
         let component = UncertainState::from_state(&state, &cov, vec![]).unwrap();
         let mixture = DiffuseState::from_uncertain(component);
-        let target = Time::new(state.epoch.jd + 3652.5);
+        let target = state.epoch + 3652.5;
 
         let strict = SplitConfig {
             split_threshold: 0.01,
@@ -635,7 +634,7 @@ mod tests {
             &sun_resolver(&spk),
         )
         .unwrap();
-        assert!((back.epoch().jd - (2451545.0 - 200.0)).abs() < 1e-9);
+        assert!((back.epoch().jd() - (2451545.0 - 200.0)).abs() < 1e-9);
 
         let (forward, _) = propagate_diffuse_state(
             &mixture,

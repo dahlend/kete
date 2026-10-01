@@ -745,7 +745,7 @@ fn perturb_element(elements: &CometElements, col: usize, delta: f64) -> CometEle
     match col {
         0 => e.eccentricity += delta,
         1 => e.peri_dist += delta,
-        2 => e.peri_time = (e.peri_time.jd + delta).into(),
+        2 => e.peri_time += delta,
         3 => e.lon_of_ascending += delta,
         4 => e.peri_arg += delta,
         5 => e.inclination += delta,

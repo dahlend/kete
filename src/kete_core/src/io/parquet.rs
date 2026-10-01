@@ -71,7 +71,7 @@ pub fn write_states_parquet(
     );
     let jd = Column::new(
         "jd".into(),
-        states.iter().map(|state| state.epoch.jd).collect_vec(),
+        states.iter().map(|state| state.epoch.jd()).collect_vec(),
     );
     let x = Column::new(
         "x".into(),
@@ -121,7 +121,7 @@ pub fn write_states_parquet(
                         .into(),
                 ));
             }
-            let updated: Vec<Option<f64>> = updated.into_iter().map(|t| Some(t.jd)).collect();
+            let updated: Vec<Option<f64>> = updated.into_iter().map(|t| Some(t.jd())).collect();
             let updated = Column::new("updated".into(), updated);
 
             DataFrame::new(
@@ -327,7 +327,7 @@ mod tests {
         assert_eq!(updated.len(), states.len());
         for (a, b) in states.iter().zip(read.iter()) {
             assert_eq!(a.desig.to_string(), b.desig.to_string());
-            assert_eq!(a.epoch.jd, b.epoch.jd);
+            assert_eq!(a.epoch.jd(), b.epoch.jd());
             assert_eq!(a.pos, b.pos);
             assert_eq!(a.vel, b.vel);
             assert_eq!(a.center_id(), b.center_id());

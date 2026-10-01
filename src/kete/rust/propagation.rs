@@ -207,7 +207,7 @@ pub fn propagation_n_body_spk_py(
                                         "Impact detected between ({}) <-> {} at time {} ({})",
                                         desig,
                                         try_name_from_id(id).unwrap_or(id.to_string()),
-                                        time.jd,
+                                        time.jd(),
                                         time.utc().to_iso().unwrap_or_default()
                                     );
                                 }

@@ -35,7 +35,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use super::leap_second::tai_to_utc_offset;
+use super::leap_second::{tai_minus_utc_at_tai, tai_minus_utc_at_utc};
 
 /// Definitional offset from TT to TAI.
 ///
@@ -83,12 +83,25 @@ fn tdb_minus_tt(jd: f64) -> f64 {
 pub const JD_TO_MJD: f64 = -2_400_000.5;
 
 /// Time Scaling support, all time scales must implement this.
-pub trait TimeScale {
-    /// Convert julian date to TDB scaled julian date.
-    fn to_tdb(jd: f64) -> f64;
+///
+/// A scale is described by its offset from TDB. The offsets change slowly, so they
+/// are evaluated at the Julian date as a single f64 and added to the full precision
+/// time.
+pub trait TimeScale: Clone + Copy + std::fmt::Debug + PartialEq {
+    /// This scale minus TDB, in days, at the TDB Julian date `jd`.
+    fn from_tdb_offset(jd: f64) -> f64;
 
-    /// Convert from TDB scaled julian date.
-    fn from_tdb(jd: f64) -> f64;
+    /// TDB minus this scale, in days, at the Julian date `jd` on this scale.
+    ///
+    /// The default inverts [`Self::from_tdb_offset`] by fixed point, evaluating it at
+    /// the time as given and then at the corrected time. That is exact to f64
+    /// precision for an offset that changes smoothly and slowly. A scale whose offset
+    /// steps, such as UTC at a leap second, defines this directly.
+    #[must_use]
+    fn to_tdb_offset(jd: f64) -> f64 {
+        let offset = Self::from_tdb_offset(jd);
+        -Self::from_tdb_offset(jd - offset)
+    }
 }
 
 /// TDB Scaled JD time.
@@ -107,11 +120,8 @@ pub trait TimeScale {
 pub struct TDB;
 
 impl TimeScale for TDB {
-    fn to_tdb(t: f64) -> f64 {
-        t
-    }
-    fn from_tdb(t: f64) -> f64 {
-        t
+    fn from_tdb_offset(_jd: f64) -> f64 {
+        0.0
     }
 }
 
@@ -122,27 +132,20 @@ impl TimeScale for TDB {
 pub struct UTC;
 
 impl TimeScale for UTC {
-    fn to_tdb(mut jd: f64) -> f64 {
-        // move to tai first
-        // Guess the tai time that this UTC time came from
-        let offset = tai_to_utc_offset(jd + JD_TO_MJD);
-
-        // use that guess to update the TAI guess to fix the leap second offset
-        let offset = tai_to_utc_offset(jd + JD_TO_MJD + offset);
-        jd += offset;
-
-        // then tai to tt to tdb
-        TT::to_tdb(jd + TT_TO_TAI)
+    fn from_tdb_offset(jd: f64) -> f64 {
+        // TDB to TAI, then the leap seconds in effect at that TAI time.
+        let tdb_to_tai = TAI::from_tdb_offset(jd);
+        let leap = tai_minus_utc_at_tai(jd + tdb_to_tai + JD_TO_MJD);
+        tdb_to_tai - leap
     }
-    fn from_tdb(jd: f64) -> f64 {
-        // convert from TDB to TT to TAI
-        let mut jd = TT::from_tdb(jd) - TT_TO_TAI;
 
-        // Time is now TAI
-        // calculate leap seconds for that time to convert from TAI to UTC
-        let offset = tai_to_utc_offset(jd + JD_TO_MJD);
-        jd -= offset;
-        jd
+    /// In the first second after a leap second, both leap second counts are
+    /// consistent with the UTC label, so a fixed point cannot choose between them.
+    /// The leap second file lists UTC dates, so the count is read directly.
+    fn to_tdb_offset(jd: f64) -> f64 {
+        let leap = tai_minus_utc_at_utc(jd + JD_TO_MJD);
+        let tai = jd + leap;
+        leap + TAI::to_tdb_offset(tai)
     }
 }
 
@@ -156,11 +159,8 @@ impl TimeScale for UTC {
 pub struct TT;
 
 impl TimeScale for TT {
-    fn to_tdb(jd: f64) -> f64 {
-        jd + tdb_minus_tt(jd)
-    }
-    fn from_tdb(jd: f64) -> f64 {
-        jd - tdb_minus_tt(jd)
+    fn from_tdb_offset(jd: f64) -> f64 {
+        -tdb_minus_tt(jd)
     }
 }
 
@@ -172,11 +172,8 @@ impl TimeScale for TT {
 pub struct TAI;
 
 impl TimeScale for TAI {
-    fn from_tdb(jd: f64) -> f64 {
-        TT::from_tdb(jd) - TT_TO_TAI
-    }
-    fn to_tdb(jd: f64) -> f64 {
-        TT::to_tdb(jd + TT_TO_TAI)
+    fn from_tdb_offset(jd: f64) -> f64 {
+        TT::from_tdb_offset(jd) - TT_TO_TAI
     }
 }
 
@@ -205,18 +202,15 @@ const TCB_EPOCH: f64 = 2_443_144.500_372_5;
 pub struct TCB;
 
 impl TimeScale for TCB {
-    fn to_tdb(jd: f64) -> f64 {
-        // TDB = TCB - L_B * (TCB - T_0)
-        jd - L_B_TCB * (jd - TCB_EPOCH)
-    }
-    fn from_tdb(jd: f64) -> f64 {
-        // TCB = (TDB - L_B * T_0) / (1 - L_B)
-        (jd - L_B_TCB * TCB_EPOCH) / (1.0 - L_B_TCB)
+    fn from_tdb_offset(jd: f64) -> f64 {
+        // TCB = (TDB - L_B * T_0) / (1 - L_B), so TCB - TDB = L_B (TDB - T_0) / (1 - L_B)
+        L_B_TCB * (jd - TCB_EPOCH) / (1.0 - L_B_TCB)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::Time;
     use super::{TAI, TDB, TT, TimeScale, tdb_minus_tt};
 
     /// ``TDB - TT`` in seconds, from an independent evaluation of the Moyer
@@ -284,8 +278,12 @@ mod tests {
     fn tt_round_trips_through_tdb() {
         for step in 0..100 {
             let jd = 2_451_545.0 + f64::from(step) * 37.0;
-            let back = TT::from_tdb(TT::to_tdb(jd));
-            assert!((back - jd).abs() < 1e-11, "round trip drifted at jd {jd}");
+            let tt = Time::<TT>::new(jd);
+            let back = tt.tdb().tt();
+            assert!(
+                ((back - tt).elapsed).abs() < 1e-15,
+                "round trip drifted at jd {jd}"
+            );
         }
     }
 
@@ -297,7 +295,7 @@ mod tests {
         let mut hi = f64::NEG_INFINITY;
         for step in 0..400 {
             let jd = 2_451_545.0 + f64::from(step);
-            let offset = (TAI::to_tdb(jd) - jd) * 86400.0;
+            let offset = -TAI::from_tdb_offset(jd) * 86400.0;
             lo = lo.min(offset);
             hi = hi.max(offset);
         }
@@ -310,7 +308,6 @@ mod tests {
 
     #[test]
     fn tdb_is_the_identity() {
-        assert!((TDB::to_tdb(2_457_316.5) - 2_457_316.5).abs() < f64::EPSILON);
-        assert!((TDB::from_tdb(2_457_316.5) - 2_457_316.5).abs() < f64::EPSILON);
+        assert_eq!(TDB::from_tdb_offset(2_457_316.5), 0.0);
     }
 }

@@ -7,6 +7,7 @@ use crate::interpolation::{ChebyshevLayout, chebyshev_evaluate_both};
 use kete_core::constants::AU_KM;
 use kete_core::errors::Error;
 use kete_core::prelude::KeteResult;
+use kete_core::time::{TDB, Time};
 
 /// Chebyshev Polynomials (Position Only)
 ///
@@ -57,13 +58,14 @@ impl SpkSegmentType2 {
     }
 
     #[inline(always)]
-    pub(crate) fn try_get_pos_vel(&self, jds: f64) -> KeteResult<([f64; 3], [f64; 3])> {
+    pub(crate) fn try_get_pos_vel(&self, time: Time<TDB>) -> KeteResult<([f64; 3], [f64; 3])> {
+        let jds = time.j2000_seconds();
         let record_index = self.layout.record_index(jds);
         let record = self.get_record(record_index);
 
         let t_step = record.t_step;
 
-        let t = (jds - record.t_mid) / t_step;
+        let t = time.j2000_seconds_minus(*record.t_mid) / t_step;
 
         let t_step_scaled = 86400.0 / t_step / AU_KM;
 
@@ -228,7 +230,7 @@ mod tests {
         // INIT.
         let seg = three_constant_records(50.0, 300.0);
         for (jds, expected) in [(50.0, 1.0), (99.0, 1.0), (120.0, 2.0), (199.0, 2.0)] {
-            let (p, v) = seg.try_get_pos_vel(jds).unwrap();
+            let (p, v) = seg.try_get_pos_vel(Time::from_j2000_seconds(jds)).unwrap();
             assert!(
                 (p[0] * AU_KM - expected).abs() < 1e-9,
                 "jds={jds}: {}",
@@ -237,7 +239,9 @@ mod tests {
             assert_eq!(v, [0.0; 3]);
         }
         // A time exactly at the end of the last record uses the last record.
-        let (p, _) = seg.try_get_pos_vel(300.0).unwrap();
+        let (p, _) = seg
+            .try_get_pos_vel(Time::from_j2000_seconds(300.0))
+            .unwrap();
         assert!((p[0] * AU_KM - 3.0).abs() < 1e-9);
     }
 

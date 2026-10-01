@@ -94,7 +94,7 @@ const CACHE_SLOTS: usize = 8;
 /// it belongs to the one force that filled it.
 #[derive(Debug, Default)]
 pub struct EphemerisCache {
-    entries: Vec<(f64, Vec<(Vector3<f64>, Vector3<f64>)>)>,
+    entries: Vec<(Time<TDB>, Vec<(Vector3<f64>, Vector3<f64>)>)>,
 }
 
 impl EphemerisCache {
@@ -107,14 +107,14 @@ impl EphemerisCache {
         time: Time<TDB>,
         fill: impl FnOnce() -> KeteResult<Vec<(Vector3<f64>, Vector3<f64>)>>,
     ) -> KeteResult<&[(Vector3<f64>, Vector3<f64>)]> {
-        let idx = if let Some(idx) = self.entries.iter().position(|(t, _)| *t == time.jd) {
+        let idx = if let Some(idx) = self.entries.iter().position(|(t, _)| *t == time) {
             idx
         } else {
             let states = fill()?;
             if self.entries.len() == CACHE_SLOTS {
                 self.entries.clear();
             }
-            self.entries.push((time.jd, states));
+            self.entries.push((time, states));
             self.entries.len() - 1
         };
         Ok(&self.entries[idx].1)
@@ -201,11 +201,11 @@ fn missing_sun() -> Error {
 /// radius, so it costs nothing on orbits that never approach such a body. The CK must
 /// hold pointing at `time`; a gap is an error, never a silent point mass.
 fn ck_body_to_equatorial(frame_id: i32, time: Time<TDB>) -> KeteResult<Matrix3<f64>> {
-    let (frame_time, frame) = LOADED_CK.try_read()?.try_get_frame(time.jd, frame_id)?;
-    if (frame_time.jd - time.jd).abs() > 1e-8 {
+    let (frame_time, frame) = LOADED_CK.try_read()?.try_get_frame(time, frame_id)?;
+    if (frame_time - time).elapsed.abs() > 1e-8 {
         return Err(Error::Bounds(format!(
             "CK frame {frame_id} has no pointing at JD {}.",
-            time.jd
+            time.jd()
         )));
     }
     let (rot, _) = rotations_to_equatorial_full(&frame)?;

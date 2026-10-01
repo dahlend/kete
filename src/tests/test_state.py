@@ -30,7 +30,7 @@ class TestlState:
         assert np.isclose(elem.inclination, 10)
         assert np.isclose(elem.peri_arg, 30)
         assert np.isclose(elem.lon_of_ascending, 45)
-        assert np.isclose(elem.peri_time, 123456)
+        assert np.isclose(elem.peri_time.jd, 123456)
         assert np.isclose(elem.peri_dist, 0.45)
         assert np.isclose(elem.semi_major, 0.5)
 
@@ -38,7 +38,7 @@ class TestlState:
         assert np.isclose(vs.inclination, 10)
         assert np.isclose(vs.peri_arg, 30)
         assert np.isclose(vs.lon_of_ascending, 45)
-        assert np.isclose(vs.peri_time, 123456)
+        assert np.isclose(vs.peri_time.jd, 123456)
         assert np.isclose(vs.peri_dist, 0.45)
         assert np.isclose(vs.semi_major, 0.5)
 

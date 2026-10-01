@@ -12,6 +12,7 @@ use super::SpkArray;
 use super::type18::{PacketSeries, TYPE19_MAX_DEGREE, check_packet_layout, packet_size};
 use kete_core::errors::Error;
 use kete_core::prelude::KeteResult;
+use kete_core::time::{TDB, Time};
 
 /// Type 19 Segment
 ///
@@ -168,10 +169,11 @@ impl SpkSegmentType19 {
     /// These are [`Error::IOError`] for a malformed mini-segment, and
     /// [`Error::ValueError`] for an unsupported subtype.
     #[inline(always)]
-    pub(crate) fn try_get_pos_vel(&self, jds: f64) -> KeteResult<([f64; 3], [f64; 3])> {
+    pub(crate) fn try_get_pos_vel(&self, time: Time<TDB>) -> KeteResult<([f64; 3], [f64; 3])> {
+        let jds = time.j2000_seconds();
         Ok(self
             .mini_segment(self.interval_index(jds))?
-            .try_get_pos_vel(jds))
+            .try_get_pos_vel(time))
     }
 }
 
@@ -324,7 +326,9 @@ mod tests {
     }
 
     fn assert_state(seg: &SpkSegmentType19, seconds: f64) {
-        let (pos, vel) = seg.try_get_pos_vel(seconds).unwrap();
+        let (pos, vel) = seg
+            .try_get_pos_vel(Time::from_j2000_seconds(seconds))
+            .unwrap();
         let (want_pos, want_vel) = state_at(seconds);
         for idx in 0..3 {
             let dp = (pos[idx] * AU_KM - want_pos[idx]).abs();
@@ -381,6 +385,6 @@ mod tests {
         )]
         let a_len = seg.pointers()[1] as usize - 1;
         seg.array.daf.data[a_len - 3] = 7.0;
-        assert!(seg.try_get_pos_vel(30.0).is_err());
+        assert!(seg.try_get_pos_vel(Time::from_j2000_seconds(30.0)).is_err());
     }
 }

@@ -173,7 +173,7 @@ pub fn calc_earth_precession(time: PyTime) -> Vec<Vec<f64>> {
 pub fn solar_noon_py(time: PyTime, geodetic_lon: f64) -> f64 {
     approx_solar_noon(time.0.utc(), geodetic_lon.to_radians())
         .tdb()
-        .jd
+        .jd()
 }
 
 /// Compute the approximate equation of time.

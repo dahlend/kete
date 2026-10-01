@@ -133,7 +133,7 @@ impl<'a, MType, const D: usize> RK45Integrator<'a, MType, D> {
             + k4 * (28561.0 / 56430.0)
             - k5 * (9.0 / 50.0)
             + k6 * (2.0 / 55.0);
-        self.cur_time.jd += step_size;
+        self.cur_time += step_size;
         self.cur_der = (self.func)(self.cur_time, &self.cur_state, &mut self.metadata, true)?;
 
         Ok(new_step)

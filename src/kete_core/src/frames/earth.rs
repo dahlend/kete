@@ -190,11 +190,13 @@ pub fn earth_obliquity(jd: Time<TDB>) -> f64 {
 /// > IERS Technical Note No. 36 (2010)
 #[must_use]
 pub fn greenwich_mean_sidereal_time(time: Time<TDB>) -> f64 {
-    let du = approx_ut1(time) - 2451545.0;
+    let (ut1_days, ut1_frac) = ut1_parts(time);
+    let du = ut1_days - 2451545.0;
     let t = (time - Time::j2000()).elapsed / 36525.0;
 
-    // Remove the whole days before the scale factor to keep the precision.
-    let era = TAU * (du.rem_euclid(1.0) + 0.779_057_273_264 + 0.002_737_811_911_354_48 * du);
+    // The whole days drop out of the first term, so only the fraction of the day is
+    // scaled by the full rotation rate, which keeps the precision of the time.
+    let era = TAU * (ut1_frac + 0.779_057_273_264 + 0.002_737_811_911_354_48 * (du + ut1_frac));
     let precession = 0.014_506
         + (4_612.156_534
             + (1.391_581_7 + (-0.000_000_44 + (-0.000_029_956 - 0.000_000_036_8 * t) * t) * t) * t)
@@ -216,13 +218,20 @@ pub fn greenwich_mean_sidereal_time(time: Time<TDB>) -> f64 {
 ///
 #[must_use]
 pub fn approx_ut1(time: Time<TDB>) -> f64 {
-    // 1972-01-01, the start of UTC with leap seconds.
+    let (days, frac) = ut1_parts(time);
+    days + frac
+}
+
+/// [`approx_ut1`] as whole days and a fraction of a day, see [`Time::jd_parts`].
+fn ut1_parts(time: Time<TDB>) -> (f64, f64) {
+    // 1972-01-01 UTC, the start of UTC with leap seconds. The comparison is made in
+    // TDB, since UTC before 1972 is taken to equal TAI and its labels step back at
+    // that date.
     const LEAP_SECOND_START_JD: f64 = 2441317.5;
-    let utc = time.utc();
-    if utc.jd >= LEAP_SECOND_START_JD {
-        utc.jd
+    if time >= Time::<UTC>::new(LEAP_SECOND_START_JD).tdb() {
+        time.utc().jd_parts()
     } else {
-        time.jd - approx_delta_t(time) / 86400.0
+        (time - approx_delta_t(time) / 86400.0).jd_parts()
     }
 }
 
@@ -242,7 +251,7 @@ pub fn approx_ut1(time: Time<TDB>) -> f64 {
 ///
 #[must_use]
 pub fn approx_delta_t(time: Time<TDB>) -> f64 {
-    let y = 2000.0 + (time.jd - 2451544.5) / 365.25;
+    let y = 2000.0 + (time.jd() - 2451544.5) / 365.25;
     let parabola = |y: f64| -20.0 + 32.0 * ((y - 1820.0) / 100.0).powi(2);
     match y {
         y if !(-500.0..2150.0).contains(&y) => parabola(y),
@@ -588,18 +597,12 @@ pub fn next_sunset_sunrise(
     // if the predicted sunset time is more than 1 day in the future,
     // then we can subtract 1 day from the two times to get the next
     // upcoming sunset and sunrise.
-    if (next_noon.jd + hour_angle) > (time.jd + 1.0) {
-        (
-            (next_noon.jd + hour_angle - 1.0).into(),
-            (next_noon.jd - hour_angle).into(),
-        )
+    if next_noon + hour_angle > time + 1.0 {
+        (next_noon + (hour_angle - 1.0), next_noon - hour_angle)
     } else {
         // otherwise, we are already past sunset, so we will return the next
         // sunrise and sunset times.
-        (
-            (next_noon.jd + hour_angle).into(),
-            (next_noon.jd - hour_angle + 1.0).into(),
-        )
+        (next_noon + hour_angle, next_noon + (1.0 - hour_angle))
     }
 }
 
@@ -663,17 +666,17 @@ pub fn approx_solar_noon(time: Time<UTC>, geodetic_lon: f64) -> Time<UTC> {
         let (y, m, d, _) = time.year_month_day();
 
         let frac_of_earth = -geodetic_lon.to_degrees().rem_euclid(360.0) / 360.0;
-        Time::<UTC>::from_year_month_day(y.into(), m, d, 0.5 + frac_of_earth).jd
+        Time::<UTC>::from_year_month_day(y.into(), m, d, 0.5 + frac_of_earth)
     };
-    let mut noon = noon - equation_of_time(Time::<UTC>::new(noon));
-    while noon <= time.jd {
+    let mut noon = noon - equation_of_time(noon);
+    while noon <= time {
         noon += 1.0;
     }
 
-    while noon > time.jd + 1.0 {
+    while noon > time + 1.0 {
         noon -= 1.0;
     }
-    Time::<UTC>::new(noon)
+    noon
 }
 
 /// Table II of the paper cited on [`earth_nutation`], the IAU 2000B series.

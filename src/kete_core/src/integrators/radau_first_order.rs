@@ -237,17 +237,9 @@ where
             h0.copysign((integrator.final_time - integrator.cur_time).elapsed)
         };
 
-        // Relative tolerance scaled by the JD magnitude. An absolute tolerance finer
-        // than the ULP of `cur_time.jd` (about 5.5e-10 at JD ~2.5e6) could never be
-        // satisfied and the loop would not terminate.
-        let convergence_tol = {
-            let scale = integrator
-                .cur_time
-                .jd
-                .abs()
-                .max(integrator.final_time.jd.abs());
-            (scale * 1e-13).max(1e-12)
-        };
+        // The last step is sized to land on `final_time`, which `Time` resolves to
+        // about 1e-16 day at any epoch, so the loop ends within this tolerance of it.
+        let convergence_tol = 1e-12;
 
         let mut step_failures = 0;
         loop {
@@ -361,7 +353,7 @@ where
                 self.eval_scratch.set_column(
                     0,
                     &(self.func)(
-                        (self.cur_time.jd + gauss_radau_frac * step_size).into(),
+                        self.cur_time + gauss_radau_frac * step_size,
                         &self.state_scratch,
                         &mut self.metadata,
                         false,
@@ -428,9 +420,9 @@ where
         });
 
         let y_t = step_size - self.comp_time;
-        let t_t = self.cur_time.jd + y_t;
-        self.comp_time = (t_t - self.cur_time.jd) - y_t;
-        self.cur_time.jd = t_t;
+        let t_t = self.cur_time + y_t;
+        self.comp_time = (t_t - self.cur_time).elapsed - y_t;
+        self.cur_time = t_t;
 
         self.cur_state_der = (self.func)(self.cur_time, &self.cur_state, &mut self.metadata, true)?;
         self.predictor.accept(step_size, &self.cur_b);
@@ -490,7 +482,7 @@ mod tests {
         _exact: bool,
     ) -> KeteResult<Vector6<f64>> {
         meta.0 += 1;
-        let truth = (RATE_TEST * time.jd).exp();
+        let truth = (RATE_TEST * time.jd()).exp();
         let mut out = Vector6::zeros();
         out[0] = RATE_TEST * truth + FEEDBACK * (state[0] - truth);
         Ok(out)
@@ -539,7 +531,7 @@ mod tests {
     ) -> KeteResult<Vector6<f64>> {
         meta.0 += 1;
         let mut out = Vector6::zeros();
-        out[0] = RATE_TEST * (RATE_TEST * time.jd).exp();
+        out[0] = RATE_TEST * (RATE_TEST * time.jd()).exp();
         Ok(out)
     }
 

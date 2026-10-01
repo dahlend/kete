@@ -98,7 +98,7 @@ where
     /// Are all values finite.
     #[must_use]
     pub fn is_finite(&self) -> bool {
-        self.pos.is_finite() & self.vel.is_finite() & self.epoch.jd.is_finite()
+        self.pos.is_finite() & self.vel.is_finite() & self.epoch.jd().is_finite()
     }
 
     /// Convert the state into a new frame, preserving the center type.
@@ -203,7 +203,7 @@ impl<T: InertialFrame> State<T, DynCenter> {
     /// - Center id of the state does not match the ID in the other state.
     #[inline(always)]
     pub fn try_change_center(&mut self, mut state: Self) -> KeteResult<()> {
-        if self.epoch != state.epoch {
+        if !self.epoch.same_instant(&state.epoch) {
             return Err(Error::ValueError(
                 "States don't have matching epochs.".into(),
             ));

@@ -295,7 +295,7 @@ where
         let mut vel_est = &self.cur_state_der + &dvel;
 
         for k in 1..n_sub {
-            let t_k = (self.cur_time.jd + k as f64 * h).into();
+            let t_k = self.cur_time + k as f64 * h;
             let f_k = (self.func)(t_k, &y_cur, &vel_est, &mut self.metadata, false)?;
 
             // delta_{k+1} = delta_k + h^2 * f_k
@@ -318,7 +318,7 @@ where
         }
 
         // Final function evaluation at y_n for Gragg smoothing.
-        let t_n = (self.cur_time.jd + h_total).into();
+        let t_n = self.cur_time + h_total;
         let f_n = (self.func)(t_n, &y_cur, &vel_est, &mut self.metadata, false)?;
 
         // Gragg-smoothed increments:
@@ -448,9 +448,9 @@ where
                     }
 
                     let y_t = step_size - self.comp_time;
-                    let t_t = self.cur_time.jd + y_t;
-                    self.comp_time = (t_t - self.cur_time.jd) - y_t;
-                    self.cur_time.jd = t_t;
+                    let t_t = self.cur_time + y_t;
+                    self.comp_time = (t_t - self.cur_time).elapsed - y_t;
+                    self.cur_time = t_t;
 
                     // Re-evaluate acceleration at the accepted state.
                     self.cur_state_der_der = (self.func)(

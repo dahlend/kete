@@ -146,7 +146,7 @@ impl PyState {
     /// JD of the object's state in TDB scaled time.
     #[getter]
     pub fn jd(&self) -> f64 {
-        self.raw.epoch.jd
+        self.raw.epoch.jd()
     }
 
     /// Position of the object in AU with respect to the central object.
@@ -172,7 +172,7 @@ impl PyState {
     pub fn is_finite(&self) -> bool {
         self.raw.pos.norm().is_finite()
             && self.raw.vel.norm().is_finite()
-            && self.raw.epoch.jd.is_finite()
+            && self.raw.epoch.jd().is_finite()
     }
 
     /// Central ID of the object used as reference for the coordinate frame.

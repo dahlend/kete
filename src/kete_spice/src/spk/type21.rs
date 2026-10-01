@@ -15,6 +15,7 @@ use super::type1::difference_orders;
 use kete_core::constants::AU_KM;
 use kete_core::errors::Error;
 use kete_core::prelude::KeteResult;
+use kete_core::time::{TDB, Time};
 
 /// Extended Modified Difference Arrays
 ///
@@ -123,7 +124,8 @@ impl SpkSegmentType21 {
         clippy::cast_sign_loss,
         reason = "This is correct as long as the file is correct."
     )]
-    pub(crate) fn try_get_pos_vel(&self, jds: f64) -> KeteResult<([f64; 3], [f64; 3])> {
+    pub(crate) fn try_get_pos_vel(&self, time: Time<TDB>) -> KeteResult<([f64; 3], [f64; 3])> {
+        let jds = time.j2000_seconds();
         // Records are laid out as so:
         //
         // Size      Description
@@ -161,7 +163,7 @@ impl SpkSegmentType21 {
         )?;
 
         // in the spice code ref_time is in seconds from j2000
-        let dt = jds - ref_time;
+        let dt = time.j2000_seconds_minus(ref_time);
 
         let mut fc = [0.0; MAX_DIM];
         let mut wc = [0.0; MAX_DIM];
@@ -315,10 +317,12 @@ mod tests {
     #[test]
     fn type21_evaluates_and_clamps_to_the_last_record() {
         let seg = segment(&[0.0, 100.0], 200.0);
-        let (pos, vel) = seg.try_get_pos_vel(90.0).unwrap();
+        let (pos, vel) = seg.try_get_pos_vel(Time::from_j2000_seconds(90.0)).unwrap();
         assert!((pos[0] * AU_KM - 990.0).abs() < 1e-9);
         assert!((vel[0] * AU_KM / 86400.0 - 1.0).abs() < 1e-12);
-        let (pos, _) = seg.try_get_pos_vel(150.0).unwrap();
+        let (pos, _) = seg
+            .try_get_pos_vel(Time::from_j2000_seconds(150.0))
+            .unwrap();
         assert!((pos[0] * AU_KM - 1050.0).abs() < 1e-9);
     }
 

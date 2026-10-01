@@ -1,5 +1,4 @@
 use crate::daf::{DAFType, DafArray};
-use crate::jd_to_spice_jd;
 use kete_core::errors::Error;
 use kete_core::time::{TDB, Time};
 
@@ -34,7 +33,7 @@ impl SpkArray {
     /// Is the specified JD within the range of this array.
     #[must_use]
     pub fn contains(&self, jd: Time<TDB>) -> bool {
-        let jds = jd_to_spice_jd(jd);
+        let jds = jd.j2000_seconds();
         (jds >= self.jds_start) && (jds <= self.jds_end)
     }
 

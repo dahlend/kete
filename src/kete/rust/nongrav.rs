@@ -21,6 +21,7 @@ use kete_flux::diam_from_h_mag_albedo;
 use pyo3::{PyResult, exceptions::PyValueError, pyclass, pyfunction, pymethods};
 
 use crate::frame::PyFrames;
+use crate::time::PyTime;
 use crate::vector::VectorLike;
 
 /// Radiation-pressure coefficient in kg/m^2, the constant in the
@@ -385,7 +386,8 @@ impl PyNonGravModel {
     /// Parameters
     /// ==========
     /// t0:
-    ///     Reference epoch of the ramp and of the phase, JD (TDB).
+    ///     Reference epoch of the ramp and of the phase, a :class:`~kete.Time` or a
+    ///     JD (TDB).
     /// a1:
     ///     Radial thrust at ``t0`` in AU / day^2, or NaN to fit it.
     /// a2:
@@ -412,7 +414,7 @@ impl PyNonGravModel {
         reason = "one keyword argument per model parameter, as in the other factories"
     )]
     pub fn new_ramped_thrust(
-        t0: f64,
+        t0: PyTime,
         a1: f64,
         a2: f64,
         a3: f64,
@@ -425,7 +427,7 @@ impl PyNonGravModel {
         c2: f64,
         c3: f64,
     ) -> PyResult<Self> {
-        let force = RampedThrustNonGrav::new(t0, period)?;
+        let force = RampedThrustNonGrav::new(t0.into(), period)?;
         let (b, c) = ([b1, b2, b3], [c1, c2, c3]);
         if period.is_none() && b.iter().chain(&c).any(|v| !v.is_nan()) {
             Err(PyValueError::new_err(
@@ -709,7 +711,7 @@ impl PyNonGravModel {
                 constant("spin_pole_z", raw[2]);
             }
             NonGravKind::RampedThrust(ref f) => {
-                constant("t0", f.t0);
+                constant("t0", f.t0.jd());
                 if let Some(period) = f.period {
                     constant("period", period);
                 }
@@ -772,7 +774,7 @@ impl PyNonGravModel {
                 };
                 format!(
                     "kete.propagation.NonGravModel.new_ramped_thrust(t0={:?}, a1={}, a2={}, a3={}, rate={}{turning})",
-                    c.t0,
+                    c.t0.jd(),
                     f(v[0]),
                     f(v[1]),
                     f(v[2]),

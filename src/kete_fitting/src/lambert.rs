@@ -371,7 +371,7 @@ mod tests {
             center: SunCenter,
         };
 
-        let target: Time<TDB> = (epoch.jd + dt_days).into();
+        let target: Time<TDB> = epoch + dt_days;
         let s2 = propagate_two_body(&s1, target).expect("two-body propagation failed");
 
         let solutions = lambert(&r1, &s2.pos, dt_days, true, 0).expect("Lambert solver failed");
@@ -474,7 +474,7 @@ mod tests {
             vel: v1,
             center: SunCenter,
         };
-        let target: Time<TDB> = (epoch.jd + 30.0).into();
+        let target: Time<TDB> = epoch + 30.0;
         let s2 = propagate_two_body(&s1, target).expect("propagation failed");
 
         let solutions = lambert(&r1, &s2.pos, 30.0, false, 0).expect("Lambert solver failed");
@@ -585,7 +585,7 @@ mod tests {
         };
         // Transfer > 1 full period (~365 days).
         let dt_days = 400.0;
-        let target: Time<TDB> = (epoch.jd + dt_days).into();
+        let target: Time<TDB> = epoch + dt_days;
         let s2 = propagate_two_body(&s1, target).expect("propagation failed");
 
         let solutions = lambert(&r1, &s2.pos, dt_days, true, 2).expect("multi_rev failed");

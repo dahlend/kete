@@ -480,7 +480,7 @@ impl PyUncertainState {
     /// Reference epoch as a :class:`~kete.Time` (shortcut for ``self.state.epoch``).
     #[getter]
     fn epoch(&self) -> PyTime {
-        self.state.elements.epoch.jd.into()
+        self.state.elements.epoch.into()
     }
 
     /// Departure from linearity this component is carrying, in sigma of its own
@@ -666,7 +666,9 @@ impl PyUncertainState {
         let n = self.state.cov_matrix.nrows();
         format!(
             "UncertainState(desig={}, epoch={:.6}, params={})",
-            self.state.elements.desig, self.state.elements.epoch.jd, n,
+            self.state.elements.desig,
+            self.state.elements.epoch.jd(),
+            n,
         )
     }
 }

@@ -41,7 +41,7 @@ pub mod prelude {
 }
 
 use kete_core::errors::{Error, KeteResult};
-use kete_core::time::{TDB, Time};
+
 use std::io::Read;
 
 /// Load kernel files of any supported type into their singletons.
@@ -140,67 +140,9 @@ pub(crate) fn prepend_by_precedence<S>(
     let _ = existing.splice(0..0, block);
 }
 
-/// Convert seconds from J2000 into JD.
-///
-/// # Arguments
-/// * `jds_sec` - The number of TDB seconds from J2000.
-///
-/// # Returns
-/// The Julian Date (TDB).
-#[inline(always)]
-fn spice_jd_to_jd(jds_sec: f64) -> Time<TDB> {
-    // 86400.0 = 60 * 60 * 24
-    (jds_sec / 86400.0 + 2451545.0).into()
-}
-
-/// Convert TDB JD to seconds from J2000.
-#[inline(always)]
-fn jd_to_spice_jd(epoch: Time<TDB>) -> f64 {
-    // 86400.0 = 60 * 60 * 24
-    (epoch.jd - 2451545.0) * 86400.0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_spice_jd_to_jd() {
-        {
-            let jd_sec = 0.0;
-            let jd = spice_jd_to_jd(jd_sec);
-            assert_eq!(jd, 2451545.0.into());
-        }
-        {
-            // 1 day in seconds
-            let jd_sec = 86400.0;
-            let jd = spice_jd_to_jd(jd_sec);
-            assert_eq!(jd, 2451546.0.into());
-        }
-    }
-
-    #[test]
-    fn test_jd_to_spice_jd() {
-        {
-            let jd = 2451545.0.into();
-            let jd_sec = jd_to_spice_jd(jd);
-            assert_eq!(jd_sec, 0.0);
-        }
-        {
-            // 1 day after J2000
-            let jd = 2451546.0.into();
-            let jd_sec = jd_to_spice_jd(jd);
-            assert_eq!(jd_sec, 86400.0);
-        }
-    }
-
-    #[test]
-    fn test_spice_jd_to_jd_and_back() {
-        let jd_sec = 1.0;
-        let jd = spice_jd_to_jd(jd_sec);
-        let jd_sec_back = jd_to_spice_jd(jd);
-        assert!((jd_sec - jd_sec_back).abs() < 1e-5);
-    }
 
     /// Return the labels of (key, label) pairs. A label records the file and
     /// the position that a segment comes from.

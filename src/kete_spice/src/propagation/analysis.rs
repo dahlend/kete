@@ -40,7 +40,7 @@ pub fn closest_approach(
         ));
     }
 
-    let span = jd_end.jd - jd_start.jd;
+    let span = (jd_end - jd_start).elapsed;
     if span <= 0.0 {
         return Err(Error::ValueError("jd_end must be after jd_start".into()));
     }
@@ -69,7 +69,7 @@ pub fn closest_approach(
     let mut prev_b = cur_b.clone();
 
     for i in 1..=n_samples {
-        let t: Time<TDB> = (jd_start.jd + i as f64 * dt).into();
+        let t = jd_start + i as f64 * dt;
         let old_a = cur_a.clone();
         let old_b = cur_b.clone();
         cur_a = state_at_time(&cur_a, t, &spk, include_extended)?;
@@ -83,13 +83,12 @@ pub fn closest_approach(
         }
     }
 
-    // Bracket the coarse minimum and refine with golden-section search.
-    // Use offsets from jd_start to avoid precision loss on large JD values.
+    // Bracket the coarse minimum and refine with golden-section search, on offsets
+    // in days from jd_start.
     let lo_idx = best_idx.saturating_sub(1);
     let hi_idx = (best_idx + 1).min(n_samples);
-    let base = jd_start.jd;
-    let lo_off = jd_start.jd + lo_idx as f64 * dt - base;
-    let hi_off = jd_start.jd + hi_idx as f64 * dt - base;
+    let lo_off = lo_idx as f64 * dt;
+    let hi_off = hi_idx as f64 * dt;
     let tol = 1e-10; // ~0.01 ms
 
     let ref_a = &prev_a;
@@ -99,7 +98,7 @@ pub fn closest_approach(
         if inner_err.is_some() {
             return f64::NAN;
         }
-        let t: Time<TDB> = (base + off).into();
+        let t = jd_start + off;
         let (sa, sb) = match (
             state_at_time(ref_a, t, &spk, include_extended),
             state_at_time(ref_b, t, &spk, include_extended),
@@ -120,7 +119,7 @@ pub fn closest_approach(
             })
         })?;
 
-    let final_jd: Time<TDB> = (base + best_off).into();
+    let final_jd = jd_start + best_off;
     let sa = state_at_time(ref_a, final_jd, &spk, include_extended)?;
     let sb = state_at_time(ref_b, final_jd, &spk, include_extended)?;
     Ok((

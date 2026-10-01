@@ -29,7 +29,6 @@
 
 use super::PckArray;
 use super::type2::PckSegmentType2;
-use crate::jd_to_spice_jd;
 use kete_core::errors::Error;
 use kete_core::frames::NonInertialFrame;
 use kete_core::prelude::KeteResult;
@@ -86,7 +85,7 @@ impl PckSegment {
             ))?;
         }
 
-        let jds = jd_to_spice_jd(epoch);
+        let jds = epoch.j2000_seconds();
 
         if jds < arr_ref.jds_start || jds > arr_ref.jds_end {
             Err(Error::Bounds("JD is not present in this record.".into()))?;
@@ -99,7 +98,7 @@ impl PckSegment {
         }
 
         match &self {
-            Self::Type2(v) => v.try_get_orientation(jds),
+            Self::Type2(v) => v.try_get_orientation(epoch),
         }
     }
 }

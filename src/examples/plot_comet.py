@@ -106,7 +106,7 @@ def plot_syndyne(wcs, state, fov, beta, back_days=90, day_step=1, **kwargs):
     # working backward, calculate the position of the comet at each time step
     dust_state = kete.propagate_n_body(state, fov.jd - back_days)
     dust_states = []
-    for jd in np.arange(dust_state.jd, fov.jd, day_step):
+    for jd in np.arange(dust_state.jd, fov.jd.jd, day_step):
         dust_state = kete.propagate_n_body(dust_state, jd)
         dust_states.append(dust_state)
 

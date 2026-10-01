@@ -4,11 +4,11 @@
 
 use super::SpkArray;
 use crate::interpolation::lagrange_interpolation;
-use crate::jd_to_spice_jd;
 use kete_core::constants::AU_KM;
 use kete_core::errors::Error;
 use kete_core::frames::InertialFrame;
 use kete_core::prelude::{Desig, KeteResult, State};
+use kete_core::time::{TDB, Time};
 
 /// Lagrange Interpolation (Uneven Time Steps)
 ///
@@ -141,7 +141,7 @@ impl SpkSegmentType9 {
                 let pos: [f64; 3] = s.pos.into();
                 let vel: [f64; 3] = s.vel.into();
                 (
-                    jd_to_spice_jd(s.epoch),
+                    s.epoch.j2000_seconds(),
                     [pos[0] * AU_KM, pos[1] * AU_KM, pos[2] * AU_KM],
                     [
                         vel[0] * AU_KM / 86400.0,
@@ -183,10 +183,12 @@ impl SpkSegmentType9 {
     }
 
     #[inline(always)]
-    pub(crate) fn try_get_pos_vel(&self, jds: f64) -> ([f64; 3], [f64; 3]) {
+    pub(crate) fn try_get_pos_vel(&self, time: Time<TDB>) -> ([f64; 3], [f64; 3]) {
+        let jds = time.j2000_seconds();
         let times = self.get_times();
         let window_size = self.poly_degree + 1;
         let start_idx = window_start(times, jds, window_size);
+        let offset = time.j2000_seconds_minus(times[start_idx]);
 
         let mut pos = [0.0; 3];
         let mut vel = [0.0; 3];
@@ -197,9 +199,10 @@ impl SpkSegmentType9 {
             let mut dp: Box<[f64]> = (0..window_size)
                 .map(|i| self.get_record(i + start_idx).vel[idx])
                 .collect();
-            let p = lagrange_interpolation(&times[start_idx..start_idx + window_size], &mut p, jds);
+            let p =
+                lagrange_interpolation(&times[start_idx..start_idx + window_size], &mut p, offset);
             let v =
-                lagrange_interpolation(&times[start_idx..start_idx + window_size], &mut dp, jds);
+                lagrange_interpolation(&times[start_idx..start_idx + window_size], &mut dp, offset);
             pos[idx] = p / AU_KM;
             vel[idx] = v / AU_KM * 86400.;
         }

@@ -454,7 +454,7 @@ pub fn analytic_2_body_delta(
 /// - Input contains non-finite values
 /// - Hitting recursion depth limits.
 pub fn analytic_2_body(
-    time: Duration<TDB>,
+    time: Duration,
     pos: &Vector3<f64>,
     vel: &Vector3<f64>,
     depth: Option<usize>,
@@ -489,7 +489,7 @@ pub fn analytic_2_body(
 /// # Errors
 /// Same failure modes as [`analytic_2_body`].
 pub fn analytic_2_body_stm(
-    time: Duration<TDB>,
+    time: Duration,
     pos: &Vector3<f64>,
     vel: &Vector3<f64>,
     depth: Option<usize>,

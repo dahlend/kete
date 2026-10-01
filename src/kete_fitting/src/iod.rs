@@ -100,8 +100,8 @@ pub fn initial_orbit_determination(
     let mut sorted = obs.to_vec();
     sorted.sort_by(|a, b| {
         a.epoch()
-            .jd
-            .partial_cmp(&b.epoch().jd)
+            .jd()
+            .partial_cmp(&b.epoch().jd())
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     let sorted = sorted;
@@ -161,9 +161,8 @@ pub fn initial_orbit_determination(
     // does not dominate the residual.  Observation density varies widely
     // across objects, so a count cap is also enforced to keep dense modern
     // datasets from swamping the scoring with short-arc recent data.
-    let last_jd = sorted[sorted.len() - 1].epoch().jd;
-    let window_start_jd = last_jd - RESCORE_WINDOW_DAYS;
-    let time_idx = sorted.partition_point(|o| o.epoch().jd < window_start_jd);
+    let window_start = sorted[sorted.len() - 1].epoch() - RESCORE_WINDOW_DAYS;
+    let time_idx = sorted.partition_point(|o| o.epoch() < window_start);
     let count_idx = sorted.len().saturating_sub(RESCORE_MAX_OBS);
     // Take the more recent start so both caps are enforced.
     let window_idx = time_idx.max(count_idx);
@@ -219,7 +218,7 @@ pub fn initial_orbit_determination(
     let mut propagated: Vec<(f64, State<Equatorial>)> = Vec::with_capacity(results.len());
     let spk = kete_spice::prelude::LOADED_SPK.try_read().ok();
     for (score, state) in results {
-        if (state.epoch.jd - ref_epoch.jd).abs() < 1e-12 {
+        if (state.epoch - ref_epoch).elapsed.abs() < 1e-12 {
             propagated.push((score, state));
         } else if let Some(ref spk) = spk
             && let Ok(sun_state) = spk.try_to_sun(state.clone())
@@ -348,7 +347,7 @@ fn select_iod_apparitions(
     let mut apparitions: Vec<(usize, usize)> = Vec::new();
     let mut start = 0;
     for i in 1..n {
-        if sorted_obs[i].epoch().jd - sorted_obs[i - 1].epoch().jd > GAP_THRESHOLD {
+        if (sorted_obs[i].epoch() - sorted_obs[i - 1].epoch()).elapsed > GAP_THRESHOLD {
             apparitions.push((start, i));
             start = i;
         }
@@ -356,7 +355,7 @@ fn select_iod_apparitions(
     apparitions.push((start, n));
 
     let arc_days =
-        |&(s, e): &(usize, usize)| sorted_obs[e - 1].epoch().jd - sorted_obs[s].epoch().jd;
+        |&(s, e): &(usize, usize)| (sorted_obs[e - 1].epoch() - sorted_obs[s].epoch()).elapsed;
 
     // Single apparition: just cap-and-go.
     if apparitions.len() == 1 {
@@ -445,7 +444,7 @@ fn best_pair_near_baseline(
     let mut j = 1_usize;
     for i in 0..n {
         // Advance j until dt(i,j) >= target (bracket from below).
-        while j < n && (sorted_obs[j].epoch().jd - sorted_obs[i].epoch().jd) < target_days {
+        while j < n && (sorted_obs[j].epoch() - sorted_obs[i].epoch()).elapsed < target_days {
             j += 1;
         }
         // Check j-1 and j (they bracket the target baseline).
@@ -453,7 +452,7 @@ fn best_pair_near_baseline(
             if candidate <= i || candidate >= n {
                 continue;
             }
-            let dt = sorted_obs[candidate].epoch().jd - sorted_obs[i].epoch().jd;
+            let dt = (sorted_obs[candidate].epoch() - sorted_obs[i].epoch()).elapsed;
             if dt < 1e-6 {
                 continue;
             }
@@ -486,9 +485,8 @@ fn select_distributed_obs(sorted_obs: &[AstrometricObservation], n_max: usize) -
         return vec![0];
     }
     // Invariant: n > n_max >= 2.
-    let t_start = sorted_obs[0].epoch().jd;
-    let t_end = sorted_obs[n - 1].epoch().jd;
-    let t_span = t_end - t_start;
+    let t_start = sorted_obs[0].epoch();
+    let t_span = (sorted_obs[n - 1].epoch() - t_start).elapsed;
     if t_span < 1e-12 {
         return (0..n_max).collect();
     }
@@ -497,7 +495,7 @@ fn select_distributed_obs(sorted_obs: &[AstrometricObservation], n_max: usize) -
         let frac = k as f64 / (n_max - 1) as f64;
         let t_target = t_start + t_span * frac;
         let idx = sorted_obs
-            .partition_point(|o| o.epoch().jd < t_target)
+            .partition_point(|o| o.epoch() < t_target)
             .min(n - 1);
         if selected.last() != Some(&idx) {
             selected.push(idx);
@@ -522,7 +520,7 @@ fn run_ranging_for_pair(
     let los_a = Vector::<Equatorial>::from_ra_dec(ra_a, dec_a);
     let los_b = Vector::<Equatorial>::from_ra_dec(ra_b, dec_b);
 
-    let dt = obs_b.epoch.jd - obs_a.epoch.jd;
+    let dt = (obs_b.epoch - obs_a.epoch).elapsed;
     if dt.abs() < 1e-6 {
         return Err(Error::ValueError(
             "IOD: selected pair too close in time".into(),
@@ -721,8 +719,8 @@ fn gauss_iod(
     let l3 = Vector::<Equatorial>::from_ra_dec(ra3, dec3);
 
     // Time intervals in days (Gauss uses tau = k * dt where k = sqrt(mu)).
-    let tau1 = GMS_SQRT * (o1.epoch.jd - o2.epoch.jd);
-    let tau3 = GMS_SQRT * (o3.epoch.jd - o2.epoch.jd);
+    let tau1 = GMS_SQRT * (o1.epoch - o2.epoch).elapsed;
+    let tau3 = GMS_SQRT * (o3.epoch - o2.epoch).elapsed;
     let tau = tau3 - tau1;
 
     // Cross products for the D matrix.
@@ -1843,9 +1841,9 @@ mod tests {
         let last_jd = epochs[epochs.len() - 1];
         for (_, c) in &results {
             assert!(
-                (c.epoch.jd - last_jd).abs() < 1e-10,
+                (c.epoch.jd() - last_jd).abs() < 1e-10,
                 "Epoch should be last obs {last_jd}, got {}",
-                c.epoch.jd
+                c.epoch.jd()
             );
         }
     }

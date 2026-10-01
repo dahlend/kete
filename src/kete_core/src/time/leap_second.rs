@@ -38,7 +38,7 @@ use crate::prelude::{Error, KeteResult};
 /// This is parsed from the contents of the `leap_second.dat` file.
 #[derive(Debug)]
 struct LeapSecond {
-    ///  MJD
+    /// UTC MJD at which `tai_m_utc` takes effect.
     pub mjd: f64,
 
     /// Offset from TAI time in fractions of day
@@ -77,20 +77,24 @@ static LEAP_SECONDS: std::sync::LazyLock<Vec<LeapSecond>> = std::sync::LazyLock:
     codes
 });
 
-/// Given an MJD return the TAI - UTC offset for that epoch in days.
+/// TAI - UTC in days at the TAI MJD `mjd`.
 ///
-/// TAI - UTC = offset
-/// TAI - offset = UTC
-/// TAI = offset + UTC
-///
-/// # Arguments
-///
-/// * `MJD` - MJD in TAI scaled time.
-pub(crate) fn tai_to_utc_offset(mjd: f64) -> f64 {
-    match LEAP_SECONDS.binary_search_by(|probe| probe.mjd.total_cmp(&mjd)) {
-        Ok(idx) => LEAP_SECONDS[idx].tai_m_utc,
-        Err(0) => 0.0,
-        Err(idx) => LEAP_SECONDS[idx - 1].tai_m_utc,
+/// The file lists the UTC date each offset takes effect, so in TAI an offset starts
+/// at that date plus the offset itself. Before the first entry, 1972, the offset is
+/// taken as zero.
+pub(crate) fn tai_minus_utc_at_tai(mjd: f64) -> f64 {
+    match LEAP_SECONDS.partition_point(|probe| probe.mjd + probe.tai_m_utc <= mjd) {
+        0 => 0.0,
+        idx => LEAP_SECONDS[idx - 1].tai_m_utc,
+    }
+}
+
+/// TAI - UTC in days at the UTC MJD `mjd`, read directly from the dates in the file.
+/// Before the first entry, 1972, the offset is taken as zero.
+pub(crate) fn tai_minus_utc_at_utc(mjd: f64) -> f64 {
+    match LEAP_SECONDS.partition_point(|probe| probe.mjd <= mjd) {
+        0 => 0.0,
+        idx => LEAP_SECONDS[idx - 1].tai_m_utc,
     }
 }
 
@@ -114,11 +118,21 @@ mod tests {
 
     #[test]
     fn test_lookup() {
-        assert_eq!(tai_to_utc_offset(0.0), 0.0);
-        assert_eq!(tai_to_utc_offset(41317.0), 10.0 / 86400.0);
-        assert_eq!(tai_to_utc_offset(41317.1), 10.0 / 86400.0);
-        assert_eq!(tai_to_utc_offset(57753.9), 36.0 / 86400.0);
-        assert_eq!(tai_to_utc_offset(57754.0), 37.0 / 86400.0);
-        assert_eq!(tai_to_utc_offset(57755.0), 37.0 / 86400.0);
+        assert_eq!(tai_minus_utc_at_tai(0.0), 0.0);
+        assert_eq!(tai_minus_utc_at_tai(41317.1), 10.0 / 86400.0);
+        assert_eq!(tai_minus_utc_at_tai(57753.9), 36.0 / 86400.0);
+        // 2017-01-01 00:00:00 UTC is 00:00:37 TAI; the second before it is still 36.
+        assert_eq!(
+            tai_minus_utc_at_tai(57754.0 + 36.0 / 86400.0),
+            36.0 / 86400.0
+        );
+        assert_eq!(
+            tai_minus_utc_at_tai(57754.0 + 37.0 / 86400.0),
+            37.0 / 86400.0
+        );
+        assert_eq!(tai_minus_utc_at_tai(57755.0), 37.0 / 86400.0);
+        assert_eq!(tai_minus_utc_at_utc(57753.99), 36.0 / 86400.0);
+        assert_eq!(tai_minus_utc_at_utc(57754.0), 37.0 / 86400.0);
+        assert_eq!(tai_minus_utc_at_utc(41316.9), 0.0);
     }
 }

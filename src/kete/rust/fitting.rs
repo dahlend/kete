@@ -468,7 +468,7 @@ impl PyObservation {
 
     /// String representation.
     fn __repr__(&self) -> String {
-        let epoch = self.obs.epoch().jd;
+        let epoch = self.obs.epoch().jd();
         match &self.obs {
             AstrometricObservation::Optical {
                 ra,
@@ -642,7 +642,7 @@ impl PyOrbitFit {
             n_included,
             n_total,
             self.inner.converged,
-            self.inner.uncertain_state.elements.epoch.jd,
+            self.inner.uncertain_state.elements.epoch.jd(),
         )
     }
 }
@@ -856,7 +856,7 @@ impl PyOrbitSamples {
     /// Common reference epoch (JD, TDB).
     #[getter]
     fn epoch(&self) -> f64 {
-        self.0.epoch
+        self.0.epoch.jd()
     }
 
     /// Designator of the fitted object.
@@ -876,8 +876,7 @@ impl PyOrbitSamples {
         let epoch_jd = self.0.epoch;
         let desig = self.0.desig.clone();
         let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-        let sun_state: State<Equatorial> =
-            spk.try_get_state_with_center(10, Time::new(epoch_jd), 0)?;
+        let sun_state: State<Equatorial> = spk.try_get_state_with_center(10, epoch_jd, 0)?;
         self.0
             .draws
             .iter()
@@ -961,7 +960,8 @@ impl PyOrbitSamples {
         let n_div = self.0.divergent.iter().filter(|&&d| d).count();
         format!(
             "OrbitSamples(desig={}, draws={n}, seeds={n_seeds}, divergent={n_div}, epoch={:.6})",
-            self.0.desig, self.0.epoch
+            self.0.desig,
+            self.0.epoch.jd()
         )
     }
 }
@@ -1099,7 +1099,7 @@ impl PyRangingSamples {
     /// Epoch of every draw (JD TDB), the attributable reference epoch.
     #[getter]
     fn epoch(&self) -> f64 {
-        self.0.epoch
+        self.0.epoch.jd()
     }
 
     /// Sampled orbits as :class:`~kete.State` objects (Sun-centered Ecliptic).
@@ -1107,8 +1107,7 @@ impl PyRangingSamples {
     fn draws(&self) -> PyResult<Vec<PyState>> {
         let epoch_jd = self.0.epoch;
         let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-        let sun_state: State<Equatorial> =
-            spk.try_get_state_with_center(10, Time::new(epoch_jd), 0)?;
+        let sun_state: State<Equatorial> = spk.try_get_state_with_center(10, epoch_jd, 0)?;
         self.0
             .draws
             .iter()
@@ -1174,7 +1173,7 @@ impl PyRangingSamples {
             "RangingSamples(draws={}, ess={:.1}, epoch={:.6})",
             self.0.draws.len(),
             self.0.effective_sample_size,
-            self.0.epoch,
+            self.0.epoch.jd(),
         )
     }
 }

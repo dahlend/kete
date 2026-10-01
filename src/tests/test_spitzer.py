@@ -111,7 +111,7 @@ def test_spitzer_frame_jd():
         Vector.from_ra_dec(10.0, 20.1),
     ]
     fov = kete.SpitzerFrame(corners, observer, "ivo://test/obs3", "IRAC3", "", 0.0)
-    assert abs(fov.jd - jd) < 1e-6
+    assert abs(fov.jd.jd - jd) < 1e-6
 
 
 def test_spitzer_frame_repr():

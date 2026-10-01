@@ -96,7 +96,7 @@ impl SimultaneousStates {
             return Err(Error::ValueError("Center IDs do not match expected".into()));
         }
 
-        if fov.is_none() && states.iter().any(|s| s.epoch != jd) {
+        if fov.is_none() && states.iter().any(|s| !s.epoch.same_instant(&jd)) {
             return Err(Error::ValueError(
                 "Epoch JDs do not match expected, this is only allowed if there is an associated FOV."
                     .into(),

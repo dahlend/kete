@@ -39,8 +39,8 @@ pub fn rotations_to_equatorial_full(
             // then chained with this frame.
             let (time, ref_frame) = LOADED_CK
                 .try_read()?
-                .try_get_frame(frame.time.jd, frame.reference_frame_id)?;
-            if (time.jd - frame.time.jd).abs() > 1e-8 {
+                .try_get_frame(frame.time, frame.reference_frame_id)?;
+            if (time - frame.time).elapsed.abs() > 1e-8 {
                 return Err(Error::Bounds(format!(
                     "Reference frame ID {} has no CK data at the requested time.",
                     frame.reference_frame_id

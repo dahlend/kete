@@ -189,7 +189,7 @@ impl ZtfField {
                 || ccd.fid != fid
                 || ccd.filtercode != filtercode
                 || ccd.imgtypecode != imgtypecode
-                || ccd.observer().epoch != observer.epoch
+                || !ccd.observer().epoch.same_instant(&observer.epoch)
             {
                 Err(Error::ValueError(
                     "All ZtfCcdQuads must have matching values except CCD ID etc.".into(),

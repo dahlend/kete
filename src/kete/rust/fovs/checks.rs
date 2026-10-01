@@ -62,7 +62,7 @@ pub fn fov_checks_py(
         }
     };
 
-    fovs.sort_by(|a, b| a.jd().jd.total_cmp(&b.jd().jd));
+    fovs.sort_by(|a, b| a.jd().jd().total_cmp(&b.jd().jd()));
 
     // break the fovs into groups based upon the dt_limit
     let mut fov_chunks: Vec<Vec<FOV>> = Vec::new();
@@ -89,7 +89,7 @@ pub fn fov_checks_py(
     // Epoch that the states sit at, and the reference epoch of the last big step. Note
     // that `big_jd` is when the last big step was triggered, not the epoch the big step
     // states are at, which is `jd` at the moment that step is taken.
-    let mut jd = pop.epoch().jd;
+    let mut jd = pop.epoch().jd();
     let mut big_jd = jd;
 
     // The states are stepped forward often, in steps of order dt_limit. The big step
@@ -122,8 +122,8 @@ pub fn fov_checks_py(
         };
 
     for fovs in fov_chunks {
-        let jd_mean = (fovs.last().unwrap().observer().epoch.jd
-            + fovs.first().unwrap().observer().epoch.jd)
+        let jd_mean = (fovs.last().unwrap().observer().epoch.jd()
+            + fovs.first().unwrap().observer().epoch.jd())
             / 2.0;
 
         // Take large steps which are 10x the smaller steps, this helps long term numerical stability
@@ -187,7 +187,7 @@ pub fn fov_spk_checks_py(
     obj_ids: Vec<i32>,
     mut fovs: Vec<AllowedFOV>,
 ) -> PyResult<Vec<PySimultaneousStates>> {
-    fovs.sort_by(|a, b| a.jd().jd.total_cmp(&b.jd().jd));
+    fovs.sort_by(|a, b| a.jd().jd().total_cmp(&b.jd().jd()));
 
     let visible: Vec<Vec<PySimultaneousStates>> = py.detach(|| {
         fovs.into_par_iter()
@@ -227,7 +227,7 @@ pub fn fov_static_checks_py(
     pos: Vec<VectorLike>,
     mut fovs: Vec<AllowedFOV>,
 ) -> Vec<(Vec<usize>, AllowedFOV)> {
-    fovs.sort_by(|a, b| a.jd().jd.total_cmp(&b.jd().jd));
+    fovs.sort_by(|a, b| a.jd().jd().total_cmp(&b.jd().jd()));
     let pos: Vec<_> = pos
         .into_iter()
         .map(|p| p.into_vector(crate::frame::PyFrames::Ecliptic))

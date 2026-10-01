@@ -88,7 +88,7 @@ impl std::fmt::Debug for ProbeSet {
         f.debug_struct("ProbeSet")
             .field("pairs", &self.directions.len())
             .field("alive", &self.states.iter().filter(|s| s.is_some()).count())
-            .field("epoch", &self.epoch.jd)
+            .field("epoch", &self.epoch.jd())
             .finish()
     }
 }

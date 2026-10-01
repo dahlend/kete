@@ -742,10 +742,11 @@ impl DiffuseState {
             first.free_params.len(),
         );
         for (i, c) in components.iter().enumerate().skip(1) {
-            if c.elements.epoch != epoch {
+            if !c.elements.epoch.same_instant(&epoch) {
                 return Err(Error::ValueError(format!(
                     "component {i} epoch {} does not match component 0 at {}",
-                    c.elements.epoch.jd, epoch.jd
+                    c.elements.epoch.jd(),
+                    epoch.jd()
                 )));
             }
             if c.elements.center_id != center_id {

@@ -29,11 +29,11 @@
 
 use super::PckArray;
 use crate::interpolation::{ChebyshevLayout, chebyshev_evaluate_both};
-use crate::spice_jd_to_jd;
 use crate::spk::type2::build_type2_data;
 use kete_core::errors::Error;
 use kete_core::frames::NonInertialFrame;
 use kete_core::prelude::KeteResult;
+use kete_core::time::{TDB, Time};
 
 /// Chebyshev polynomials (Euler angles only)
 ///
@@ -60,7 +60,10 @@ impl PckSegmentType2 {
     }
 
     /// Return the stored orientation, along with the rate of change of the orientation.
-    pub(in crate::pck) fn try_get_orientation(&self, jds: f64) -> KeteResult<NonInertialFrame> {
+    pub(in crate::pck) fn try_get_orientation(
+        &self,
+        time: Time<TDB>,
+    ) -> KeteResult<NonInertialFrame> {
         // Records in the segment contain information about the central position of the
         // north pole, as well as the position of the prime meridian. These values for
         // type 2 segments are stored as chebyshev polynomials of the first kind, in
@@ -74,10 +77,10 @@ impl PckSegmentType2 {
         //
         // Rate of change for each of these values can be calculated by using the
         // derivative of chebyshev of the first kind, which is done below.
-        let record = self.get_record(self.layout.record_index(jds));
+        let record = self.get_record(self.layout.record_index(time.j2000_seconds()));
         let t_mid = record[0];
         let t_step = record[1];
-        let t = (jds - t_mid) / t_step;
+        let t = time.j2000_seconds_minus(t_mid) / t_step;
 
         let n_coef = self.layout.n_coef;
         let ra_coef = &record[2..(n_coef + 2)];
@@ -90,7 +93,6 @@ impl PckSegmentType2 {
         // rem_euclid is equivalent to the modulo operator, so this maps w to [0, 2pi]
         let w = w.rem_euclid(std::f64::consts::TAU);
 
-        let time = spice_jd_to_jd(jds);
         let frame = NonInertialFrame::from_euler::<'Z', 'X', 'Z'>(
             time,
             [ra, dec, w],
@@ -206,7 +208,10 @@ mod tests {
         assert_eq!(pck.frame_id, 3000);
 
         let seg = PckSegmentType2::try_from(pck).unwrap();
-        assert!(seg.try_get_orientation(1.5 * intlen).is_ok());
+        assert!(
+            seg.try_get_orientation(Time::from_j2000_seconds(1.5 * intlen))
+                .is_ok()
+        );
     }
 
     /// Check that the final instant of the segment uses the last record.
@@ -239,7 +244,9 @@ mod tests {
         )
         .unwrap();
         let seg = PckSegmentType2::try_from(array).unwrap();
-        let frame = seg.try_get_orientation(3.0 * intlen).unwrap();
+        let frame = seg
+            .try_get_orientation(Time::from_j2000_seconds(3.0 * intlen))
+            .unwrap();
         let expected =
             NonInertialFrame::from_euler::<'Z', 'X', 'Z'>(0.0, [0.2, 0.25, 0.3], [0.0; 3], 17);
         assert!((frame.rotation.matrix() - expected.rotation.matrix()).norm() < 1e-14);

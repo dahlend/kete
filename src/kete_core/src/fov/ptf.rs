@@ -207,7 +207,9 @@ impl PtfField {
         let filter = first.filter;
 
         for ccd in &ccds {
-            if ccd.field != field || ccd.filter != filter || ccd.observer().epoch != observer.epoch
+            if ccd.field != field
+                || ccd.filter != filter
+                || !ccd.observer().epoch.same_instant(&observer.epoch)
             {
                 Err(Error::ValueError(
                     "All PtfCcds must have matching values except CCD ID etc.".into(),
