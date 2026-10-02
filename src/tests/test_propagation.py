@@ -122,8 +122,12 @@ class TestFreeParameters:
     def test_free_beta_extends_the_covariance(self, state):
         free = NonGravModel.new_dust(beta=float("nan"))
         us = UncertainState.from_state(
-            state, 1e-8, 1e-7, non_grav=free,
-            free_params=[0.01], param_sigmas=[0.003],
+            state,
+            1e-8,
+            1e-7,
+            non_grav=free,
+            free_params=[0.01],
+            param_sigmas=[0.003],
         )
         assert us.param_names == ["p", "f", "g", "h", "k", "L", "beta"]
         cov = np.array(us.cov_matrix)
@@ -158,8 +162,12 @@ class TestFreeParameters:
         trajectory)."""
         free = NonGravModel.new_dust(beta=float("nan"))
         us = UncertainState.from_state(
-            state, 1e-8, 1e-7, non_grav=free,
-            free_params=[0.01], param_sigmas=[0.003],
+            state,
+            1e-8,
+            1e-7,
+            non_grav=free,
+            free_params=[0.01],
+            param_sigmas=[0.003],
         )
         assert np.allclose(np.array(us.cov_matrix)[6, :6], 0.0)
         prop = us.propagate(state.jd + 60.0)
@@ -171,8 +179,12 @@ class TestFreeParameters:
         """Samples carry their own beta, jointly with the orbit."""
         free = NonGravModel.new_dust(beta=float("nan"))
         us = UncertainState.from_state(
-            state, 1e-8, 1e-7, non_grav=free,
-            free_params=[0.02], param_sigmas=[0.004],
+            state,
+            1e-8,
+            1e-7,
+            non_grav=free,
+            free_params=[0.02],
+            param_sigmas=[0.004],
         )
         _, non_gravs = us.sample(4000, seed=11)
         betas = np.array([n.beta for n in non_gravs])
@@ -192,14 +204,22 @@ class TestFreeParameters:
     def test_free_params_validation(self, state):
         free = NonGravModel.new_dust(beta=float("nan"))
         with pytest.raises(ValueError, match="free_params has length"):
-            UncertainState.from_state(state, 1e-8, 1e-7, non_grav=free,
-                                      free_params=[0.01, 0.02])
+            UncertainState.from_state(
+                state, 1e-8, 1e-7, non_grav=free, free_params=[0.01, 0.02]
+            )
         with pytest.raises(ValueError, match="finite"):
-            UncertainState.from_state(state, 1e-8, 1e-7, non_grav=free,
-                                      free_params=[float("nan")])
+            UncertainState.from_state(
+                state, 1e-8, 1e-7, non_grav=free, free_params=[float("nan")]
+            )
         with pytest.raises(ValueError, match="param_sigmas"):
-            UncertainState.from_state(state, 1e-8, 1e-7, non_grav=free,
-                                      free_params=[0.01], param_sigmas=[1.0, 2.0])
+            UncertainState.from_state(
+                state,
+                1e-8,
+                1e-7,
+                non_grav=free,
+                free_params=[0.01],
+                param_sigmas=[1.0, 2.0],
+            )
 
 
 class TestDustBeta:
