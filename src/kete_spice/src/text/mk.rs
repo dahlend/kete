@@ -1,7 +1,7 @@
 //! Meta-kernels: text kernels that list other kernels to load.
 //!
 //! A text kernel that sets `KERNELS_TO_LOAD` is a meta-kernel, whatever its
-//! header, as in CSPICE `furnsh`. These rules also follow `furnsh`:
+//! header. These rules apply to a meta-kernel:
 //!
 //! - An element of `KERNELS_TO_LOAD` that ends in `+` continues into the next
 //!   element, without the `+`.

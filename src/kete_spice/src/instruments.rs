@@ -21,9 +21,9 @@ use kete_core::time::{TDB, Time};
 ///
 /// The observer is the spacecraft of the instrument, relative to the Sun. It
 /// is the spacecraft of the first CK frame in the chain of TK frames from the
-/// frame of the field of view, as CSPICE `ckmeta` gives it (see
-/// [`TextKernels::ck_spk_id`]). Without a CK frame in that chain, it is the
-/// instrument ID divided by 1000, the NAIF convention for instrument IDs.
+/// frame of the field of view (see [`TextKernels::ck_spk_id`]). Without a CK
+/// frame in that chain, it is the instrument ID divided by 1000, the NAIF
+/// convention for instrument IDs.
 /// A rectangle gives a [`GenericRectangle`], a circle a
 /// [`GenericCone`], and a polygon a [`GenericPolygon`].
 ///

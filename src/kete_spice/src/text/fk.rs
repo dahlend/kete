@@ -79,7 +79,7 @@ pub fn ck_clock_id(vars: &TextKernelVars, ck_id: i32) -> KeteResult<ClockId> {
 /// The SPK ID of the spacecraft of the CK frame with class ID `ck_id`.
 ///
 /// It is the value of `CK_<ck_id>_SPK` if it is set. Otherwise it is
-/// `ck_id / 1000` if `ck_id` is -1000 or less, as in CSPICE `ckmeta`.
+/// `ck_id / 1000` if `ck_id` is -1000 or less.
 ///
 /// # Errors
 /// [`Error::ValueError`] if `CK_<ck_id>_SPK` is not one integer, or it is not

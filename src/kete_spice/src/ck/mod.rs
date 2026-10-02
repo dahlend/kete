@@ -60,6 +60,7 @@ use crate::text::sclk::Sclk;
 use crossbeam::sync::ShardedLock;
 use nalgebra::{Rotation3, Vector3};
 use segments::CkSegment;
+use std::collections::HashMap;
 
 /// Largest difference, in days, between a requested time and the time of the CK
 /// pointing used for it: about 1 ms.
@@ -68,8 +69,12 @@ pub(crate) const POINTING_TOLERANCE_DAYS: f64 = 1e-8;
 /// A collection of segments.
 #[derive(Debug, Default)]
 pub struct CkCollection {
-    /// Collection of CK file information
+    /// The loaded segments, in precedence order: a lower index takes
+    /// precedence.
     segments: Vec<CkSegment>,
+
+    /// For each CK ID, the spans of its segments (see [`Span`]).
+    index: HashMap<i32, Vec<Span>>,
 }
 
 impl CkCollection {
@@ -98,6 +103,7 @@ impl CkCollection {
             let arr: &CkArray = seg.into();
             arr.instrument_id
         });
+        self.index = span_index(&self.segments);
         Ok(())
     }
 
@@ -129,29 +135,29 @@ impl CkCollection {
         sclk: &Sclk,
     ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
         let tick = sclk.time_to_tick(time)?;
-        let segment = self
-            .segments
-            .iter()
-            .find(|segment| {
-                let array: &CkArray = (*segment).into();
-                array.instrument_id == ck_id && array.contains(tick) && segment.has_data_at(tick)
-            })
-            .ok_or_else(|| {
-                Error::Bounds(format!(
-                    "CK frame {ck_id} has no pointing at JD {}.",
-                    time.jd()
-                ))
-            })?;
+        // Of the segments that span the tick, the one first in precedence order
+        // that holds pointing there.
+        let mut best: Option<usize> = None;
+        if let Some(spans) = self.index.get(&ck_id) {
+            for_each_spanning(spans, tick, &mut |idx| {
+                if best.is_none_or(|b| idx < b) && self.segments[idx].has_data_at(tick) {
+                    best = Some(idx);
+                }
+            });
+        }
+        let segment = best.map(|idx| &self.segments[idx]).ok_or_else(|| {
+            Error::Bounds(format!(
+                "CK frame {ck_id} has no pointing at JD {}.",
+                time.jd()
+            ))
+        })?;
         segment.try_get_orientation(ck_id, time, tick, sclk)
     }
 
     /// Whether any loaded segment, at any time, holds pointing for `ck_id`.
     #[must_use]
     pub fn has_instrument(&self, ck_id: i32) -> bool {
-        self.segments.iter().any(|segment| {
-            let array: &CkArray = segment.into();
-            array.instrument_id == ck_id
-        })
+        self.index.contains_key(&ck_id)
     }
 
     /// Return a list of all loaded instrument ids.
@@ -192,6 +198,75 @@ impl CkCollection {
                 }
             })
             .collect()
+    }
+}
+
+/// The time span of one segment, as a node of an implicit interval tree.
+///
+/// The spans of one CK ID are sorted by start tick. The node of a slice of them
+/// is its middle span. Its children are the nodes of the slices below and above
+/// it. `max_end` is the largest end tick in the slice of the node. Thus a search
+/// skips every slice that ends before a tick.
+#[derive(Debug)]
+struct Span {
+    start: f64,
+    end: f64,
+    max_end: f64,
+
+    /// Index of the segment in [`CkCollection::segments`].
+    segment: usize,
+}
+
+/// The spans of each CK ID in `segments`, sorted and with `max_end` set.
+fn span_index(segments: &[CkSegment]) -> HashMap<i32, Vec<Span>> {
+    let mut index: HashMap<i32, Vec<Span>> = HashMap::new();
+    for (segment, seg) in segments.iter().enumerate() {
+        let array: &CkArray = seg.into();
+        index.entry(array.instrument_id).or_default().push(Span {
+            start: array.tick_start,
+            end: array.tick_end,
+            max_end: array.tick_end,
+            segment,
+        });
+    }
+    for spans in index.values_mut() {
+        spans.sort_by(|a, b| a.start.total_cmp(&b.start));
+        let _ = set_max_end(spans);
+    }
+    index
+}
+
+/// Set `max_end` of the node of `spans` and its descendants.
+///
+/// The function returns the `max_end` of the node.
+fn set_max_end(spans: &mut [Span]) -> f64 {
+    let mid = spans.len() / 2;
+    let (below, rest) = spans.split_at_mut(mid);
+    let Some((node, above)) = rest.split_first_mut() else {
+        return f64::NEG_INFINITY;
+    };
+    node.max_end = node.end.max(set_max_end(below)).max(set_max_end(above));
+    node.max_end
+}
+
+/// Call `f` with the segment of each span of `spans` that holds `tick`.
+///
+/// Both ends of a span are inclusive.
+fn for_each_spanning(spans: &[Span], tick: f64, f: &mut impl FnMut(usize)) {
+    let mid = spans.len() / 2;
+    let Some(node) = spans.get(mid) else {
+        return;
+    };
+    if node.max_end < tick {
+        return;
+    }
+    for_each_spanning(&spans[..mid], tick, f);
+    // The spans above start at or after this one.
+    if node.start <= tick {
+        if tick <= node.end {
+            f(node.segment);
+        }
+        for_each_spanning(&spans[mid + 1..], tick, f);
     }
 }
 
@@ -265,6 +340,57 @@ pub(crate) mod tests {
 
     fn tick(jd: f64) -> f64 {
         test_clock().time_to_tick(Time::new(jd)).unwrap()
+    }
+
+    /// The index finds exactly the spans that hold a tick, as a scan of all of
+    /// them does, for nested, overlapping, touching and disjoint spans.
+    #[test]
+    fn span_index_matches_a_scan() {
+        // A fixed pseudo-random sequence keeps the test repeatable.
+        let mut state: u64 = 3;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 11) as f64 / (1_u64 << 53) as f64
+        };
+        let mut spans: Vec<(f64, f64)> = (0..500)
+            .map(|idx| {
+                let start = (next() * 1000.0).floor();
+                let length = if idx % 50 == 0 {
+                    400.0
+                } else {
+                    (next() * 5.0).floor()
+                };
+                (start, start + length)
+            })
+            .collect();
+        spans.push((10.0, 10.0));
+        let mut index: Vec<Span> = spans
+            .iter()
+            .enumerate()
+            .map(|(segment, &(start, end))| Span {
+                start,
+                end,
+                max_end: end,
+                segment,
+            })
+            .collect();
+        index.sort_by(|a, b| a.start.total_cmp(&b.start));
+        let _ = set_max_end(&mut index);
+        for k in 0..2400 {
+            let tick = f64::from(k) * 0.5 - 100.0;
+            let mut found = Vec::new();
+            for_each_spanning(&index, tick, &mut |idx| found.push(idx));
+            found.sort_unstable();
+            let expected: Vec<usize> = (0..spans.len())
+                .filter(|&i| spans[i].0 <= tick && tick <= spans[i].1)
+                .collect();
+            assert_eq!(found, expected, "tick {tick}");
+        }
+        let mut found = Vec::new();
+        for_each_spanning(&[], 1.0, &mut |idx| found.push(idx));
+        assert!(found.is_empty());
     }
 
     /// Write a type 2 CK file for instrument -999000 and return its path.

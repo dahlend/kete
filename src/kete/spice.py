@@ -81,7 +81,8 @@ def instrument_fov_definition(instrument: int | str) -> FovDefinition:
     The field of view definition of an instrument, in its own frame.
 
     The definition comes from the loaded instrument kernels. An ``ANGLES``
-    definition is converted to boundary vectors, as SPICE ``getfov`` does.
+    definition gives the boundary vectors from its reference vector and its
+    angles.
 
     Parameters
     ----------
@@ -143,11 +144,12 @@ def kernel_reload(
     and then none of ``filenames`` load. A file of a supported type that fails
     to load prints a message and is skipped.
 
-    A meta-kernel lists files in ``KERNELS_TO_LOAD``, which load right after it,
-    with ``PATH_SYMBOLS`` and ``PATH_VALUES`` expanded as in SPICE ``furnsh``.
-    Relative paths in it are relative to the working directory, not to the
-    meta-kernel. A listed file of an unsupported type, such as a leap seconds
-    kernel or a DSK, prints a message and is skipped.
+    A meta-kernel lists files in ``KERNELS_TO_LOAD``, which load right after it.
+    In a listed name, a ``$`` and a symbol from ``PATH_SYMBOLS`` is replaced by
+    the matching entry of ``PATH_VALUES``. An entry that ends in ``+`` continues
+    into the next entry. Relative paths are relative to the working directory,
+    not to the meta-kernel. A listed file of an unsupported type, such as a leap
+    seconds kernel or a DSK, prints a message and is skipped.
 
     Where kernels overlap in time for the same object, the kernel loaded last is
     used. The load order is the cache, then the default planetary kernels, then

@@ -216,7 +216,7 @@ impl BodyRotation {
 /// The variables of the system hold the nutation and precession angles, the
 /// epoch and the reference frame. The system is the barycenter of a planet or
 /// satellite: ID / 100 for a 3 digit ID, and ID / 10000 for a 5 digit ID. It is
-/// the body itself for any other ID. These are the rules of CSPICE `zzbodbry`.
+/// the body itself for any other ID.
 fn system(id: i32) -> i32 {
     match id {
         100..=999 => id / 100,
@@ -229,7 +229,7 @@ fn system(id: i32) -> i32 {
 /// `BODY<sys>_CONSTS_<key>` that is set, or `None` if neither is.
 ///
 /// # Errors
-/// [`Error::ValueError`] if both are set, as in CSPICE `bodeul`.
+/// [`Error::ValueError`] if both are set.
 fn system_constant(vars: &TextKernelVars, sys: i32, key: &str) -> KeteResult<Option<String>> {
     let long = format!("BODY{sys}_CONSTANTS_{key}");
     let short = format!("BODY{sys}_CONSTS_{key}");

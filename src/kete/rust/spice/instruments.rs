@@ -54,9 +54,10 @@ pub enum KernelValue {
 /// instrument. The frame is resolved through its chain of reference frames to
 /// the equatorial frame. The observer is the spacecraft of the instrument, from
 /// the loaded SPK files. It is the spacecraft of the CK frame the instrument
-/// frame is fixed to, from ``CK_<id>_SPK`` or else the CK ID divided by 1000,
-/// as in CSPICE ``ckmeta``. Without such a CK frame, it is the instrument ID
-/// divided by 1000. The pointing has no light time or aberration correction.
+/// frame is fixed to. That is ``CK_<id>_SPK`` if it is set, else the CK ID
+/// divided by 1000 for a CK ID of -1000 or less. Without such a CK frame, it is
+/// the instrument ID divided by 1000. The pointing has no light time or
+/// aberration correction.
 ///
 /// Parameters
 /// ----------
@@ -76,8 +77,9 @@ pub enum KernelValue {
 /// ------
 /// ValueError
 ///   If the instrument or its field of view is not defined, or the field of
-///   view is an ellipse. Also if a frame in the chain has no data at ``jd``, or
-///   the SPK files have no state of the spacecraft at ``jd``.
+///   view is an ellipse. Also if a frame in the chain has no data at ``jd``, if
+///   these rules give no spacecraft ID, or if the SPK files have no state of
+///   the spacecraft at ``jd``.
 #[pyfunction]
 #[pyo3(name = "instrument_fov")]
 pub fn instrument_fov_py(instrument: InstrumentLike, jd: PyTime) -> PyResult<AllowedFOV> {
