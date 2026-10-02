@@ -30,6 +30,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+mod checks;
 mod fov_like;
 mod generic;
 mod neos;
@@ -44,6 +45,7 @@ use crate::frames::{Equatorial, Vector};
 use crate::geometry::Contains;
 use crate::state::State;
 
+pub use self::checks::{check_ephemeris, check_n_body, check_visible};
 pub use self::fov_like::{FovLike, check_linear, check_statics, check_two_body};
 pub use self::generic::{GenericCone, GenericRectangle, OmniDirectional};
 pub use self::neos::{NeosCmos, NeosVisit};

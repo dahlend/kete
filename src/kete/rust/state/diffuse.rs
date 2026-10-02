@@ -7,11 +7,12 @@ use kete_core::forces::NonGravMask;
 use kete_core::forces::ParameterizedForce;
 use kete_core::frames::Equatorial;
 use kete_core::prelude::*;
+use kete_core::propagation::{NBody, sun_resolver};
 use kete_core::state::{
     DEFAULT_STEP_DAYS, SplitConfig, StepReport, Termination, propagate_diffuse_state,
     step_diffuse_state,
 };
-use kete_spice::propagation::{SpkNBody, sun_resolver};
+use kete_spice::ephemeris::SpiceEphemeris;
 use kete_spice::spk::LOADED_SPK;
 use pyo3::prelude::*;
 
@@ -118,8 +119,8 @@ impl PyDiffuseState {
         self.mixture.components.first()?.non_grav.as_ref()
     }
 
-    fn build_forces<'a>(&self, spk: &'a kete_spice::spk::SpkCollection) -> SpkNBody<'a> {
-        SpkNBody::with_non_grav(spk, self.mixture.include_asteroids, self.mask().cloned())
+    fn build_forces<'a>(&self, eph: &'a SpiceEphemeris) -> NBody<'a, SpiceEphemeris> {
+        NBody::with_non_grav(eph, self.mixture.include_asteroids, self.mask().cloned())
     }
 }
 
@@ -486,15 +487,15 @@ impl PyDiffuseState {
         };
         let target: Time<TDB> = jd.into();
         py.detach(|| {
-            let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-            let forces = self.build_forces(&spk);
+            let eph = SpiceEphemeris::loaded()?;
+            let forces = self.build_forces(&eph);
             let (propagated, report) = propagate_diffuse_state(
                 &self.mixture,
                 &forces,
                 target,
                 &cfg,
                 step_days,
-                &sun_resolver(&spk),
+                &sun_resolver(&eph),
             )?;
             Ok((
                 Self {
@@ -550,10 +551,10 @@ impl PyDiffuseState {
         };
         let target: Time<TDB> = jd.into();
         py.detach(|| {
-            let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-            let forces = self.build_forces(&spk);
+            let eph = SpiceEphemeris::loaded()?;
+            let forces = self.build_forces(&eph);
             let (stepped, report) =
-                step_diffuse_state(&self.mixture, &forces, target, &cfg, &sun_resolver(&spk))?;
+                step_diffuse_state(&self.mixture, &forces, target, &cfg, &sun_resolver(&eph))?;
             Ok((Self { mixture: stepped }, report.into()))
         })
     }

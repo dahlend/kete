@@ -157,13 +157,13 @@ impl PyPolyhedron {
     }
 }
 
-/// The body-frame orientation from exactly one of a CK frame and a fixed rotation.
+/// The body-frame orientation from exactly one of a frame id and a fixed rotation.
 pub(crate) fn orientation(
     frame_id: Option<i32>,
     rotation: Option<[[f64; 3]; 3]>,
 ) -> PyResult<Orientation> {
     match (frame_id, rotation) {
-        (Some(frame_id), None) => Ok(Orientation::Ck { frame_id }),
+        (Some(frame_id), None) => Ok(Orientation::Frame { frame_id }),
         (None, Some(rows)) => {
             let rot = Matrix3::from_fn(|i, j| rows[i][j]);
             if (rot * rot.transpose() - Matrix3::identity()).abs().max() > 1e-9
@@ -195,10 +195,11 @@ pub(crate) fn orientation(
 /// offset as well. A body
 /// already registered with the same NAIF ID is replaced.
 ///
-/// Exactly one orientation is required: ``frame_id``, a CK frame read at each
-/// evaluation inside ``switch_radius`` (the CK and its clock must be loaded, and
-/// a time without pointing is an error), or ``rotation``, a fixed matrix taking
-/// body-frame vectors to equatorial (J2000) axes.
+/// Exactly one orientation is required: ``frame_id``, a body frame read at each
+/// evaluation inside ``switch_radius`` from the loaded PCK files or, when they have
+/// no frame with that id, the CK files with their clock, where a time without
+/// orientation is an error, or ``rotation``, a fixed matrix taking body-frame
+/// vectors to equatorial (J2000) axes.
 ///
 /// The polyhedron field and the point mass agree ever more closely with distance,
 /// so ``switch_radius`` trades evaluation cost against the step in the force where
@@ -220,7 +221,7 @@ pub(crate) fn orientation(
 ///     Mass of the body as a fraction of the Sun's mass. Defaults to the value in
 ///     the built-in mass table.
 /// frame_id :
-///     CK frame ID of the body frame.
+///     Frame ID of the body frame: the class ID of a PCK frame, or a CK ID.
 /// rotation :
 ///     Fixed rotation matrix from the body frame to equatorial axes, shape
 ///     ``(3, 3)``.

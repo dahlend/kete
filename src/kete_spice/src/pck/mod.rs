@@ -34,7 +34,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 mod array;
-pub(crate) mod segments;
+mod segments;
 /// PCK Type 2: Chebyshev polynomials (Euler angles).
 pub mod type2;
 
@@ -61,8 +61,8 @@ pub struct PckCollection {
 }
 
 impl PckCollection {
-    /// Given an PCK filename, load all the segments present inside of it.
-    /// These segments are added to the PCK singleton in memory.
+    /// Load all the segments of a PCK file into this collection, ahead of those already
+    /// loaded.
     ///
     /// # Errors
     /// May fail if there are IO or Parsing errors.
@@ -105,6 +105,14 @@ impl PckCollection {
         )))?
     }
 
+    /// Whether any loaded segment, at any time, holds the frame `id`.
+    #[must_use]
+    pub fn has_frame(&self, id: i32) -> bool {
+        self.segments
+            .iter()
+            .any(|segment| Into::<&PckArray>::into(segment).frame_id == id)
+    }
+
     /// Delete all segments in the PCK singleton, equivalent to unloading all files.
     pub fn reset(&mut self) {
         *self = Self::default();
@@ -123,31 +131,22 @@ impl PckCollection {
         loaded.into_iter().collect()
     }
 
-    /// Load the core files.
+    /// Load the files in the core kernel cache directory.
     ///
     /// # Errors
-    /// May fail if there are IO or Parsing errors.
+    /// Fails when the cache directory cannot be found or read. A file that fails to
+    /// parse is reported with ``eprintln`` and skipped.
     pub fn load_core(&mut self) -> KeteResult<()> {
         let cache = cache_path("kernels/core")?;
         self.load_directory(&cache)?;
         Ok(())
     }
 
-    /// Load files in the cache directory.
+    /// Load all PCK files in a directory, in sorted filename order.
     ///
     /// # Errors
-    /// May fail if there are IO or Parsing errors.
-    pub fn load_cache(&mut self) -> KeteResult<()> {
-        let cache = cache_path("kernels")?;
-        self.load_directory(&cache)?;
-        Ok(())
-    }
-
-    /// Load all PCK files from a directory.
-    ///
-    /// # Errors
-    /// This only fails when there is a file IO error. When individual files fail to load,
-    /// ``eprintln`` is used, but loading will continue.
+    /// Fails when the directory cannot be read. A file that fails to parse is reported
+    /// with ``eprintln`` and skipped.
     pub fn load_directory(&mut self, directory: &str) -> KeteResult<()> {
         // A later file takes precedence, so the load order matters. `read_dir`
         // does not define an order. A sorted order gives the same result on

@@ -287,7 +287,7 @@ impl ChebyshevLayout {
 /// # Arguments
 ///
 /// * `times` - Times where the function `f` is evaluated at.
-/// * `y_vals` - The values of the function `f` at the specified times.
+/// * `y` - The values of the function `f` at the specified times.
 /// * `dy` - The values of the derivative of the function `f`.
 /// * `offset` - Time at which to evaluate the interpolation function, as an offset
 ///   from `times[0]`. The caller forms it from a time of higher precision than a

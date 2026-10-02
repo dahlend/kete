@@ -157,11 +157,11 @@ pub enum Orientation {
     /// A fixed rotation from the body frame to equatorial axes.
     Fixed(Matrix3<f64>),
 
-    /// The rotation from the body frame to equatorial axes is read from a loaded CK
-    /// frame at each evaluation. `kete_core` has no CK access; the caller resolves it
-    /// (see [`GravParams::orientation_needed`]).
-    Ck {
-        /// CK frame / instrument id of the body frame.
+    /// The rotation from the body frame to equatorial axes is the frame `frame_id` of
+    /// an [`Ephemeris`](crate::ephemeris::Ephemeris) at each evaluation; the caller
+    /// resolves it (see [`GravParams::orientation_needed`]).
+    Frame {
+        /// Id of the body frame.
         frame_id: i32,
     },
 }
@@ -346,20 +346,20 @@ impl GravParams {
         }
     }
 
-    /// The CK frame id whose rotation [`Self::add_acceleration`] and
+    /// The frame id whose rotation [`Self::add_acceleration`] and
     /// [`Self::add_acceleration_and_jacobians`] need at relative position `rel_pos`, if any: a
-    /// polyhedron body with a CK orientation, evaluated inside its switch radius.
+    /// shaped body with a frame orientation, evaluated inside its switch radius.
     #[inline(always)]
     #[must_use]
     pub fn orientation_needed(&self, rel_pos: &Vector3<f64>) -> Option<i32> {
         match &self.shape {
             Shape::Polyhedron {
-                orientation: Orientation::Ck { frame_id },
+                orientation: Orientation::Frame { frame_id },
                 switch_radius,
                 ..
             }
             | Shape::SphericalHarmonics {
-                orientation: Orientation::Ck { frame_id },
+                orientation: Orientation::Frame { frame_id },
                 switch_radius,
                 ..
             } if rel_pos.norm() < *switch_radius => Some(*frame_id),
@@ -406,9 +406,9 @@ impl GravParams {
         }
         let rot = match orientation {
             Orientation::Fixed(rot) => *rot,
-            Orientation::Ck { frame_id } => *body_to_equatorial.ok_or_else(|| {
+            Orientation::Frame { frame_id } => *body_to_equatorial.ok_or_else(|| {
                 Error::ValueError(format!(
-                    "Body {} has a gravity field model oriented by CK frame {frame_id}, \
+                    "Body {} has a gravity field model oriented by frame {frame_id}, \
                      but no orientation was provided; this propagator cannot evaluate it.",
                     self.naif_id
                 ))
@@ -461,8 +461,8 @@ impl GravParams {
     /// Add acceleration to the provided accel vector.
     ///
     /// `rel_pos` and `rel_vel` are relative to the body, on equatorial axes.
-    /// `body_to_equatorial` is the body-frame rotation for a polyhedron body with a
-    /// CK orientation, required when [`Self::orientation_needed`] returns a frame,
+    /// `body_to_equatorial` is the body-frame rotation for a shaped body with a
+    /// frame orientation, required when [`Self::orientation_needed`] returns a frame,
     /// ignored otherwise.
     ///
     /// # Errors
@@ -801,7 +801,7 @@ mod tests {
         }
     }
     /// A polyhedron body: the test prism of `forces::polyhedron`, scaled to `size`,
-    /// with a fixed rotation or a CK orientation.
+    /// with a fixed rotation or a frame orientation.
     fn polyhedron_body(orientation: Orientation, switch_radius: f64) -> GravParams {
         let size = 1e-3;
         let v = (0..8_u32)
@@ -936,7 +936,7 @@ mod tests {
 
     #[test]
     fn polyhedron_body_ck_orientation_required_inside_only() {
-        let body = polyhedron_body(Orientation::Ck { frame_id: -42 }, 0.05);
+        let body = polyhedron_body(Orientation::Frame { frame_id: -42 }, 0.05);
         let near = Vector3::new(2.1e-3, -0.8e-3, 1.4e-3);
         let far = Vector3::new(0.3, 0.0, 0.0);
         assert_eq!(body.orientation_needed(&near), Some(-42), "needed inside");
@@ -1148,7 +1148,7 @@ mod tests {
         let rot = rotation();
         let body = harmonics_body(
             test_harmonics(3e-12, 1.5e-3),
-            Orientation::Ck { frame_id: -42 },
+            Orientation::Frame { frame_id: -42 },
             0.05,
         );
         let near = Vector3::new(2.6e-3, -1.8e-3, 1.4e-3);

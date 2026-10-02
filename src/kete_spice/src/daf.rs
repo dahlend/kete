@@ -141,8 +141,7 @@ impl TryFrom<&str> for DAFType {
     }
 }
 
-/// DAF files header information.
-/// This contains
+/// A DAF file: the file record, the comments, and the arrays.
 #[derive(Debug)]
 pub struct DafFile {
     /// Magic number within the DAF file corresponds to this DAF type.
@@ -170,9 +169,7 @@ pub struct DafFile {
     /// not file byte index.
     pub final_summary_record_index: i32,
 
-    /// First free address of the file.
-    /// Index of initial summary record
-    /// Note that this is 1 indexed.
+    /// First free address of the file, a 1 indexed word address.
     pub first_free: i32,
 
     /// FTP Validation string
@@ -254,7 +251,7 @@ impl DafFile {
             ));
         }
 
-        // the following values are not used, so are not stored.
+        // Values from the file record that are kept as read.
         let internal_desc = bytes_to_string(&bytes[16..76]);
         let final_summary_record_index = bytes_to_i32(&bytes[80..84])?;
         let first_free = bytes_to_i32(&bytes[84..88])?;
@@ -397,7 +394,8 @@ impl DafFile {
     /// Returns an error if writing to the underlying writer fails.
     ///
     /// # Panics
-    /// Panics if arrays is non-empty and the last batch has no addresses.
+    /// Panics when an array's summary size differs from the size given by the
+    /// file's `n_doubles` and `n_ints`, such as a PCK array in an SPK file.
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_possible_wrap,
@@ -654,7 +652,6 @@ impl DafFile {
             let bytes = Self::try_load_record(file, current_idx as u64)?;
 
             next_idx = bytes_to_f64(&bytes[0..8])? as i32;
-            // let prev_idx = bytes_to_f64(&bytes[8..16])? as i32;
             let n_summaries = bytes_to_f64(&bytes[16..24])?;
             if !(0.0..=f64::from(max_summaries)).contains(&n_summaries) {
                 return Err(Error::IOError(format!(

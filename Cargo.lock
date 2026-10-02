@@ -1869,9 +1869,8 @@ version = "3.2.2"
 dependencies = [
  "criterion",
  "crossbeam",
- "itertools 0.15.0",
  "kete_core",
- "kete_stats",
+ "kete_spice",
  "nalgebra",
  "nom",
  "pprof",

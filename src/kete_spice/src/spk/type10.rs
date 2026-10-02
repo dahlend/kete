@@ -27,7 +27,7 @@ pub struct SpkSegmentType10 {
     /// `Reference Items` is a list of all JDs
     pub(in crate::spk) array: GenericSegment,
 
-    /// spg4 uses a geopotential model which is loaded from the spice kernel.
+    /// SGP4 uses a geopotential model which is loaded from the spice kernel.
     /// Unfortunately SGP4 doesn't support custom altitude bounds, but this
     /// probably shouldn't be altered from the defaults.
     geopotential: Geopotential,
@@ -420,7 +420,7 @@ impl SpkSegmentType10 {
                 .naive_utc(),
         );
 
-        // use the provided goepotential even if it is not correct.
+        // use the provided geopotential even if it is not correct.
         let orbit_0 = Orbit::from_kozai_elements(
             &self.geopotential,
             inclination,
@@ -653,7 +653,7 @@ impl TryFrom<SpkArray> for GenericSegment {
 ///
 /// # Errors
 /// Returns an error if the text cannot be parsed as either 3-line or 2-line TLEs.
-pub fn parse_tle_text(text: &str) -> KeteResult<Vec<(u64, Vec<sgp4::Elements>)>> {
+fn parse_tle_text(text: &str) -> KeteResult<Vec<(u64, Vec<sgp4::Elements>)>> {
     let elements = sgp4::parse_3les(text)
         .or_else(|_| sgp4::parse_2les(text))
         .map_err(|e| Error::ValueError(format!("Failed to parse TLE text: {e}")))?;

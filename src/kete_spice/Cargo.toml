@@ -3,7 +3,7 @@ name = "kete_spice"
 readme = "README.md"
 keywords = ["physics", "simulation", "astronomy", "spice"]
 categories = ["Aerospace", "Science", "Simulation"]
-description = "SPICE kernel I/O and SPK-dependent propagation for Kete."
+description = "SPICE kernel I/O for Kete."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -21,15 +21,15 @@ workspace = true
 
 [dependencies]
 kete_core = { version = "*", path = "../kete_core" }
-kete_stats = { version = "*", path = "../kete_stats" }
 crossbeam = "^0.8.4"
-itertools = "^0.15.0"
 nalgebra = { version = "^0.34.2", features = ["rayon"] }
 nom = "8.0.0"
 rayon = "^1.11.0"
 sgp4 = "^2.2.0"
 
 [dev-dependencies]
+# The integration tests and benches load the committed test kernels through `test_data`.
+kete_spice = { path = ".", features = ["test"] }
 criterion = { version = "^0.5.1", features = ["html_reports"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]

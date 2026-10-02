@@ -90,12 +90,6 @@ impl PckSegment {
         if jds < arr_ref.jds_start || jds > arr_ref.jds_end {
             Err(Error::Bounds("JD is not present in this record.".into()))?;
         }
-        if arr_ref.reference_frame_id != 17 {
-            Err(Error::ValueError(format!(
-                "PCK frame ID {} is not supported. Only 17 (Ecliptic) is supported.",
-                arr_ref.reference_frame_id
-            )))?;
-        }
 
         match &self {
             Self::Type2(v) => v.try_get_orientation(epoch),

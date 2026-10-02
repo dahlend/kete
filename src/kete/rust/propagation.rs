@@ -1,13 +1,13 @@
 //! Python support for n body propagation
 use itertools::Itertools;
 use kete_core::moid::moid;
+use kete_core::propagation::NBody;
 use kete_core::{
     desigs::try_name_from_id,
     errors::Error,
     frames::{Ecliptic, Equatorial, SunCenter},
     state::State,
 };
-use kete_spice::propagation::SpkNBody;
 use pyo3::{IntoPyObjectExt, Py, PyAny, PyResult, Python, pyfunction};
 use rayon::prelude::*;
 
@@ -162,11 +162,9 @@ pub fn propagation_n_body_spk_py(
         // Errors are collected as KeteResult (Rust) rather than PyResult to avoid
         // creating PyErr objects inside rayon threads (which would require the GIL).
         let proc_chunk: PyResult<Vec<_>> = py.detach(|| {
-            // Acquire the SPK read guard once per chunk for center conversions.
-            // The force borrows the collection through this read guard.
-            let spk = kete_spice::prelude::LOADED_SPK
-                .try_read()
-                .map_err(|_| Error::ValueError("SPK lock unavailable".into()))?;
+            // Acquire the SPK read guard once per chunk; the force borrows it.
+            let eph = kete_spice::prelude::SpiceEphemeris::loaded()?;
+            let spk = eph.spk();
 
             chunk_owned
                 .into_par_iter()
@@ -190,7 +188,7 @@ pub fn propagation_n_body_spk_py(
                         .change_frame(frame));
                     }
                     let ssb_state = spk.try_to_ssb(state)?;
-                    let force = SpkNBody::with_non_grav(&spk, include_asteroids, model);
+                    let force = NBody::with_non_grav(&eph, include_asteroids, model);
                     let result = ssb_state.propagate_with(&force, jd);
                     match result {
                         Ok(ssb_result) => {
@@ -308,9 +306,8 @@ pub fn propagation_n_body_py(
         .map(|y| y.map(|z| z.to_fixed()))
         .collect();
 
-    let spk = kete_spice::prelude::LOADED_SPK
-        .try_read()
-        .map_err(Error::from)?;
+    let eph = kete_spice::prelude::SpiceEphemeris::loaded()?;
+    let spk = eph.spk();
 
     let jd = jd_final.into();
     let res: Result<Vec<_>, _> = py.detach(|| {
@@ -327,7 +324,8 @@ pub fn propagation_n_body_py(
                     .into_iter()
                     .map(|s| spk.try_to_sun(s))
                     .collect::<kete_core::errors::KeteResult<Vec<_>>>()?;
-                kete_spice::propagation::propagate_n_body_vec(
+                kete_core::propagation::propagate_n_body_vec(
+                    &eph,
                     chunk_state,
                     jd,
                     planet_states.clone(),
@@ -388,7 +386,9 @@ pub fn closest_approach_py(
 ) -> PyResult<(PyTime, f64)> {
     let raw_a = state_a.raw.into_frame();
     let raw_b = state_b.raw.into_frame();
-    let (epoch, dist) = kete_spice::propagation::closest_approach(
+    let eph = kete_spice::prelude::SpiceEphemeris::loaded()?;
+    let (epoch, dist) = kete_core::propagation::closest_approach(
+        &eph,
         &raw_a,
         &raw_b,
         jd_start.into(),

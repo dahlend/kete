@@ -41,8 +41,9 @@ use kete_core::forces::{NonGravMask, ParameterizedForce};
 use kete_core::frames::{CenterBody, Equatorial, SSB};
 use kete_core::kepler::light_time_correct;
 use kete_core::prelude::{Error, KeteResult, State, UncertainState};
+use kete_core::propagation::compute_state_transition;
 use kete_core::time::{TDB, Time};
-use kete_spice::prelude::{LOADED_SPK, compute_state_transition};
+use kete_spice::prelude::{LOADED_SPK, SpiceEphemeris};
 use nalgebra::{DMatrix, DVector};
 
 /// Stored quantities at each observation epoch for the RTS backward pass.
@@ -408,13 +409,17 @@ fn forward_pass(
         // EKF: propagate the state nonlinearly; use the STM only for
         // the covariance prediction.
         let (phi_full, xv_pred, cov_pred, new_state) = if dt.abs() > 1e-12 {
-            let ssb_result = compute_state_transition(
-                &state_cur,
-                obs_epoch,
-                include_asteroids,
-                mask.map(|m| (m, ng_values.as_slice())),
-            )
-            .ok();
+            let ssb_result = SpiceEphemeris::loaded()
+                .and_then(|eph| {
+                    compute_state_transition(
+                        &eph,
+                        &state_cur,
+                        obs_epoch,
+                        include_asteroids,
+                        mask.map(|m| (m, ng_values.as_slice())),
+                    )
+                })
+                .ok();
             if let Some((propagated_ssb, phi_6xd)) = ssb_result {
                 let phi = expand_phi(&phi_6xd, dim);
                 let qmat = build_process_noise(dim, process_noise_q, dt);
@@ -757,9 +762,9 @@ mod tests {
     use kete_core::frames::Equatorial;
     use kete_core::kepler::light_time_correct;
     use kete_core::prelude::State;
+    use kete_core::propagation::NBody;
     use kete_core::time::{TDB, Time};
-    use kete_spice::prelude::LOADED_SPK;
-    use kete_spice::propagation::SpkNBody;
+    use kete_spice::prelude::SpiceEphemeris;
     use kete_spice::test_data::ensure_test_spk;
 
     /// Build a simple SSB-centered state.
@@ -803,10 +808,12 @@ mod tests {
             let (obs_pos, obs_vel) = earth_observer(jd);
             let observer = make_state(obs_pos, obs_vel, jd);
 
-            let spk = LOADED_SPK.try_read().unwrap();
+            let eph = SpiceEphemeris::loaded().unwrap();
+
+            let spk = eph.spk();
             let obj_at = true_state
                 .clone()
-                .propagate_with(&SpkNBody::new(&spk, false), Time::<TDB>::new(jd))
+                .propagate_with(&NBody::new(&eph, false), Time::<TDB>::new(jd))
                 .unwrap();
             let sun_at = spk.try_to_sun(obj_at.clone()).unwrap();
             let obs_helio = observer.pos - obj_at.pos + sun_at.pos;
@@ -850,12 +857,13 @@ mod tests {
         let epochs: Vec<f64> = (0..20).map(|i| 2_460_000.5 + f64::from(i) * 6.0).collect();
         let observations = synth_observations(&true_state, &epochs, 1e-6);
 
-        let spk = LOADED_SPK.try_read().unwrap();
+        let eph = SpiceEphemeris::loaded().unwrap();
+
         let start = true_state
             .clone()
-            .propagate_with(&SpkNBody::new(&spk, false), Time::<TDB>::new(2_459_995.5))
+            .propagate_with(&NBody::new(&eph, false), Time::<TDB>::new(2_459_995.5))
             .unwrap();
-        drop(spk);
+        drop(eph);
 
         let fit = fit_orbit_filter(&start, &observations, false, None, 100.0, 0.0).unwrap();
         let fitted = crate::orbit_fitting::ssb_state(&fit.uncertain_state).unwrap();

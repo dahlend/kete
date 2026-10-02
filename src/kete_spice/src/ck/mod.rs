@@ -34,7 +34,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 mod array;
-pub(crate) mod segments;
+mod segments;
 /// CK Type 2: Discrete pointing, constant rotation rate.
 pub mod type2;
 /// CK Type 3: Discrete pointing, linear interpolation.
@@ -58,19 +58,27 @@ use crate::daf::{DAFType, DafFile};
 use crate::prepend_by_precedence;
 use crate::sclk::LOADED_SCLK;
 use crossbeam::sync::ShardedLock;
-use nalgebra::{Rotation3, Vector3};
+use nalgebra::{Matrix3, Rotation3, Vector3};
 use segments::CkSegment;
+
+/// Largest difference, in days, between a requested time and the time of the CK
+/// pointing used for it: about 1 ms.
+pub(crate) const POINTING_TOLERANCE_DAYS: f64 = 1e-8;
+
+/// Most frames a chain of CK reference frames may hold, such as a camera on a platform on
+/// a spacecraft; a longer chain is taken to be a cycle.
+const MAX_FRAME_CHAIN: usize = 8;
 
 /// A collection of segments.
 #[derive(Debug, Default)]
 pub struct CkCollection {
     /// Collection of CK file information
-    pub(crate) segments: Vec<CkSegment>,
+    segments: Vec<CkSegment>,
 }
 
 impl CkCollection {
-    /// Given an CK filename, load all the segments present inside of it.
-    /// These segments are added to the CK singleton in memory.
+    /// Load all the segments of a CK file into this collection, ahead of those already
+    /// loaded.
     ///
     /// # Errors
     /// [`Error::IOError`] if the file is not a CK formatted file.
@@ -104,15 +112,22 @@ impl CkCollection {
 
     /// Return the pointing of an instrument at a time.
     ///
-    /// `instrument_id` is the NAIF ID of the instrument. The spacecraft clock ID is `instrument_id / 1000`. The
-    /// function uses the first segment in precedence order that holds pointing
-    /// at `time`. It returns the time of the pointing and the instrument frame.
+    /// `instrument_id` is the NAIF ID of the instrument, and its spacecraft clock ID is
+    /// `instrument_id / 1000`. The function uses the first segment in precedence order
+    /// that holds pointing at `time`. It returns the time of the pointing and the
+    /// instrument frame. A segment defined relative to another CK frame, such as a
+    /// camera relative to its spacecraft, is chained through the pointing of that frame
+    /// at the same time, recursively, so the returned frame is relative to the first
+    /// non-CK frame of the chain (an inertial frame for the usual kernels).
     ///
     /// # Errors
     /// - [`Error::LockFailed`] if the SCLK singleton lock is not available.
     /// - [`Error::ValueError`] if no SCLK clock is loaded for the spacecraft.
     /// - [`Error::Bounds`] if no loaded segment holds pointing for the
-    ///   instrument at `time`.
+    ///   instrument at `time`, or for a reference frame in its chain within
+    ///   about 1 ms (1e-8 days) of the pointing time.
+    /// - [`Error::ValueError`] if the chain of reference frames loops, or holds more
+    ///   than 8 frames.
     /// - [`Error::IOError`] or [`Error::ValueError`] if the selected segment
     ///   is a type 6 segment with a malformed mini-segment.
     pub fn try_get_frame(
@@ -120,28 +135,71 @@ impl CkCollection {
         time: Time<TDB>,
         instrument_id: i32,
     ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
-        let sclk = LOADED_SCLK.try_read()?;
-        let spice_id = instrument_id / 1000;
-        let tick = sclk.try_time_to_tick(spice_id, time)?;
+        self.frame_in_chain(time, instrument_id, 0)
+    }
 
-        // The first segment in precedence order that holds pointing at the
-        // time is used, as in SPICE. Inside a gap of a later segment, an
-        // earlier segment can then supply the pointing. The code does not
-        // extrapolate across a gap, so a time that no segment covers has no
-        // pointing.
-        for segment in &self.segments {
-            let array: &CkArray = segment.into();
-            if array.instrument_id == instrument_id
-                && array.contains(tick)
-                && segment.has_data_at(tick)
-            {
-                return segment.try_get_orientation(instrument_id, time);
-            }
+    /// [`Self::try_get_frame`] for the frame `depth` links down a chain of reference
+    /// frames, so that a chain which loops back on itself ends in an error.
+    fn frame_in_chain(
+        &self,
+        time: Time<TDB>,
+        instrument_id: i32,
+        depth: usize,
+    ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
+        if depth >= MAX_FRAME_CHAIN {
+            return Err(Error::ValueError(format!(
+                "CK frames form a cycle, or a chain of more than {MAX_FRAME_CHAIN} frames, \
+                 ending at instrument {instrument_id}."
+            )));
         }
-
-        Err(Error::Bounds(format!(
-            "Instrument ({instrument_id}) has no CK pointing at the target JD."
-        )))?
+        // The pointing of this frame, read under the clock lock. The lock is released
+        // before any reference frame is looked up, so the chain never holds two reads
+        // of it.
+        let (pointing_time, frame) = {
+            let sclk = LOADED_SCLK.try_read()?;
+            let tick = sclk.try_time_to_tick(instrument_id / 1000, time)?;
+            // The first segment in precedence order that holds pointing at the
+            // time is used, as in SPICE. Inside a gap of a later segment, an
+            // earlier segment can then supply the pointing. The code does not
+            // extrapolate across a gap, so a time that no segment covers has no
+            // pointing.
+            let segment = self
+                .segments
+                .iter()
+                .find(|segment| {
+                    let array: &CkArray = (*segment).into();
+                    array.instrument_id == instrument_id
+                        && array.contains(tick)
+                        && segment.has_data_at(tick)
+                })
+                .ok_or_else(|| {
+                    Error::Bounds(format!(
+                        "Instrument ({instrument_id}) has no CK pointing at the target JD."
+                    ))
+                })?;
+            segment.try_get_orientation(instrument_id, time, tick, &sclk)?
+        };
+        if frame.reference_frame_id >= 0 {
+            return Ok((pointing_time, frame));
+        }
+        let (ref_time, base) =
+            self.frame_in_chain(frame.time, frame.reference_frame_id, depth + 1)?;
+        if (ref_time - frame.time).elapsed.abs() > POINTING_TOLERANCE_DAYS {
+            return Err(Error::Bounds(format!(
+                "Reference frame ID {} has no CK data at the requested time.",
+                frame.reference_frame_id
+            )));
+        }
+        // d(R_ref R) / dt = dR_ref R + R_ref dR
+        let rate = frame.rotation_rate.unwrap_or_else(Matrix3::zeros);
+        let base_rate = base.rotation_rate.unwrap_or_else(Matrix3::zeros);
+        let chained = NonInertialFrame::from_rotations(
+            frame.time,
+            base.rotation * frame.rotation,
+            Some(base_rate * frame.rotation.matrix() + base.rotation.matrix() * rate),
+            base.reference_frame_id,
+        );
+        Ok((pointing_time, chained))
     }
 
     /// Return a list of all loaded instrument ids.
@@ -160,7 +218,8 @@ impl CkCollection {
             .collect()
     }
 
-    /// For a given NAIF ID, return all increments of time which are currently loaded.
+    /// The loaded segments of an instrument, each as `(instrument id, reference frame
+    /// id, segment type, start tick, end tick)`, with the ticks on the spacecraft clock.
     #[must_use]
     pub fn available_info(&self, instrument_id: i32) -> Vec<(i32, i32, i32, f64, f64)> {
         self.segments
@@ -204,7 +263,7 @@ pub static LOADED_CK: std::sync::LazyLock<ShardedLock<CkCollection>> =
 /// The frame rotation is the inverse of the C-matrix. The rotation rate is the
 /// time derivative of that rotation, `[w]x R`, in units of 1/day. The rotation
 /// rate is `None` when `angular_velocity` is `None`.
-pub(crate) fn instrument_frame(
+fn instrument_frame(
     time: Time<TDB>,
     c_matrix: Rotation3<f64>,
     angular_velocity: Option<[f64; 3]>,
@@ -223,8 +282,15 @@ mod tests {
     use crate::daf::DafFile;
     use nalgebra::Matrix3;
 
-    /// Write and load a constant-rate test clock with ID -999 on TDB.
+    /// Write and load a constant-rate test clock with ID -999 on TDB, once per test
+    /// binary: tests run in parallel, and one writing the file while another reads it
+    /// gave a partial file.
     fn load_test_clock() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(write_and_load_test_clock);
+    }
+
+    fn write_and_load_test_clock() {
         let path = std::env::temp_dir().join("kete_ck_precedence_test.tsc");
         let text = "KPL/SCLK\n\\begindata\n\
             SCLK_KERNEL_ID = ( @2011-02-01/13:14:41 )\n\
@@ -495,12 +561,9 @@ mod tests {
             .unwrap();
 
         let rotations_at = |jd| {
-            let (_, frame) = LOADED_CK
-                .read()
-                .unwrap()
-                .try_get_frame(Time::new(jd), -999_011)
-                .unwrap();
-            crate::frame_ext::rotations_to_equatorial_full(&frame).unwrap()
+            let ck = LOADED_CK.read().unwrap();
+            let (_, frame) = ck.try_get_frame(Time::new(jd), -999_011).unwrap();
+            frame.rotations_to_equatorial().unwrap()
         };
         let jd = SPIN_JD0 + 0.25;
         let (_, rate) = rotations_at(jd);

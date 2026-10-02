@@ -9,9 +9,9 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use kete_core::constants;
 use kete_core::forces::{DustNonGrav, NonGravKind, ParameterMask};
 use kete_core::prelude::*;
+use kete_core::propagation::{NBody, propagate_n_body_vec};
 use kete_core::state::propagate_with_stm;
-use kete_spice::propagation::{SpkNBody, propagate_n_body_vec};
-use kete_spice::spk::LOADED_SPK;
+use kete_spice::ephemeris::SpiceEphemeris;
 use pprof::criterion::{Output, PProfProfiler};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
@@ -54,51 +54,45 @@ static HYPERBOLIC: std::sync::LazyLock<State<Ecliptic>> = std::sync::LazyLock::n
 });
 
 fn prop_n_body_radau(state: State<Ecliptic>, dt: f64) {
-    let spk = LOADED_SPK.read().unwrap();
+    let eph = SpiceEphemeris::loaded().unwrap();
     let jd = state.epoch + dt;
     let eq_state: State<Equatorial, SSB> = state.into_frame().try_into().unwrap();
     let _ = eq_state
-        .propagate_with(&SpkNBody::new(&spk, false), jd)
+        .propagate_with(&NBody::new(&eph, false), jd)
         .unwrap();
 }
 
 fn prop_n_body_vec_radau(state: State<Ecliptic>, dt: f64) {
-    let spk = &LOADED_SPK.read().unwrap();
+    let eph = SpiceEphemeris::loaded().unwrap();
+    let spk = eph.spk();
     let state_sun = spk.try_to_sun(state).unwrap();
     let jd = state_sun.epoch + dt;
     let states: Vec<State<Equatorial, SunCenter>> = vec![state_sun.into_frame(); 100];
     let non_gravs: Vec<Option<ParameterMask<kete_core::forces::JplCometNonGrav>>> = vec![None; 100];
-    let _ = propagate_n_body_vec(states, jd, None, non_gravs).unwrap();
+    let _ = propagate_n_body_vec(&eph, states, jd, None, non_gravs).unwrap();
 }
 
 fn prop_n_body_radau_par(state: &State<Ecliptic>, dt: f64) {
-    let spk = LOADED_SPK.read().unwrap();
+    let eph = SpiceEphemeris::loaded().unwrap();
     let states: Vec<State<_>> = (0..100).map(|_| state.clone()).collect();
     let _tmp: Vec<_> = states
         .into_par_iter()
         .map(|s| {
             let jd = s.epoch + dt;
             let eq: State<Equatorial, SSB> = s.into_frame().try_into().unwrap();
-            eq.propagate_with(&SpkNBody::new(&spk, false), jd).unwrap()
+            eq.propagate_with(&NBody::new(&eph, false), jd).unwrap()
         })
         .collect();
 }
 
-fn prop_n_body_force(state: State<Ecliptic>, dt: f64) {
-    let spk = LOADED_SPK.read().unwrap();
-    let jd = state.epoch + dt;
-    let eq_state: State<Equatorial, SSB> = state.into_frame().try_into().unwrap();
-    let force = SpkNBody::new(&spk, false);
-    let _ = eq_state.propagate_with(&force, jd).unwrap();
-}
-
 const DUST_BETA: f64 = 1e-3;
 
-fn prop_n_body_force_dust(state: State<Ecliptic>, dt: f64) {
-    let spk = LOADED_SPK.read().unwrap();
+/// Variational propagation with a dust non-grav, its parameter free.
+fn prop_n_body_stm_dust(state: State<Ecliptic>, dt: f64) {
+    let eph = SpiceEphemeris::loaded().unwrap();
     let jd = state.epoch + dt;
     let eq_state: State<Equatorial, SSB> = state.into_frame().try_into().unwrap();
-    let force = SpkNBody::with_non_grav(&spk, false, Some(DustNonGrav));
+    let force = NBody::with_non_grav(&eph, false, Some(DustNonGrav));
     let _ = propagate_with_stm(
         &force,
         eq_state.pos.into(),
@@ -112,22 +106,22 @@ fn prop_n_body_force_dust(state: State<Ecliptic>, dt: f64) {
 
 /// Plain propagation with a frozen non-grav, as used by `propagate_n_body`.
 fn prop_n_body_frozen_dust(state: State<Ecliptic>, dt: f64) {
-    let spk = LOADED_SPK.read().unwrap();
+    let eph = SpiceEphemeris::loaded().unwrap();
     let jd = state.epoch + dt;
     let eq_state: State<Equatorial, SSB> = state.into_frame().try_into().unwrap();
     let frozen = ParameterMask::all_fixed(NonGravKind::Dust(DustNonGrav), vec![DUST_BETA]).unwrap();
-    let force = SpkNBody::with_non_grav(&spk, false, Some(frozen));
+    let force = NBody::with_non_grav(&eph, false, Some(frozen));
     let _ = eq_state.propagate_with(&force, jd).unwrap();
 }
 
 /// Variational propagation through an all-free mask, as used by the fitter and
 /// `UncertainState`.
 fn prop_n_body_stm_masked_dust(state: State<Ecliptic>, dt: f64) {
-    let spk = LOADED_SPK.read().unwrap();
+    let eph = SpiceEphemeris::loaded().unwrap();
     let jd = state.epoch + dt;
     let eq_state: State<Equatorial, SSB> = state.into_frame().try_into().unwrap();
     let mask = ParameterMask::all_free(NonGravKind::Dust(DustNonGrav));
-    let force = SpkNBody::with_non_grav(&spk, false, Some(mask));
+    let force = NBody::with_non_grav(&eph, false, Some(mask));
     let _ = propagate_with_stm(
         &force,
         eq_state.pos.into(),
@@ -141,10 +135,10 @@ fn prop_n_body_stm_masked_dust(state: State<Ecliptic>, dt: f64) {
 
 /// Variational propagation under gravity alone.
 fn prop_n_body_stm(state: State<Ecliptic>, dt: f64) {
-    let spk = LOADED_SPK.read().unwrap();
+    let eph = SpiceEphemeris::loaded().unwrap();
     let jd = state.epoch + dt;
     let eq_state: State<Equatorial, SSB> = state.into_frame().try_into().unwrap();
-    let force = SpkNBody::new(&spk, false);
+    let force = NBody::new(&eph, false);
     let _ = propagate_with_stm(
         &force,
         eq_state.pos.into(),
@@ -156,23 +150,10 @@ fn prop_n_body_stm(state: State<Ecliptic>, dt: f64) {
     .unwrap();
 }
 
-fn prop_n_body_force_par(state: &State<Ecliptic>, dt: f64) {
-    let spk = LOADED_SPK.read().unwrap();
-    let states: Vec<State<_>> = (0..100).map(|_| state.clone()).collect();
-    let _tmp: Vec<_> = states
-        .into_par_iter()
-        .map(|s| {
-            let jd = s.epoch + dt;
-            let eq: State<Equatorial, SSB> = s.into_frame().try_into().unwrap();
-            let force = SpkNBody::new(&spk, false);
-            eq.propagate_with(&force, jd).unwrap()
-        })
-        .collect();
-}
-
 /// Benchmark functions for the propagation algorithms
 #[allow(clippy::missing_panics_doc, reason = "Benchmarking only")]
 fn n_body_prop(c: &mut Criterion) {
+    kete_spice::test_data::ensure_test_spk();
     let mut nbody_group = c.benchmark_group("N-Body");
 
     for state in [
@@ -188,27 +169,15 @@ fn n_body_prop(c: &mut Criterion) {
             b.iter(|| prop_n_body_radau(black_box(s.clone()), black_box(1000.0)));
         });
 
-        let _ =
-            nbody_group.bench_with_input(BenchmarkId::new("Single-Force", name), &state, |b, s| {
-                b.iter(|| prop_n_body_force(black_box(s.clone()), black_box(1000.0)));
-            });
-
         let _ = nbody_group.bench_with_input(BenchmarkId::new("Parallel", name), &state, |b, s| {
             b.iter(|| prop_n_body_radau_par(black_box(s), black_box(1000.0)));
         });
 
-        let _ = nbody_group.bench_with_input(
-            BenchmarkId::new("Parallel-Force", name),
-            &state,
-            |b, s| b.iter(|| prop_n_body_force_par(black_box(s), black_box(1000.0))),
-        );
-
-        // Dust non-grav: short arc (100 days) since variational
-        // integration is ~3x more expensive than the bare propagation
-        // and the question is per-step overhead, not arc length.
-        let _ = nbody_group.bench_with_input(BenchmarkId::new("Dust", name), &state, |b, s| {
+        // The variational runs use a 100 day arc: the question is the per-step
+        // overhead, not the arc length.
+        let _ = nbody_group.bench_with_input(BenchmarkId::new("STM-Dust", name), &state, |b, s| {
             b.iter(|| {
-                prop_n_body_force_dust(black_box(s.clone()), black_box(100.0));
+                prop_n_body_stm_dust(black_box(s.clone()), black_box(100.0));
             });
         });
 
@@ -234,6 +203,7 @@ fn n_body_prop(c: &mut Criterion) {
 /// Benchmark functions for the propagation algorithms
 #[allow(clippy::missing_panics_doc, reason = "Benchmarking only")]
 pub fn n_body_prop_vec(c: &mut Criterion) {
+    kete_spice::test_data::ensure_test_spk();
     let mut nbody_group = c.benchmark_group("N-Body-Vec");
 
     for state in [

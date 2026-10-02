@@ -203,34 +203,30 @@ impl NonInertialFrame {
 
     /// Return the rotation matrix and rotation rate for this frame in the equatorial frame.
     ///
-    /// This only supports inertial reference frames (Equatorial = 1, Ecliptic = 17).
-    /// For CK-dependent non-inertial reference frames, use
-    /// `kete_spice::frame_ext::rotations_to_equatorial_full`.
+    /// The reference frame must be one of the SPICE inertial frames J2000 (1), FK4 (3),
+    /// GALACTIC (13) or ECLIPJ2000 (17). A frame defined relative to another body frame
+    /// is resolved by its provider, see
+    /// [`Ephemeris::try_frame`](crate::ephemeris::Ephemeris::try_frame).
     ///
     /// # Errors
-    /// Fails when reference frame is not found or supported.
+    /// Fails when the reference frame is not one of those four.
     pub fn rotations_to_equatorial(&self) -> KeteResult<(Rotation3<f64>, Matrix3<f64>)> {
-        if self.reference_frame_id == 1 {
-            // Equatorial frame
-            Ok((
-                self.rotation,
-                self.rotation_rate.unwrap_or_else(Matrix3::zeros),
-            ))
-        } else if self.reference_frame_id == 17 {
-            // Ecliptic frame
-            let rot = self.rotation;
-            let dt_rot = self.rotation_rate.unwrap_or_else(Matrix3::zeros);
-            Ok((
-                *ECLIPTIC_EQUATORIAL_ROT * rot,
-                *ECLIPTIC_EQUATORIAL_ROT * dt_rot,
-            ))
-        } else {
-            // Unsupported frame -- use kete_spice for CK-dependent resolution
-            Err(Error::Bounds(format!(
-                "Reference frame ID {} is not supported in kete_core. Use kete_spice::frame_ext::rotations_to_equatorial_full for CK-dependent frames.",
-                self.reference_frame_id
-            )))
-        }
+        let to_equatorial: &Rotation3<f64> = match self.reference_frame_id {
+            1 => &IDENTITY_ROT,
+            3 => &FK4_EQUATORIAL_ROT,
+            13 => &GALACTIC_EQUATORIAL_ROT,
+            17 => &ECLIPTIC_EQUATORIAL_ROT,
+            id => {
+                return Err(Error::Bounds(format!(
+                    "Reference frame ID {id} is not supported. Supported inertial references \
+                     are J2000 (1), FK4 (3), GALACTIC (13) and ECLIPJ2000 (17); a frame \
+                     relative to a body frame is resolved by the ephemeris that provides it \
+                     (Ephemeris::try_frame)."
+                )));
+            }
+        };
+        let rate = self.rotation_rate.unwrap_or_else(Matrix3::zeros);
+        Ok((to_equatorial * self.rotation, to_equatorial * rate))
     }
 
     /// Convert a vector from the equatorial frame to this frame.
@@ -365,5 +361,29 @@ mod tests {
             let (_, new_vel) = frame.from_equatorial(pos, vel).unwrap();
             assert!((new_vel - rot.inverse() * vel).norm() <= 10.0 * f64::EPSILON);
         }
+    }
+
+    /// Each supported inertial reference applies its frame's rotation to equatorial;
+    /// any other reference is an error.
+    #[test]
+    fn rotations_to_equatorial_by_reference() {
+        let rot = Rotation3::from_euler_angles(0.1, -0.2, 0.3);
+        let rate = Matrix3::new(0.0, -1e-3, 0.0, 1e-3, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let frame = |id| {
+            NonInertialFrame::from_rotations(Time::<TDB>::new(2_451_545.0), rot, Some(rate), id)
+        };
+        let cases = [
+            (1, Equatorial::rotation_to_equatorial()),
+            (3, FK4::rotation_to_equatorial()),
+            (13, Galactic::rotation_to_equatorial()),
+            (17, Ecliptic::rotation_to_equatorial()),
+        ];
+        for (id, to_eq) in cases {
+            let (r, dr) = frame(id).rotations_to_equatorial().unwrap();
+            assert!((r.matrix() - (to_eq * rot).matrix()).norm() < 1e-15);
+            assert!((dr - to_eq * rate).norm() < 1e-15);
+        }
+        assert!(frame(2).rotations_to_equatorial().is_err());
+        assert!(frame(-1000).rotations_to_equatorial().is_err());
     }
 }

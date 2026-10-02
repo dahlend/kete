@@ -44,8 +44,6 @@ use kete_core::frames::NonInertialFrame;
 use kete_core::time::{TDB, Time};
 use nalgebra::UnitQuaternion;
 
-use crate::sclk::LOADED_SCLK;
-
 /// Piecewise pointing data made of type 5 style mini-segments.
 ///
 /// The mini-segments occupy the start of the segment. The interval bounds, the
@@ -210,8 +208,9 @@ impl CkSegmentType6 {
     pub(crate) fn try_get_orientation(
         &self,
         time: Time<TDB>,
+        tick: f64,
     ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
-        let (quaternion, rates) = self.get_quaternion_at_time(time)?;
+        let (quaternion, rates) = self.get_quaternion_at_tick(tick)?;
 
         let frame = instrument_frame(
             time,
@@ -223,29 +222,8 @@ impl CkSegmentType6 {
         Ok((time, frame))
     }
 
-    /// Return the interpolated attitude and angular velocity at `time`.
-    ///
-    /// The angular velocity is in radians per second.
-    ///
-    /// # Errors
-    /// - [`Error::Bounds`] if the SCLK singleton lock is not available.
-    /// - [`Error::ValueError`] if no SCLK clock is loaded for the spacecraft.
-    /// - The errors of [`Self::get_quaternion_at_tick`].
-    pub(crate) fn get_quaternion_at_time(
-        &self,
-        time: Time<TDB>,
-    ) -> KeteResult<(UnitQuaternion<f64>, Option<[f64; 3]>)> {
-        let sclk = LOADED_SCLK
-            .try_read()
-            .map_err(|_| Error::Bounds("Failed to read SCLK data.".into()))?;
-        let tick = sclk.try_time_to_tick(self.array.naif_id, time)?;
-        self.get_quaternion_at_tick(tick)
-    }
-
-    /// Return the interpolated attitude at an encoded clock tick.
-    ///
-    /// This function is separate from [`Self::get_quaternion_at_time`] so that
-    /// tests can run the interpolation without an SCLK kernel.
+    /// Return the interpolated attitude and angular velocity (radians per second) at
+    /// an encoded clock tick.
     ///
     /// # Errors
     /// - [`Error::Bounds`] if the segment holds no pointing at `tick`.

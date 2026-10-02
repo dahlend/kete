@@ -1,4 +1,4 @@
-use kete_spice::prelude::{LOADED_CK, rotations_to_equatorial_full};
+use kete_spice::prelude::LOADED_CK;
 use pyo3::{PyResult, pyfunction};
 
 use crate::{
@@ -77,14 +77,13 @@ pub fn ck_sc_frame_to_equatorial(
     jd: PyTime,
     vec: [f64; 3],
 ) -> PyResult<(PyTime, PyVector)> {
+    // A frame defined relative to another CK frame, such as a camera relative to
+    // its spacecraft, comes back resolved through that chain.
     let (time, frame) = LOADED_CK
         .try_read()
         .unwrap()
         .try_get_frame(jd.0, instrument_id)?;
-
-    // A CK frame can be defined relative to another CK frame, such as a camera
-    // relative to its spacecraft. The full chain resolves that case.
-    let (rot, _) = rotations_to_equatorial_full(&frame)?;
+    let (rot, _) = frame.rotations_to_equatorial()?;
     let pos = rot.transform_vector(&vec.into());
 
     let vec = PyVector::new(pos.into(), PyFrames::Equatorial);
@@ -128,14 +127,13 @@ pub fn ck_sc_equatorial_to_frame(
     vec: VectorLike,
 ) -> PyResult<(PyTime, [f64; 3])> {
     let vec = vec.into_vector(PyFrames::Equatorial);
+    // A frame defined relative to another CK frame, such as a camera relative to
+    // its spacecraft, comes back resolved through that chain.
     let (time, frame) = LOADED_CK
         .try_read()
         .unwrap()
         .try_get_frame(jd.0, instrument_id)?;
-
-    // A CK frame can be defined relative to another CK frame, such as a camera
-    // relative to its spacecraft. The full chain resolves that case.
-    let (rot, _) = rotations_to_equatorial_full(&frame)?;
+    let (rot, _) = frame.rotations_to_equatorial()?;
     let pos = rot.inverse_transform_vector(&vec.into());
 
     Ok((time.into(), pos.into()))

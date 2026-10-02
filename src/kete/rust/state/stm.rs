@@ -1,6 +1,7 @@
 //! State Transition matrix computation
 use kete_core::prelude::*;
-use kete_spice::prelude::compute_state_transition;
+use kete_core::propagation::compute_state_transition;
+use kete_spice::ephemeris::SpiceEphemeris;
 use kete_spice::spk::LOADED_SPK;
 use nalgebra::DMatrix;
 use pyo3::{PyResult, Python, pyfunction};
@@ -74,8 +75,10 @@ pub fn compute_stm_py(
         .transpose()?;
     let jd = jd_end.into();
 
-    let (final_state_ssb, sens) =
-        py.detach(|| compute_state_transition(&ssb_state, jd, include_asteroids, non_grav))?;
+    let (final_state_ssb, sens) = py.detach(|| {
+        let eph = SpiceEphemeris::loaded()?;
+        compute_state_transition(&eph, &ssb_state, jd, include_asteroids, non_grav)
+    })?;
 
     // Re-center back to original center
     let mut final_state: State<Equatorial> = final_state_ssb.into();

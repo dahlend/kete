@@ -32,6 +32,7 @@ use super::type2::CkSegmentType2;
 use super::type3::CkSegmentType3;
 use super::type5::CkSegmentType5;
 use super::type6::CkSegmentType6;
+use crate::sclk::SclkCollection;
 use kete_core::errors::{Error, KeteResult};
 use kete_core::frames::NonInertialFrame;
 use kete_core::time::{TDB, Time};
@@ -45,10 +46,14 @@ pub(crate) enum CkSegment {
 }
 
 impl CkSegment {
+    /// The pointing at `time`, whose clock tick (`tick`, from the segment's clock in
+    /// `sclk`) the caller has already computed.
     pub(crate) fn try_get_orientation(
         &self,
         instrument_id: i32,
         time: Time<TDB>,
+        tick: f64,
+        sclk: &SclkCollection,
     ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
         let arr_ref: &CkArray = self.into();
         if arr_ref.instrument_id != instrument_id {
@@ -59,10 +64,10 @@ impl CkSegment {
         }
 
         match self {
-            Self::Type3(seg) => seg.try_get_orientation(time),
-            Self::Type2(seg) => seg.try_get_orientation(time),
-            Self::Type5(seg) => seg.try_get_orientation(time),
-            Self::Type6(seg) => seg.try_get_orientation(time),
+            Self::Type3(seg) => seg.try_get_orientation(time, tick, sclk),
+            Self::Type2(seg) => seg.try_get_orientation(time, tick),
+            Self::Type5(seg) => seg.try_get_orientation(time, tick, sclk),
+            Self::Type6(seg) => seg.try_get_orientation(time, tick),
         }
     }
 }

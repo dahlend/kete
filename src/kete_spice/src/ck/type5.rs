@@ -40,7 +40,7 @@
 use super::array::stored_count;
 use super::{CkArray, instrument_frame};
 use crate::interpolation::{hermite_interpolation, lagrange_interpolation_both};
-use crate::sclk::LOADED_SCLK;
+use crate::sclk::SclkCollection;
 use kete_core::errors::{Error, KeteResult};
 use kete_core::frames::NonInertialFrame;
 use kete_core::time::{TDB, Time};
@@ -157,8 +157,10 @@ impl CkSegmentType5 {
     pub(crate) fn try_get_orientation(
         &self,
         time: Time<TDB>,
+        tick: f64,
+        sclk: &SclkCollection,
     ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
-        let (time, quaternion, rates) = self.get_quaternion_at_time(time)?;
+        let (time, quaternion, rates) = self.get_quaternion_at_time(time, tick, sclk)?;
 
         let frame = instrument_frame(
             time,
@@ -177,7 +179,6 @@ impl CkSegmentType5 {
     /// a segment with one record. Otherwise it is the request time.
     ///
     /// # Errors
-    /// - [`Error::Bounds`] if the SCLK singleton lock is not available.
     /// - [`Error::ValueError`] if no SCLK clock is loaded for the spacecraft.
     ///
     /// # Panics
@@ -185,12 +186,9 @@ impl CkSegmentType5 {
     pub(crate) fn get_quaternion_at_time(
         &self,
         time: Time<TDB>,
+        tick: f64,
+        sclk: &SclkCollection,
     ) -> KeteResult<(Time<TDB>, UnitQuaternion<f64>, Option<[f64; 3]>)> {
-        let sclk = LOADED_SCLK
-            .try_read()
-            .map_err(|_| Error::Bounds("Failed to read SCLK data.".into()))?;
-        let tick = sclk.try_time_to_tick(self.array.naif_id, time)?;
-
         if self.n_records == 1 {
             let t = sclk.try_tick_to_time(self.array.naif_id, self.record_times()[0])?;
             let (quat, rates) = self.get_quaternion_at_tick(tick);
@@ -202,9 +200,6 @@ impl CkSegmentType5 {
     }
 
     /// Return the interpolated attitude at an encoded clock tick.
-    ///
-    /// This function is separate from [`Self::get_quaternion_at_time`] so that
-    /// tests can run the interpolation without an SCLK kernel.
     ///
     /// # Panics
     /// Panics if the segment has more than one interval, and `tick` is at or

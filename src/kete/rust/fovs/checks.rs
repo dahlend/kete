@@ -1,13 +1,12 @@
 use super::*;
 use kete_core::errors::{Error, KeteResult};
 use kete_core::forces::NonGravMask;
-use kete_core::fov::{FOV, FovLike, check_statics};
+use kete_core::fov::{FOV, FovLike, check_ephemeris, check_statics, check_visible};
 use kete_core::frames::Equatorial;
+use kete_core::propagation::NBody;
 use kete_core::state::State;
 use kete_core::time::{TDB, Time};
-use kete_spice::fov_checks;
-use kete_spice::propagation::SpkNBody;
-use kete_spice::spk::LOADED_SPK;
+use kete_spice::ephemeris::SpiceEphemeris;
 use pyo3::prelude::*;
 use rayon::prelude::*;
 
@@ -101,9 +100,8 @@ pub fn fov_checks_py(
     let mut big_step_non_gravs = non_gravs.clone();
     let mut visible: Vec<PySimultaneousStates> = Vec::new();
 
-    let spk = LOADED_SPK
-        .read()
-        .expect("Failed to read the loaded spice kernels.");
+    let eph = SpiceEphemeris::loaded()?;
+    let spk = eph.spk();
 
     // Propagate every state to the given time, dropping any which fail. Failures drop
     // the state and its non-gravitational model together, keeping the two lists aligned.
@@ -114,7 +112,7 @@ pub fn fov_checks_py(
                 .zip(non_gravs)
                 .filter_map(|(state, non_grav)| {
                     let ssb = spk.try_to_ssb(state).ok()?;
-                    let force = SpkNBody::with_non_grav(&spk, include_asteroids, non_grav.clone());
+                    let force = NBody::with_non_grav(&eph, include_asteroids, non_grav.clone());
                     let moved = ssb.propagate_with(&force, jd);
                     moved.ok().map(|moved| (moved.into(), non_grav))
                 })
@@ -149,7 +147,8 @@ pub fn fov_checks_py(
                 .map(|chunk| {
                     let mut found = Vec::new();
                     for fov in chunk {
-                        let seen = fov_checks::check_visible(
+                        let seen = check_visible(
+                            &eph,
                             fov,
                             &states,
                             &non_gravs,
@@ -189,16 +188,21 @@ pub fn fov_spk_checks_py(
 ) -> PyResult<Vec<PySimultaneousStates>> {
     fovs.sort_by(|a, b| a.jd().jd().total_cmp(&b.jd().jd()));
 
+    // The SPK read guard is taken and dropped while the GIL is released, so a thread
+    // holding the GIL and waiting to load kernels cannot block on it.
     let visible: Vec<Vec<PySimultaneousStates>> = py.detach(|| {
-        fovs.into_par_iter()
-            .map(|fov| {
-                let fov = fov.unwrap();
-                Ok(fov_checks::check_spks(&fov, &obj_ids)?
-                    .into_iter()
-                    .filter_map(|pop| pop.map(|p| PySimultaneousStates(Box::new(p))))
-                    .collect())
-            })
-            .collect::<KeteResult<_>>()
+        let eph = SpiceEphemeris::loaded()?;
+        Ok::<_, Error>(
+            fovs.into_par_iter()
+                .map(|fov| {
+                    let fov = fov.unwrap();
+                    check_ephemeris(&eph, &fov, &obj_ids)
+                        .into_iter()
+                        .filter_map(|pop| pop.map(|p| PySimultaneousStates(Box::new(p))))
+                        .collect()
+                })
+                .collect(),
+        )
     })?;
     Ok(visible.into_iter().flatten().collect())
 }

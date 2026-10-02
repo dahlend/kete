@@ -35,6 +35,7 @@ fn spice_get_state(jd: f64) {
 
 #[allow(clippy::missing_panics_doc, reason = "Benchmarking only")]
 pub fn spice_benchmark(c: &mut Criterion) {
+    kete_spice::test_data::ensure_test_spk();
     let spice = &LOADED_SPK.try_read().unwrap();
     let state = spice
         .try_get_state_with_center(5, 2451545.0.into(), 10)

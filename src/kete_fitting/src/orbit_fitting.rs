@@ -36,9 +36,9 @@ use kete_core::forces::{NonGravMask, ParameterizedForce};
 use kete_core::frames::{Equatorial, SSB};
 use kete_core::kepler::light_time_correct;
 use kete_core::prelude::{Error, KeteResult, State, UncertainState};
+use kete_core::propagation::{NBody, compute_state_transition};
 use kete_core::time::{TDB, Time};
-use kete_spice::prelude::{LOADED_SPK, compute_state_transition};
-use kete_spice::propagation::SpkNBody;
+use kete_spice::prelude::{LOADED_SPK, SpiceEphemeris};
 use nalgebra::{DMatrix, DVector};
 use rayon::prelude::*;
 
@@ -451,10 +451,10 @@ fn propagate_helio(
     mask: Option<&NonGravMask>,
     ng_values: &[f64],
 ) -> KeteResult<State<Equatorial, SSB>> {
-    let spk = LOADED_SPK.try_read()?;
+    let eph = SpiceEphemeris::loaded()?;
     let frozen = mask.map(|m| m.fixed_at(ng_values)).transpose()?;
     state.propagate_with(
-        &SpkNBody::with_non_grav(&spk, include_extended, frozen),
+        &NBody::with_non_grav(&eph, include_extended, frozen),
         jd_final,
     )
 }
@@ -1250,6 +1250,7 @@ fn stm_sweep_inner(
 
         if (obs_epoch - state_cur.epoch).elapsed.abs() > 1e-12 {
             let (new_state, phi_k) = compute_state_transition(
+                &SpiceEphemeris::loaded()?,
                 &state_cur,
                 obs_epoch,
                 include_asteroids,

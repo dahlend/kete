@@ -1,24 +1,23 @@
 //! Batched N-body propagation over a packed `(planets | objects)` vector.
 //!
-//! [`vec_accel`] is the SPK-free ODE function: planets and objects are
+//! [`vec_accel`] is the ephemeris-free ODE function: planets and objects are
 //! integrated together as a single packed `DVector`, with massive bodies
 //! occupying the leading `N` slots and test particles following.
 //! [`propagate_n_body_vec`] is the high-level entry point that builds the
 //! initial vector from an input list of states and returns the final
 //! states at `jd_final`.
 
-use kete_core::errors::Error;
-use kete_core::forces::{GravParams, ParameterMask, ParameterizedForce};
-use kete_core::frames::{Equatorial, SunCenter};
-use kete_core::integrators::RadauIntegrator;
-use kete_core::prelude::{Desig, KeteResult};
-use kete_core::state::State;
-use kete_core::time::{TDB, Time};
+use crate::desigs::Desig;
+use crate::ephemeris::Ephemeris;
+use crate::errors::{Error, KeteResult};
+use crate::forces::{GravParams, ParameterMask, ParameterizedForce};
+use crate::frames::{Equatorial, SunCenter};
+use crate::integrators::RadauIntegrator;
+use crate::state::State;
+use crate::time::{TDB, Time};
 use nalgebra::DVector;
 
-use crate::spk::LOADED_SPK;
-
-/// Metadata for [`vec_accel`]: the SPK-free bulk N-body ODE function.
+/// Metadata for [`vec_accel`]: the ephemeris-free bulk N-body ODE function.
 ///
 /// Generic over the inner non-gravitational force `F`. Callers commit to
 /// one concrete force type per batch.
@@ -65,7 +64,7 @@ where
     nalgebra::DefaultAllocator:
         nalgebra::allocator::Allocator<D> + nalgebra::allocator::Allocator<D, nalgebra::U2>,
 {
-    use kete_core::frames::Vector;
+    use crate::frames::Vector;
     use nalgebra::{U1, Vector3};
     use std::ops::AddAssign;
 
@@ -91,9 +90,10 @@ where
             if exact_eval && (rel_pos.norm() as f32 <= radius) {
                 Err(Error::Impact(grav_params.naif_id, time))?;
             }
-            // This path has no CK access. A polyhedron or spherical harmonic
-            // body with a CK orientation gives an error inside its switch
-            // radius. It does not fall back to the point-mass term.
+            // No orientation is passed: the massive bodies here are the simplified
+            // planets, point masses or oblate, which need none. A body with a
+            // frame-oriented shaped field would give an error inside its switch
+            // radius, never a silent point mass.
             grav_params.add_acceleration(&mut accel_working, &rel_pos, &rel_vel, None)?;
             if (grav_params.naif_id == 10)
                 && (idx >= n_massive)
@@ -118,7 +118,7 @@ where
     Ok(accel)
 }
 
-/// Propagate objects with N-body mechanics and no SPK queries during the
+/// Propagate objects with N-body mechanics and no ephemeris queries during the
 /// integration.
 ///
 /// The function integrates the Sun and the planet system barycenters together
@@ -128,8 +128,8 @@ where
 /// `states` are the objects, all at one epoch. `jd_final` is the end time.
 /// `planet_states` holds Sun-centered states of the bodies in
 /// [`GravParams::simplified_planets`], in that order, at the epoch of
-/// `states`. If it is `None`, the function reads these states from the loaded
-/// SPK. `non_gravs` holds one optional non-gravitational force per object.
+/// `states`. If it is `None`, the function reads these states from `ephem`.
+/// `non_gravs` holds one optional non-gravitational force per object.
 ///
 /// The function returns the final object states and the final planet states,
 /// both Sun-centered at `jd_final`.
@@ -139,8 +139,8 @@ where
 ///   from `states.len()`, or if the epochs of `states` differ.
 /// - `Error::ValueError` if `planet_states` has the wrong length, or if its
 ///   first state has an epoch different from `states`.
-/// - The error of the SPK lock, or of an SPK query for the planet states when
-///   `planet_states` is `None`.
+/// - The error of an ephemeris query for the planet states when `planet_states`
+///   is `None`.
 /// - `Error::Impact` if an object impacts a massive body.
 /// - `Error::Convergence` if the integrator does not converge.
 ///
@@ -148,13 +148,15 @@ where
 /// Does not panic. Each `unwrap` on `states.first()` and
 /// `planet_states.first()` follows a length check that guarantees a first
 /// element.
-pub fn propagate_n_body_vec<F>(
+pub fn propagate_n_body_vec<E, F>(
+    ephem: &E,
     states: Vec<State<Equatorial, SunCenter>>,
     jd_final: Time<TDB>,
     planet_states: Option<Vec<State<Equatorial>>>,
     non_gravs: Vec<Option<ParameterMask<F>>>,
 ) -> KeteResult<(Vec<State<Equatorial>>, Vec<State<Equatorial>>)>
 where
+    E: Ephemeris,
     F: ParameterizedForce<Frame = Equatorial, Center = SunCenter>,
 {
     if states.is_empty() {
@@ -175,15 +177,13 @@ where
     let mut pos: Vec<f64> = Vec::new();
     let mut vel: Vec<f64> = Vec::new();
     let mut desigs: Vec<Desig> = Vec::new();
-    let spk = &LOADED_SPK.try_read()?;
-
     let planets = GravParams::simplified_planets();
     let planet_states = if let Some(ps) = planet_states {
         ps
     } else {
         let mut planet_states = Vec::new();
         for obj in planets {
-            let planet = spk.try_get_state_with_center::<Equatorial>(obj.naif_id, jd_init, 10)?;
+            let planet = ephem.try_get_state_with_center(obj.naif_id, jd_init, 10)?;
             planet_states.push(planet);
         }
         planet_states
@@ -248,48 +248,48 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::propagation::SpkNBody;
-    use itertools::Itertools;
-    use kete_core::forces::ParameterizedForce;
-    use kete_core::frames::Vector;
+    use crate::constants::GMS;
+    use crate::ephemeris::test_ephemeris::SunAndOne;
+    use crate::frames::Vector;
+    use crate::propagation::NBody;
 
+    /// The packed batch acceleration of a test particle equals the [`NBody`]
+    /// acceleration with the same massive bodies at the same states.
     #[test]
-    fn check_accelerations_equal() {
-        crate::test_data::ensure_test_spk();
-        let spk = &LOADED_SPK.try_read().unwrap();
-        let jd = 2451545.0.into();
+    fn batch_accel_matches_n_body() {
+        let eph = SunAndOne {
+            radius: 5.2,
+            rate: 0.0015,
+        };
+        let jd = Time::<TDB>::new(2_451_545.0);
+        let massive = [
+            GravParams::new(10, GMS, 0.004_65),
+            GravParams::new(5, 1e-3 * GMS, 0.000_5),
+        ];
         let mut pos: Vec<f64> = Vec::new();
         let mut vel: Vec<f64> = Vec::new();
-
-        let planets = GravParams::planets();
-        for obj in planets {
-            let planet = spk
-                .try_get_state_with_center::<Equatorial>(obj.naif_id, jd, 0)
-                .unwrap();
-            pos.append(&mut planet.pos.into());
-            vel.append(&mut planet.vel.into());
+        for obj in &massive {
+            let s = eph.try_get_state_with_center(obj.naif_id, jd, 0).unwrap();
+            pos.append(&mut s.pos.into());
+            vel.append(&mut s.vel.into());
         }
-
-        pos.append(&mut [0.0, 0.0, 0.5].into());
-        vel.append(&mut [0.0, 0.0, 1.0].into());
+        pos.extend([0.0, 0.0, 0.5]);
+        vel.extend([0.0, 0.0, 1.0]);
 
         let accel = vec_accel(
             jd,
-            &pos.into(),
-            &vel.into(),
-            &mut AccelVecMeta::<kete_core::forces::JplCometNonGrav> {
+            &DVector::from(pos),
+            &DVector::from(vel),
+            &mut AccelVecMeta::<crate::forces::JplCometNonGrav> {
                 non_gravs: vec![None],
-                massive_obj: planets,
+                massive_obj: &massive,
             },
             false,
         )
-        .unwrap()
-        .iter()
-        .copied()
-        .skip(planets.len() * 3)
-        .collect_vec();
-
-        let accel2 = SpkNBody::new(spk, false)
+        .unwrap();
+        let mut force = NBody::new(&eph, false);
+        force.massive_obj = massive.to_vec();
+        let accel2 = force
             .accel(
                 jd,
                 &Vector::<Equatorial>::new([0.0, 0.0, 0.5]),
@@ -299,8 +299,8 @@ mod tests {
                 false,
             )
             .unwrap();
-        assert!((accel[0] - accel2[0]).abs() < 1e-10);
-        assert!((accel[1] - accel2[1]).abs() < 1e-10);
-        assert!((accel[2] - accel2[2]).abs() < 1e-10);
+        for i in 0..3 {
+            assert!((accel[massive.len() * 3 + i] - accel2[i]).abs() < 1e-15);
+        }
     }
 }

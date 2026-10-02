@@ -1141,9 +1141,9 @@ mod tests {
     use kete_core::desigs::Desig;
     use kete_core::frames::{SSB, SunCenter};
     use kete_core::kepler::{light_time_correct, propagate_two_body};
+    use kete_core::propagation::NBody;
     use kete_core::time::{TDB, Time};
-    use kete_spice::prelude::{LOADED_SPK, SpkNBody};
-
+    use kete_spice::prelude::SpiceEphemeris;
     use kete_spice::test_data::ensure_test_spk;
 
     fn make_state(pos: [f64; 3], vel: [f64; 3], jd: f64) -> State<Equatorial, SunCenter> {
@@ -1553,7 +1553,9 @@ mod tests {
             }
         }
 
-        let spk = LOADED_SPK.try_read().unwrap();
+        let eph = SpiceEphemeris::loaded().unwrap();
+
+        let spk = eph.spk();
         let noise_arcsec = 1.0_f64;
         let noise_rad = noise_arcsec * std::f64::consts::PI / (180.0 * 3600.0);
         let mut rng = Rng::new(77777);
@@ -1561,7 +1563,7 @@ mod tests {
         let observations: Vec<AstrometricObservation> = epochs
             .iter()
             .map(|&jd| {
-                let force = SpkNBody::new(&spk, false);
+                let force = NBody::new(&eph, false);
                 let obj_at = spk
                     .try_to_ssb(obj.clone())
                     .expect("Center conversion failed")
@@ -1618,7 +1620,7 @@ mod tests {
         let obj_at = {
             let obj_ssb = spk.try_to_ssb(obj.clone()).unwrap();
             obj_ssb
-                .propagate_with(&SpkNBody::new(&spk, false), results[0].1.epoch)
+                .propagate_with(&NBody::new(&eph, false), results[0].1.epoch)
                 .unwrap()
         };
         let best = best_candidate(&results, &obj_at);

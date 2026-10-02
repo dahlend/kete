@@ -251,4 +251,47 @@ mod tests {
             NonInertialFrame::from_euler::<'Z', 'X', 'Z'>(0.0, [0.2, 0.25, 0.3], [0.0; 3], 17);
         assert!((frame.rotation.matrix() - expected.rotation.matrix()).norm() < 1e-14);
     }
+
+    /// A segment relative to J2000 (1) evaluates like one relative to ECLIPJ2000 (17);
+    /// the stored reference frame decides the rotation to equatorial.
+    #[test]
+    fn pck_type2_reference_frame_is_kept() {
+        use crate::pck::segments::PckSegment;
+        use kete_core::frames::{Ecliptic, InertialFrame};
+
+        let angles = [0.2, 0.25, 0.3];
+        let cdata: Vec<f64> = angles.iter().flat_map(|&a| [a, 0.0]).collect();
+        let time = Time::from_j2000_seconds(0.5 * 86400.0);
+        let frame_with_reference = |reference_frame_id| {
+            let array = PckSegmentType2::new_array(
+                3000,
+                reference_frame_id,
+                &cdata,
+                1,
+                0.0,
+                86400.0,
+                1,
+                0.0,
+                86400.0,
+                "constant record",
+            )
+            .unwrap();
+            PckSegment::try_from(array)
+                .unwrap()
+                .try_get_orientation(3000, time)
+                .unwrap()
+        };
+        let stored = NonInertialFrame::from_euler::<'Z', 'X', 'Z'>(0.0, angles, [0.0; 3], 1);
+
+        let j2000 = frame_with_reference(1);
+        assert_eq!(j2000.reference_frame_id, 1);
+        let (rot, _) = j2000.rotations_to_equatorial().unwrap();
+        assert!((rot.matrix() - stored.rotation.matrix()).norm() < 1e-14);
+
+        let ecliptic = frame_with_reference(17);
+        assert_eq!(ecliptic.reference_frame_id, 17);
+        let (rot, _) = ecliptic.rotations_to_equatorial().unwrap();
+        let expected = Ecliptic::rotation_to_equatorial() * stored.rotation;
+        assert!((rot.matrix() - expected.matrix()).norm() < 1e-14);
+    }
 }

@@ -44,24 +44,23 @@ use nom::{
 use std::{collections::HashMap, fs, str::FromStr};
 
 use kete_core::{
-    cache::cache_path,
     errors::{Error, KeteResult},
     time::{TDB, TT, Time},
 };
 
-/// A collection of segments.
+/// The loaded spacecraft clocks, by NAIF id of the spacecraft.
 #[derive(Debug, Default)]
 pub struct SclkCollection {
-    /// Collection of SCLK file information
     clocks: HashMap<i32, Sclk>,
 }
 
 impl SclkCollection {
-    /// Given an SCLK filename, load all the segments present inside of it.
-    /// These segments are added to the SCLK singleton in memory.
+    /// Load the clock defined in an SCLK file into this collection, replacing any
+    /// clock already loaded for the same spacecraft.
     ///
     /// # Errors
-    /// [`Error::IOError`] if the file is not a SCLK formatted file.
+    /// [`Error::IOError`] if the file cannot be read or is not SCLK formatted;
+    /// [`Error::ValueError`] if a required entry is missing or inconsistent.
     pub fn load_file(&mut self, filename: &str) -> KeteResult<()> {
         let contents = fs::read_to_string(filename)?;
         let (_, tokens) = parse_sclk_string(&contents)
@@ -75,15 +74,11 @@ impl SclkCollection {
 
     /// Convert a spacecraft clock string into a [`Time<TDB>`].
     ///
-    /// # Parameters
-    /// ``id``: i32
-    ///   The NAIF ID of the spacecraft clock.
-    /// ``sclk_string``: &str
-    ///   The spacecraft clock string to convert.
+    /// `id` is the NAIF ID of the spacecraft clock, and `sclk_string` the clock
+    /// string to convert.
     ///
     /// # Errors
-    /// [`Error::ValueError`] if the SCLK clock for the given ID is not found.
-    ///
+    /// [`Error::ValueError`] if no SCLK clock is loaded for `id`.
     pub fn string_get_time(&self, id: i32, sclk_string: &str) -> KeteResult<Time<TDB>> {
         if let Some(sclk) = self.clocks.get(&id) {
             sclk.string_to_time(sclk_string)
@@ -94,36 +89,12 @@ impl SclkCollection {
         }
     }
 
-    /// Convert a spacecraft clock string into a clock tick (SCLK float).
+    /// Convert a clock tick (SCLK float) into a [`Time<TDB>`].
     ///
-    /// # Parameters
-    /// ``id``: i32
-    ///     The NAIF ID of the spacecraft clock.
-    /// ``sclk_string``: &str
-    ///     The spacecraft clock string to convert.
+    /// `id` is the NAIF ID of the spacecraft clock.
     ///
     /// # Errors
-    /// [`Error::ValueError`] if the SCLK clock for the given ID is not found.
-    pub fn try_string_to_tick(&self, id: i32, sclk_string: &str) -> KeteResult<f64> {
-        if let Some(sclk) = self.clocks.get(&id) {
-            sclk.string_to_tick(sclk_string).map(|x| x.1)
-        } else {
-            Err(Error::ValueError(format!(
-                "SCLK clock for spacecraft ID {id} not found."
-            )))
-        }
-    }
-
-    /// Convert clock tick into a time [`Time<TDB>`].
-    ///
-    /// # Parameters
-    /// ``id``: i32
-    ///     The NAIF ID of the spacecraft clock.
-    /// ``clock_tick``: f64
-    ///     The clock tick (SCLK float) to convert.
-    ///
-    /// # Errors
-    /// [`Error::ValueError`] if the SCLK clock for the given ID is not found.
+    /// [`Error::ValueError`] if no SCLK clock is loaded for `id`.
     pub fn try_tick_to_time(&self, id: i32, clock_tick: f64) -> KeteResult<Time<TDB>> {
         if let Some(sclk) = self.clocks.get(&id) {
             Ok(sclk.tick_to_time(clock_tick))
@@ -151,7 +122,7 @@ impl SclkCollection {
         }
     }
 
-    /// Delete all segments in the SCLK singleton, equivalent to unloading all files.
+    /// Remove all loaded clocks, equivalent to unloading all files.
     pub fn reset(&mut self) {
         *self = Self::default();
     }
@@ -160,45 +131,6 @@ impl SclkCollection {
     #[must_use]
     pub fn loaded_objects(&self) -> Vec<i32> {
         self.clocks.keys().copied().collect()
-    }
-
-    /// Load files in the cache directory.
-    ///
-    /// # Errors
-    /// [`Error::IOError`] if the cache directory cannot be found or read.
-    pub fn load_cache(&mut self) -> KeteResult<()> {
-        let cache = cache_path("kernels")?;
-        self.load_directory(&cache)?;
-        Ok(())
-    }
-
-    /// Load all SCLK files from a directory.
-    ///
-    /// The function loads only files whose names end in `.tsc`, in any letter
-    /// case. The files load in sorted path order. If two files define the same
-    /// clock, the clock from the last file in sorted order is kept. Thus the
-    /// result is the same on every machine. The function skips directory
-    /// entries that cannot be read, and paths that are not valid UTF-8. If a
-    /// file fails to load, the function prints an error to stderr and
-    /// continues.
-    ///
-    /// # Errors
-    /// Returns [`Error::IOError`] if the directory cannot be read.
-    pub fn load_directory(&mut self, directory: &str) -> KeteResult<()> {
-        let mut files: Vec<_> = fs::read_dir(directory)?
-            .filter_map(|entry| entry.ok().map(|e| e.path()))
-            .filter(|path| path.is_file())
-            .collect();
-        files.sort();
-        for path in files {
-            if let Some(filename) = path.to_str()
-                && filename.to_lowercase().ends_with(".tsc")
-                && let Err(err) = self.load_file(filename)
-            {
-                eprintln!("Failed to load SCLK file {filename}: {err}");
-            }
-        }
-        Ok(())
     }
 }
 
@@ -219,14 +151,9 @@ pub static LOADED_SCLK: std::sync::LazyLock<ShardedLock<SclkCollection>> =
 #[derive(Debug, Clone, PartialEq)]
 struct Sclk {
     /// NAIF id of the spacecraft.
-    pub naif_id: i32,
+    naif_id: i32,
 
-    /// Kernel ID, which is a string identifier for the kernel.
-    pub kernel_id: String,
-
-    // Required Fields
     n_fields: u32,
-    moduli: Vec<u64>,
     offsets: Vec<u64>,
 
     partition_start: Vec<f64>,
@@ -331,14 +258,16 @@ impl Sclk {
         Ok((partition, tick))
     }
 
-    /// Go through the coefficients and find the clock rate for a given spacecraft clock.
+    /// The coefficient row (tick, parallel time, rate) that holds `tick`: the last one
+    /// starting at or before it.
     fn find_tick_rate(&self, tick: f64) -> [f64; 3] {
         let mut idx = self.coefficients.partition_point(|probe| probe[0] <= tick);
         idx = idx.saturating_sub(1);
         self.coefficients[idx]
     }
 
-    /// Go through the coefficients and find the clock rate for a given spacecraft clock.
+    /// The coefficient row (tick, parallel time, rate) that holds the parallel time
+    /// `par_time`: the last one starting at or before it.
     fn find_parallel_time_rate(&self, par_time: f64) -> [f64; 3] {
         let mut idx = self
             .coefficients
@@ -591,7 +520,7 @@ impl TryFrom<Vec<SclkToken>> for Sclk {
 
         // validation
         let naif_id = naif_id.ok_or(Error::ValueError("SCLK NAIF ID is missing.".into()))?;
-        let kernel_id = kernel_id.ok_or(Error::ValueError("SCLK Kernel ID is missing.".into()))?;
+        let _ = kernel_id.ok_or(Error::ValueError("SCLK Kernel ID is missing.".into()))?;
         let n_fields = n_fields.ok_or(Error::ValueError("SCLK N_FIELDS is missing.".into()))?;
         let moduli = moduli.ok_or(Error::ValueError("SCLK MODULI is missing.".into()))?;
         let offsets = offsets.ok_or(Error::ValueError("SCLK OFFSETS is missing.".into()))?;
@@ -638,9 +567,7 @@ impl TryFrom<Vec<SclkToken>> for Sclk {
 
         Ok(Self {
             naif_id,
-            kernel_id,
             n_fields,
-            moduli,
             offsets,
             partition_start,
             partition_end,
@@ -698,10 +625,9 @@ fn parse_key_suffix(input: &str) -> IResult<&str, (&str, Option<u32>)> {
 
 /// SCLK file data is stored as key value pairs, this parses a specific key and its value.
 ///
-///
-/// `Thing_a_b_10 = ( foo bar baz)`
-/// Parses into `(Some(10), "foo bar \n baz")`
-///
+/// `Thing_a_b_10 = ( foo bar baz )` parses into `(Some(10), "foo bar baz")`: the id
+/// suffix, and the contents between the parentheses with the outer whitespace
+/// trimmed.
 fn parse_line<'a>(
     input: &'a str,
     has_id: bool,
@@ -738,7 +664,7 @@ fn sp<'a, E: ParseError<&'a str>>(i: &'a str) -> IResult<&'a str, &'a str, E> {
     take_while(move |c| chars.contains(c))(i)
 }
 
-pub(crate) fn parse_num<T: FromStr>(input: &str) -> IResult<&str, T> {
+fn parse_num<T: FromStr>(input: &str) -> IResult<&str, T> {
     let chars = ".Ee+-";
     map_res(
         take_while1(|c: char| c.is_ascii_digit() || chars.contains(c)),

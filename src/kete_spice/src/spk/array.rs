@@ -313,7 +313,7 @@ mod tests {
         }
     }
 
-    /// Same test for 20000042.bsp (7 Type-21 segments, 60 comment records).
+    /// Byte-for-byte test for 20000042.bsp, a CSPICE-written file with Type 21 segments.
     #[test]
     fn byte_for_byte_match_20000042() {
         use std::io::Cursor;
@@ -350,7 +350,7 @@ mod tests {
         }
     }
 
-    /// Byte-for-byte test for wise.bsp (1296 Type-13 segments, 38 MB).
+    /// Byte-for-byte test for wise.bsp, a CSPICE-written file with Type 13 segments.
     #[test]
     fn byte_for_byte_match_wise() {
         use std::io::Cursor;

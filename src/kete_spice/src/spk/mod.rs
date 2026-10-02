@@ -18,7 +18,7 @@
 
 mod array;
 pub mod repack;
-pub(crate) mod segments;
+mod segments;
 pub mod type1;
 pub mod type10;
 pub mod type13;
@@ -116,9 +116,10 @@ pub struct SpkCollection {
 }
 
 impl SpkCollection {
-    /// Get the raw state from the loaded SPK files.
-    /// This state will have the center and frame of whatever was originally loaded
-    /// into the file.
+    /// State of `id` at `jd` from the highest precedence segment that covers it.
+    ///
+    /// The state is relative to the center of that segment, not converted to any
+    /// other center.
     ///
     /// # Errors
     /// Fails when the id or jd is not found in the [`SpkCollection`].
@@ -335,7 +336,11 @@ impl SpkCollection {
         State::<T, SunCenter>::try_from(state)
     }
 
-    /// For a given NAIF ID, return all increments of time which are currently loaded.
+    /// Time ranges covered by the loaded segments for `id`, sorted by start time.
+    ///
+    /// Each entry is `(start, end, center_id, frame_id, segment_type)`. Segments that
+    /// overlap, or whose gap is under about a millisecond, are merged into one entry,
+    /// which keeps the center, frame and type of the first segment in it.
     #[must_use]
     pub fn available_info(&self, id: i32) -> Vec<(Time<TDB>, Time<TDB>, i32, i32, i32)> {
         let mut segment_info = Vec::<(Time<TDB>, Time<TDB>, i32, i32, i32)>::new();
@@ -399,7 +404,7 @@ impl SpkCollection {
     /// without any merging or buffering.  Useful for the repacker to know
     /// precisely where source data exists.
     #[must_use]
-    pub fn segment_boundaries(&self, id: i32) -> Vec<(f64, f64)> {
+    pub(crate) fn segment_boundaries(&self, id: i32) -> Vec<(f64, f64)> {
         let mut bounds = Vec::new();
         for seg in &self.planet_segments {
             let arr: &SpkArray = seg.into();
@@ -417,7 +422,7 @@ impl SpkCollection {
         bounds
     }
 
-    /// Return a hash set of all unique identifies loaded in the SPKs.
+    /// Return a hash set of all unique identifiers loaded in the SPKs.
     /// If include centers is true, then this additionally includes the IDs for the
     /// center IDs. For example, if ``include_centers`` is false, then `0` will never
     /// be included in the loaded objects set, as 0 is a privileged position at the
@@ -517,30 +522,33 @@ impl SpkCollection {
         *self = Self::default();
     }
 
-    /// Load the core files.
+    /// Load the files in the core kernel cache directory.
     ///
     /// # Errors
-    /// May fail if there are IO or Parsing errors.
+    /// Fails when the cache directory cannot be found or read. A file that fails to
+    /// parse is reported with ``eprintln`` and skipped.
     pub fn load_core(&mut self) -> KeteResult<()> {
         let cache = cache_path("kernels/core")?;
         self.load_directory(&cache)?;
         Ok(())
     }
 
-    /// Load files in the cache directory.
+    /// Load the files in the kernel cache directory.
     ///
     /// # Errors
-    /// May fail if there are IO or Parsing errors.
+    /// Fails when the cache directory cannot be found or read. A file that fails to
+    /// parse is reported with ``eprintln`` and skipped.
     pub fn load_cache(&mut self) -> KeteResult<()> {
         let cache = cache_path("kernels")?;
         self.load_directory(&cache)?;
         Ok(())
     }
 
-    /// Load all SPK files from a directory.
+    /// Load all SPK files in a directory, in sorted filename order.
     ///
     /// # Errors
-    /// May fail if there are IO or Parsing errors.
+    /// Fails when the directory cannot be read. A file that fails to parse is reported
+    /// with ``eprintln`` and skipped.
     pub fn load_directory(&mut self, directory: &str) -> KeteResult<()> {
         // Later files take precedence, so the load order matters. `read_dir`
         // does not specify an order. Sorted order gives the same result on
@@ -570,8 +578,7 @@ impl SpkCollection {
     /// If no ID is found, an error is returned.
     /// If multiple IDs are found, an error is returned.
     pub fn try_id_from_name(&mut self, name: &str) -> KeteResult<NaifId> {
-        // check first for cache hit with a read only lock
-
+        // Names resolved earlier are cached.
         if let Some(id) = self.naif_ids.get(name.to_lowercase().as_str()) {
             return Ok(id.clone());
         }

@@ -29,7 +29,7 @@
 
 use super::array::stored_count;
 use super::{CkArray, instrument_frame};
-use crate::sclk::LOADED_SCLK;
+use crate::sclk::SclkCollection;
 use kete_core::errors::{Error, KeteResult};
 use kete_core::frames::NonInertialFrame;
 use kete_core::time::{TDB, Time};
@@ -68,7 +68,7 @@ impl CkSegmentType3 {
                 .get_unchecked(idx * self.rec_size..(idx + 1) * self.rec_size);
             Type3RecordView {
                 quaternion: rec[..4].try_into().unwrap_unchecked(),
-                accel: &rec[4..],
+                rates: &rec[4..],
             }
         }
     }
@@ -113,13 +113,15 @@ impl CkSegmentType3 {
     pub(crate) fn try_get_orientation(
         &self,
         time: Time<TDB>,
+        tick: f64,
+        sclk: &SclkCollection,
     ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
-        let (time, quaternion, accel) = self.get_quaternion_at_time(time)?;
+        let (time, quaternion, rates) = self.get_quaternion_at_time(time, tick, sclk)?;
 
         let frame = instrument_frame(
             time,
             quaternion.to_rotation_matrix(),
-            accel,
+            rates,
             self.array.reference_frame_id,
         );
 
@@ -139,19 +141,18 @@ impl CkSegmentType3 {
     /// angular velocity if the records hold it. The time is the request time
     /// when the function interpolates. Otherwise it is the record time.
     ///
+    /// `tick` is `time` on the segment's clock in `sclk`.
+    ///
     /// # Errors
-    /// - [`Error::Bounds`] if the SCLK singleton lock is not available.
     /// - [`Error::ValueError`] if no SCLK clock is loaded for the spacecraft.
     /// - [`Error::Bounds`] if no interval covers the time.
     pub(crate) fn get_quaternion_at_time(
         &self,
         time: Time<TDB>,
+        tick: f64,
+        sclk: &SclkCollection,
     ) -> KeteResult<(Time<TDB>, UnitQuaternion<f64>, Option<[f64; 3]>)> {
-        let sclk = LOADED_SCLK
-            .try_read()
-            .map_err(|_| Error::Bounds("Failed to read SCLK data.".into()))?;
         let naif_id = self.array.naif_id;
-        let tick = sclk.try_time_to_tick(naif_id, time)?;
 
         let times = self.record_times();
         let starts = self.interval_starts();
@@ -329,7 +330,7 @@ impl CkSegmentType3 {
 
 struct Type3RecordView<'a> {
     quaternion: &'a [f64; 4],
-    accel: &'a [f64],
+    rates: &'a [f64],
 }
 
 impl From<Type3RecordView<'_>> for (Quaternion<f64>, Option<[f64; 3]>) {
@@ -338,21 +339,17 @@ impl From<Type3RecordView<'_>> for (Quaternion<f64>, Option<[f64; 3]>) {
             &[a, b, c, d] => Quaternion::new(a, b, c, d),
         };
 
-        let accel = match record.accel {
+        let rates = match record.rates {
             &[a, b, c] => Some([a, b, c]),
             _ => None,
         };
-        (quaternion, accel)
+        (quaternion, rates)
     }
 }
 
 impl TryFrom<CkArray> for CkSegmentType3 {
     type Error = Error;
 
-    #[allow(
-        clippy::cast_sign_loss,
-        reason = "cast should work except when file is incorrectly formatted"
-    )]
     fn try_from(array: CkArray) -> Result<Self, Self::Error> {
         let len = array.daf.len();
         if len < 2 {

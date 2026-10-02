@@ -38,9 +38,10 @@
 //! [`GravParams::add_acceleration`] and [`GravParams::add_acceleration_and_jacobians`] evaluate all of a
 //! body's terms on the relative state.
 //!
-//! `kete_spice` implements the complete model used for n-body orbit propagation,
-//! `SpkNBody`: it looks up each massive body in the loaded SPK files, evaluates that
-//! body's gravity, and evaluates an optional non-grav force on the Sun-relative state.
+//! The complete model used for n-body orbit propagation is
+//! [`NBody`](crate::propagation::NBody): it looks up each massive body in an
+//! [`Ephemeris`](crate::ephemeris::Ephemeris), evaluates that body's gravity, and
+//! evaluates an optional non-grav force on the Sun-relative state.
 
 mod gravity;
 mod nongrav;

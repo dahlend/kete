@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CK segment types 5 and 6 (MEX/Rosetta attitude interpolation).
 - `kernel_reload` also loads CK and SCLK kernels, detecting each file's type from
   its header, and raises `ValueError` for unsupported kernel types.
+- PCK segments relative to J2000, FK4 or GALACTIC, as well as ECLIPJ2000.
 
 ### Changed
 
@@ -33,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and invalid scales raise `ValueError`.
 - Rust: geometry types moved to `kete_core::geometry`, from `kete_flux` and
   `kete_core::fov`.
+- Rust: N-body propagation and FOV checks moved to `kete_core`, generic over its new
+  `Ephemeris` (states and frames); `SpiceEphemeris` serves it. `SpkNBody` is now `NBody`.
+- `register_polyhedron` and `register_spherical_harmonics` accept PCK frames for `frame_id`,
+  as well as CK frames.
 - `fit_model` is faster, using an analytic gradient.
 - Rust: removed `ModelResults::reflected_fraction` and `lambertian_vis_scale_factor`,
   and reordered the arguments of `neatm_facet_temperature`.

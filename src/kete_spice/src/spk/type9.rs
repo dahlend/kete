@@ -6,8 +6,7 @@ use super::SpkArray;
 use crate::interpolation::lagrange_interpolation;
 use kete_core::constants::AU_KM;
 use kete_core::errors::Error;
-use kete_core::frames::InertialFrame;
-use kete_core::prelude::{Desig, KeteResult, State};
+use kete_core::prelude::KeteResult;
 use kete_core::time::{TDB, Time};
 
 /// Lagrange Interpolation (Uneven Time Steps)
@@ -97,68 +96,6 @@ impl SpkSegmentType9 {
             data,
             segment_name.to_string(),
         ))
-    }
-
-    /// Create a Type 9 SPK array from [`State`] objects.
-    ///
-    /// The function converts epochs to TDB seconds from J2000, positions from
-    /// AU to km, and velocities from AU/day to km/s. It takes the object ID and
-    /// the center ID from the first state. [`Self::new_array`] describes
-    /// `frame_id`, `degree`, and `segment_name`.
-    ///
-    /// # Errors
-    /// Returns [`Error::ValueError`] in these cases:
-    /// - `states` is empty.
-    /// - The designation of the first state is not a NAIF integer ID.
-    /// - `degree` is outside `[1, 27]`.
-    /// - `states` holds fewer than `degree + 1` entries.
-    /// - The epochs are not strictly increasing.
-    pub fn from_states<T: InertialFrame>(
-        states: &[State<T>],
-        frame_id: i32,
-        degree: u32,
-        segment_name: &str,
-    ) -> KeteResult<SpkArray> {
-        let Some(first) = states.first() else {
-            return Err(Error::ValueError("Type 9: need at least one state.".into()));
-        };
-        #[allow(
-            clippy::wildcard_enum_match_arm,
-            reason = "Only NAIF IDs are valid here."
-        )]
-        let object_id = match &first.desig {
-            Desig::Naif(id) => *id,
-            _ => {
-                return Err(Error::ValueError(
-                    "Type 9: states must have NAIF integer designations.".into(),
-                ));
-            }
-        };
-        let center_id = first.center_id();
-        let raw_states: Vec<(f64, [f64; 3], [f64; 3])> = states
-            .iter()
-            .map(|s| {
-                let pos: [f64; 3] = s.pos.into();
-                let vel: [f64; 3] = s.vel.into();
-                (
-                    s.epoch.j2000_seconds(),
-                    [pos[0] * AU_KM, pos[1] * AU_KM, pos[2] * AU_KM],
-                    [
-                        vel[0] * AU_KM / 86400.0,
-                        vel[1] * AU_KM / 86400.0,
-                        vel[2] * AU_KM / 86400.0,
-                    ],
-                )
-            })
-            .collect();
-        Self::new_array(
-            object_id,
-            center_id,
-            frame_id,
-            &raw_states,
-            degree,
-            segment_name,
-        )
     }
 
     #[inline(always)]

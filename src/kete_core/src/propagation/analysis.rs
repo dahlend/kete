@@ -1,25 +1,23 @@
-//! Trajectory analysis tools requiring SPICE ephemeris data.
+//! Trajectory analysis that needs body states or N-body propagation.
 //!
-//! Complements `kete_core::analysis` (B-plane, orbital elements) with
-//! functions that need live SPK lookups or N-body propagation.
+//! Complements [`analysis`](crate::analysis) (B-plane, orbital elements) with
+//! functions that query an [`Ephemeris`](crate::ephemeris::Ephemeris).
 
-use kete_core::elements::CometElements;
-use kete_core::errors::Error;
-use kete_core::frames::{Ecliptic, Equatorial};
-use kete_core::prelude::KeteResult;
-use kete_core::state::State;
-use kete_core::time::{TDB, Time};
+use super::n_body::NBody;
+use crate::elements::CometElements;
+use crate::ephemeris::Ephemeris;
+use crate::errors::{Error, KeteResult};
+use crate::frames::{Ecliptic, Equatorial};
+use crate::state::State;
+use crate::time::{TDB, Time};
 use nalgebra::Vector3;
-
-use super::spk_n_body::SpkNBody;
-use crate::spk::{LOADED_SPK, SpkCollection};
 
 /// Find the epoch and distance of closest approach between two objects.
 ///
 /// Both objects are propagated using full N-body mechanics over the search
-/// window. If either state's designation corresponds to a body available in
-/// the loaded SPK kernels, the SPK ephemeris is used directly instead of
-/// N-body propagation.
+/// window, with body states from `ephem`. If either state's designation
+/// corresponds to a body that `ephem` covers, its ephemeris is used directly
+/// instead of N-body propagation.
 ///
 /// A coarse grid scan followed by golden-section refinement locates the
 /// minimum separation.
@@ -27,7 +25,8 @@ use crate::spk::{LOADED_SPK, SpkCollection};
 /// # Errors
 /// Returns an error if the states have different center IDs or the time
 /// window is non-positive.
-pub fn closest_approach(
+pub fn closest_approach<E: Ephemeris>(
+    ephem: &E,
     state_a: &State<Equatorial>,
     state_b: &State<Equatorial>,
     jd_start: Time<TDB>,
@@ -45,8 +44,6 @@ pub fn closest_approach(
         return Err(Error::ValueError("jd_end must be after jd_start".into()));
     }
 
-    let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-
     // Adaptive sample count: at least 20 samples per orbital period of the
     // shorter-period object, minimum 200 total.
     let elem_a = CometElements::from_state(&state_a.clone().into_frame::<Ecliptic>())?;
@@ -60,8 +57,8 @@ pub fn closest_approach(
     };
     let dt = span / n_samples as f64;
 
-    let mut cur_a = state_at_time(state_a, jd_start, &spk, include_extended)?;
-    let mut cur_b = state_at_time(state_b, jd_start, &spk, include_extended)?;
+    let mut cur_a = state_at_time(state_a, jd_start, ephem, include_extended)?;
+    let mut cur_b = state_at_time(state_b, jd_start, ephem, include_extended)?;
 
     let mut best_idx = 0;
     let mut best_dist = (Vector3::from(cur_a.pos) - Vector3::from(cur_b.pos)).norm();
@@ -72,8 +69,8 @@ pub fn closest_approach(
         let t = jd_start + i as f64 * dt;
         let old_a = cur_a.clone();
         let old_b = cur_b.clone();
-        cur_a = state_at_time(&cur_a, t, &spk, include_extended)?;
-        cur_b = state_at_time(&cur_b, t, &spk, include_extended)?;
+        cur_a = state_at_time(&cur_a, t, ephem, include_extended)?;
+        cur_b = state_at_time(&cur_b, t, ephem, include_extended)?;
         let d = (Vector3::from(cur_a.pos) - Vector3::from(cur_b.pos)).norm();
         if d < best_dist {
             best_dist = d;
@@ -100,8 +97,8 @@ pub fn closest_approach(
         }
         let t = jd_start + off;
         let (sa, sb) = match (
-            state_at_time(ref_a, t, &spk, include_extended),
-            state_at_time(ref_b, t, &spk, include_extended),
+            state_at_time(ref_a, t, ephem, include_extended),
+            state_at_time(ref_b, t, ephem, include_extended),
         ) {
             (Ok(a), Ok(b)) => (a, b),
             (Err(e), _) | (_, Err(e)) => {
@@ -120,37 +117,37 @@ pub fn closest_approach(
         })?;
 
     let final_jd = jd_start + best_off;
-    let sa = state_at_time(ref_a, final_jd, &spk, include_extended)?;
-    let sb = state_at_time(ref_b, final_jd, &spk, include_extended)?;
+    let sa = state_at_time(ref_a, final_jd, ephem, include_extended)?;
+    let sb = state_at_time(ref_b, final_jd, ephem, include_extended)?;
     Ok((
         final_jd,
         (Vector3::from(sa.pos) - Vector3::from(sb.pos)).norm(),
     ))
 }
 
-/// Get the state of a body at a given time, using the SPK if possible,
+/// Get the state of a body at a given time, from the ephemeris if possible,
 /// otherwise propagating with N-body.
 ///
-/// If the state's designation maps to a NAIF ID that the SPK can serve at
-/// `time`, the SPK ephemeris is used directly. Otherwise the state is
-/// propagated forward under N-body gravity.
-fn state_at_time(
+/// If the state's designation maps to a NAIF ID that `ephem` covers at
+/// `time`, its ephemeris is used directly. Otherwise the state is propagated
+/// forward under N-body gravity.
+fn state_at_time<E: Ephemeris>(
     state: &State<Equatorial>,
     time: Time<TDB>,
-    spk: &SpkCollection,
+    ephem: &E,
     include_extended: bool,
 ) -> KeteResult<State<Equatorial>> {
     let center = state.center_id();
     if let Some(id) = state.desig.clone().naif_id()
-        && let Ok(st) = spk.try_get_state_with_center(id, time, center)
+        && let Ok(st) = ephem.try_get_state_with_center(id, time, center)
     {
         return Ok(st);
     }
-    let ssb = spk.try_to_ssb(state.clone())?;
-    let ssb_result = ssb.propagate_with(&SpkNBody::new(spk, include_extended), time)?;
+    let ssb = ephem.try_to_ssb(state.clone())?;
+    let ssb_result = ssb.propagate_with(&NBody::new(ephem, include_extended), time)?;
     let mut result: State<Equatorial> = ssb_result.into();
     if center != 0 {
-        spk.try_change_center(&mut result, center)?;
+        ephem.try_change_center(&mut result, center)?;
     }
     Ok(result)
 }

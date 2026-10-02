@@ -28,7 +28,6 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use super::{CkArray, instrument_frame};
-use crate::sclk::LOADED_SCLK;
 use kete_core::errors::{Error, KeteResult};
 use kete_core::frames::NonInertialFrame;
 use kete_core::time::{TDB, Time};
@@ -94,12 +93,8 @@ impl CkSegmentType2 {
     pub(crate) fn try_get_orientation(
         &self,
         time: Time<TDB>,
+        tick: f64,
     ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
-        let sclk = LOADED_SCLK
-            .try_read()
-            .map_err(|_| Error::Bounds("Failed to read SCLK data.".into()))?;
-        let tick = sclk.try_time_to_tick(self.array.naif_id, time)?;
-
         // get the time of the last record and its index
         let time_starts = self.time_starts();
         let (record_time, record_idx) = if self.n_records == 1 {

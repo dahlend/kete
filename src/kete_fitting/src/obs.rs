@@ -32,10 +32,11 @@
 use kete_core::Band;
 use kete_core::constants::{AU_KM, C_AU_PER_DAY, C_AU_PER_DAY_INV, GMS};
 use kete_core::desigs::Desig;
+use kete_core::ephemeris::Ephemeris;
 use kete_core::frames::{Equatorial, SSB, Vector, geodetic_lat_lon_to_ecef};
 use kete_core::prelude::{Error, KeteResult, State};
 use kete_core::time::{TDB, Time};
-use kete_spice::prelude::{LOADED_PCK, LOADED_SPK};
+use kete_spice::prelude::{LOADED_SPK, SpiceEphemeris};
 use nalgebra::{DVector, Matrix2x3, Matrix3x1, RowVector6, Vector3};
 
 /// Solar Schwarzschild radius in AU: ``2 GM_sun / c^2``.
@@ -115,10 +116,10 @@ pub(crate) fn differential_light_deflect(
 /// Compute the SSB-centered Equatorial state of an Earth ground station at
 /// the given epoch.
 ///
-/// Uses the loaded PCK kernels for Earth orientation (delivers position +
-/// inertial velocity, including Earth surface rotation) and the loaded SPK
-/// kernels to recenter from geocentric to SSB.  This is the same conversion
-/// used by `spice.earth_pos_to_ecliptic` on the Python side.
+/// Uses the Earth frame (ITRF93, 3000) of the loaded kernels for Earth
+/// orientation (delivers position + inertial velocity, including Earth surface
+/// rotation) and their states to recenter from geocentric to SSB.  This is the
+/// same conversion used by `spice.earth_pos_to_ecliptic` on the Python side.
 fn station_state_at(
     lat_rad: f64,
     lon_rad: f64,
@@ -129,13 +130,12 @@ fn station_state_at(
     let pos_ecef_au: Vector3<f64> =
         Vector3::new(pos_ecef_km[0], pos_ecef_km[1], pos_ecef_km[2]) / AU_KM;
 
-    let pcks = LOADED_PCK.try_read()?;
-    let frame = pcks.try_get_orientation(3000, epoch)?;
+    let eph = SpiceEphemeris::loaded()?;
+    let frame = eph.try_frame(3000, epoch)?;
     let (pos_eq, vel_eq) = frame.to_equatorial(pos_ecef_au, Vector3::zeros())?;
 
     let geocentric = State::<Equatorial>::new(Desig::Empty, epoch, pos_eq, vel_eq, 399);
-    let spks = LOADED_SPK.try_read()?;
-    spks.try_to_ssb(geocentric)
+    eph.try_to_ssb(geocentric)
 }
 
 /// A single astrometric or radar observation.

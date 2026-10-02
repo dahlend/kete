@@ -6,16 +6,16 @@
 //! <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/spk.html#Type%2021:%20Extended%20Modified%20Difference%20Arrays>
 
 use super::SpkArray;
-
-/// Largest number of difference coefficients per component.
-///
-/// This is the MAXTRM limit of the SPICE type 21 format.
-const MAX_DIM: usize = 25;
 use super::type1::difference_orders;
 use kete_core::constants::AU_KM;
 use kete_core::errors::Error;
 use kete_core::prelude::KeteResult;
 use kete_core::time::{TDB, Time};
+
+/// Largest number of difference coefficients per component.
+///
+/// This is the MAXTRM limit of the SPICE type 21 format.
+const MAX_DIM: usize = 25;
 
 /// Extended Modified Difference Arrays
 ///

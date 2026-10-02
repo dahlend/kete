@@ -1,14 +1,13 @@
 //! # `kete_spice`
 //!
-//! SPICE kernel I/O, SPK-dependent propagation, and SPICE-related extensions
-//! for kete.
+//! SPICE kernel I/O and SPICE-related extensions for kete.
 //!
 //! This crate provides:
 //! - SPICE kernel reading (SPK, PCK, CK, SCLK)
 //! - SPICE kernel writing (SPK, PCK, CK)
-//! - SPK-dependent N-body propagation in the [`propagation`] module
-//! - SPICE-dependent FOV visibility checks in the [`fov_checks`] module
-//! - CK-dependent frame rotation in the [`frame_ext`] module
+//! - the loaded SPK, PCK and CK files as a [`kete_core::ephemeris::Ephemeris`]
+//!   ([`SpiceEphemeris`](ephemeris::SpiceEphemeris)), which the propagation and
+//!   visibility code in `kete_core` takes
 //!
 //! Dependency direction: `kete_spice -> kete_core` (one-way, no cycles).
 
@@ -17,10 +16,8 @@
 
 pub mod ck;
 pub mod daf;
-pub mod fov_checks;
-pub mod frame_ext;
+pub mod ephemeris;
 pub mod pck;
-pub mod propagation;
 pub mod sclk;
 pub mod spk;
 
@@ -35,9 +32,7 @@ pub mod prelude {
     pub use crate::sclk::LOADED_SCLK;
     pub use crate::spk::LOADED_SPK;
 
-    pub use crate::fov_checks::{check_n_body, check_spks, check_visible};
-    pub use crate::frame_ext::rotations_to_equatorial_full;
-    pub use crate::propagation::{SpkNBody, compute_state_transition};
+    pub use crate::ephemeris::SpiceEphemeris;
 }
 
 use kete_core::errors::{Error, KeteResult};

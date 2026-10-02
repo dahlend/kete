@@ -12,8 +12,9 @@ use crate::time::PyTime;
 use kete_core::forces::ParameterizedForce;
 use kete_core::frames::{Ecliptic, Equatorial};
 use kete_core::prelude::*;
+use kete_core::propagation::{NBody, sun_resolver};
 use kete_core::state::propagate_uncertain;
-use kete_spice::propagation::{SpkNBody, sun_resolver};
+use kete_spice::ephemeris::SpiceEphemeris;
 use kete_spice::spk::LOADED_SPK;
 use nalgebra::DMatrix;
 use pyo3::prelude::*;
@@ -95,15 +96,15 @@ fn resolve_free_params(
 impl PyUncertainState {
     /// Build the SSB-centered force model used by all propagation paths.
     ///
-    /// Gravity-only `SpkNBody` when `non_grav` is `None`, or `SpkNBody` carrying the
-    /// non-grav force template otherwise. Captures the `LOADED_SPK` read guard so the
+    /// Gravity-only `NBody` when `non_grav` is `None`, or `NBody` carrying the
+    /// non-grav force template otherwise. Borrows the loaded SPK read guard so the
     /// borrow lifetime is well-defined.
     fn build_forces<'a>(
         &self,
-        spk: &'a kete_spice::spk::SpkCollection,
+        eph: &'a SpiceEphemeris,
         include_extended: bool,
-    ) -> SpkNBody<'a> {
-        SpkNBody::with_non_grav(spk, include_extended, self.state.non_grav.clone())
+    ) -> NBody<'a, SpiceEphemeris> {
+        NBody::with_non_grav(eph, include_extended, self.state.non_grav.clone())
     }
 }
 
@@ -160,7 +161,7 @@ impl PyUncertainState {
         }
         // Elements are defined about a gravitating body, so this centers on the Sun
         // rather than the barycenter. The propagation paths cross to the force model's
-        // center themselves, see `kete_spice::propagation::sun_resolver`.
+        // center themselves, see `kete_core::propagation::sun_resolver`.
         let mut eq_state = state.raw;
         if eq_state.center_id() != 10 {
             let spk = LOADED_SPK.try_read().map_err(Error::from)?;
@@ -585,9 +586,9 @@ impl PyUncertainState {
     fn propagate(&self, py: Python<'_>, jd: PyTime, include_asteroids: bool) -> PyResult<Self> {
         let target: Time<TDB> = jd.into();
         py.detach(|| {
-            let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-            let forces = self.build_forces(&spk, include_asteroids);
-            let result = propagate_uncertain(&self.state, &forces, target, &sun_resolver(&spk))?;
+            let eph = SpiceEphemeris::loaded()?;
+            let forces = self.build_forces(&eph, include_asteroids);
+            let result = propagate_uncertain(&self.state, &forces, target, &sun_resolver(&eph))?;
             Ok(Self { state: result })
         })
     }

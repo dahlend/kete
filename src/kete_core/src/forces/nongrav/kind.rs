@@ -6,7 +6,7 @@
 //! thermal recoil model, and a thrust fixed in the RTN frame with a linear ramp in
 //! time. All share
 //! `Frame = Equatorial` and `Center = SunCenter`, so the enum slots
-//! into `ParameterMask` and `SpkNBody` interchangeably.
+//! into `ParameterMask` and `NBody` interchangeably.
 //!
 //! This is a convenience aggregate for kete's bundled physics, not a
 //! gate -- the public [`ParameterizedForce`](crate::forces::ParameterizedForce)

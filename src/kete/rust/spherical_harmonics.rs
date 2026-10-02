@@ -172,10 +172,11 @@ impl PySphericalHarmonics {
 /// field before using it. ``C_00`` must be 1, since the series' mass is the body's,
 /// which is also the point mass beyond ``switch_radius``.
 ///
-/// Exactly one orientation is required: ``frame_id``, a CK frame read at each
-/// evaluation inside ``switch_radius`` (the CK and its clock must be loaded, and a
-/// time without pointing is an error), or ``rotation``, a fixed matrix taking
-/// body-frame vectors to equatorial (J2000) axes.
+/// Exactly one orientation is required: ``frame_id``, a body frame read at each
+/// evaluation inside ``switch_radius`` from the loaded PCK files or, when they have
+/// no frame with that id, the CK files with their clock, where a time without
+/// orientation is an error, or ``rotation``, a fixed matrix taking body-frame
+/// vectors to equatorial (J2000) axes.
 ///
 /// Parameters
 /// ----------
@@ -196,7 +197,7 @@ impl PySphericalHarmonics {
 ///     Mass of the body as a fraction of the Sun's mass. Defaults to the value in
 ///     the built-in mass table.
 /// frame_id :
-///     CK frame ID of the body frame.
+///     Frame ID of the body frame: the class ID of a PCK frame, or a CK ID.
 /// rotation :
 ///     Fixed rotation matrix from the body frame to equatorial axes, shape
 ///     ``(3, 3)``.
