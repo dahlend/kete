@@ -29,13 +29,6 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use nom::{
-    Parser, bytes::complete::take_while1, character::complete::space0, multi::separated_list1,
-    sequence::delimited,
-};
-
-use std::str::FromStr;
-
 use crate::errors::{Error, KeteResult};
 
 /// Degree angle representation.
@@ -296,33 +289,37 @@ fn split_sexagesimal(units: u64, scale: u64) -> (u32, u32, f64) {
     (leading, minutes, seconds)
 }
 
-/// Parse a number from a string, consuming digits and decimal/exponent characters.
-fn parse_num<T: FromStr>(input: &str) -> nom::IResult<&str, T> {
-    nom::combinator::map_res(
-        take_while1(|c: char| c.is_ascii_digit() || ".Ee+-".contains(c)),
-        |s: &str| s.parse::<T>(),
-    )
-    .parse(input)
-}
-
 /// Parse a string of one to three numbers into a tuple.
 ///
-/// The string may use any run of ` ,;:` as separators. Missing trailing values
-/// are 0.0. Ranges are not checked here.
+/// The numbers are separated by runs of ` ,;:`. Leading spaces and tabs, and
+/// trailing whitespace, are allowed. A separator at the start or the end is not.
+/// A number holds only digits, `.`, `E`, `e`, `+` and `-`. Missing trailing
+/// values are 0.0. The ranges are not checked here.
+///
+/// # Errors
+/// [`Error::ValueError`] if the string does not match this format, or holds
+/// more than three numbers.
 fn parse_str_to_floats(text: &str) -> KeteResult<(f64, f64, f64)> {
-    let (rem, values): (_, Vec<f64>) = delimited(
-        space0,
-        separated_list1(take_while1(|c| " ,:;".contains(c)), parse_num),
-        space0,
-    )
-    .parse(text)
-    .map_err(|_| Error::ValueError(format!("Failed to parse string: {text}")))?;
-
-    if !rem.trim().is_empty() {
-        return Err(Error::ValueError(format!(
-            "Failed to parse: {text} parsing failed at {rem}",
-        )));
+    let err = || Error::ValueError(format!("Failed to parse string: {text}"));
+    let is_separator = |c: char| " ,:;".contains(c);
+    let body = text.trim_start_matches([' ', '\t']).trim_end();
+    if body.is_empty() || body.starts_with(is_separator) || body.ends_with(is_separator) {
+        return Err(err());
     }
+    let values = body
+        .split(is_separator)
+        .filter(|token| !token.is_empty())
+        .map(|token| {
+            if token
+                .chars()
+                .all(|c| c.is_ascii_digit() || ".Ee+-".contains(c))
+            {
+                token.parse::<f64>().map_err(|_| err())
+            } else {
+                Err(err())
+            }
+        })
+        .collect::<KeteResult<Vec<f64>>>()?;
 
     match *values.as_slice() {
         [x] => Ok((x, 0.0, 0.0)),
@@ -488,6 +485,20 @@ mod tests {
         assert_eq!(dms(-0.0, 30.0, 0.0), "-00 30 00.00");
         assert_eq!(dms(-0.0, 0.0, 0.001), "+00 00 00.00");
         assert_eq!(dms(90.0, 0.0, 0.0), "+90 00 00.00");
+    }
+
+    /// Separators sit only between numbers; a tab is not a separator.
+    #[test]
+    fn test_string_separators() {
+        assert_eq!(
+            parse_str_to_floats(" 12,34;56 ").unwrap(),
+            (12.0, 34.0, 56.0)
+        );
+        assert_eq!(parse_str_to_floats("12 ,  34").unwrap(), (12.0, 34.0, 0.0));
+        assert_eq!(parse_str_to_floats("\t12 30\n").unwrap(), (12.0, 30.0, 0.0));
+        for bad in [",12,34", "12,34,", "12\t30", "1 2 3 4", "nan", "- 12", ""] {
+            assert!(parse_str_to_floats(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

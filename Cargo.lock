@@ -1823,7 +1823,6 @@ dependencies = [
  "itertools 0.15.0",
  "kete_stats",
  "nalgebra",
- "nom",
  "polars",
  "pprof",
  "pyo3",
