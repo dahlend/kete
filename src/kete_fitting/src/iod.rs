@@ -37,7 +37,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use kete_core::constants::{GMS, GMS_SQRT};
+use kete_core::constants::{C_AU_PER_DAY_INV, GMS, GMS_SQRT};
 use kete_core::frames::{Equatorial, Vector};
 use kete_core::kepler::{light_time_correct, propagate_two_body};
 use kete_core::prelude::{Error, KeteResult, State};
@@ -538,6 +538,25 @@ fn run_ranging_for_pair(
         .map(|i| sorted_obs[i].clone())
         .collect();
 
+    // The candidate through the two lines of sight at ranges `rho_a` and `rho_b`.
+    // Each position is where the light left the object, so it holds at its
+    // observation epoch less the light travel time; the Lambert arc spans the
+    // interval between those two emission epochs.
+    let candidate = |rho_a: f64, rho_b: f64| -> Option<State<Equatorial>> {
+        let t_a = obs_a.epoch - rho_a * C_AU_PER_DAY_INV;
+        let t_b = obs_b.epoch - rho_b * C_AU_PER_DAY_INV;
+        let r_a = obs_a.pos + los_a * rho_a;
+        let r_b = obs_b.pos + los_b * rho_b;
+        let vel = lambert_velocity(&r_a, &r_b, (t_b - t_a).elapsed)?;
+        Some(State::new(
+            kete_core::desigs::Desig::Empty,
+            t_a,
+            r_a,
+            vel,
+            0,
+        ))
+    };
+
     // 2-D grid scan over (log rho_a, log rho_b).
     // Independent distances for the two observations -- no equal-helio-distance
     // constraint, so eccentric and hyperbolic orbits are naturally sampled.
@@ -555,15 +574,10 @@ fn run_ranging_for_pair(
 
             let frac_a = ia as f64 / (n_scan - 1) as f64;
             let rho_a = (log_min + (log_max - log_min) * frac_a).exp();
-            let r_a = obs_a.pos + los_a * rho_a;
-
             let frac_b = ib as f64 / (n_scan - 1) as f64;
             let rho_b = (log_min + (log_max - log_min) * frac_b).exp();
-            let r_b = obs_b.pos + los_b * rho_b;
 
-            let vel = lambert_velocity(&r_a, &r_b, dt)?;
-            let state = State::new(kete_core::desigs::Desig::Empty, obs_a.epoch, r_a, vel, 0);
-
+            let state = candidate(rho_a, rho_b)?;
             if !is_physically_valid(&state) {
                 return None;
             }
@@ -607,18 +621,9 @@ fn run_ranging_for_pair(
 
     for &(seed_score, rho_a_seed, rho_b_seed) in &seeds {
         // Seed state -- used as the fallback if no refinement cell improves on it.
-        let seed_r_a = obs_a.pos + los_a * rho_a_seed;
-        let seed_r_b = obs_b.pos + los_b * rho_b_seed;
-        let Some(seed_vel) = lambert_velocity(&seed_r_a, &seed_r_b, dt) else {
+        let Some(seed_state) = candidate(rho_a_seed, rho_b_seed) else {
             continue;
         };
-        let seed_state = State::new(
-            kete_core::desigs::Desig::Empty,
-            obs_a.epoch,
-            seed_r_a,
-            seed_vel,
-            0,
-        );
 
         let n_refine: usize = 11;
         let half_width = coarse_step;
@@ -639,18 +644,14 @@ fn run_ranging_for_pair(
                 if rho_a < 1e-5 {
                     return None;
                 }
-                let r_a = obs_a.pos + los_a * rho_a;
-
                 let frac_b = ib as f64 / (n_refine - 1) as f64;
                 let log_b = (center_b - half_width) + 2.0 * half_width * frac_b;
                 let rho_b = log_b.exp();
                 if rho_b < 1e-5 {
                     return None;
                 }
-                let r_b = obs_b.pos + los_b * rho_b;
 
-                let vel = lambert_velocity(&r_a, &r_b, dt)?;
-                let state = State::new(kete_core::desigs::Desig::Empty, obs_a.epoch, r_a, vel, 0);
+                let state = candidate(rho_a, rho_b)?;
                 if !is_physically_valid(&state) {
                     return None;
                 }
@@ -851,7 +852,9 @@ fn gauss_iod(
         // from f/g is in AU per Gaussian day.  Convert: v_au_day = v * GMS_SQRT.
         let vel2 = (pos3 * f1 - pos1 * f3) / fg_det * GMS_SQRT;
 
-        let state = State::new(kete_core::desigs::Desig::Empty, o2.epoch, pos2, vel2, 0);
+        // pos2 is where the light received at o2 left the object.
+        let epoch2 = o2.epoch - rho2 * C_AU_PER_DAY_INV;
+        let state = State::new(kete_core::desigs::Desig::Empty, epoch2, pos2, vel2, 0);
 
         if is_physically_valid(&state) {
             results.push(state);
@@ -1179,7 +1182,8 @@ mod tests {
         }
     }
 
-    /// Synthesize observations with an ecliptic-plane observer.
+    /// Synthesize observations with an ecliptic-plane observer, including light
+    /// travel time from the object.
     fn synth_optical_ecliptic(
         obj: &State<Equatorial, SunCenter>,
         epochs: &[f64],
@@ -1213,7 +1217,9 @@ mod tests {
                     vel: observer_sun.vel,
                     center: SSB,
                 };
-                let d = obj_at.pos - observer.pos;
+                let emitted = light_time_correct(&obj_at, &observer_sun.pos)
+                    .expect("light time correction failed");
+                let d = emitted.pos - observer.pos;
                 let (ra, dec) = d.to_ra_dec();
                 let ra_noisy = ra + rng.gaussian() * noise_rad / dec.cos().max(0.1);
                 let dec_noisy = dec + rng.gaussian() * noise_rad;

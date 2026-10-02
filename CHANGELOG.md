@@ -66,6 +66,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Leap seconds took effect 36-37 s before 00:00 UTC, so UTC conversions were 1 s off
   in that window.
 - `Time(jd, scaling="tt")` and `Time.from_mjd(mjd, "tt")` treated TT as TDB.
+- IOD candidates are labeled at the light emission epoch; they were labeled at the
+  observation epoch.
 - `Time - number` returns the Time that many days earlier, matching `Time + number`; it
   returned days to the number read as a JD. `Time + Time` raises `TypeError`.
 - `TT` is now its own time scale rather than an alias of `TDB`. UTC and TAI to TDB
