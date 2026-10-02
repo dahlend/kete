@@ -435,6 +435,7 @@ impl PyParamPrior {
 ///         h_mag      = (-5.0, 35.0),
 ///         g_param    = (-0.3, 0.7, 0.2, 0.05),
 ///         vis_albedo = (0.01, 1.0),
+///         f_sigma    = (0.5, 5.0),
 ///     )
 ///
 /// Each prior is a :class:`ParamPrior` specifying ``bounds`` (logistic
@@ -456,6 +457,8 @@ impl PyParamPrior {
 ///     :class:`ParamPrior` for G parameter.
 /// vis_albedo :
 ///     :class:`ParamPrior` for visible geometric albedo.
+/// f_sigma :
+///     :class:`ParamPrior` for the factor that scales every flux uncertainty.
 #[pyclass(frozen, module = "kete.flux", name = "FluxPriors", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyFluxPriors(pub FluxPriors);
@@ -470,6 +473,7 @@ impl PyFluxPriors {
         h_mag=None,
         g_param=None,
         vis_albedo=None,
+        f_sigma=None,
     ))]
     fn new(
         diameter: Option<PyParamPrior>,
@@ -478,6 +482,7 @@ impl PyFluxPriors {
         h_mag: Option<PyParamPrior>,
         g_param: Option<PyParamPrior>,
         vis_albedo: Option<PyParamPrior>,
+        f_sigma: Option<PyParamPrior>,
     ) -> Self {
         let d = FluxPriors::default();
         Self(FluxPriors {
@@ -487,20 +492,21 @@ impl PyFluxPriors {
             h_mag: h_mag.map_or(d.h_mag, |p| p.0),
             g_param: g_param.map_or(d.g_param, |p| p.0),
             vis_albedo: vis_albedo.map_or(d.vis_albedo, |p| p.0),
-            f_sigma: d.f_sigma,
+            f_sigma: f_sigma.map_or(d.f_sigma, |p| p.0),
         })
     }
 
     fn __repr__(&self) -> String {
         let p = &self.0;
         format!(
-            "FluxPriors(\n  diameter={},\n  beaming={},\n  r_ir={},\n  h_mag={},\n  g_param={},\n  vis_albedo={})",
+            "FluxPriors(\n  diameter={},\n  beaming={},\n  r_ir={},\n  h_mag={},\n  g_param={},\n  vis_albedo={},\n  f_sigma={})",
             PyParamPrior(p.diameter.clone()).__repr__(),
             PyParamPrior(p.beaming.clone()).__repr__(),
             PyParamPrior(p.r_ir.clone()).__repr__(),
             PyParamPrior(p.h_mag.clone()).__repr__(),
             PyParamPrior(p.g_param.clone()).__repr__(),
             PyParamPrior(p.vis_albedo.clone()).__repr__(),
+            PyParamPrior(p.f_sigma.clone()).__repr__(),
         )
     }
 
@@ -532,6 +538,11 @@ impl PyFluxPriors {
     #[getter]
     fn vis_albedo(&self) -> PyParamPrior {
         PyParamPrior(self.0.vis_albedo.clone())
+    }
+
+    #[getter]
+    fn f_sigma(&self) -> PyParamPrior {
+        PyParamPrior(self.0.f_sigma.clone())
     }
 }
 
