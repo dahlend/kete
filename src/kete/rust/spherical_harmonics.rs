@@ -197,7 +197,7 @@ impl PySphericalHarmonics {
 ///     Mass of the body as a fraction of the Sun's mass. Defaults to the value in
 ///     the built-in mass table.
 /// frame_id :
-///     Frame ID of the body frame: the class ID of a PCK frame, or a CK ID.
+///     SPICE frame ID or frame name of the body frame.
 /// rotation :
 ///     Fixed rotation matrix from the body frame to equatorial axes, shape
 ///     ``(3, 3)``.
@@ -220,7 +220,7 @@ pub fn register_spherical_harmonics(
     min_radius: f64,
     switch_radius: f64,
     mass: Option<f64>,
-    frame_id: Option<i32>,
+    frame_id: Option<crate::spice::FrameLike>,
     rotation: Option<[[f64; 3]; 3]>,
 ) -> PyResult<PySphericalHarmonics> {
     let orientation = orientation(frame_id, rotation)?;

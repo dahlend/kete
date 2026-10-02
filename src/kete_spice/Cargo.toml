@@ -23,7 +23,6 @@ workspace = true
 kete_core = { version = "*", path = "../kete_core" }
 crossbeam = "^0.8.4"
 nalgebra = { version = "^0.34.2", features = ["rayon"] }
-nom = "8.0.0"
 rayon = "^1.11.0"
 sgp4 = "^2.2.0"
 

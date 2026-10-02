@@ -1,25 +1,13 @@
+use kete_spice::frames::try_frame_at;
 use kete_spice::prelude::LOADED_CK;
 use pyo3::{PyResult, pyfunction};
 
 use crate::{
     frame::PyFrames,
+    spice::FrameLike,
     time::PyTime,
     vector::{PyVector, VectorLike},
 };
-
-/// Load all specified files into the CK shared memory singleton.
-#[pyfunction]
-#[pyo3(name = "ck_load")]
-pub fn ck_load_py(filenames: Vec<String>) -> PyResult<()> {
-    let mut singleton = LOADED_CK.write().unwrap();
-    for filename in filenames.iter() {
-        let load = (*singleton).load_file(filename);
-        if let Err(err) = load {
-            eprintln!("{filename} failed to load. {err}");
-        }
-    }
-    Ok(())
-}
 
 /// Reset the contents of the CK shared memory to the default set of CK kernels.
 #[pyfunction]
@@ -28,32 +16,19 @@ pub fn ck_reset_py() {
     LOADED_CK.write().unwrap().reset()
 }
 
-/// List all loaded instruments in the CK singleton.
-#[pyfunction]
-#[pyo3(name = "ck_loaded_instruments")]
-pub fn ck_loaded_instruments_py() -> Vec<i32> {
-    let singleton = LOADED_CK.read().unwrap();
-    singleton.loaded_instruments()
-}
-
-/// List all loaded instruments in the CK singleton.
-#[pyfunction]
-#[pyo3(name = "ck_loaded_instrument_info")]
-pub fn ck_loaded_instrument_info_py(instrument_id: i32) -> Vec<(i32, i32, i32, f64, f64)> {
-    let singleton = LOADED_CK.read().unwrap();
-    singleton.available_info(instrument_id)
-}
-
 /// Convert a vector in an instrument frame to the equatorial frame.
 ///
-/// Where loaded CK kernels overlap, the kernel loaded last takes precedence.
-/// Pointing is not extrapolated. A time inside a gap between the intervals of
-/// a kernel has no pointing, unless another loaded kernel covers that time.
+/// The frame resolves through its chain of reference frames, such as a camera
+/// on a spacecraft. Where loaded CK kernels overlap, the kernel loaded last
+/// takes precedence. Pointing is not extrapolated. A time inside a gap between
+/// the intervals of a kernel has no pointing, unless another loaded kernel
+/// covers that time.
 ///
 /// Parameters
 /// ----------
-/// instrument_id : int
-///   NAIF ID of the instrument.
+/// instrument_id : int or str
+///   SPICE frame ID or frame name of the instrument frame. A frame that no
+///   loaded frames kernel defines is a CK frame with that ID.
 /// jd : :class:`~kete.Time` or float
 ///   Time of the request. A float is a Julian date in the TDB scale.
 /// vec : list of float
@@ -62,28 +37,27 @@ pub fn ck_loaded_instrument_info_py(instrument_id: i32) -> Vec<(i32, i32, i32, f
 /// Returns
 /// -------
 /// tuple of (:class:`~kete.Time`, :class:`~kete.Vector`)
-///   Time of the pointing used, and the vector in the equatorial frame.
+///   Time of the frame, and the vector in the equatorial frame. The time is
+///   the time of the CK pointing for a CK frame, and ``jd`` otherwise.
 ///
 /// Raises
 /// ------
 /// ValueError
-///   If no loaded CK holds pointing for the instrument at ``jd``, or if no
-///   SCLK kernel is loaded for the spacecraft. The same error occurs for a
-///   frame in the chain of reference frames of the instrument.
+///   If the frame or a frame in its chain of reference frames is unknown, or
+///   of an unsupported class. Also if a CK frame in the chain has no pointing
+///   at ``jd``, or its spacecraft clock is not loaded.
 #[pyfunction]
 #[pyo3(name = "instrument_frame_to_equatorial")]
 pub fn ck_sc_frame_to_equatorial(
-    instrument_id: i32,
+    instrument_id: FrameLike,
     jd: PyTime,
     vec: [f64; 3],
 ) -> PyResult<(PyTime, PyVector)> {
-    // A frame defined relative to another CK frame, such as a camera relative to
-    // its spacecraft, comes back resolved through that chain.
-    let (time, frame) = LOADED_CK
-        .try_read()
-        .unwrap()
-        .try_get_frame(jd.0, instrument_id)?;
-    let (rot, _) = frame.rotations_to_equatorial()?;
+    // The frame comes back resolved through its chain of reference frames, such as a
+    // camera mounted on its spacecraft.
+    let frame = try_frame_at(instrument_id.frame_id()?, jd.0)?;
+    let time = frame.time;
+    let rot = frame.rotation_to_equatorial()?;
     let pos = rot.transform_vector(&vec.into());
 
     let vec = PyVector::new(pos.into(), PyFrames::Equatorial);
@@ -93,14 +67,17 @@ pub fn ck_sc_frame_to_equatorial(
 
 /// Convert a vector from the equatorial frame to an instrument frame.
 ///
-/// Where loaded CK kernels overlap, the kernel loaded last takes precedence.
-/// Pointing is not extrapolated. A time inside a gap between the intervals of
-/// a kernel has no pointing, unless another loaded kernel covers that time.
+/// The frame resolves through its chain of reference frames, such as a camera
+/// on a spacecraft. Where loaded CK kernels overlap, the kernel loaded last
+/// takes precedence. Pointing is not extrapolated. A time inside a gap between
+/// the intervals of a kernel has no pointing, unless another loaded kernel
+/// covers that time.
 ///
 /// Parameters
 /// ----------
-/// instrument_id : int
-///   NAIF ID of the instrument.
+/// instrument_id : int or str
+///   SPICE frame ID or frame name of the instrument frame. A frame that no
+///   loaded frames kernel defines is a CK frame with that ID.
 /// jd : :class:`~kete.Time` or float
 ///   Time of the request. A float is a Julian date in the TDB scale.
 /// vec : :class:`~kete.Vector` or list of float
@@ -110,30 +87,29 @@ pub fn ck_sc_frame_to_equatorial(
 /// Returns
 /// -------
 /// tuple of (:class:`~kete.Time`, list of float)
-///   Time of the pointing used, and the 3 components of the vector in the
-///   instrument frame.
+///   Time of the frame, and the 3 components of the vector in the
+///   instrument frame. The time is the time of the CK pointing for a CK frame,
+///   and ``jd`` otherwise.
 ///
 /// Raises
 /// ------
 /// ValueError
-///   If no loaded CK holds pointing for the instrument at ``jd``, or if no
-///   SCLK kernel is loaded for the spacecraft. The same error occurs for a
-///   frame in the chain of reference frames of the instrument.
+///   If the frame or a frame in its chain of reference frames is unknown, or
+///   of an unsupported class. Also if a CK frame in the chain has no pointing
+///   at ``jd``, or its spacecraft clock is not loaded.
 #[pyfunction]
 #[pyo3(name = "instrument_equatorial_to_frame")]
 pub fn ck_sc_equatorial_to_frame(
-    instrument_id: i32,
+    instrument_id: FrameLike,
     jd: PyTime,
     vec: VectorLike,
 ) -> PyResult<(PyTime, [f64; 3])> {
     let vec = vec.into_vector(PyFrames::Equatorial);
-    // A frame defined relative to another CK frame, such as a camera relative to
-    // its spacecraft, comes back resolved through that chain.
-    let (time, frame) = LOADED_CK
-        .try_read()
-        .unwrap()
-        .try_get_frame(jd.0, instrument_id)?;
-    let (rot, _) = frame.rotations_to_equatorial()?;
+    // The frame comes back resolved through its chain of reference frames, such as a
+    // camera mounted on its spacecraft.
+    let frame = try_frame_at(instrument_id.frame_id()?, jd.0)?;
+    let time = frame.time;
+    let rot = frame.rotation_to_equatorial()?;
     let pos = rot.inverse_transform_vector(&vec.into());
 
     Ok((time.into(), pos.into()))

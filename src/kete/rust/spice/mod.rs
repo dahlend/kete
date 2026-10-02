@@ -1,15 +1,17 @@
 //! Python support for reading SPICE kernels
 mod ck;
 mod daf;
+mod frames;
+mod instruments;
 mod pck;
-mod sclk;
 mod spk;
 
 pub use ck::*;
 pub use daf::*;
+pub use frames::*;
+pub use instruments::*;
 use kete_core::desigs::{OBS_CODES, try_obs_code_from_name};
 pub use pck::*;
-pub use sclk::*;
 pub use spk::*;
 
 use pyo3::{PyResult, pyfunction};

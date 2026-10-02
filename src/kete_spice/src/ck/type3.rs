@@ -29,7 +29,7 @@
 
 use super::array::stored_count;
 use super::{CkArray, instrument_frame};
-use crate::sclk::SclkCollection;
+use crate::text::sclk::Sclk;
 use kete_core::errors::{Error, KeteResult};
 use kete_core::frames::NonInertialFrame;
 use kete_core::time::{TDB, Time};
@@ -114,7 +114,7 @@ impl CkSegmentType3 {
         &self,
         time: Time<TDB>,
         tick: f64,
-        sclk: &SclkCollection,
+        sclk: &Sclk,
     ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
         let (time, quaternion, rates) = self.get_quaternion_at_time(time, tick, sclk)?;
 
@@ -141,19 +141,16 @@ impl CkSegmentType3 {
     /// angular velocity if the records hold it. The time is the request time
     /// when the function interpolates. Otherwise it is the record time.
     ///
-    /// `tick` is `time` on the segment's clock in `sclk`.
+    /// `tick` is `time` on the segment's clock `sclk`.
     ///
     /// # Errors
-    /// - [`Error::ValueError`] if no SCLK clock is loaded for the spacecraft.
-    /// - [`Error::Bounds`] if no interval covers the time.
+    /// [`Error::Bounds`] if no interval covers the time.
     pub(crate) fn get_quaternion_at_time(
         &self,
         time: Time<TDB>,
         tick: f64,
-        sclk: &SclkCollection,
+        sclk: &Sclk,
     ) -> KeteResult<(Time<TDB>, UnitQuaternion<f64>, Option<[f64; 3]>)> {
-        let naif_id = self.array.naif_id;
-
         let times = self.record_times();
         let starts = self.interval_starts();
         let not_covered =
@@ -161,7 +158,7 @@ impl CkSegmentType3 {
 
         let single = |idx: usize| -> KeteResult<_> {
             let (quat, rates) = self.get_record(idx).into();
-            let t = sclk.try_tick_to_time(naif_id, times[idx])?;
+            let t = sclk.tick_to_time(times[idx])?;
             Ok((t, Unit::from_quaternion(quat), rates))
         };
 

@@ -40,7 +40,7 @@
 use super::array::stored_count;
 use super::{CkArray, instrument_frame};
 use crate::interpolation::{hermite_interpolation, lagrange_interpolation_both};
-use crate::sclk::SclkCollection;
+use crate::text::sclk::Sclk;
 use kete_core::errors::{Error, KeteResult};
 use kete_core::frames::NonInertialFrame;
 use kete_core::time::{TDB, Time};
@@ -135,7 +135,7 @@ impl CkSegmentType5 {
     /// The range is `(begin, end)`, with `end` exclusive. Interval `i` runs
     /// from its start time to the last record before the start of interval
     /// `i + 1`. Thus the ranges partition the records.
-    /// [`super::CkCollection::try_get_frame`] checks [`Self::has_data_at`]
+    /// [`super::CkCollection::try_get_pointing`] checks [`Self::has_data_at`]
     /// first, so a tick from there is always inside an interval.
     fn interval_records(&self, tick: f64) -> (usize, usize) {
         let times = self.record_times();
@@ -158,7 +158,7 @@ impl CkSegmentType5 {
         &self,
         time: Time<TDB>,
         tick: f64,
-        sclk: &SclkCollection,
+        sclk: &Sclk,
     ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
         let (time, quaternion, rates) = self.get_quaternion_at_time(time, tick, sclk)?;
 
@@ -179,7 +179,8 @@ impl CkSegmentType5 {
     /// a segment with one record. Otherwise it is the request time.
     ///
     /// # Errors
-    /// - [`Error::ValueError`] if no SCLK clock is loaded for the spacecraft.
+    /// [`Error::Bounds`] if the segment has one record, and its time is outside
+    /// the clock `sclk`.
     ///
     /// # Panics
     /// Panics under the same condition as [`Self::get_quaternion_at_tick`].
@@ -187,16 +188,14 @@ impl CkSegmentType5 {
         &self,
         time: Time<TDB>,
         tick: f64,
-        sclk: &SclkCollection,
+        sclk: &Sclk,
     ) -> KeteResult<(Time<TDB>, UnitQuaternion<f64>, Option<[f64; 3]>)> {
-        if self.n_records == 1 {
-            let t = sclk.try_tick_to_time(self.array.naif_id, self.record_times()[0])?;
-            let (quat, rates) = self.get_quaternion_at_tick(tick);
-            return Ok((t, quat, rates));
-        }
-
         let (quat, rates) = self.get_quaternion_at_tick(tick);
-        Ok((time, quat, rates))
+        if self.n_records == 1 {
+            Ok((sclk.tick_to_time(self.record_times()[0])?, quat, rates))
+        } else {
+            Ok((time, quat, rates))
+        }
     }
 
     /// Return the interpolated attitude at an encoded clock tick.

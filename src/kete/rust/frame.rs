@@ -157,9 +157,8 @@ pub fn calc_obliquity_py(time: f64) -> f64 {
 #[pyo3(name = "earth_precession_rotation")]
 pub fn calc_earth_precession(time: PyTime) -> Vec<Vec<f64>> {
     earth_precession_rotation(time.into())
-        .rotations_to_equatorial()
+        .rotation_to_equatorial()
         .unwrap()
-        .0
         .matrix()
         .column_iter()
         .map(|x| x.iter().cloned().collect())

@@ -38,7 +38,7 @@ use crate::{
     constants::{C_AU_PER_DAY_INV_SQUARED, EARTH_J2, GMS, JUPITER_J2, SUN_J2},
     desigs::Desig,
     errors::{Error, KeteResult},
-    frames::{Ecliptic, InertialFrame},
+    frames::{Ecliptic, FrameId, InertialFrame},
 };
 
 #[cfg(feature = "pyo3")]
@@ -157,12 +157,13 @@ pub enum Orientation {
     /// A fixed rotation from the body frame to equatorial axes.
     Fixed(Matrix3<f64>),
 
-    /// The rotation from the body frame to equatorial axes is the frame `frame_id` of
-    /// an [`Ephemeris`](crate::ephemeris::Ephemeris) at each evaluation; the caller
-    /// resolves it (see [`GravParams::orientation_needed`]).
+    /// The rotation from the body frame to equatorial axes is the frame
+    /// `frame_id` of an [`Ephemeris`](crate::ephemeris::Ephemeris) at each
+    /// evaluation. The caller resolves it (see
+    /// [`GravParams::orientation_needed`]).
     Frame {
-        /// Id of the body frame.
-        frame_id: i32,
+        /// SPICE frame ID of the body frame.
+        frame_id: FrameId,
     },
 }
 
@@ -346,12 +347,15 @@ impl GravParams {
         }
     }
 
-    /// The frame id whose rotation [`Self::add_acceleration`] and
-    /// [`Self::add_acceleration_and_jacobians`] need at relative position `rel_pos`, if any: a
-    /// shaped body with a frame orientation, evaluated inside its switch radius.
+    /// The frame whose rotation [`Self::add_acceleration`] and
+    /// [`Self::add_acceleration_and_jacobians`] need at relative position
+    /// `rel_pos`, if any.
+    ///
+    /// Only a shaped body with a frame orientation needs one, inside its switch
+    /// radius.
     #[inline(always)]
     #[must_use]
-    pub fn orientation_needed(&self, rel_pos: &Vector3<f64>) -> Option<i32> {
+    pub fn orientation_needed(&self, rel_pos: &Vector3<f64>) -> Option<FrameId> {
         match &self.shape {
             Shape::Polyhedron {
                 orientation: Orientation::Frame { frame_id },
@@ -936,10 +940,19 @@ mod tests {
 
     #[test]
     fn polyhedron_body_ck_orientation_required_inside_only() {
-        let body = polyhedron_body(Orientation::Frame { frame_id: -42 }, 0.05);
+        let body = polyhedron_body(
+            Orientation::Frame {
+                frame_id: FrameId(-42),
+            },
+            0.05,
+        );
         let near = Vector3::new(2.1e-3, -0.8e-3, 1.4e-3);
         let far = Vector3::new(0.3, 0.0, 0.0);
-        assert_eq!(body.orientation_needed(&near), Some(-42), "needed inside");
+        assert_eq!(
+            body.orientation_needed(&near),
+            Some(FrameId(-42)),
+            "needed inside"
+        );
         assert_eq!(body.orientation_needed(&far), None, "not needed outside");
         let mut a = Vector3::zeros();
         assert!(
@@ -1148,12 +1161,14 @@ mod tests {
         let rot = rotation();
         let body = harmonics_body(
             test_harmonics(3e-12, 1.5e-3),
-            Orientation::Frame { frame_id: -42 },
+            Orientation::Frame {
+                frame_id: FrameId(-42),
+            },
             0.05,
         );
         let near = Vector3::new(2.6e-3, -1.8e-3, 1.4e-3);
         let far = Vector3::new(0.3, 0.0, 0.0);
-        assert_eq!(body.orientation_needed(&near), Some(-42));
+        assert_eq!(body.orientation_needed(&near), Some(FrameId(-42)));
         assert_eq!(body.orientation_needed(&far), None);
         assert!(
             accel_of(&body, &near).is_err(),

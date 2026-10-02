@@ -36,6 +36,7 @@ use kete_core::ephemeris::Ephemeris;
 use kete_core::frames::{Equatorial, SSB, Vector, geodetic_lat_lon_to_ecef};
 use kete_core::prelude::{Error, KeteResult, State};
 use kete_core::time::{TDB, Time};
+use kete_spice::frames::ITRF93;
 use kete_spice::prelude::{LOADED_SPK, SpiceEphemeris};
 use nalgebra::{DVector, Matrix2x3, Matrix3x1, RowVector6, Vector3};
 
@@ -131,7 +132,7 @@ fn station_state_at(
         Vector3::new(pos_ecef_km[0], pos_ecef_km[1], pos_ecef_km[2]) / AU_KM;
 
     let eph = SpiceEphemeris::loaded()?;
-    let frame = eph.try_frame(3000, epoch)?;
+    let frame = eph.try_frame(ITRF93, epoch)?;
     let (pos_eq, vel_eq) = frame.to_equatorial(pos_ecef_au, Vector3::zeros())?;
 
     let geocentric = State::<Equatorial>::new(Desig::Empty, epoch, pos_eq, vel_eq, 399);

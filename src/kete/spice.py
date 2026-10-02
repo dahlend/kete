@@ -15,7 +15,9 @@ from ._core import (
     daf_convert_big_to_little_endian,
     get_state,
     instrument_equatorial_to_frame,
+    instrument_fov,
     instrument_frame_to_equatorial,
+    kernel_variable,
     loaded_objects,
     name_lookup,
     repack_spk,
@@ -31,6 +33,7 @@ __all__ = [
     "daf_convert_big_to_little_endian",
     "SpkBuilder",
     "SpkInfo",
+    "FovDefinition",
     "get_state",
     "name_lookup",
     "loaded_objects",
@@ -45,6 +48,9 @@ __all__ = [
     "moon_illumination_frac",
     "instrument_frame_to_equatorial",
     "instrument_equatorial_to_frame",
+    "instrument_fov",
+    "instrument_fov_definition",
+    "kernel_variable",
     "repack_spk",
 ]
 
@@ -57,6 +63,44 @@ SpkInfo.jd_end.__doc__ = "JD date of the end of the spice segment."
 SpkInfo.center.__doc__ = "Reference Center NAIF ID."
 SpkInfo.frame.__doc__ = "Frame of reference."
 SpkInfo.spk_type.__doc__ = "SPK Segment Type ID."
+
+
+FovDefinition = namedtuple("FovDefinition", "shape, frame, boresight, bounds")
+"""The field of view definition of an instrument, in its own frame."""
+FovDefinition.shape.__doc__ = 'Shape: "CIRCLE", "ELLIPSE", "RECTANGLE" or "POLYGON".'
+FovDefinition.frame.__doc__ = "Name of the frame of the vectors."
+FovDefinition.boresight.__doc__ = "Boresight vector, as the kernel gives it."
+FovDefinition.bounds.__doc__ = (
+    "Boundary vectors: one for a circle, two for an ellipse, and the corners, in "
+    "order, for a rectangle or a polygon."
+)
+
+
+def instrument_fov_definition(instrument: int | str) -> FovDefinition:
+    """
+    The field of view definition of an instrument, in its own frame.
+
+    The definition comes from the loaded instrument kernels. An ``ANGLES``
+    definition is converted to boundary vectors, as SPICE ``getfov`` does.
+
+    Parameters
+    ----------
+    instrument :
+        NAIF ID or name of the instrument, such as ``-226111`` or
+        ``"ROS_OSIRIS_NAC"``.
+
+    Returns
+    -------
+    FovDefinition
+        The shape, frame name, boresight, and boundary vectors.
+
+    Raises
+    ------
+    ValueError
+        If the instrument or its field of view is not defined, or the
+        definition is malformed.
+    """
+    return FovDefinition(*_core._instrument_fov_definition(instrument))
 
 
 def loaded_object_info(desig: int | str) -> list[SpkInfo]:
@@ -92,12 +136,18 @@ def kernel_reload(
     """
     Reset all loaded kernels, then load the specified kernels into memory.
 
-    The reset clears the SPK, PCK, CK, and SCLK kernels. The function identifies
-    the type of each file from its header, not its extension. It supports binary
-    SPK, PCK, and CK files, and text SCLK files. Other kernel types, such as
-    frame, instrument, and text PCK kernels, raise a ValueError, and then none
-    of ``filenames`` load. A file of a supported type that fails to load prints
-    a message and is skipped.
+    The reset clears the SPK, PCK, CK, and all text kernels. The
+    function identifies the type of each file from its header, not its extension.
+    It supports binary SPK, PCK, and CK files, and text SCLK, frames (FK), PCK,
+    instrument (IK), and meta-kernels. Other kernel types raise a ValueError,
+    and then none of ``filenames`` load. A file of a supported type that fails
+    to load prints a message and is skipped.
+
+    A meta-kernel lists files in ``KERNELS_TO_LOAD``, which load right after it,
+    with ``PATH_SYMBOLS`` and ``PATH_VALUES`` expanded as in SPICE ``furnsh``.
+    Relative paths in it are relative to the working directory, not to the
+    meta-kernel. A listed file of an unsupported type, such as a leap seconds
+    kernel or a DSK, prints a message and is skipped.
 
     Where kernels overlap in time for the same object, the kernel loaded last is
     used. The load order is the cache, then the default planetary kernels, then
@@ -109,8 +159,9 @@ def kernel_reload(
     Parameters
     ----------
     filenames : list of str, optional
-      Paths of the files to load. The list can mix SPK, PCK, CK, and SCLK
-      files. Default is ``None``, which loads no additional files.
+      Paths of the files to load. The list can mix SPK, PCK, CK, SCLK, frames,
+      text PCK, instrument, and meta-kernel files. Default is ``None``, which
+      loads no additional files.
     include_cache : bool, optional
       If ``True``, also load the SPK kernels in the kete cache folder. Default
       is ``False``.
@@ -123,13 +174,14 @@ def kernel_reload(
     Raises
     ------
     ValueError
-      If a file in ``filenames`` cannot be read, or does not have the header of
-      a supported kernel type.
+      If a file in ``filenames``, or a file a meta-kernel lists, cannot be
+      read; if a file in ``filenames`` does not have the header of a supported
+      kernel type; or if a meta-kernel lists another meta-kernel.
     """
     _core.spk_reset()
     _core.pck_reset()
     _core.ck_reset()
-    _core.sclk_reset()
+    _core.text_kernels_reset()
 
     if include_planets:
         _download_core_files()

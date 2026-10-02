@@ -3,7 +3,7 @@
 use kete_core::desigs::Desig;
 use kete_core::errors::Error;
 use kete_core::forces::{GravParams, ParameterizedForce};
-use kete_core::frames::{Equatorial, SSB, Vector};
+use kete_core::frames::{Equatorial, FrameId, SSB, Vector};
 use kete_core::propagation::NBody;
 use kete_core::state::State;
 use kete_core::time::{TDB, Time};
@@ -139,7 +139,7 @@ fn n_body_polyhedron_ck_without_kernel() {
     let time = Time::<TDB>::new(2_451_545.0);
     let mut force = NBody::new(&eph, false);
     force.massive_obj.push(polyhedron_42(Orientation::Frame {
-        frame_id: -987_654_000,
+        frame_id: FrameId(-987_654_000),
     }));
     let body_pos = Vector3::from(
         spk.try_get_state_with_center::<Equatorial>(20_000_042, time, 0)

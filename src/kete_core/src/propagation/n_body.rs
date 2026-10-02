@@ -203,7 +203,7 @@ fn orientation<E: Ephemeris>(
     grav_params
         .orientation_needed(rel_pos)
         .map(|frame_id| {
-            let (rot, _) = ephem.try_frame(frame_id, time)?.rotations_to_equatorial()?;
+            let rot = ephem.try_frame(frame_id, time)?.rotation_to_equatorial()?;
             Ok(*rot.matrix())
         })
         .transpose()

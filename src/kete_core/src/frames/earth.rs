@@ -41,7 +41,7 @@ use crate::{
     time::{TDB, Time, UTC},
 };
 
-use super::{Ecliptic, Equatorial, NonInertialFrame};
+use super::{Ecliptic, Equatorial, FrameId, NonInertialFrame};
 
 /// Earth semi major axis in km as defined by WGS84
 pub const EARTH_A: f64 = 6378.1370;
@@ -428,7 +428,7 @@ pub fn teme_frame(time: Time<TDB>) -> NonInertialFrame {
     let x = y.cross(&z);
     let rotation = Rotation3::from_matrix_unchecked(Matrix3::from_columns(&[x, y, z]));
 
-    NonInertialFrame::from_rotations(time, rotation, None, 1)
+    NonInertialFrame::from_rotations(time, rotation, None, FrameId::J2000)
 }
 
 /// Compute the approximate orientation of the Earth-fixed frame.
@@ -483,7 +483,7 @@ pub fn approx_earth_frame(time: Time<TDB>) -> NonInertialFrame {
         time,
         to_j2000 * spin,
         Some(to_j2000.matrix() * spin_rate),
-        1,
+        FrameId::J2000,
     )
 }
 
@@ -537,7 +537,7 @@ pub fn earth_precession_rotation(time: Time<TDB>) -> NonInertialFrame {
         * Rotation3::from_axis_angle(&Vector3::y_axis(), angle_b)
         * Rotation3::from_axis_angle(&z_axis, angle_a);
 
-    NonInertialFrame::from_rotations(time, rotation, None, 1)
+    NonInertialFrame::from_rotations(time, rotation, None, FrameId::J2000)
 }
 
 /// Compute the approximate state of a location on Earth in the Ecliptic frame.

@@ -146,6 +146,33 @@ impl InertialFrame for FK4 {
     }
 }
 
+/// SPICE frame ID of a reference frame, such as [`Self::J2000`].
+///
+/// An [`Ephemeris`](crate::ephemeris::Ephemeris) resolves a body frame from its
+/// ID. The inertial frames below convert to equatorial directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct FrameId(pub i32);
+
+impl FrameId {
+    /// The SPICE J2000 frame, the equatorial frame.
+    pub const J2000: Self = Self(1);
+
+    /// The SPICE FK4 frame.
+    pub const FK4: Self = Self(3);
+
+    /// The SPICE GALACTIC frame.
+    pub const GALACTIC: Self = Self(13);
+
+    /// The SPICE ECLIPJ2000 frame, the ecliptic frame.
+    pub const ECLIPJ2000: Self = Self(17);
+}
+
+impl std::fmt::Display for FrameId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// General representation of a non-inertial frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[must_use]
@@ -156,11 +183,15 @@ pub struct NonInertialFrame {
     /// Rotation matrix from this frame to the reference frame.
     pub rotation: Rotation3<f64>,
 
-    /// Rotation rate of this frame, if not defined, this is assumed to be zero.
+    /// Time derivative of `rotation`, per day.
+    ///
+    /// It is `None` when the source of the frame holds no rate, such as a CK
+    /// segment without angular velocity. A frame without a rate gives its
+    /// rotation, but not a velocity transformation.
     pub rotation_rate: Option<Matrix3<f64>>,
 
     /// The frame that this frame is defined relative to.
-    pub reference_frame_id: i32,
+    pub reference_frame_id: FrameId,
 }
 
 impl NonInertialFrame {
@@ -169,7 +200,7 @@ impl NonInertialFrame {
         time: impl Into<Time<TDB>>,
         angles: [f64; 3],
         rates: [f64; 3],
-        reference_frame_id: i32,
+        reference_frame_id: FrameId,
     ) -> Self {
         let (rot_p, rot_dp) = euler_rotation::<E1, E2, E3>(&angles, &rates);
         Self {
@@ -185,13 +216,13 @@ impl NonInertialFrame {
     /// # Arguments
     /// * `time` - Time of the frame in TDB.
     /// * `rotation` - Rotation matrix from this frame to the reference frame.
-    /// * `rotation_rate` - Rotation rate of this frame, if not defined, this is assumed to be zero.
+    /// * `rotation_rate` - Time derivative of `rotation` per day, or `None` if unknown.
     /// * `reference_frame_id` - The frame that this frame is defined relative to.
     pub fn from_rotations(
         time: impl Into<Time<TDB>>,
         rotation: Rotation3<f64>,
         rotation_rate: Option<Matrix3<f64>>,
-        reference_frame_id: i32,
+        reference_frame_id: FrameId,
     ) -> Self {
         Self {
             time: time.into(),
@@ -201,21 +232,50 @@ impl NonInertialFrame {
         }
     }
 
-    /// Return the rotation matrix and rotation rate for this frame in the equatorial frame.
+    /// The rotation from this frame to the equatorial frame.
     ///
-    /// The reference frame must be one of the SPICE inertial frames J2000 (1), FK4 (3),
-    /// GALACTIC (13) or ECLIPJ2000 (17). A frame defined relative to another body frame
-    /// is resolved by its provider, see
+    /// The reference frame must be one of the SPICE inertial frames J2000 (1),
+    /// FK4 (3), GALACTIC (13) or ECLIPJ2000 (17). The provider of a frame
+    /// relative to another body frame resolves it, see
     /// [`Ephemeris::try_frame`](crate::ephemeris::Ephemeris::try_frame).
     ///
     /// # Errors
-    /// Fails when the reference frame is not one of those four.
+    /// [`Error::Bounds`] if the reference frame is not one of those four.
+    pub fn rotation_to_equatorial(&self) -> KeteResult<Rotation3<f64>> {
+        Ok(self.reference_to_equatorial()? * self.rotation)
+    }
+
+    /// The rotation from this frame to the equatorial frame, and its time
+    /// derivative per day.
+    ///
+    /// # Errors
+    /// - [`Error::Bounds`] if the reference frame is not supported, as for
+    ///   [`Self::rotation_to_equatorial`].
+    /// - [`Error::ValueError`] if the frame has no rotation rate.
     pub fn rotations_to_equatorial(&self) -> KeteResult<(Rotation3<f64>, Matrix3<f64>)> {
-        let to_equatorial: &Rotation3<f64> = match self.reference_frame_id {
-            1 => &IDENTITY_ROT,
-            3 => &FK4_EQUATORIAL_ROT,
-            13 => &GALACTIC_EQUATORIAL_ROT,
-            17 => &ECLIPTIC_EQUATORIAL_ROT,
+        let to_equatorial = self.reference_to_equatorial()?;
+        let rate = self.rotation_rate.ok_or_else(|| {
+            Error::ValueError(
+                "The frame has no rotation rate, so it rotates positions but cannot \
+                 transform velocities. A CK segment without angular velocity gives such a \
+                 frame."
+                    .into(),
+            )
+        })?;
+        Ok((to_equatorial * self.rotation, to_equatorial * rate))
+    }
+
+    /// The rotation from the reference frame to the equatorial frame.
+    ///
+    /// # Errors
+    /// [`Error::Bounds`] if the reference frame is not J2000, FK4, GALACTIC or
+    /// ECLIPJ2000.
+    fn reference_to_equatorial(&self) -> KeteResult<&'static Rotation3<f64>> {
+        let to_equatorial: &'static Rotation3<f64> = match self.reference_frame_id {
+            FrameId::J2000 => &IDENTITY_ROT,
+            FrameId::FK4 => &FK4_EQUATORIAL_ROT,
+            FrameId::GALACTIC => &GALACTIC_EQUATORIAL_ROT,
+            FrameId::ECLIPJ2000 => &ECLIPTIC_EQUATORIAL_ROT,
             id => {
                 return Err(Error::Bounds(format!(
                     "Reference frame ID {id} is not supported. Supported inertial references \
@@ -225,15 +285,14 @@ impl NonInertialFrame {
                 )));
             }
         };
-        let rate = self.rotation_rate.unwrap_or_else(Matrix3::zeros);
-        Ok((to_equatorial * self.rotation, to_equatorial * rate))
+        Ok(to_equatorial)
     }
 
-    /// Convert a vector from the equatorial frame to this frame.
+    /// Convert a position and velocity from the equatorial frame to this frame.
     ///
     /// # Errors
-    /// May fail if coordinate frame conversion fails, should not be possible.
-    /// Please raise a github issue if this error occurs.
+    /// - [`Error::Bounds`] if the reference frame is not supported.
+    /// - [`Error::ValueError`] if the frame has no rotation rate.
     #[allow(
         clippy::wrong_self_convention,
         reason = "Always need position and velocity together"
@@ -252,11 +311,11 @@ impl NonInertialFrame {
         Ok((new_pos, new_vel))
     }
 
-    /// Convert a vector from input frame to equatorial frame.
+    /// Convert a position and velocity from this frame to the equatorial frame.
     ///
     /// # Errors
-    /// May fail if coordinate frame conversion fails, should not be possible.
-    /// Please raise a github issue if this error occurs.
+    /// - [`Error::Bounds`] if the reference frame is not supported.
+    /// - [`Error::ValueError`] if the frame has no rotation rate.
     pub fn to_equatorial(
         &self,
         pos: impl Into<Vector3<f64>>,
@@ -334,7 +393,12 @@ mod tests {
         let rates = [0.41, 0.51, 0.61];
         let pos = [1.0, 2.0, 3.0];
         let vel = [0.1, 0.2, 0.3];
-        let frame = NonInertialFrame::from_euler::<'Z', 'X', 'Z'>(0_f64, angles, rates, 17);
+        let frame = NonInertialFrame::from_euler::<'Z', 'X', 'Z'>(
+            0_f64,
+            angles,
+            rates,
+            FrameId::ECLIPJ2000,
+        );
         let (r_pos, r_vel) = frame.to_equatorial(pos, vel).unwrap();
         let (pos_return, vel_return) = frame.from_equatorial(r_pos, r_vel).unwrap();
 
@@ -346,20 +410,28 @@ mod tests {
         assert!((0.3 - vel_return.z).abs() <= 10.0 * f64::EPSILON);
     }
 
-    /// A frame with no rotation rate only rotates the velocity; the position
-    /// contributes nothing to it.
+    /// A frame with no rotation rate gives its rotation, but a velocity transformation
+    /// is an error rather than one that assumes the frame does not rotate.
     #[test]
-    fn test_noninertial_missing_rate_is_zero() {
+    fn missing_rate_rotates_but_does_not_transform_velocity() {
         let rotation = euler_rotation::<'Z', 'X', 'Z'>(&[0.11, 0.21, 0.31], &[0.0; 3]).0;
         let pos = Vector3::new(1.0, 2.0, 3.0);
         let vel = Vector3::new(0.1, 0.2, 0.3);
-        for reference in [1, 17] {
+        for reference in [FrameId::J2000, FrameId::ECLIPJ2000] {
             let frame = NonInertialFrame::from_rotations(0_f64, rotation, None, reference);
-            let (rot, _) = frame.rotations_to_equatorial().unwrap();
-            let (_, new_vel) = frame.to_equatorial(pos, vel).unwrap();
-            assert!((new_vel - rot * vel).norm() <= 10.0 * f64::EPSILON);
-            let (_, new_vel) = frame.from_equatorial(pos, vel).unwrap();
-            assert!((new_vel - rot.inverse() * vel).norm() <= 10.0 * f64::EPSILON);
+            let with_rate = NonInertialFrame::from_rotations(
+                0_f64,
+                rotation,
+                Some(Matrix3::zeros()),
+                reference,
+            );
+            assert_eq!(
+                frame.rotation_to_equatorial().unwrap(),
+                with_rate.rotations_to_equatorial().unwrap().0
+            );
+            assert!(frame.rotations_to_equatorial().is_err());
+            assert!(frame.to_equatorial(pos, vel).is_err());
+            assert!(frame.from_equatorial(pos, vel).is_err());
         }
     }
 
@@ -373,17 +445,17 @@ mod tests {
             NonInertialFrame::from_rotations(Time::<TDB>::new(2_451_545.0), rot, Some(rate), id)
         };
         let cases = [
-            (1, Equatorial::rotation_to_equatorial()),
-            (3, FK4::rotation_to_equatorial()),
-            (13, Galactic::rotation_to_equatorial()),
-            (17, Ecliptic::rotation_to_equatorial()),
+            (FrameId::J2000, Equatorial::rotation_to_equatorial()),
+            (FrameId::FK4, FK4::rotation_to_equatorial()),
+            (FrameId::GALACTIC, Galactic::rotation_to_equatorial()),
+            (FrameId::ECLIPJ2000, Ecliptic::rotation_to_equatorial()),
         ];
         for (id, to_eq) in cases {
             let (r, dr) = frame(id).rotations_to_equatorial().unwrap();
             assert!((r.matrix() - (to_eq * rot).matrix()).norm() < 1e-15);
             assert!((dr - to_eq * rate).norm() < 1e-15);
         }
-        assert!(frame(2).rotations_to_equatorial().is_err());
-        assert!(frame(-1000).rotations_to_equatorial().is_err());
+        assert!(frame(FrameId(2)).rotations_to_equatorial().is_err());
+        assert!(frame(FrameId(-1000)).rotations_to_equatorial().is_err());
     }
 }

@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `kernel_reload` also loads CK and SCLK kernels, detecting each file's type from
   its header, and raises `ValueError` for unsupported kernel types.
 - PCK segments relative to J2000, FK4 or GALACTIC, as well as ECLIPJ2000.
+- `kernel_reload` loads frames (FK), text PCK, instrument (IK) and meta-kernels.
+- `kete.spice.instrument_fov`, `instrument_fov_definition` and `kernel_variable`.
 - `PolygonFOV`, a polygon field of view that can be non-convex.
 
 ### Changed
@@ -37,8 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `kete_core::fov`.
 - Rust: N-body propagation and FOV checks moved to `kete_core`, generic over its new
   `Ephemeris` (states and frames); `SpiceEphemeris` serves it. `SpkNBody` is now `NBody`.
-- `register_polyhedron` and `register_spherical_harmonics` accept PCK frames for `frame_id`,
-  as well as CK frames.
+- `register_polyhedron` and `register_spherical_harmonics` take a frame ID or name.
 - `fit_model` is faster, using an analytic gradient.
 - Rust: removed `ModelResults::reflected_fraction` and `lambertian_vis_scale_factor`,
   and reordered the arguments of `neatm_facet_temperature`.
@@ -61,10 +62,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `fit_orbit_ranging` is faster on multi-night arcs.
 - Rust: SPK and PCK writers take coverage and epochs in TDB seconds from J2000
   rather than `Time<TDB>`.
-- Rust: `SphericalPolygon` holds any number of edges, can be non-convex, and replaces
-  `OnSkyRectangle`; `from_normals` takes a slice. Saved FOV files load unchanged.
-- The `corners` of a polygon FOV, such as `RectangleFOV` or `WiseCmos`, are unit vectors
-  starting at the first corner given; they were not normalized and started at the second.
+- Rust: frames are named by `FrameId`; `try_get_frame` is now `try_get_pointing`.
+- Removed the unused private `_core` CK and SCLK bindings.
+- Rust: text kernels load into one `TextKernels` store; clocks are named by `ClockId`.
+- Rust: `SphericalPolygon` replaces `OnSkyRectangle` and can be non-convex.
+- FOV `corners` are unit vectors, starting at the first corner given.
+- Rust: a `NonInertialFrame` without a rotation rate errors on velocity transforms.
+- `instrument_frame_to_equatorial` and `instrument_equatorial_to_frame` take names.
 
 ### Fixed
 
@@ -120,6 +124,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cannot fit, rather than leaving gaps or unchecked records.
 - `repack_spk` fits the input file's data where the core kernels also cover the object.
 - SCLK clocks with a TT time system, and SCLK string parsing, match SPICE.
+- Rust: `Sclk` conversions error outside the clock's partitions.
 - CK lookups fall back to an earlier segment inside a gap of a later one and never
   extrapolate across a gap, as SPICE does.
 - CK type 2 pointing between interval starts, and CK type 3 intervals after the

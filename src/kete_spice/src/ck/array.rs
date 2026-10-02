@@ -18,9 +18,6 @@ pub struct CkArray {
     /// Instrument ID
     pub instrument_id: i32,
 
-    /// NAIF ID of the spacecraft.
-    pub naif_id: i32,
-
     /// The spice frame ID of the array.
     /// Called the `Reference` in SPICE documentation.
     pub reference_frame_id: i32,
@@ -52,7 +49,6 @@ impl CkArray {
         name: String,
     ) -> Self {
         let avflag = i32::from(produces_angular_rates);
-        let naif_id = instrument_id / 1000;
         let summary_floats: Box<[f64]> = vec![tick_start, tick_end].into();
         let summary_ints: Box<[i32]> = vec![
             instrument_id,
@@ -69,7 +65,6 @@ impl CkArray {
             tick_start,
             tick_end,
             instrument_id,
-            naif_id,
             reference_frame_id,
             segment_type,
             produces_angular_rates,
@@ -125,7 +120,6 @@ impl TryFrom<DafArray> for CkArray {
         // Those two values are already contained within the DafArray stored in this
         // object.
         let instrument_id = array.summary_ints[0];
-        let naif_id = array.summary_ints[0] / 1000;
         let frame_id = array.summary_ints[1];
         let segment_type = array.summary_ints[2];
         let produces_angular_rates = array.summary_ints[3] == 1;
@@ -135,7 +129,6 @@ impl TryFrom<DafArray> for CkArray {
             tick_start,
             tick_end,
             instrument_id,
-            naif_id,
             reference_frame_id: frame_id,
             segment_type,
             produces_angular_rates,

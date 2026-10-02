@@ -1,6 +1,7 @@
 //! Python bindings for constant-density polyhedron gravity.
 use std::sync::Arc;
 
+use crate::spice::FrameLike;
 use kete_core::constants::{AU_KM, GMS};
 use kete_core::forces::{GravParams, Orientation, Polyhedron, Shape};
 use kete_core::geometry::TriMesh;
@@ -159,11 +160,13 @@ impl PyPolyhedron {
 
 /// The body-frame orientation from exactly one of a frame id and a fixed rotation.
 pub(crate) fn orientation(
-    frame_id: Option<i32>,
+    frame_id: Option<FrameLike>,
     rotation: Option<[[f64; 3]; 3]>,
 ) -> PyResult<Orientation> {
     match (frame_id, rotation) {
-        (Some(frame_id), None) => Ok(Orientation::Frame { frame_id }),
+        (Some(frame), None) => Ok(Orientation::Frame {
+            frame_id: frame.frame_id()?,
+        }),
         (None, Some(rows)) => {
             let rot = Matrix3::from_fn(|i, j| rows[i][j]);
             if (rot * rot.transpose() - Matrix3::identity()).abs().max() > 1e-9
@@ -221,7 +224,7 @@ pub(crate) fn orientation(
 ///     Mass of the body as a fraction of the Sun's mass. Defaults to the value in
 ///     the built-in mass table.
 /// frame_id :
-///     Frame ID of the body frame: the class ID of a PCK frame, or a CK ID.
+///     SPICE frame ID or frame name of the body frame.
 /// rotation :
 ///     Fixed rotation matrix from the body frame to equatorial axes, shape
 ///     ``(3, 3)``.
@@ -238,7 +241,7 @@ pub fn register_polyhedron(
     faces: Vec<[u32; 3]>,
     switch_radius: f64,
     mass: Option<f64>,
-    frame_id: Option<i32>,
+    frame_id: Option<FrameLike>,
     rotation: Option<[[f64; 3]; 3]>,
 ) -> PyResult<PyPolyhedron> {
     let orientation = orientation(frame_id, rotation)?;

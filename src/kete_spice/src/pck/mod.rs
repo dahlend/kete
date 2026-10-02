@@ -87,30 +87,35 @@ impl PckCollection {
         Ok(())
     }
 
-    /// Get the raw orientation from the loaded PCK files.
-    /// This orientation will have the frame of what was originally present in the file.
+    /// The PCK frame with class ID `class_id` at `jd`, relative to the reference frame
+    /// stored in the segment.
     ///
     /// # Errors
-    /// Fails when the specified ID is not found in known segments.
-    pub fn try_get_orientation(&self, id: i32, jd: Time<TDB>) -> KeteResult<NonInertialFrame> {
+    /// Fails when no loaded segment holds `class_id` at `jd`.
+    pub fn try_get_orientation(
+        &self,
+        class_id: i32,
+        jd: Time<TDB>,
+    ) -> KeteResult<NonInertialFrame> {
         for segment in &self.segments {
             let array: &PckArray = segment.into();
-            if (array.frame_id == id) & array.contains(jd) {
-                return segment.try_get_orientation(id, jd);
+            if (array.frame_id == class_id) & array.contains(jd) {
+                return segment.try_get_orientation(class_id, jd);
             }
         }
 
         Err(Error::Bounds(format!(
-            "Object ({id}) does not have an PCK record for the target JD."
-        )))?
+            "No loaded PCK segment holds class ID {class_id} at JD {}.",
+            jd.jd()
+        )))
     }
 
-    /// Whether any loaded segment, at any time, holds the frame `id`.
+    /// Whether any loaded segment, at any time, holds the class ID `class_id`.
     #[must_use]
-    pub fn has_frame(&self, id: i32) -> bool {
+    pub fn has_frame(&self, class_id: i32) -> bool {
         self.segments
             .iter()
-            .any(|segment| Into::<&PckArray>::into(segment).frame_id == id)
+            .any(|segment| Into::<&PckArray>::into(segment).frame_id == class_id)
     }
 
     /// Delete all segments in the PCK singleton, equivalent to unloading all files.
