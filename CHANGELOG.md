@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `kernel_reload` also loads CK and SCLK kernels, detecting each file's type from
   its header, and raises `ValueError` for unsupported kernel types.
 - PCK segments relative to J2000, FK4 or GALACTIC, as well as ECLIPJ2000.
+- `PolygonFOV`, a polygon field of view that can be non-convex.
 
 ### Changed
 
@@ -60,6 +61,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `fit_orbit_ranging` is faster on multi-night arcs.
 - Rust: SPK and PCK writers take coverage and epochs in TDB seconds from J2000
   rather than `Time<TDB>`.
+- Rust: `SphericalPolygon` holds any number of edges, can be non-convex, and replaces
+  `OnSkyRectangle`; `from_normals` takes a slice. Saved FOV files load unchanged.
+- The `corners` of a polygon FOV, such as `RectangleFOV` or `WiseCmos`, are unit vectors
+  starting at the first corner given; they were not normalized and started at the second.
 
 ### Fixed
 

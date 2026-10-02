@@ -31,7 +31,7 @@
 
 use super::FovLike;
 use crate::fov::FOV;
-use crate::geometry::{Contains, OnSkyRectangle, SkyPatch};
+use crate::geometry::{Contains, SkyPatch, SphericalPolygon};
 use crate::prelude::*;
 use crate::{constants::WISE_WIDTH, frames::Vector};
 /// WISE or NEOWISE frame data, all bands
@@ -41,7 +41,7 @@ pub struct WiseCmos {
     pub(crate) observer: State<Equatorial>,
 
     /// Patch of sky
-    pub(crate) patch: OnSkyRectangle,
+    pub(crate) patch: SphericalPolygon,
 
     /// Frame number of the fov
     pub frame_num: u64,
@@ -60,7 +60,7 @@ impl WiseCmos {
         frame_num: u64,
         scan_id: Box<str>,
     ) -> Self {
-        let patch = OnSkyRectangle::new(pointing, rotation, WISE_WIDTH, WISE_WIDTH);
+        let patch = SphericalPolygon::new(pointing, rotation, WISE_WIDTH, WISE_WIDTH);
         Self {
             observer,
             patch,
@@ -77,7 +77,7 @@ impl WiseCmos {
         frame_num: u64,
         scan_id: Box<str>,
     ) -> Self {
-        let patch = OnSkyRectangle::from_corners(corners, 60_f64.recip().to_radians());
+        let patch = SphericalPolygon::from_corners(corners, 60_f64.recip().to_radians());
         Self {
             observer,
             patch,
@@ -123,6 +123,6 @@ impl FovLike for WiseCmos {
 
     #[inline]
     fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
-        Ok(self.patch.corners().into())
+        Ok(self.patch.corners())
     }
 }

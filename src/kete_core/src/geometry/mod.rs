@@ -37,5 +37,5 @@ mod shapes;
 
 pub use self::mesh::{Edge, TriMesh};
 pub(crate) use self::patches::closest_inside;
-pub use self::patches::{Contains, OnSkyRectangle, SkyPatch, SphericalCone, SphericalPolygon};
+pub use self::patches::{Contains, SkyPatch, SphericalCone, SphericalPolygon};
 pub use self::shapes::{ConvexShape, Facet, TriangleFacet, TriangleShape};

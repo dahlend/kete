@@ -31,7 +31,7 @@
 use super::FovLike;
 use crate::fov::FOV;
 use crate::frames::Vector;
-use crate::geometry::{Contains, OnSkyRectangle, SkyPatch};
+use crate::geometry::{Contains, SkyPatch, SphericalPolygon};
 use crate::prelude::*;
 use std::{fmt::Display, str::FromStr};
 
@@ -101,7 +101,7 @@ pub struct SpitzerFrame {
     pub(crate) observer: State<Equatorial>,
 
     /// Patch of sky.
-    pub(crate) patch: OnSkyRectangle,
+    pub(crate) patch: SphericalPolygon,
 
     /// IRSA ``obs_publisher_did`` identifying this BCD plane.
     pub obs_id: Box<str>,
@@ -130,7 +130,7 @@ impl SpitzerFrame {
         height: f64,
         duration: f64,
     ) -> Self {
-        let patch = OnSkyRectangle::new(pointing, rotation, width, height);
+        let patch = SphericalPolygon::new(pointing, rotation, width, height);
         Self {
             observer,
             patch,
@@ -152,7 +152,7 @@ impl SpitzerFrame {
         duration: f64,
     ) -> Self {
         // 1 arcminute tolerance for the CAOM polygon not forming a perfect rectangle.
-        let patch = OnSkyRectangle::from_corners(corners, 60_f64.recip().to_radians());
+        let patch = SphericalPolygon::from_corners(corners, 60_f64.recip().to_radians());
         Self {
             observer,
             patch,
@@ -200,7 +200,7 @@ impl FovLike for SpitzerFrame {
 
     #[inline]
     fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
-        Ok(self.patch.corners().into())
+        Ok(self.patch.corners())
     }
 }
 

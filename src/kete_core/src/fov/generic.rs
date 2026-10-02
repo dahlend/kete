@@ -33,7 +33,7 @@
 use std::fmt::Debug;
 
 use super::FovLike;
-use crate::geometry::{Contains, OnSkyRectangle, SkyPatch, SphericalCone};
+use crate::geometry::{Contains, SkyPatch, SphericalCone, SphericalPolygon};
 use crate::{
     errors::{Error, KeteResult},
     fov::FOV,
@@ -47,7 +47,7 @@ pub struct GenericRectangle {
     pub(crate) observer: State<Equatorial>,
 
     /// Patch of sky
-    pub(crate) patch: OnSkyRectangle,
+    pub(crate) patch: SphericalPolygon,
 
     /// Rotation of the FOV.
     pub rotation: f64,
@@ -63,7 +63,7 @@ impl GenericRectangle {
         lat_width: f64,
         observer: State<Equatorial>,
     ) -> Self {
-        let patch = OnSkyRectangle::new(pointing, rotation, lon_width, lat_width);
+        let patch = SphericalPolygon::new(pointing, rotation, lon_width, lat_width);
         Self {
             observer,
             patch,
@@ -78,7 +78,7 @@ impl GenericRectangle {
         observer: State<Equatorial>,
         expand_angle: f64,
     ) -> Self {
-        let patch = OnSkyRectangle::from_corners(corners, expand_angle);
+        let patch = SphericalPolygon::from_corners(corners, expand_angle);
         Self {
             patch,
             observer,
@@ -137,7 +137,7 @@ impl FovLike for GenericRectangle {
 
     #[inline]
     fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
-        Ok(self.patch.corners().into())
+        Ok(self.patch.corners())
     }
 }
 
@@ -196,6 +196,72 @@ impl FovLike for OmniDirectional {
         Err(Error::ValueError(
             "OmniDirectional FOV does not have corners.".into(),
         ))
+    }
+}
+
+/// Generic polygon FOV, convex or not.
+///
+/// See [`SphericalPolygon::try_from_corners`] for the conditions on the
+/// corners.
+#[derive(Debug, Clone)]
+pub struct GenericPolygon {
+    pub(crate) observer: State<Equatorial>,
+
+    /// Patch of sky.
+    pub patch: SphericalPolygon,
+}
+
+impl GenericPolygon {
+    /// The polygon FOV with `corners`, given in order around it, seen by
+    /// `observer`.
+    ///
+    /// # Errors
+    /// [`Error::ValueError`] if the corners do not form a valid polygon.
+    pub fn new(corners: &[Vector<Equatorial>], observer: State<Equatorial>) -> KeteResult<Self> {
+        Ok(Self {
+            observer,
+            patch: SphericalPolygon::try_from_corners(corners)?,
+        })
+    }
+}
+
+impl FovLike for GenericPolygon {
+    type ChildFov = Self;
+
+    #[inline]
+    fn get_child(&self, index: usize) -> Self {
+        assert!(index == 0, "FOV only has a single patch");
+        self.clone()
+    }
+
+    #[inline]
+    fn into_fov(self) -> FOV {
+        FOV::GenericPolygon(self)
+    }
+
+    #[inline]
+    fn observer(&self) -> &State<Equatorial> {
+        &self.observer
+    }
+
+    #[inline]
+    fn contains(&self, obs_to_obj: &Vector<Equatorial>) -> (usize, Contains) {
+        (0, self.patch.contains(obs_to_obj))
+    }
+
+    #[inline]
+    fn n_patches(&self) -> usize {
+        1
+    }
+
+    #[inline]
+    fn pointing(&self) -> KeteResult<Vector<Equatorial>> {
+        Ok(self.patch.pointing())
+    }
+
+    #[inline]
+    fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
+        Ok(self.patch.corners())
     }
 }
 

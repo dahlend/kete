@@ -41,11 +41,12 @@ use crate::forces::{
     ParameterizedForce, RampedThrustNonGrav,
 };
 use crate::fov::{
-    FOV, GenericCone, GenericRectangle, NeosCmos, NeosVisit, OmniDirectional, PTFFilter, PtfCcd,
-    PtfField, SpherexCmos, SpherexField, SpitzerBand, SpitzerFrame, WiseCmos, ZtfCcdQuad, ZtfField,
+    FOV, GenericCone, GenericPolygon, GenericRectangle, NeosCmos, NeosVisit, OmniDirectional,
+    PTFFilter, PtfCcd, PtfField, SpherexCmos, SpherexField, SpitzerBand, SpitzerFrame, WiseCmos,
+    ZtfCcdQuad, ZtfField,
 };
 use crate::frames::{Equatorial, Vector};
-use crate::geometry::{OnSkyRectangle, SphericalCone};
+use crate::geometry::{SphericalCone, SphericalPolygon};
 use crate::state::{DiffuseState, ProbeSet, SimultaneousStates, State, UncertainState};
 use crate::time::{TDB, Time};
 use nalgebra::{DMatrix, DVector, Vector3};
@@ -431,7 +432,7 @@ impl KeteRead for State<Equatorial> {
 }
 
 // ---------------------------------------------------------------------------
-// SphericalCone, OnSkyRectangle, PTFFilter
+// SphericalCone, rectangle patches, PTFFilter
 // ---------------------------------------------------------------------------
 
 impl KeteWrite for SphericalCone {
@@ -450,25 +451,39 @@ impl KeteRead for SphericalCone {
     }
 }
 
-impl KeteWrite for OnSkyRectangle {
-    fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        for normal in &self.edge_normals {
-            normal.write_to(w)?;
-        }
-        Ok(())
+/// Write the rectangle patch of a rectangle based FOV: its four edge normals.
+///
+/// This is the encoding every rectangle based FOV uses for its patch.
+///
+/// # Errors
+/// An [`io::ErrorKind::InvalidInput`] error if `patch` is not a convex polygon
+/// with four edges, which the encoding cannot hold, or the error of `w`.
+fn write_rectangle<W: Write>(patch: &SphericalPolygon, w: &mut W) -> io::Result<()> {
+    let (normals, _) = patch.parts();
+    if normals.len() != 4 || !patch.is_convex() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Only a convex polygon with 4 edges is stored as a rectangle.",
+        ));
     }
+    for normal in normals {
+        normal.write_to(w)?;
+    }
+    Ok(())
 }
 
-impl KeteRead for OnSkyRectangle {
-    fn read_from<R: Read>(r: &mut R) -> KeteResult<Self> {
-        let normals = [
-            Vector::read_from(r)?,
-            Vector::read_from(r)?,
-            Vector::read_from(r)?,
-            Vector::read_from(r)?,
-        ];
-        Ok(Self::from_normals(normals))
-    }
+/// Read the rectangle patch that [`write_rectangle`] writes.
+///
+/// # Errors
+/// The error of reading four vectors from `r`.
+fn read_rectangle<R: Read>(r: &mut R) -> KeteResult<SphericalPolygon> {
+    let normals = [
+        Vector::read_from(r)?,
+        Vector::read_from(r)?,
+        Vector::read_from(r)?,
+        Vector::read_from(r)?,
+    ];
+    Ok(SphericalPolygon::from_normals(&normals))
 }
 
 impl KeteWrite for PTFFilter {
@@ -532,7 +547,7 @@ impl KeteRead for GenericCone {
 impl KeteWrite for GenericRectangle {
     fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
         self.observer.write_to(w)?;
-        self.patch.write_to(w)?;
+        write_rectangle(&self.patch, w)?;
         self.rotation.write_to(w)
     }
 }
@@ -541,8 +556,34 @@ impl KeteRead for GenericRectangle {
     fn read_from<R: Read>(r: &mut R) -> KeteResult<Self> {
         Ok(Self {
             observer: State::read_from(r)?,
-            patch: OnSkyRectangle::read_from(r)?,
+            patch: read_rectangle(r)?,
             rotation: f64::read_from(r)?,
+        })
+    }
+}
+
+/// A polygon is stored as its edge normals and, for a non-convex polygon, its
+/// center, so a read gives back the same polygon.
+impl KeteWrite for GenericPolygon {
+    fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        self.observer.write_to(w)?;
+        let (normals, center) = self.patch.parts();
+        normals.to_vec().write_to(w)?;
+        center.into_iter().collect::<Vec<_>>().write_to(w)
+    }
+}
+
+impl KeteRead for GenericPolygon {
+    fn read_from<R: Read>(r: &mut R) -> KeteResult<Self> {
+        let observer = State::read_from(r)?;
+        let normals = Vec::<Vector<Equatorial>>::read_from(r)?;
+        let center = Vec::<Vector<Equatorial>>::read_from(r)?;
+        if normals.len() < 3 || center.len() > 1 {
+            return Err(Error::IOError("Malformed polygon FOV.".into()));
+        }
+        Ok(Self {
+            observer,
+            patch: SphericalPolygon::from_parts(normals, center.first().copied()),
         })
     }
 }
@@ -550,7 +591,7 @@ impl KeteRead for GenericRectangle {
 impl KeteWrite for WiseCmos {
     fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
         self.observer.write_to(w)?;
-        self.patch.write_to(w)?;
+        write_rectangle(&self.patch, w)?;
         self.frame_num.write_to(w)?;
         self.scan_id.as_ref().write_to(w)
     }
@@ -560,7 +601,7 @@ impl KeteRead for WiseCmos {
     fn read_from<R: Read>(r: &mut R) -> KeteResult<Self> {
         Ok(Self {
             observer: State::read_from(r)?,
-            patch: OnSkyRectangle::read_from(r)?,
+            patch: read_rectangle(r)?,
             frame_num: u64::read_from(r)?,
             scan_id: Box::<str>::read_from(r)?,
         })
@@ -570,7 +611,7 @@ impl KeteRead for WiseCmos {
 impl KeteWrite for NeosCmos {
     fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
         self.observer.write_to(w)?;
-        self.patch.write_to(w)?;
+        write_rectangle(&self.patch, w)?;
         self.rotation.write_to(w)?;
         self.side_id.write_to(w)?;
         self.stack_id.write_to(w)?;
@@ -587,7 +628,7 @@ impl KeteRead for NeosCmos {
     fn read_from<R: Read>(r: &mut R) -> KeteResult<Self> {
         Ok(Self {
             observer: State::read_from(r)?,
-            patch: OnSkyRectangle::read_from(r)?,
+            patch: read_rectangle(r)?,
             rotation: f64::read_from(r)?,
             side_id: u16::read_from(r)?,
             stack_id: u8::read_from(r)?,
@@ -644,7 +685,7 @@ impl KeteRead for NeosVisit {
 impl KeteWrite for ZtfCcdQuad {
     fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
         self.observer.write_to(w)?;
-        self.patch.write_to(w)?;
+        write_rectangle(&self.patch, w)?;
         self.field.write_to(w)?;
         self.filefracday.write_to(w)?;
         self.maglimit.write_to(w)?;
@@ -660,7 +701,7 @@ impl KeteRead for ZtfCcdQuad {
     fn read_from<R: Read>(r: &mut R) -> KeteResult<Self> {
         Ok(Self {
             observer: State::read_from(r)?,
-            patch: OnSkyRectangle::read_from(r)?,
+            patch: read_rectangle(r)?,
             field: u32::read_from(r)?,
             filefracday: u64::read_from(r)?,
             maglimit: f64::read_from(r)?,
@@ -700,7 +741,7 @@ impl KeteRead for ZtfField {
 impl KeteWrite for PtfCcd {
     fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
         self.observer.write_to(w)?;
-        self.patch.write_to(w)?;
+        write_rectangle(&self.patch, w)?;
         self.field.write_to(w)?;
         self.ccdid.write_to(w)?;
         self.filter.write_to(w)?;
@@ -714,7 +755,7 @@ impl KeteRead for PtfCcd {
     fn read_from<R: Read>(r: &mut R) -> KeteResult<Self> {
         Ok(Self {
             observer: State::read_from(r)?,
-            patch: OnSkyRectangle::read_from(r)?,
+            patch: read_rectangle(r)?,
             field: u32::read_from(r)?,
             ccdid: u8::read_from(r)?,
             filter: PTFFilter::read_from(r)?,
@@ -748,7 +789,7 @@ impl KeteRead for PtfField {
 impl KeteWrite for SpherexCmos {
     fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
         self.observer.write_to(w)?;
-        self.patch.write_to(w)?;
+        write_rectangle(&self.patch, w)?;
         self.uri.as_ref().write_to(w)?;
         self.plane_id.as_ref().write_to(w)
     }
@@ -758,7 +799,7 @@ impl KeteRead for SpherexCmos {
     fn read_from<R: Read>(r: &mut R) -> KeteResult<Self> {
         Ok(Self {
             observer: State::read_from(r)?,
-            patch: OnSkyRectangle::read_from(r)?,
+            patch: read_rectangle(r)?,
             uri: Box::<str>::read_from(r)?,
             plane_id: Box::<str>::read_from(r)?,
         })
@@ -822,7 +863,7 @@ impl KeteRead for SpitzerBand {
 impl KeteWrite for SpitzerFrame {
     fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
         self.observer.write_to(w)?;
-        self.patch.write_to(w)?;
+        write_rectangle(&self.patch, w)?;
         self.obs_id.as_ref().write_to(w)?;
         self.band.write_to(w)?;
         self.artifact_uri.as_ref().write_to(w)?;
@@ -834,7 +875,7 @@ impl KeteRead for SpitzerFrame {
     fn read_from<R: Read>(r: &mut R) -> KeteResult<Self> {
         Ok(Self {
             observer: State::read_from(r)?,
-            patch: OnSkyRectangle::read_from(r)?,
+            patch: read_rectangle(r)?,
             obs_id: Box::<str>::read_from(r)?,
             band: SpitzerBand::read_from(r)?,
             artifact_uri: Box::<str>::read_from(r)?,
@@ -870,6 +911,7 @@ impl KeteWrite for FOV {
             Self::SpherexCmos(v) => (10_u8, write_to_vec(v)?),
             Self::SpherexField(v) => (11_u8, write_to_vec(v)?),
             Self::Spitzer(v) => (12_u8, write_to_vec(v)?),
+            Self::GenericPolygon(v) => (13_u8, write_to_vec(v)?),
         };
         tag.write_to(w)?;
         (payload.len() as u32).write_to(w)?;
@@ -907,6 +949,7 @@ pub fn read_fov<R: Read>(r: &mut R) -> KeteResult<Option<FOV>> {
         10 => Some(FOV::SpherexCmos(SpherexCmos::read_from(&mut cursor)?)),
         11 => Some(FOV::SpherexField(SpherexField::read_from(&mut cursor)?)),
         12 => Some(FOV::Spitzer(SpitzerFrame::read_from(&mut cursor)?)),
+        13 => Some(FOV::GenericPolygon(GenericPolygon::read_from(&mut cursor)?)),
         _ => None,
     };
     Ok(fov)
@@ -1736,9 +1779,9 @@ mod tests {
 
     // -- FOV variants --
 
-    fn sample_rectangle() -> OnSkyRectangle {
+    fn sample_rectangle() -> SphericalPolygon {
         let n = |x: f64, y: f64, z: f64| Vector::new([x, y, z]);
-        OnSkyRectangle::from_normals([
+        SphericalPolygon::from_normals(&[
             n(0.0, 0.0, 1.0),
             n(0.0, 1.0, 0.0),
             n(0.0, 0.0, -1.0),
@@ -1758,9 +1801,25 @@ mod tests {
         round_trip_debug(&sample_cone());
     }
 
+    /// A rectangle patch is stored as its four edge normals, in order, and
+    /// nothing else. Files written before polygons held any number of edges use
+    /// this encoding.
     #[test]
-    fn test_on_sky_rectangle() {
-        round_trip_debug(&sample_rectangle());
+    fn test_rectangle_patch() {
+        let rect = sample_rectangle();
+        let mut buf = Vec::new();
+        write_rectangle(&rect, &mut buf).unwrap();
+        let mut expected = Vec::new();
+        for normal in rect.parts().0 {
+            normal.write_to(&mut expected).unwrap();
+        }
+        assert_eq!(buf, expected);
+        assert_eq!(buf.len(), 4 * 3 * 8);
+        let recovered = read_rectangle(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(format!("{rect:?}"), format!("{recovered:?}"));
+
+        let triangle = SphericalPolygon::from_normals(&rect.parts().0[..3]);
+        assert!(write_rectangle(&triangle, &mut Vec::new()).is_err());
     }
 
     #[test]
@@ -1989,6 +2048,19 @@ mod tests {
                 patch: sample_rectangle(),
                 rotation: 0.5,
             }),
+            FOV::GenericPolygon(
+                GenericPolygon::new(
+                    &[
+                        [1.0, 0.0, 0.0].into(),
+                        [1.0, 0.1, 0.0].into(),
+                        [1.0, 0.05, 0.02].into(),
+                        [1.0, 0.1, 0.1].into(),
+                        [1.0, 0.0, 0.1].into(),
+                    ],
+                    sample_state(),
+                )
+                .unwrap(),
+            ),
             FOV::Wise(WiseCmos {
                 observer: sample_state(),
                 patch: sample_rectangle(),

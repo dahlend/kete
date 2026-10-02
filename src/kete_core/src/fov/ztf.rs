@@ -32,7 +32,7 @@
 use super::FovLike;
 use crate::fov::FOV;
 use crate::geometry::closest_inside;
-use crate::geometry::{Contains, OnSkyRectangle, SkyPatch};
+use crate::geometry::{Contains, SkyPatch, SphericalPolygon};
 use crate::{frames::Vector, prelude::*};
 /// ZTF frame data, single quad of a single chip
 #[derive(Debug, Clone)]
@@ -41,7 +41,7 @@ pub struct ZtfCcdQuad {
     pub(crate) observer: State<Equatorial>,
 
     /// Patch of sky
-    pub(crate) patch: OnSkyRectangle,
+    pub(crate) patch: SphericalPolygon,
 
     /// Field ID
     pub field: u32,
@@ -84,7 +84,7 @@ impl ZtfCcdQuad {
         maglimit: f64,
         fid: u64,
     ) -> Self {
-        let patch = OnSkyRectangle::from_corners(corners, 0.0);
+        let patch = SphericalPolygon::from_corners(corners, 0.0);
         Self {
             observer,
             patch,
@@ -135,7 +135,7 @@ impl FovLike for ZtfCcdQuad {
 
     #[inline]
     fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
-        Ok(self.patch.corners().into())
+        Ok(self.patch.corners())
     }
 }
 

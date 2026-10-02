@@ -34,7 +34,7 @@ use crate::constants::{NEOS_HEIGHT, NEOS_WIDTH};
 use crate::fov::FOV;
 use crate::frames::Vector;
 use crate::geometry::closest_inside;
-use crate::geometry::{Contains, OnSkyRectangle, SkyPatch};
+use crate::geometry::{Contains, SkyPatch, SphericalPolygon};
 use crate::prelude::*;
 /// NEOS frame data, a single detector on a single band
 #[derive(Debug, Clone)]
@@ -43,7 +43,7 @@ pub struct NeosCmos {
     pub(crate) observer: State<Equatorial>,
 
     /// Patch of sky
-    pub(crate) patch: OnSkyRectangle,
+    pub(crate) patch: SphericalPolygon,
 
     /// Rotation of the FOV.
     pub rotation: f64,
@@ -90,7 +90,7 @@ impl NeosCmos {
         cmos_id: u8,
         band: u8,
     ) -> Self {
-        let patch = OnSkyRectangle::new(pointing, rotation, NEOS_WIDTH, NEOS_HEIGHT);
+        let patch = SphericalPolygon::new(pointing, rotation, NEOS_WIDTH, NEOS_HEIGHT);
         Self {
             observer,
             patch,
@@ -141,7 +141,7 @@ impl FovLike for NeosCmos {
 
     #[inline]
     fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
-        Ok(self.patch.corners().into())
+        Ok(self.patch.corners())
     }
 }
 
@@ -290,10 +290,10 @@ impl NeosVisit {
         let chip_4_b = -left_vec.rotate_around(up_vec, x_width / 2.0);
 
         // make the patches for each chip
-        let chip_1_patch = OnSkyRectangle::from_normals([chip_1_a, y_top, chip_1_b, y_bottom]);
-        let chip_2_patch = OnSkyRectangle::from_normals([chip_2_a, y_top, chip_2_b, y_bottom]);
-        let chip_3_patch = OnSkyRectangle::from_normals([chip_3_a, y_top, chip_3_b, y_bottom]);
-        let chip_4_patch = OnSkyRectangle::from_normals([chip_4_a, y_top, chip_4_b, y_bottom]);
+        let chip_1_patch = SphericalPolygon::from_normals(&[chip_1_a, y_top, chip_1_b, y_bottom]);
+        let chip_2_patch = SphericalPolygon::from_normals(&[chip_2_a, y_top, chip_2_b, y_bottom]);
+        let chip_3_patch = SphericalPolygon::from_normals(&[chip_3_a, y_top, chip_3_b, y_bottom]);
+        let chip_4_patch = SphericalPolygon::from_normals(&[chip_4_a, y_top, chip_4_b, y_bottom]);
 
         // make the chips
         let chip_1 = NeosCmos {

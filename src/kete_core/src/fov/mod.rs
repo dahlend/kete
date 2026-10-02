@@ -47,7 +47,7 @@ use crate::state::State;
 
 pub use self::checks::{check_ephemeris, check_n_body, check_visible};
 pub use self::fov_like::{FovLike, check_linear, check_statics, check_two_body};
-pub use self::generic::{GenericCone, GenericRectangle, OmniDirectional};
+pub use self::generic::{GenericCone, GenericPolygon, GenericRectangle, OmniDirectional};
 pub use self::neos::{NeosCmos, NeosVisit};
 pub use self::ptf::{PTFFilter, PtfCcd, PtfField};
 pub use self::spherex::{SpherexCmos, SpherexField};
@@ -68,6 +68,9 @@ pub enum FOV {
 
     /// Generic rectangle FOV without any additional metadata.
     GenericRectangle(GenericRectangle),
+
+    /// Generic polygon FOV, convex or not, without any additional metadata.
+    GenericPolygon(GenericPolygon),
 
     /// WISE or NEOWISE FOV.
     Wise(WiseCmos),
@@ -108,6 +111,7 @@ macro_rules! dispatch_fov {
             Self::ZtfCcdQuad(fov) => fov.$method($($arg),*),
             Self::GenericCone(fov) => fov.$method($($arg),*),
             Self::GenericRectangle(fov) => fov.$method($($arg),*),
+            Self::GenericPolygon(fov) => fov.$method($($arg),*),
             Self::ZtfField(fov) => fov.$method($($arg),*),
             Self::NeosVisit(fov) => fov.$method($($arg),*),
             Self::OmniDirectional(fov) => fov.$method($($arg),*),
@@ -134,6 +138,7 @@ impl FovLike for FOV {
             Self::ZtfCcdQuad(fov) => Self::ZtfCcdQuad(fov.get_child(index)),
             Self::GenericCone(fov) => Self::GenericCone(fov.get_child(index)),
             Self::GenericRectangle(fov) => Self::GenericRectangle(fov.get_child(index)),
+            Self::GenericPolygon(fov) => Self::GenericPolygon(fov.get_child(index)),
             Self::ZtfField(fov) => Self::ZtfCcdQuad(fov.get_child(index)),
             Self::NeosVisit(fov) => Self::NeosCmos(fov.get_child(index)),
             Self::OmniDirectional(fov) => Self::OmniDirectional(fov.get_child(index)),

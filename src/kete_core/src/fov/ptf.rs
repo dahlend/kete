@@ -31,7 +31,7 @@
 use super::FovLike;
 use crate::fov::FOV;
 use crate::geometry::closest_inside;
-use crate::geometry::{Contains, OnSkyRectangle, SkyPatch};
+use crate::geometry::{Contains, SkyPatch, SphericalPolygon};
 use crate::{frames::Vector, prelude::*};
 use std::{fmt::Display, str::FromStr};
 
@@ -84,7 +84,7 @@ pub struct PtfCcd {
     pub(crate) observer: State<Equatorial>,
 
     /// Patch of sky
-    pub patch: OnSkyRectangle,
+    pub patch: SphericalPolygon,
 
     /// Field ID
     pub field: u32,
@@ -118,7 +118,7 @@ impl PtfCcd {
         info_bits: u32,
         seeing: f32,
     ) -> Self {
-        let patch = OnSkyRectangle::from_corners(corners, 0.0);
+        let patch = SphericalPolygon::from_corners(corners, 0.0);
         Self {
             observer,
             patch,
@@ -167,7 +167,7 @@ impl FovLike for PtfCcd {
 
     #[inline]
     fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
-        Ok(self.patch.corners().into())
+        Ok(self.patch.corners())
     }
 }
 

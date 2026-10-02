@@ -32,7 +32,7 @@ use super::FovLike;
 use crate::fov::FOV;
 use crate::frames::Vector;
 use crate::geometry::closest_inside;
-use crate::geometry::{Contains, OnSkyRectangle, SkyPatch};
+use crate::geometry::{Contains, SkyPatch, SphericalPolygon};
 use crate::prelude::*;
 /// Spherex frame data, both optical assemblies
 #[derive(Debug, Clone)]
@@ -41,7 +41,7 @@ pub struct SpherexCmos {
     pub(crate) observer: State<Equatorial>,
 
     /// Patch of sky
-    pub(crate) patch: OnSkyRectangle,
+    pub(crate) patch: SphericalPolygon,
 
     /// uri indicating where the frame is stored in IRSA
     pub uri: Box<str>,
@@ -59,7 +59,7 @@ impl SpherexCmos {
         uri: Box<str>,
         plane_id: Box<str>,
     ) -> Self {
-        let patch = OnSkyRectangle::from_corners(corners, 0.0);
+        let patch = SphericalPolygon::from_corners(corners, 0.0);
         Self {
             observer,
             patch,
@@ -105,7 +105,7 @@ impl FovLike for SpherexCmos {
 
     #[inline]
     fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
-        Ok(self.patch.corners().into())
+        Ok(self.patch.corners())
     }
 }
 

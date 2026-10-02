@@ -96,6 +96,7 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<fovs::PySpherexField>()?;
     m.add_class::<fovs::PySpitzerFrame>()?;
     m.add_class::<fovs::PyGenericRectangle>()?;
+    m.add_class::<fovs::PyGenericPolygon>()?;
     m.add_class::<fovs::PyGenericCone>()?;
     m.add_class::<fovs::PyOmniDirectional>()?;
     m.add_class::<spice::PySpkBuilder>()?;

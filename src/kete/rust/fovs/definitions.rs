@@ -223,6 +223,29 @@ pub struct PySpitzerFrame(pub fov::SpitzerFrame);
 #[derive(Clone, Debug)]
 pub struct PyGenericRectangle(pub fov::GenericRectangle);
 
+/// Polygon field of view, convex or not.
+///
+/// The edges are great circles. The corners go around the polygon in order,
+/// clockwise or counterclockwise, and lie within 89.9 degrees of their center.
+/// Edges that cross are an error.
+///
+/// Parameters
+/// ----------
+/// corners : list of :class:`~kete.Vector`
+///   Three or more corners of the FOV, in order. A list is taken to be in the
+///   equatorial frame.
+/// observer : :class:`~kete.State`
+///   The state of the observer.
+///
+/// Raises
+/// ------
+/// ValueError
+///   If there are fewer than 3 corners, a corner is too far from the center,
+///   or two edges cross.
+#[pyclass(module = "kete", frozen, name = "PolygonFOV", from_py_object)]
+#[derive(Clone, Debug)]
+pub struct PyGenericPolygon(pub fov::GenericPolygon);
+
 /// Generic Cone field of view.
 ///
 /// A cone directly out from the observer's location to a point on the sky.
@@ -261,6 +284,7 @@ pub enum AllowedFOV {
     ZTFField(PyZtfField),
     NEOSVisit(PyNeosVisit),
     Rectangle(PyGenericRectangle),
+    Polygon(PyGenericPolygon),
     Cone(PyGenericCone),
     OmniDirectional(PyOmniDirectional),
     PTF(PyPtfCcd),
@@ -277,6 +301,7 @@ impl AllowedFOV {
             AllowedFOV::NEOS(fov) => fov.0.observer().epoch,
             AllowedFOV::WISE(fov) => fov.0.observer().epoch,
             AllowedFOV::Rectangle(fov) => fov.0.observer().epoch,
+            AllowedFOV::Polygon(fov) => fov.0.observer().epoch,
             AllowedFOV::ZTF(fov) => fov.0.observer().epoch,
             AllowedFOV::ZTFField(fov) => fov.0.observer().epoch,
             AllowedFOV::NEOSVisit(fov) => fov.0.observer().epoch,
@@ -296,6 +321,7 @@ impl AllowedFOV {
         match self {
             AllowedFOV::WISE(fov) => fov.0.get_child(idx).into_fov(),
             AllowedFOV::Rectangle(fov) => fov.0.get_child(idx).into_fov(),
+            AllowedFOV::Polygon(fov) => fov.0.get_child(idx).into_fov(),
             AllowedFOV::NEOS(fov) => fov.0.get_child(idx).into_fov(),
             AllowedFOV::ZTF(fov) => fov.0.get_child(idx).into_fov(),
             AllowedFOV::ZTFField(fov) => fov.0.get_child(idx).into_fov(),
@@ -315,6 +341,7 @@ impl AllowedFOV {
         match self {
             AllowedFOV::WISE(fov) => fov::FOV::Wise(fov.0),
             AllowedFOV::Rectangle(fov) => fov::FOV::GenericRectangle(fov.0),
+            AllowedFOV::Polygon(fov) => fov::FOV::GenericPolygon(fov.0),
             AllowedFOV::NEOS(fov) => fov::FOV::NeosCmos(fov.0),
             AllowedFOV::ZTF(fov) => fov::FOV::ZtfCcdQuad(fov.0),
             AllowedFOV::ZTFField(fov) => fov::FOV::ZtfField(fov.0),
@@ -334,6 +361,7 @@ impl AllowedFOV {
         match self {
             AllowedFOV::WISE(fov) => fov.__repr__(),
             AllowedFOV::Rectangle(fov) => fov.__repr__(),
+            AllowedFOV::Polygon(fov) => fov.__repr__(),
             AllowedFOV::NEOS(fov) => fov.__repr__(),
             AllowedFOV::ZTF(fov) => fov.__repr__(),
             AllowedFOV::ZTFField(fov) => fov.__repr__(),
@@ -356,6 +384,7 @@ impl From<fov::FOV> for AllowedFOV {
             fov::FOV::ZtfCcdQuad(fov) => AllowedFOV::ZTF(PyZtfCcdQuad(fov)),
             fov::FOV::NeosCmos(fov) => AllowedFOV::NEOS(PyNeosCmos(fov)),
             fov::FOV::GenericRectangle(fov) => AllowedFOV::Rectangle(PyGenericRectangle(fov)),
+            fov::FOV::GenericPolygon(fov) => AllowedFOV::Polygon(PyGenericPolygon(fov)),
             fov::FOV::ZtfField(fov) => AllowedFOV::ZTFField(PyZtfField(fov)),
             fov::FOV::NeosVisit(fov) => AllowedFOV::NEOSVisit(PyNeosVisit(fov)),
             fov::FOV::GenericCone(fov) => AllowedFOV::Cone(PyGenericCone(fov)),
@@ -557,6 +586,55 @@ impl PyGenericRectangle {
             self.observer().__repr__(),
             self.lon_width(),
             self.lat_width(),
+        )
+    }
+}
+
+#[pymethods]
+impl PyGenericPolygon {
+    /// Construct a polygon FOV from its corners and the observer state.
+    #[new]
+    pub fn new(corners: Vec<VectorLike>, observer: PyState) -> PyResult<Self> {
+        let corners: Vec<Vector<_>> = corners
+            .into_iter()
+            .map(|x| x.into_vector(crate::frame::PyFrames::Equatorial))
+            .collect();
+        Ok(PyGenericPolygon(fov::GenericPolygon::new(
+            &corners,
+            observer.raw,
+        )?))
+    }
+
+    /// The observer State.
+    #[getter]
+    pub fn observer(&self) -> PyState {
+        self.0.observer().clone().into()
+    }
+
+    /// JD of the observer location.
+    #[getter]
+    pub fn jd(&self) -> PyTime {
+        self.0.observer().epoch.into()
+    }
+
+    /// Unit vector of the center of the corners.
+    #[getter]
+    pub fn pointing(&self) -> PyVector {
+        self.0.patch.pointing().into()
+    }
+
+    /// Corners of this FOV as unit vectors, in the order given.
+    #[getter]
+    pub fn corners(&self) -> Vec<PyVector> {
+        self.0.patch.corners().iter().map(|x| (*x).into()).collect()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PolygonFOV(pointing={}, observer={}, n_corners={})",
+            self.pointing().__repr__(),
+            self.observer().__repr__(),
+            self.0.patch.corners().len(),
         )
     }
 }
