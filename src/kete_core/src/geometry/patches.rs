@@ -59,14 +59,17 @@ impl Contains {
 }
 
 /// Given an iterable of [`Contains`], find the closest one to being Inside.
-pub(crate) fn closest_inside(contains: &[Contains]) -> (usize, Contains) {
+///
+/// Returns the index of the first [`Contains::Inside`], or else the index and
+/// distance of the first smallest [`Contains::Outside`].
+pub(crate) fn closest_inside(contains: impl IntoIterator<Item = Contains>) -> (usize, Contains) {
     let mut best = (usize::MAX, f64::INFINITY);
-    for (idx, con) in contains.iter().enumerate() {
+    for (idx, con) in contains.into_iter().enumerate() {
         match con {
             Contains::Inside => return (idx, Contains::Inside),
             Contains::Outside(d) => {
-                if d < &best.1 {
-                    best = (idx, *d);
+                if d < best.1 {
+                    best = (idx, d);
                 }
             }
         }

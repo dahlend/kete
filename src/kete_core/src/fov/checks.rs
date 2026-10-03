@@ -8,13 +8,14 @@ use crate::ephemeris::Ephemeris;
 use crate::errors::{Error, KeteResult};
 use crate::forces::NonGravMask;
 use crate::frames::{Equatorial, SSB, SunCenter};
-use crate::geometry::Contains;
+use crate::geometry::{Contains, SkyPatch, SphericalCone};
 use crate::kepler::light_time_correct;
 use crate::propagation::NBody;
 use crate::state::{SimultaneousStates, State};
 use crate::time::{TDB, Time};
 
 use rayon::prelude::*;
+use std::f64::consts::FRAC_PI_2;
 
 /// Assuming the object undergoes n-body motion, check to see if it is within the
 /// field of view.
@@ -161,6 +162,7 @@ pub fn check_visible<E: Ephemeris, F: FovLike>(
         )))?;
     }
     let obs_state = fov.observer();
+    let cone = bounding_cone(fov);
 
     // The linear check compares positions directly, so each state moves to the
     // center of the observer. States usually share a center and an epoch. Thus
@@ -204,7 +206,16 @@ pub fn check_visible<E: Ephemeris, F: FovLike>(
                 let vel = state.vel + offset.vel;
                 let max_dist = (vel - obs_state.vel).norm() * dt_limit * 2.0;
                 let dt = elapsed - (pos - obs_state.pos).norm() * C_AU_PER_DAY_INV;
-                let (_, contains) = fov.contains(&((pos + vel * dt) - obs_state.pos));
+                let obs_to_obj = (pos + vel * dt) - obs_state.pos;
+                // The cone holds every patch, so its distance is also a lower bound,
+                // and rejecting on it skips checking each patch of the FOV.
+                if let Some(Contains::Outside(dist)) =
+                    cone.as_ref().map(|c| c.contains(&obs_to_obj))
+                    && dist > max_dist
+                {
+                    return None;
+                }
+                let (_, contains) = fov.contains(&obs_to_obj);
                 if let Contains::Outside(dist) = contains
                     && dist > max_dist
                 {
@@ -253,4 +264,22 @@ pub fn check_visible<E: Ephemeris, F: FovLike>(
             SimultaneousStates::new_exact(states, Some(fov.get_child(idx).into_fov())).ok()
         })
         .collect())
+}
+
+/// A cone around a FOV of several patches, holding all of them. `None` for a FOV of
+/// one patch, where checking the patch costs no more than checking the cone.
+fn bounding_cone<F: FovLike>(fov: &F) -> Option<SphericalCone> {
+    if fov.n_patches() < 2 {
+        return None;
+    }
+    let center = fov.pointing().ok()?;
+    let radius = fov
+        .corners()
+        .ok()?
+        .iter()
+        .map(|corner| center.angle(corner))
+        .fold(0.0, f64::max);
+    // A cone of less than a hemisphere around the corners also holds the great
+    // circle edges between them.
+    (radius < FRAC_PI_2).then(|| SphericalCone::new(&center, radius))
 }

@@ -383,13 +383,7 @@ impl FovLike for NeosVisit {
     }
 
     fn contains(&self, obs_to_obj: &Vector<Equatorial>) -> (usize, Contains) {
-        closest_inside(
-            &self
-                .chips
-                .iter()
-                .map(|x| x.contains(obs_to_obj).1)
-                .collect::<Vec<_>>(),
-        )
+        closest_inside(self.chips.iter().map(|x| x.contains(obs_to_obj).1))
     }
 
     fn n_patches(&self) -> usize {
