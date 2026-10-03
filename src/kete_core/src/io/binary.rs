@@ -438,16 +438,14 @@ impl KeteRead for State<Equatorial> {
 impl KeteWrite for SphericalCone {
     fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
         self.pointing.write_to(w)?;
-        self.angle.write_to(w)
+        self.angle().write_to(w)
     }
 }
 
 impl KeteRead for SphericalCone {
     fn read_from<R: Read>(r: &mut R) -> KeteResult<Self> {
-        Ok(Self {
-            pointing: Vector::read_from(r)?,
-            angle: f64::read_from(r)?,
-        })
+        let pointing = Vector::read_from(r)?;
+        Ok(Self::from_parts(pointing, f64::read_from(r)?))
     }
 }
 
@@ -1790,10 +1788,7 @@ mod tests {
     }
 
     fn sample_cone() -> SphericalCone {
-        SphericalCone {
-            pointing: Vector::new([1.0, 0.0, 0.0]),
-            angle: 0.1,
-        }
+        SphericalCone::new(&Vector::new([1.0, 0.0, 0.0]), 0.1)
     }
 
     #[test]

@@ -285,8 +285,8 @@ impl GenericCone {
     /// Angle of the cone from the central pointing vector in radians.
     #[inline]
     #[must_use]
-    pub fn angle(&self) -> &f64 {
-        &self.patch.angle
+    pub fn angle(&self) -> f64 {
+        self.patch.angle()
     }
 }
 

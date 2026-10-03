@@ -565,7 +565,13 @@ pub struct SphericalCone {
     pub(crate) pointing: Vector<Equatorial>,
 
     /// Angle from the central pointing vector to the edge of the cone, in radians.
-    pub angle: f64,
+    angle: f64,
+
+    /// Cosine of `angle`.
+    cos_angle: f64,
+
+    /// Sine of `angle`.
+    sin_angle: f64,
 }
 
 impl SphericalCone {
@@ -573,37 +579,55 @@ impl SphericalCone {
     /// the central vector to the edge of the cone in radians.
     #[must_use]
     pub fn new(pointing: &Vector<Equatorial>, angle: f64) -> Self {
-        let pointing = pointing.normalize();
-        Self { pointing, angle }
+        Self::from_parts(pointing.normalize(), angle)
+    }
+
+    /// The cone with the unit vector `pointing`, used as given.
+    pub(crate) fn from_parts(pointing: Vector<Equatorial>, angle: f64) -> Self {
+        let (sin_angle, cos_angle) = angle.sin_cos();
+        Self {
+            pointing,
+            angle,
+            cos_angle,
+            sin_angle,
+        }
+    }
+
+    /// Angle from the central pointing vector to the edge of the cone, in radians.
+    #[must_use]
+    pub fn angle(&self) -> f64 {
+        self.angle
     }
 }
 
 impl SkyPatch for SphericalCone {
     /// Is the vector inside of the cone.
+    ///
+    /// The angle `theta` from the pointing is handled through its sine and cosine.
+    /// The sine comes from the cross product, which keeps it exact for small
+    /// angles, and no inverse trigonometric function is needed.
     fn contains(&self, obs_to_obj: &Vector<Equatorial>) -> Contains {
-        let dist = self.pointing.angle(obs_to_obj);
-        match dist {
-            // if d is less than the angle, it is inside cone
-            d if d <= self.angle => Contains::Inside,
+        let r = obs_to_obj.norm();
+        if r == 0.0 || self.angle >= PI {
+            return Contains::Inside;
+        }
+        let cos_theta = obs_to_obj.dot(&self.pointing) / r;
+        let sin_theta = obs_to_obj.cross(&self.pointing).norm() / r;
 
-            // outside of the cone, but how badly?
-            d => {
-                let r = obs_to_obj.norm();
-                let min_angle = (d - self.angle).abs();
+        // sin(angle - theta), which is not negative when theta is at most angle.
+        let sin_inside = self.sin_angle * cos_theta - self.cos_angle * sin_theta;
+        if sin_inside >= 0.0 {
+            return Contains::Inside;
+        }
 
-                // The minimum distance required for the object to be within the cone
-                // of shame.
-                match min_angle {
-                    // if the min angle is more than 90 degrees, then the object
-                    // can be visible by moving on top of the observer, so going r dist
-                    theta if theta > FRAC_PI_2 => Contains::Outside(r),
-
-                    // if the min angle is less than 90 degrees, then the object can
-                    // move directly toward the edge of the cone, which is a right
-                    // angle triangle, where the hypotenuse is r
-                    theta => Contains::Outside(theta.sin() * r),
-                }
-            }
+        // Outside by theta - angle. Past a right angle the object is nearest the
+        // cone by moving on top of the observer, a distance r. Otherwise it can
+        // move directly toward the edge of the cone, which is a right angle
+        // triangle with hypotenuse r.
+        if cos_theta * self.cos_angle + sin_theta * self.sin_angle < 0.0 {
+            Contains::Outside(r)
+        } else {
+            Contains::Outside(-sin_inside * r)
         }
     }
 
@@ -615,6 +639,70 @@ impl SkyPatch for SphericalCone {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The cone check as it was written with `Vector::angle`, for comparison.
+    fn cone_contains_by_angle(cone: &SphericalCone, obs_to_obj: &Vector<Equatorial>) -> Contains {
+        let theta = cone.pointing.angle(obs_to_obj);
+        if theta <= cone.angle() {
+            return Contains::Inside;
+        }
+        let r = obs_to_obj.norm();
+        match theta - cone.angle() {
+            outside if outside > FRAC_PI_2 => Contains::Outside(r),
+            outside => Contains::Outside(outside.sin() * r),
+        }
+    }
+
+    #[test]
+    fn cone_matches_angle_form() {
+        let pointing = Vector::<Equatorial>::from_ra_dec(0.3, 0.2);
+        for angle in [1e-7, 1e-3, 0.05, 1.0, 2.0] {
+            let cone = SphericalCone::new(&pointing, angle);
+            for i in 0..72 {
+                for j in 0..37 {
+                    let dir = Vector::<Equatorial>::from_ra_dec(
+                        f64::from(i) * 0.0875,
+                        -1.55 + f64::from(j) * 0.0861,
+                    );
+                    let obs_to_obj = dir * 1.7;
+                    // The angle form is not exact within about 1e-8 radians of
+                    // the edge, so the decision there is not compared.
+                    if (pointing.angle(&dir) - angle).abs() < 1e-6 {
+                        continue;
+                    }
+                    match (
+                        cone.contains(&obs_to_obj),
+                        cone_contains_by_angle(&cone, &obs_to_obj),
+                    ) {
+                        (Contains::Inside, Contains::Inside) => {}
+                        (Contains::Outside(a), Contains::Outside(b)) => {
+                            assert!((a - b).abs() < 1e-9, "angle {angle}: {a} vs {b}");
+                        }
+                        (a, b) => panic!("angle {angle}, ({i}, {j}): {a:?} vs {b:?}"),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cone_small_angles() {
+        // An object 1e-10 radians outside a cone of 1e-9 radians, where the cosine
+        // of either angle rounds to one.
+        let pointing = Vector::<Equatorial>::new([1.0, 0.0, 0.0]);
+        let cone = SphericalCone::new(&pointing, 1e-9);
+        let outside = Vector::<Equatorial>::new([2.0, 2.0 * 1.1e-9, 0.0]);
+        let inside = Vector::<Equatorial>::new([2.0, 2.0 * 0.9e-9, 0.0]);
+        assert!(cone.contains(&inside).is_inside());
+        match cone.contains(&outside) {
+            Contains::Outside(d) => assert!((d - 2.0e-10).abs() < 1e-18, "{d}"),
+            Contains::Inside => panic!("expected outside"),
+        }
+        assert!(
+            cone.contains(&Vector::<Equatorial>::new([0.0, 0.0, 0.0]))
+                .is_inside()
+        );
+    }
 
     #[test]
     fn test_rectangular_patch() {
