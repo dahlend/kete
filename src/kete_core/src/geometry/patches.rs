@@ -31,6 +31,7 @@
 
 use crate::errors::{Error, KeteResult};
 use crate::frames::{Equatorial, Vector};
+use smallvec::SmallVec;
 use std::{
     f64::consts::{FRAC_PI_2, PI},
     ops::Neg,
@@ -109,7 +110,9 @@ pub trait SkyPatch: Sized {
 #[derive(Debug, Clone)]
 pub struct SphericalPolygon {
     /// Unit normals of the planes of the edges, pointing toward the inside.
-    pub(crate) edge_normals: Vec<Vector<Equatorial>>,
+    /// Up to four, the case of every survey FOV, are stored without a heap
+    /// allocation.
+    pub(crate) edge_normals: SmallVec<[Vector<Equatorial>; 4]>,
 
     /// Unit vector of the center of the corners, for a non-convex polygon;
     /// `None` if it is convex.
@@ -122,7 +125,7 @@ impl SphericalPolygon {
     #[must_use]
     pub fn from_normals(edge_normals: &[Vector<Equatorial>]) -> Self {
         Self {
-            edge_normals: edge_normals.to_vec(),
+            edge_normals: edge_normals.into(),
             center: None,
         }
     }
@@ -337,7 +340,7 @@ impl SphericalPolygon {
             }
         }
         Ok(Self {
-            edge_normals,
+            edge_normals: edge_normals.into(),
             center: (!convex).then_some(center),
         })
     }
@@ -370,7 +373,7 @@ impl SphericalPolygon {
 
     /// The edge normals and the center of a non-convex polygon, for storage.
     pub(crate) fn parts(&self) -> (&[Vector<Equatorial>], Option<Vector<Equatorial>>) {
-        (&self.edge_normals, self.center)
+        (&self.edge_normals[..], self.center)
     }
 
     /// The polygon from the parts that [`Self::parts`] gives.
@@ -379,7 +382,7 @@ impl SphericalPolygon {
         center: Option<Vector<Equatorial>>,
     ) -> Self {
         Self {
-            edge_normals,
+            edge_normals: edge_normals.into(),
             center,
         }
     }
@@ -438,6 +441,10 @@ impl SkyPatch for SphericalPolygon {
 
 impl SphericalPolygon {
     /// [`SkyPatch::contains`] for a non-convex polygon with center `center`.
+    ///
+    /// Kept out of line: inlined, its register use would make every call of
+    /// [`SkyPatch::contains`] save and restore registers, convex or not.
+    #[inline(never)]
     fn non_convex_contains(
         &self,
         obs_to_obj: &Vector<Equatorial>,

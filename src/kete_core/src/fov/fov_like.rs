@@ -111,34 +111,17 @@ pub fn check_statics<F: FovLike>(
 ///
 /// The object moves along a straight line at the velocity of `state`. The light
 /// delay uses the distance from the observer to `state` at the epoch of
-/// `state`. `state` must have the same center as the FOV observer. The returned
-/// state is at the time light left the object.
+/// `state`. `state` must have the same center as the FOV observer.
 #[inline]
-pub fn check_linear<F: FovLike>(
-    fov: &F,
-    state: &State<Equatorial>,
-) -> (usize, Contains, State<Equatorial>) {
-    let pos = state.pos;
-    let vel = state.vel;
+pub fn check_linear<F: FovLike>(fov: &F, state: &State<Equatorial>) -> (usize, Contains) {
     let obs = fov.observer();
-
     let obs_pos = obs.pos;
-
-    let rel_pos = pos - obs_pos;
+    let rel_pos = state.pos - obs_pos;
 
     // This also accounts for first order light delay.
     let dt = (obs.epoch - state.epoch).elapsed - rel_pos.norm() * C_AU_PER_DAY_INV;
-    let new_pos = pos + vel * dt;
-    let new_rel_pos = new_pos - obs_pos;
-    let (idx, contains) = fov.contains(&new_rel_pos);
-    let new_state = State::new(
-        state.desig.clone(),
-        state.epoch + dt,
-        new_pos,
-        vel,
-        obs.center_id(),
-    );
-    (idx, contains, new_state)
+    let new_pos = state.pos + state.vel * dt;
+    fov.contains(&(new_pos - obs_pos))
 }
 
 /// Assuming the object undergoes two-body motion, check to see if it is within the

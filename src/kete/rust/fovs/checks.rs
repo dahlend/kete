@@ -142,6 +142,13 @@ pub fn fov_checks_py(
 
         // Release the GIL during CPU-intensive parallel work so Python can
         // handle signals and other threads can proceed.
+        // With no non-gravitational models, an empty list skips a lookup for every
+        // state and FOV pair.
+        let chunk_non_gravs: &[Option<NonGravMask>] = if non_gravs.iter().any(Option::is_some) {
+            &non_gravs
+        } else {
+            &[]
+        };
         let vis: Vec<Vec<PySimultaneousStates>> = py.detach(|| {
             fovs.par_chunks(100)
                 .map(|chunk| {
@@ -151,7 +158,7 @@ pub fn fov_checks_py(
                             &eph,
                             fov,
                             &states,
-                            &non_gravs,
+                            chunk_non_gravs,
                             dt_limit,
                             include_asteroids,
                         )?;

@@ -1,7 +1,7 @@
 //! Visibility checks that need body states: N-body propagation to the observer epoch,
 //! or objects looked up by NAIF id, from an [`Ephemeris`].
 
-use super::{FovLike, check_linear, check_two_body};
+use super::{FovLike, check_two_body};
 use crate::constants::C_AU_PER_DAY_INV;
 use crate::desigs::Desig;
 use crate::ephemeris::Ephemeris;
@@ -172,8 +172,9 @@ pub fn check_visible<E: Ephemeris, F: FovLike>(
         .enumerate()
         .filter_map(|(idx, state)| {
             let non_grav = non_gravs.get(idx).and_then(Option::as_ref);
+            let elapsed = (obs_state.epoch - state.epoch).elapsed;
 
-            if non_grav.is_none() && (state.epoch - obs_state.epoch).elapsed.abs() < dt_limit {
+            if non_grav.is_none() && elapsed.abs() < dt_limit {
                 let offset = match &center_offset {
                     Some((center, epoch, offset))
                         if *center == state.center_id() && *epoch == state.epoch =>
@@ -196,15 +197,14 @@ pub fn check_visible<E: Ephemeris, F: FovLike>(
                             .2
                     }
                 };
-                let relative = State::<Equatorial>::new(
-                    state.desig.clone(),
-                    state.epoch,
-                    state.pos + offset.pos,
-                    state.vel + offset.vel,
-                    obs_state.center_id(),
-                );
-                let max_dist = (relative.vel - obs_state.vel).norm() * dt_limit * 2.0;
-                let (_, contains, _) = check_linear(fov, &relative);
+                // Linear motion with first order light delay, in the frame of the
+                // observer center, as in `check_linear`. This runs for every state
+                // and FOV pair, so it works on the vectors without building a state.
+                let pos = state.pos + offset.pos;
+                let vel = state.vel + offset.vel;
+                let max_dist = (vel - obs_state.vel).norm() * dt_limit * 2.0;
+                let dt = elapsed - (pos - obs_state.pos).norm() * C_AU_PER_DAY_INV;
+                let (_, contains) = fov.contains(&((pos + vel * dt) - obs_state.pos));
                 if let Contains::Outside(dist) = contains
                     && dist > max_dist
                 {
@@ -235,6 +235,11 @@ pub fn check_visible<E: Ephemeris, F: FovLike>(
             }
         })
         .collect();
+
+    // Most FOVs contain nothing, skip building their empty results.
+    if final_states.is_empty() {
+        return Ok(vec![None; fov.n_patches()]);
+    }
 
     let mut detector_states = vec![Vec::<State<_>>::new(); fov.n_patches()];
     for (idx, state) in final_states {
