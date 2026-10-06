@@ -38,7 +38,6 @@ bindings = "pyo3"
 python-source = "src"
 module-name = "kete._core"
 manifest-path = "Cargo.toml"
-include = ["LICENSE"]
 
 [project.optional-dependencies]
 dev = ["ruff",
