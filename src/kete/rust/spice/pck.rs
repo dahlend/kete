@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 use kete_core::frames::ecef_to_geodetic_lat_lon;
 use kete_core::{constants, prelude::*};
 use kete_spice::prelude::{LOADED_PCK, LOADED_SPK};

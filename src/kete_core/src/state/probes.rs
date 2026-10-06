@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Probes carried alongside a component to measure its departure from linearity.
 //!
 //! A [`ProbeSet`] is seeded from one [`UncertainState`]'s covariance, integrated forward

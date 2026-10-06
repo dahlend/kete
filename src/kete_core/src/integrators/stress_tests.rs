@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 /// Stress tests for numerical integrators.
 ///
 /// Each scenario defines a second-order IVP y'' = f(t, y, y') with a known

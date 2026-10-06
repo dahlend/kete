@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Python bindings for orbit determination and fitting.
 //!
 //! Wraps `kete_fitting` types and functions for use from Python.

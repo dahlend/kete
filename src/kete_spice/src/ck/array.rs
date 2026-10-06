@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 use crate::daf::{DAFType, DafArray};
 use kete_core::errors::{Error, KeteResult};
 

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Interface for Minor Planet Center (MPC) utilities
 //!
 //!

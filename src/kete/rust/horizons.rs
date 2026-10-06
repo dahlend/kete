@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! PyO3 wrappers around [`kete_fitting::HorizonsProperties`] and its fetch API.
 use std::fmt::Debug;
 

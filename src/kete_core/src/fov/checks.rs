@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Visibility checks that need body states: N-body propagation to the observer epoch,
 //! or objects looked up by NAIF id, from an [`Ephemeris`].
 

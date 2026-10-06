@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Dar Dahlen
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Tests for kete.orbit_fitting.fetch_gaia_observations."""
 
 import math

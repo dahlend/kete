@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Trajectory analysis that needs body states or N-body propagation.
 //!
 //! Complements [`analysis`](crate::analysis) (B-plane, orbital elements) with

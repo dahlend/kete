@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 use kete_core::errors::Error;
 use kete_spice::instruments::instrument_fov_at;
 use kete_spice::prelude::LOADED_TEXT_KERNELS;

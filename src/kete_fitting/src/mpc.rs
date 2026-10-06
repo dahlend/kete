@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 const PRELOAD_OBS_ERRORS: &[u8] = include_bytes!("../../kete_core/data/obs_errs.csv");
 
 /// MPC observation residual statistics, used to estimate expected residuals for a given

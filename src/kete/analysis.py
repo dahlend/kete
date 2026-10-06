@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Dar Dahlen
+# SPDX-License-Identifier: BSD-3-Clause
+
 """
 Orbital analysis tools for characterizing orbits and encounter geometry.
 """

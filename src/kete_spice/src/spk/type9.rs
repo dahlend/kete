@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! SPK Segment Type 9 - Lagrange Interpolation (Unequal Time Steps).
 //!
 //! <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/FORTRAN/req/spk.html#Type%209:%20Lagrange%20Interpolation%20---%20Unequal%20Time%20Steps>

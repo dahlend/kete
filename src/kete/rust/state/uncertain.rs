@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Python wrapper for [`kete_core::state::UncertainState`].
 //!
 //! Bridges between the Rust state shape and the Python user-facing shape,

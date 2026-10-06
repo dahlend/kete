@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! SPICE frames: their definitions, and the resolution of a frame to an
 //! inertial frame.
 //!

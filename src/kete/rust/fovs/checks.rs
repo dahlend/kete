@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 use super::*;
 use kete_core::errors::{Error, KeteResult};
 use kete_core::forces::NonGravMask;

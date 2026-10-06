@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 use kete_spice::daf::convert_daf_big_to_little_endian;
 use kete_spice::prelude::DafFile;
 use pyo3::{PyResult, pyfunction};

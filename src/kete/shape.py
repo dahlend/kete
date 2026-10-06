@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Dar Dahlen
+# SPDX-License-Identifier: BSD-3-Clause
+
 """
 Definitions of geometric objects: triangle shapes used by the thermal and reflected
 light models, and the polyhedron and spherical harmonic fields used for gravity.

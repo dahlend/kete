@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! # Force Models
 //!
 //! A force is anything that contributes an acceleration to an orbiting body.

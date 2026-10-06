@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Dar Dahlen
+# SPDX-License-Identifier: BSD-3-Clause
+
 """JPL Small-Body radar astrometry: fetching and conversion to Observations."""
 
 from __future__ import annotations

@@ -1,33 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Rotation related math utilities.
-//!
-// BSD 3-Clause License
-//
-// Copyright (c) 2026, Dar Dahlen
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice, this
-//    list of conditions and the following disclaimer.
-//
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-//
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from
-//    this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use std::f64::consts::PI;
 
@@ -124,14 +98,11 @@ pub fn quaternion_to_euler<const E1: char, const E2: char, const E3: char>(
     ]
 }
 
-/// Compute two rotation matrices from a target inertial frame to the frame defined by
-/// the provided angles. The first 3 angles here define the rotation with the specified
-/// euler angles, the second three values define the derivative of the 3 angles.
+/// Rotation from a target inertial frame to the frame defined by the Euler angles
+/// `angles`, along with its time derivative given the angle `rates`.
 ///
-/// This then calculates two rotation matrices, one is the 3x3 rotation matrix, and the
-/// second is the derivative of the 3x3 matrix with respect to time. These two matrices
-/// may be used to compute the new position and velocities when moving from one frame
-/// to another.
+/// The rotation transforms positions between the frames, and together with its
+/// derivative it also transforms velocities.
 #[must_use]
 pub fn euler_rotation<const E1: char, const E2: char, const E3: char>(
     angles: &[f64; 3],

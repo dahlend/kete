@@ -1,7 +1,9 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! MaybeVec
 //! This allows Py03 functions to have polymorphic support for a single value or a
 //! vector of values.
-//!
 
 use std::fmt::Debug;
 

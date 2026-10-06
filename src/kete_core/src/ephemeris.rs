@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Ephemeris providers: states of solar system bodies, and orientations of body
 //! frames.
 //!

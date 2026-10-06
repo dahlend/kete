@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! N-body propagation with body states from an [`Ephemeris`].
 //!
 //! Pure-math integrators and force models live in [`integrators`](crate::integrators),

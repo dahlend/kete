@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! SPK Segment Type 19 - ESOC/DDID Piecewise Interpolation.
 //!
 //! A type 19 segment holds a sequence of mini-segments and a set of

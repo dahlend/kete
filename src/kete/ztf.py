@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Dar Dahlen
+# SPDX-FileCopyrightText: 2025 California Institute of Technology
+# SPDX-License-Identifier: BSD-3-Clause
+
 """
 ZTF Related Functions and Data.
 ZTF data is available from 2018 to present.

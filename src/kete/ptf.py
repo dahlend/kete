@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Dar Dahlen
+# SPDX-FileCopyrightText: 2025 California Institute of Technology
+# SPDX-License-Identifier: BSD-3-Clause
+
 """
 PTF Observatory, the predecessor to ZTF which operated from 2009 to 2018, however
 the last 3 years of data are not public.

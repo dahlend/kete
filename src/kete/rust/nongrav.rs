@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Python wrapper for non-gravitational force models.
 //!
 //! Exposes the non-grav variants to Python as a single class

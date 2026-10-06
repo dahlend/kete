@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! An [`Ephemeris`] that integrates the planets itself, from a saved set of states.
 
 use std::collections::HashMap;

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Integration tests for adaptive diffuse-state propagation with SPICE forces.
 
 use kete_core::desigs::Desig;

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Dar Dahlen
+# SPDX-FileCopyrightText: 2025 California Institute of Technology
+# SPDX-License-Identifier: BSD-3-Clause
+
 """
 Field of view definitions, along with tests for checks to see if objects are within the
 FOVs.

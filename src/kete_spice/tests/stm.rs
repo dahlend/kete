@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Element sensitivities and splitting under `NBody` with the loaded SPK files.
 
 use kete_core::desigs::Desig;

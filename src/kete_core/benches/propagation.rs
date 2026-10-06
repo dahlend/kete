@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Benchmarks for propagation algorithms in the kete library.
 
 #![allow(missing_docs, reason = "Unnecessary for benchmarks")]

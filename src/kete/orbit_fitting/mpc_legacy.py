@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Dar Dahlen
+# SPDX-FileCopyrightText: 2025 California Institute of Technology
+# SPDX-License-Identifier: BSD-3-Clause
+
 """MPC 80-character observation format: parsing and conversion to Observations."""
 
 from __future__ import annotations

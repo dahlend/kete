@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Batched N-body propagation over a packed `(planets | objects)` vector.
 //!
 //! [`vec_accel`] is the ephemeris-free ODE function: planets and objects are

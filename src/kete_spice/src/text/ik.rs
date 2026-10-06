@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Field of view definitions from instrument kernels (IK).
 //!
 //! An instrument kernel defines the field of view of instrument `<id>` by these

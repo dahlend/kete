@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Center body types for [`State`](crate::state::State).
 //!
 //! These types encode the gravitational center of a `State` at compile time,

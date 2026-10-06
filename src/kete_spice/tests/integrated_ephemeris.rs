@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! The integrated ephemeris of `kete_core` against the loaded DE440 kernels.
 
 use kete_core::ephemeris::Ephemeris;

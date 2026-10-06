@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! # `kete_spice`
 //!
 //! SPICE kernel I/O and SPICE-related extensions for kete.

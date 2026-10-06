@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! State representations and state-shape polymorphism.
 //!
 //! [`State`] is the basic exact Cartesian state. [`UncertainState`] is a best-fit

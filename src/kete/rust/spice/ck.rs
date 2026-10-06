@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 use kete_spice::frames::try_frame_at;
 use kete_spice::prelude::LOADED_CK;
 use pyo3::{PyResult, pyfunction};

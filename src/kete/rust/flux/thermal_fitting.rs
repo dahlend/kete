@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! PyO3 bindings for model fitting (NEATM/FRM/HG).
 //!
 //! Exposes [`kete_flux::fitting`] types and functions to Python under

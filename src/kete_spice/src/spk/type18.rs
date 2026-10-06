@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! SPK Segment Type 18 - ESOC/DDID Hermite/Lagrange Interpolation.
 //!
 //! Subtype 0: Hermite interpolation with 12-value records (pos, dpos, vel, dvel).

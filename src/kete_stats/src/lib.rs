@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! # Basic Statistics for astronomical data.
 //!
 //! This handles NaN gracefully for astronomical data sets.

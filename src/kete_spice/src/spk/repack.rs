@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! SPK repacker. It converts loaded SPK segments into compact output segments.
 //!
 //! The repacker writes two output types:

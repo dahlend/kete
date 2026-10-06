@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Dar Dahlen
+# SPDX-License-Identifier: BSD-3-Clause
+
 """MPC ADES API: fetch observations and convert to fitting Observations."""
 
 from __future__ import annotations

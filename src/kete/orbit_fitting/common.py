@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Dar Dahlen
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Shared utilities for observation ingestion across data sources."""
 
 from __future__ import annotations

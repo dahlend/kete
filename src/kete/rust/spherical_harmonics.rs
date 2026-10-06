@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Python bindings for spherical harmonic gravity fields.
 use std::sync::Arc;
 

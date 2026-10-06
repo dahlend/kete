@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Outgassing thrust along a direction fixed in the radial / transverse / normal
 //! frame, with a strength that changes linearly in time and an optional part that
 //! turns at a fixed period.

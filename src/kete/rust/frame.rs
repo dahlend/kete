@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Python Frame of reference support
 use kete_core::frames::{
     approx_earth_pos_to_ecliptic, approx_solar_noon, approx_sun_dec, earth_obliquity,

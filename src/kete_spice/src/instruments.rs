@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Fields of view of instruments at a time, from the loaded kernels.
 //!
 //! An instrument kernel gives the field of view in the frame of the instrument

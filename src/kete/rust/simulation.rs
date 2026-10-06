@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Python bindings for the Wisdom-Holman symplectic N-body simulation.
 use kete_core::constants::GMS;
 use kete_core::errors::Error;

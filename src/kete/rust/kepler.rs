@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Python support for kepler orbit calculations
 use itertools::Itertools;
 use kete_core::frames::{Ecliptic, Equatorial, SunCenter, Vector};

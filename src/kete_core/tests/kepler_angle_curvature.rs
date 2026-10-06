@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Does a free-Kepler cloud accumulate sigma-point divergence purely from the
 //! choice of `true_lon` as the angle coordinate?
 //!

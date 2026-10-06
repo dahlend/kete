@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Systematic ranging orbit uncertainty sampling.
 //!
 //! Implements the JPL Scout algorithm (Farnocchia et al. 2015): scans a 2-D

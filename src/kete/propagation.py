@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Dar Dahlen
+# SPDX-FileCopyrightText: 2025 California Institute of Technology
+# SPDX-License-Identifier: BSD-3-Clause
+
 """
 Propagation of objects using orbital mechanics, this includes a simplified 2 body model
 as well as a N body model which includes some general relativistic effects.

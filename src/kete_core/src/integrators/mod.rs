@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! # Numerical Integrators
 //! Numerical ODE integrators for orbit propagation.
 //!
@@ -22,7 +25,6 @@
 //! years) orbital evolution, where adaptive integrators accumulate secular energy
 //! drift. It trades short-term accuracy for bounded long-term error; see its
 //! documentation for the splitting it uses and the domain where it applies.
-//!
 
 mod bulirsch_stoer;
 mod gauss_jackson;

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! `HEALPix` sky pixelization.
 //!
 //! Implements the Hierarchical Equal Area isoLatitude Pixelization scheme

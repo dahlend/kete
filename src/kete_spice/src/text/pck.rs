@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Body orientation from text PCK constants.
 //!
 //! A text PCK gives the right ascension (RA) and declination (DEC) of the pole

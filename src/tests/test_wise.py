@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025 California Institute of Technology
+# SPDX-License-Identifier: BSD-3-Clause
+
 from kete.wise import (
     MISSION_PHASES,
     mission_phase_from_jd,

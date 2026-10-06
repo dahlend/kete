@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! SPICE text kernels: frames (FK), spacecraft clock (SCLK), text PCK,
 //! instrument (IK) and meta-kernels.
 //!

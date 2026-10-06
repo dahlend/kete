@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! The loaded SPICE kernels as a [`kete_core::ephemeris::Ephemeris`].
 
 use crossbeam::sync::ShardedLockReadGuard;

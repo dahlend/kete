@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Tests for the Wisdom-Holman integrator.
 //!
 //! Each test prints the quantities it measures (orders, drift rates, residuals)

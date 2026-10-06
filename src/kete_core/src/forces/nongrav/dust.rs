@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Dust grain force: solar radiation pressure + Poynting-Robertson drag.
 
 use nalgebra::{Matrix3, Matrix3xX, Vector3};

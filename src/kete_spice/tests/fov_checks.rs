@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Visibility checks with body states from the loaded SPK files.
 
 use kete_core::constants::C_AU_PER_DAY_INV;

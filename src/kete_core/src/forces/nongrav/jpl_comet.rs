@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! JPL comet non-gravitational force (`a1`, `a2`, `a3` in RTN frame).
 
 use nalgebra::{Matrix3xX, Vector3};

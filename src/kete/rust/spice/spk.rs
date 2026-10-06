@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 use kete_core::constants::AU_KM;
 use kete_core::desigs::Desig;
 use kete_core::frames::geodetic_lat_lon_to_ecef;

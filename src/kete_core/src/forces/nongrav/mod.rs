@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Non-gravitational forces: typed [`ParameterizedForce`] impls and physical-input helpers.
 //!
 //! The non-grav variants are separate concrete types, each holding only

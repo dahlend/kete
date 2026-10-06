@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Farnocchia et al. 2025 oblate-spheroid radiation + thermal recoil force.
 
 use nalgebra::{Matrix3xX, Vector3};

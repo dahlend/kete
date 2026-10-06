@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Meta-kernels: text kernels that list other kernels to load.
 //!
 //! A text kernel that sets `KERNELS_TO_LOAD` is a meta-kernel, whatever its
