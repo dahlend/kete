@@ -308,10 +308,10 @@ impl GravParams {
     /// in AU.
     ///
     /// The relativistic correction and the [`Shape`] are assigned from the NAIF id. The
-    /// Sun and Jupiter are relativistic and oblate about the ecliptic pole (both poles
-    /// are approximated by it, a fraction-of-a-degree-scale approximation on an already
-    /// small term), the Earth is oblate about the equatorial pole, and every other body
-    /// is a point mass.
+    /// Sun and Jupiter are relativistic and oblate: the Sun about its IAU spin pole (as
+    /// in DE440), Jupiter about the ecliptic pole (an approximation of a few degrees on
+    /// an already small term). The Earth is oblate about the equatorial pole, and every
+    /// other body is a point mass.
     #[must_use]
     pub fn new(naif_id: i32, mass: f64, radius: f32) -> Self {
         let (relativistic, shape) = match naif_id {
@@ -319,7 +319,7 @@ impl GravParams {
                 true,
                 Shape::Oblate {
                     j2: SUN_J2,
-                    pole: *ECLIPTIC_POLE_EQUATORIAL,
+                    pole: *SUN_POLE_EQUATORIAL,
                 },
             ),
             5 => (
@@ -645,6 +645,14 @@ impl GravParams {
 /// The ecliptic pole expressed on equatorial axes.
 static ECLIPTIC_POLE_EQUATORIAL: std::sync::LazyLock<Vector3<f64>> =
     std::sync::LazyLock::new(|| Ecliptic::to_equatorial(Vector3::z()));
+
+/// The Sun's spin pole on equatorial axes: right ascension 286.13 deg and
+/// declination 63.87 deg (Archinal et al. 2018, the IAU WGCCRE value, also used for
+/// the solar J2 in DE440). About 7.25 deg from the ecliptic pole.
+static SUN_POLE_EQUATORIAL: std::sync::LazyLock<Vector3<f64>> = std::sync::LazyLock::new(|| {
+    let (ra, dec) = (286.13_f64.to_radians(), 63.87_f64.to_radians());
+    Vector3::new(dec.cos() * ra.cos(), dec.cos() * ra.sin(), dec.sin())
+});
 
 /// Acceleration from the J2 oblateness term of a body.
 ///

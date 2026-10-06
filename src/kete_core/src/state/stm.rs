@@ -179,6 +179,7 @@ pub fn propagate_with_stm<F: ParameterizedForce>(
         epoch_final,
         F::Meta::default(),
         Some(3),
+        None,
     )?;
 
     // Reconstruct the 6 x (6 + Np) sensitivity matrix.
@@ -363,6 +364,7 @@ pub fn propagate_state<F: ParameterizedForce>(
         epoch_init,
         epoch_final,
         F::Meta::default(),
+        None,
         None,
     )?;
     Ok((pos_f, vel_f))

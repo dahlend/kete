@@ -36,21 +36,162 @@ use crate::time::{TDB, Time};
 use itertools::izip;
 use nalgebra::Matrix;
 use nalgebra::allocator::Allocator;
-use nalgebra::{DefaultAllocator, Dim, OMatrix, OVector, RowSVector, SMatrix, U1, U7};
+use nalgebra::{DefaultAllocator, Dim, OMatrix, OVector, RowSVector, U1, U7};
+
+use super::{
+    BPredictor, C_MAT, EPSILON, GAUSS_RADAU_SPACINGS, MIN_RATIO, MIN_STEP, U_POW_TABLE, U_VEC,
+};
 
 /// Integrator will return a result of this type.
 type RadauResult<MType, D> = KeteResult<(OVector<f64, D>, OVector<f64, D>, MType)>;
 
-pub(crate) const GAUSS_RADAU_SPACINGS: [f64; 8] = [
-    0.0,
-    0.05626256053692215,
-    0.18024069173689236,
-    0.3526247171131696,
-    0.5471536263305554,
-    0.7342101772154105,
-    0.8853209468390958,
-    0.9775206135612875,
-];
+/// Number of values stored per component per step: the state, its first and second
+/// derivatives at the start of the step, and the seven `b` coefficients.
+const DENSE_STRIDE: usize = 10;
+
+/// Margin, in days, by which a query may fall outside the integrated span and still be
+/// evaluated. The integrator ends within about 1e-12 day of its target, so this keeps
+/// the exact target time queryable.
+const DENSE_EDGE_TOL: f64 = 1e-9;
+
+/// Dense output of one [`RadauIntegrator::integrate`] call: every accepted step, which
+/// gives the state and its derivative at any time in the integrated span from the
+/// integrator's own polynomial, without integrating again.
+///
+/// Over a step starting at `epoch` with signed length `h`, for
+/// `s = (t - epoch) / h` in `[0, 1]`:
+///
+/// ```text
+/// x(t) = x0 + s h v0 + (s h)^2 (a0 / 2 + sum_k b_k s^(k+1) / ((k + 2)(k + 3)))
+/// v(t) = v0 + s h (a0 + sum_k b_k s^(k+1) / (k + 2))
+/// ```
+///
+/// with `x0`, `v0`, `a0` the state, its derivative and its second derivative at
+/// `epoch`, and `b` the step's seven Gauss-Radau coefficients.
+///
+/// If the integration fails part way, for example on an impact, the steps accepted
+/// before the failure are kept, so the trajectory runs up to it.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct RadauDense {
+    /// Number of components of the integrated state.
+    n_comp: usize,
+    /// Start of each step, in integration order.
+    epochs: Vec<Time<TDB>>,
+    /// Signed length of each step in days.
+    step_sizes: Vec<f64>,
+    /// For each step, for each component: `[x0, v0, a0, b0..b6]`.
+    coeffs: Vec<f64>,
+}
+
+impl RadauDense {
+    /// An empty dense output, to pass to [`RadauIntegrator::integrate`].
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Number of steps held.
+    #[must_use]
+    pub fn n_steps(&self) -> usize {
+        self.epochs.len()
+    }
+
+    /// Where the integration started, or `None` if empty.
+    #[must_use]
+    pub fn start(&self) -> Option<Time<TDB>> {
+        self.epochs.first().copied()
+    }
+
+    /// Where the integration ended, or `None` if empty.
+    #[must_use]
+    pub fn end(&self) -> Option<Time<TDB>> {
+        Some(*self.epochs.last()? + *self.step_sizes.last()?)
+    }
+
+    /// State and its derivative at `time`.
+    ///
+    /// # Errors
+    /// `Error::Bounds` if `time` is outside the integrated span.
+    pub fn evaluate(&self, time: Time<TDB>) -> KeteResult<(Vec<f64>, Vec<f64>)> {
+        let out_of_span = || {
+            Error::Bounds(format!(
+                "JD {} is outside the dense output, which covers JD {} to {}.",
+                time.jd(),
+                self.start().map_or(f64::NAN, |t| t.jd()),
+                self.end().map_or(f64::NAN, |t| t.jd()),
+            ))
+        };
+        let (start, end) = self.start().zip(self.end()).ok_or_else(out_of_span)?;
+        let backward = self.step_sizes[0] < 0.0;
+        let (lo, hi) = if backward { (end, start) } else { (start, end) };
+        if (lo - time).elapsed > DENSE_EDGE_TOL || (time - hi).elapsed > DENSE_EDGE_TOL {
+            Err(out_of_span())?;
+        }
+        // Steps whose start has not passed `time`, in the direction of integration.
+        let n_before = if backward {
+            self.epochs.partition_point(|epoch| *epoch >= time)
+        } else {
+            self.epochs.partition_point(|epoch| *epoch <= time)
+        };
+        Ok(self.evaluate_step(n_before.saturating_sub(1), time))
+    }
+
+    /// Append an accepted step: its start, signed length, the state and its first and
+    /// second derivatives at the start, and its `b` coefficients.
+    fn push<D: Dim>(
+        &mut self,
+        epoch: Time<TDB>,
+        step_size: f64,
+        state: &OVector<f64, D>,
+        state_der: &OVector<f64, D>,
+        state_der_der: &OVector<f64, D>,
+        b: &OMatrix<f64, D, U7>,
+    ) where
+        DefaultAllocator: Allocator<D, U1> + Allocator<D, U7>,
+    {
+        self.n_comp = state.len();
+        self.epochs.push(epoch);
+        self.step_sizes.push(step_size);
+        self.coeffs.reserve(self.n_comp * DENSE_STRIDE);
+        for idx in 0..self.n_comp {
+            self.coeffs
+                .extend_from_slice(&[state[idx], state_der[idx], state_der_der[idx]]);
+            self.coeffs.extend((0..7).map(|k| b[(idx, k)]));
+        }
+    }
+
+    /// Evaluate the polynomial of step `step` at `time`.
+    fn evaluate_step(&self, step: usize, time: Time<TDB>) -> (Vec<f64>, Vec<f64>) {
+        let step_size = self.step_sizes[step];
+        let s = (time - self.epochs[step]).elapsed / step_size;
+        let h1 = s * step_size;
+        // Powers s^(k+1) folded with the W and U weights, shared by every component.
+        let (w_vec, u_vec) = (&*W_VEC, &*U_VEC);
+        let mut w = [0.0; 7];
+        let mut u = [0.0; 7];
+        let mut s_pow = s;
+        for k in 0..7 {
+            w[k] = w_vec[k] * s_pow;
+            u[k] = u_vec[k] * s_pow;
+            s_pow *= s;
+        }
+        let base = step * self.n_comp * DENSE_STRIDE;
+        self.coeffs[base..base + self.n_comp * DENSE_STRIDE]
+            .chunks_exact(DENSE_STRIDE)
+            .map(|c| {
+                let (mut bw, mut bu) = (0.0, 0.0);
+                for k in 0..7 {
+                    bw += c[3 + k] * w[k];
+                    bu += c[3 + k] * u[k];
+                }
+                (
+                    c[0] + h1 * c[1] + h1 * h1 * (c[2] / 2.0 + bw),
+                    c[1] + h1 * (c[2] + bu),
+                )
+            })
+            .unzip()
+    }
+}
 
 // initialize W
 static W_VEC: std::sync::LazyLock<RowSVector<f64, 7>> = std::sync::LazyLock::new(|| {
@@ -59,29 +200,6 @@ static W_VEC: std::sync::LazyLock<RowSVector<f64, 7>> = std::sync::LazyLock::new
         *e = (((idx + 2) * (idx + 3)) as f64).recip();
     }
     w
-});
-
-// initialize U
-pub(crate) static U_VEC: std::sync::LazyLock<RowSVector<f64, 7>> = std::sync::LazyLock::new(|| {
-    let mut u = RowSVector::<f64, 7>::zeros();
-    for (idx, e) in u.iter_mut().enumerate() {
-        *e = ((idx + 2) as f64).recip();
-    }
-    u
-});
-
-// initialize C
-pub(crate) static C_MAT: std::sync::LazyLock<SMatrix<f64, 7, 7>> = std::sync::LazyLock::new(|| {
-    let mut c = SMatrix::<f64, 7, 7>::identity();
-    for idx in 0..7 {
-        if idx > 0 {
-            c[(idx, 0)] = -GAUSS_RADAU_SPACINGS[idx] * c[(idx - 1, 0)];
-        }
-        for idy in 1..idx {
-            c[(idx, idy)] = c[(idx - 1, idy - 1)] - GAUSS_RADAU_SPACINGS[idx] * c[(idx - 1, idy)];
-        }
-    }
-    c
 });
 
 // Precomputed w_pow and u_pow tables for each Gauss-Radau substep.
@@ -100,36 +218,6 @@ static W_POW_TABLE: std::sync::LazyLock<[RowSVector<f64, 7>; 7]> = std::sync::La
     }
     table
 });
-
-pub(crate) static U_POW_TABLE: std::sync::LazyLock<[RowSVector<f64, 7>; 7]> =
-    std::sync::LazyLock::new(|| {
-        let u = &*U_VEC;
-        let mut table = [RowSVector::<f64, 7>::zeros(); 7];
-        for (j, h) in GAUSS_RADAU_SPACINGS.iter().enumerate().skip(1) {
-            let mut hp = *h;
-            for k in 0..7 {
-                table[j - 1][k] = hp * u[k];
-                hp *= h;
-            }
-        }
-        table
-    });
-
-/// Binomial coefficients `C(n, k)` for `n, k <= 7`, used by the `b` predictor.
-static BINOMIAL: std::sync::LazyLock<[[f64; 8]; 8]> = std::sync::LazyLock::new(|| {
-    let mut c = [[0.0; 8]; 8];
-    for n in 0..8 {
-        c[n][0] = 1.0;
-        for k in 1..=n {
-            c[n][k] = c[n - 1][k - 1] + c[n - 1][k];
-        }
-    }
-    c
-});
-
-pub(crate) const MIN_RATIO: f64 = 0.25;
-pub(crate) const EPSILON: f64 = 1e-6;
-pub(crate) const MIN_STEP: f64 = 0.00005;
 
 /// Gauss-Radau Spacing Numerical Integrator
 /// This solves a second-order initial value problem.
@@ -265,6 +353,11 @@ where
 
     /// Integrate the functions from the initial time to the final time.
     ///
+    /// `dense`, when given, is replaced by every accepted step of this integration, so
+    /// that the solution can be evaluated at any time in the span afterwards (see
+    /// [`RadauDense`]). If the integration fails part way, it keeps the steps accepted
+    /// before the failure.
+    ///
     /// # Errors
     /// Integration may fail for a number of reasons, either the function fails, or
     /// convergence of the integrator fails.
@@ -276,7 +369,11 @@ where
         final_time: Time<TDB>,
         metadata: MType,
         control_dim: Option<usize>,
+        mut dense: Option<&mut RadauDense>,
     ) -> RadauResult<MType, D> {
+        if let Some(dense) = dense.as_deref_mut() {
+            *dense = RadauDense::default();
+        }
         let mut integrator = Self::new(
             func,
             state_init,
@@ -327,7 +424,7 @@ where
             if (integrator.cur_time - integrator.final_time).elapsed.abs() <= next_step_size.abs() {
                 next_step_size = (integrator.final_time - integrator.cur_time).elapsed;
             }
-            match integrator.step(next_step_size, first_step) {
+            match integrator.step(next_step_size, first_step, dense.as_deref_mut()) {
                 Ok(StepOutcome::Retry(s)) => {
                     // The first step came from an estimate rather than from the
                     // controller, and its error was above target: redo it once at the size
@@ -451,7 +548,12 @@ where
     /// A node whose state and derivative are bit-identical to its previous evaluation in
     /// this step attempt reuses that evaluation instead of calling the function again,
     /// which gives the same result.
-    fn step(&mut self, step_size: f64, first_step: bool) -> KeteResult<StepOutcome> {
+    fn step(
+        &mut self,
+        step_size: f64,
+        first_step: bool,
+        dense: Option<&mut RadauDense>,
+    ) -> KeteResult<StepOutcome> {
         self.predictor.predict(step_size, &mut self.cur_b);
         self.g_scratch.fill(0.0);
         self.node_valid = [false; 7];
@@ -590,6 +692,16 @@ where
                         step_size * 0.9 * (EPSILON / error_ratio).powf(1.0 / 7.0),
                     ));
                 }
+                if let Some(dense) = dense {
+                    dense.push(
+                        self.cur_time,
+                        step_size,
+                        &self.cur_state,
+                        &self.cur_state_der,
+                        &self.cur_state_der_der,
+                        &self.cur_b,
+                    );
+                }
                 let ss = step_size * step_size;
                 for idx in 0..self.cur_state.len() {
                     unsafe {
@@ -643,89 +755,6 @@ enum StepOutcome {
     Accepted(f64),
     /// The step was not taken; holds the size to retry it at.
     Retry(f64),
-}
-
-/// Starting `b` for each step of the Gauss-Radau integrators, extrapolated from the last
-/// accepted step (Everhart 1985).
-///
-/// Both integrators write the right-hand side over a step as
-/// `F(s) = F_0 + sum_k b_k s^(k+1)` for `s` in `[0, 1]`. With
-/// `q = step_size / last_step_size`, the last step's polynomial re-expanded about the end
-/// of that step, in units of the new step, has coefficients
-///
-/// ```text
-/// e_k = q^(k+1) * sum_{j >= k} C(j+1, k+1) b_j
-/// ```
-///
-/// The prediction is `e_k` plus the error of the previous prediction, `last_b - last_e`.
-/// It is computed from the last accepted step, so a retry after a failed attempt predicts
-/// from the same converged `b` at the retried size. Before the first accepted step, and
-/// when the step grows by more than a factor of 20 so that the extrapolation is no longer
-/// meaningful, the step starts from zero instead.
-///
-/// A better starting `b` reduces the number of corrector sweeps a step needs; it does not
-/// change the converged solution beyond the convergence tolerance.
-pub(crate) struct BPredictor<D: Dim>
-where
-    DefaultAllocator: Allocator<D, U7>,
-{
-    /// Prediction the current step attempt started from.
-    cur_e: OMatrix<f64, D, U7>,
-    /// Converged `b` of the last accepted step, and the prediction it started from.
-    last_b: OMatrix<f64, D, U7>,
-    last_e: OMatrix<f64, D, U7>,
-    /// Size of the last accepted step, zero before the first.
-    last_step_size: f64,
-}
-
-impl<D: Dim> BPredictor<D>
-where
-    DefaultAllocator: Allocator<D, U7>,
-{
-    pub(crate) fn new(dim: D) -> Self {
-        Self {
-            cur_e: Matrix::zeros_generic(dim, U7),
-            last_b: Matrix::zeros_generic(dim, U7),
-            last_e: Matrix::zeros_generic(dim, U7),
-            last_step_size: 0.0,
-        }
-    }
-
-    /// Set `b` to the predicted starting value for a step of `step_size`.
-    pub(crate) fn predict(&mut self, step_size: f64, b: &mut OMatrix<f64, D, U7>) {
-        let q = if self.last_step_size == 0.0 {
-            f64::INFINITY
-        } else {
-            step_size / self.last_step_size
-        };
-        if q.abs() > 20.0 {
-            b.fill(0.0);
-            self.cur_e.fill(0.0);
-            return;
-        }
-        let mut q_pow = [q; 7];
-        for k in 1..7 {
-            q_pow[k] = q_pow[k - 1] * q;
-        }
-        for row in 0..b.nrows() {
-            for k in 0..7 {
-                let mut sum = 0.0;
-                for j in k..7 {
-                    sum += BINOMIAL[j + 1][k + 1] * self.last_b[(row, j)];
-                }
-                let e = q_pow[k] * sum;
-                b[(row, k)] = e + (self.last_b[(row, k)] - self.last_e[(row, k)]);
-                self.cur_e[(row, k)] = e;
-            }
-        }
-    }
-
-    /// Record the converged `b` of an accepted step of `step_size`.
-    pub(crate) fn accept(&mut self, step_size: f64, b: &OMatrix<f64, D, U7>) {
-        self.last_b.copy_from(b);
-        self.last_e.copy_from(&self.cur_e);
-        self.last_step_size = step_size;
-    }
 }
 
 #[cfg(test)]
@@ -787,6 +816,7 @@ mod tests {
             t_final.into(),
             Vec::new(),
             None,
+            None,
         )
         .unwrap();
 
@@ -826,6 +856,7 @@ mod tests {
             0.0.into(),
             1000.0.into(),
             CentralAccelMeta::default(),
+            None,
             None,
         )
         .unwrap();
@@ -882,6 +913,7 @@ mod tests {
                 period.into(),
                 CentralAccelMeta::default(),
                 Some(3),
+                None,
             )
             .unwrap();
 
@@ -927,6 +959,7 @@ mod tests {
                 t1.into(),
                 CentralAccelMeta::default(),
                 None,
+                None,
             )
             .unwrap();
             p
@@ -945,6 +978,116 @@ mod tests {
                 ratio < 5.0,
                 "offset {offset:e} separated {ratio:.1}x the linear response, \
                  which means a fixed floor dominates rather than the dynamics"
+            );
+        }
+    }
+
+    /// Integrate three periods of an eccentric (e = 0.5) heliocentric orbit, forward or
+    /// backward, into `dense`.
+    fn eccentric_dense_run(
+        direction: f64,
+        dense: &mut RadauDense,
+    ) -> (Vector3<f64>, Vector3<f64>, Time<TDB>, f64) {
+        use crate::constants::GMS;
+        let (a, ecc) = (1.0_f64, 0.5_f64);
+        let peri = a * (1.0 - ecc);
+        let pos0 = Vector3::new(peri, 0.0, 0.0);
+        let vel0 = Vector3::new(0.0, (GMS * (1.0 + ecc) / peri).sqrt(), 0.0);
+        let span = direction * 3.0 * std::f64::consts::TAU * (a.powi(3) / GMS).sqrt();
+        let t0 = Time::<TDB>::new(2_451_545.0);
+        let _ = RadauIntegrator::integrate(
+            &central_accel,
+            pos0,
+            vel0,
+            t0,
+            t0 + span,
+            CentralAccelMeta::default(),
+            None,
+            Some(dense),
+        )
+        .unwrap();
+        (pos0, vel0, t0, span)
+    }
+
+    /// The trajectory covers exactly the integrated span, forward and backward, and
+    /// refuses queries outside it. Integrating again into the same dense output
+    /// replaces it.
+    #[test]
+    fn dense_output_covers_the_span() {
+        let mut dense = RadauDense::new();
+        for direction in [1.0, -1.0] {
+            let (_, _, t0, span) = eccentric_dense_run(direction, &mut dense);
+            assert!(dense.n_steps() > 0);
+            assert!((dense.start().unwrap() - t0).elapsed.abs() < 1e-12);
+            assert!((dense.end().unwrap() - (t0 + span)).elapsed.abs() < 1e-9);
+            assert!(dense.evaluate(t0).is_ok() && dense.evaluate(t0 + span).is_ok());
+            assert!(matches!(
+                dense.evaluate(t0 - direction * 1.0),
+                Err(Error::Bounds(_))
+            ));
+            assert!(matches!(
+                dense.evaluate(t0 + span + direction * 1.0),
+                Err(Error::Bounds(_))
+            ));
+            println!(
+                "dense_output_covers_the_span: direction {direction}, {} steps over {:.1} days",
+                dense.n_steps(),
+                span.abs()
+            );
+        }
+    }
+
+    /// Each step's polynomial at its end reproduces the state the next step starts
+    /// from, so the dense output is continuous in the state and its derivative.
+    #[test]
+    fn dense_output_is_continuous() {
+        let mut dense = RadauDense::new();
+        let _ = eccentric_dense_run(1.0, &mut dense);
+        let (mut worst_pos, mut worst_vel) = (0.0_f64, 0.0_f64);
+        for step in 1..dense.n_steps() {
+            let boundary = dense.epochs[step];
+            let (pos_a, vel_a) = dense.evaluate_step(step - 1, boundary);
+            let (pos_b, vel_b) = dense.evaluate_step(step, boundary);
+            let (pa, pb) = (Vector3::from_vec(pos_a), Vector3::from_vec(pos_b));
+            let (va, vb) = (Vector3::from_vec(vel_a), Vector3::from_vec(vel_b));
+            worst_pos = worst_pos.max((pa - pb).norm() / pb.norm());
+            worst_vel = worst_vel.max((va - vb).norm() / vb.norm());
+        }
+        println!("dense_output_is_continuous: worst jump pos {worst_pos:e}, vel {worst_vel:e}");
+        assert!(worst_pos < 1e-14, "position jump {worst_pos:e}");
+        assert!(worst_vel < 1e-14, "velocity jump {worst_vel:e}");
+    }
+
+    /// Inside the steps, forward and backward, the dense output is within an order of
+    /// magnitude of the integrator's accuracy at the step boundaries, against the
+    /// analytic two-body solution. Gauss-Radau collocation is most accurate at the end
+    /// of each step, so the interior is somewhat worse.
+    #[test]
+    fn dense_output_matches_the_analytic_orbit() {
+        use crate::kepler::analytic_2_body;
+        for direction in [1.0, -1.0] {
+            let mut dense = RadauDense::new();
+            let (pos0, vel0, t0, _) = eccentric_dense_run(direction, &mut dense);
+            let error_at = |time: Time<TDB>| {
+                let (pos, _) = dense.evaluate(time).unwrap();
+                let (exact, _) = analytic_2_body(time - t0, &pos0, &vel0, None).unwrap();
+                (Vector3::from_column_slice(&pos) - exact).norm()
+            };
+            let mut boundary = 0.0_f64;
+            let mut interior = 0.0_f64;
+            for (epoch, step_size) in dense.epochs.iter().zip(&dense.step_sizes) {
+                boundary = boundary.max(error_at(*epoch));
+                for frac in [0.13, 0.37, 0.5, 0.71, 0.94] {
+                    interior = interior.max(error_at(*epoch + frac * step_size));
+                }
+            }
+            println!(
+                "dense_output_matches_the_analytic_orbit: direction {direction}, worst error \
+                 at step boundaries {boundary:.3e} AU, inside steps {interior:.3e} AU"
+            );
+            assert!(
+                interior < 10.0 * boundary.max(1e-15),
+                "interior error {interior:e} is more than 10x the boundary error {boundary:e}"
             );
         }
     }

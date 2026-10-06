@@ -216,6 +216,7 @@ where
                 target_time,
                 meta,
                 control_dim,
+                None,
             )?;
             meta = m;
             let f_i = func(target_time, &p, &v, &mut meta, true)?;
@@ -299,6 +300,7 @@ where
                     target,
                     integrator.metadata,
                     Some(integrator.control_dim),
+                    None,
                 )?;
                 return Ok((p, v, m));
             }
@@ -649,6 +651,7 @@ mod tests {
             1000.0.into(),
             CentralAccelMeta::default(),
             None,
+            None,
         )
         .unwrap();
 
@@ -720,6 +723,7 @@ mod tests {
             0.0.into(),
             100_000.0.into(),
             CentralAccelMeta::default(),
+            None,
             None,
         )
         .unwrap();

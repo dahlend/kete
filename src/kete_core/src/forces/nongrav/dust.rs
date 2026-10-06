@@ -212,7 +212,7 @@ mod tests {
             let t0 = Time::<TDB>::new(times[times.len() - 1]);
             let t1 = Time::<TDB>::new(times[times.len() - 1] + period);
             let (np, nv, ()) =
-                RadauIntegrator::integrate(&accel, pos, vel, t0, t1, (), None).unwrap();
+                RadauIntegrator::integrate(&accel, pos, vel, t0, t1, (), None, None).unwrap();
             pos = np;
             vel = nv;
         }

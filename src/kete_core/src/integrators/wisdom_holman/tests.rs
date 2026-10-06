@@ -10,9 +10,9 @@
 
 use std::f64::consts::TAU;
 
-use nalgebra::{DVector, Vector3};
+use nalgebra::{DVector, Rotation3, Vector3};
 
-use super::{EMB_QUAD_J2R2, LostReason, SUN_RADIUS_AU, WisdomHolman};
+use super::{EMB_QUAD_J2R2, LostReason, SUN_RADIUS_AU, WisdomHolman, sun_oblateness};
 use crate::analysis::hill_radius;
 use crate::constants::{F0_OVER_C_AU_DAY2, GMS, SUN_J2};
 use crate::desigs::Desig;
@@ -210,6 +210,7 @@ fn radau_position_after(
         Time::new(J2000),
         Time::new(J2000 + t_final),
         (),
+        None,
         None,
     )
     .unwrap();
@@ -667,6 +668,7 @@ fn gr_matches_radau() {
         Time::new(J2000 + t_final),
         (),
         None,
+        None,
     )
     .unwrap();
     let radau = Vector3::new(rpos[0], rpos[1], rpos[2]);
@@ -820,14 +822,19 @@ fn emb_quadrupole() {
 /// The solar J2 term reproduces the secular nodal regression and apsidal
 /// precession of an inclined orbit:
 /// `dOmega/dt = -(3/2) n J2 (R/p)^2 cos(i)` and
-/// `domega/dt = (3/4) n J2 (R/p)^2 (5 cos^2(i) - 1)`.
+/// `domega/dt = (3/4) n J2 (R/p)^2 (5 cos^2(i) - 1)`,
+/// with the inclination, node and apse measured from the solar spin pole.
 #[test]
 fn j2_precession() {
     let a = 1.0_f64;
     let ecc = 0.1;
     let inc_deg = 45.0_f64;
+    // The formulas hold about the J2 axis, so the orbit is built, and its
+    // node and apse read, in a frame whose z axis is the solar spin pole.
+    let (_, pole) = sun_oblateness::<Ecliptic>().unwrap();
+    let to_ecliptic = Rotation3::rotation_between(&Vector3::z(), &pole).unwrap();
     let (pos0, vel0) = peri_pos_vel(a, ecc, inc_deg, 0.0);
-    let tp = make_state(1000, pos0, vel0);
+    let tp = make_state(1000, to_ecliptic * pos0, to_ecliptic * vel0);
     let period = TAU * (a.powi(3) / GMS).sqrt();
     let n_samples = 2000;
 
@@ -851,6 +858,7 @@ fn j2_precession() {
         for _ in 0..n_samples {
             let sun_state = &sim.massive_states()[0];
             let (pos, vel) = heliocentric(&sim.test_particle_states()[0], sun_state);
+            let (pos, vel) = (to_ecliptic.inverse() * pos, to_ecliptic.inverse() * vel);
             let h = pos.cross(&vel);
             let node = Vector3::new(-h.y, h.x, 0.0).normalize();
             let e_hat = ecc_vector(&pos, &vel).normalize();
@@ -901,16 +909,20 @@ fn j2_precession() {
 }
 
 /// With the solar J2 term on, the 8 planet system conserves energy within the
-/// kernel budget and the ecliptic-pole component of the angular momentum to
-/// roundoff; the transverse components precess by design.
+/// kernel budget and the solar-pole component of the angular momentum to
+/// roundoff; the transverse components precess by design. The Earth stands in
+/// for the Earth-Moon barycenter so the lunar quadrupole, symmetric about the
+/// ecliptic pole instead, is off.
 #[test]
 fn j2_invariants() {
-    let (states, gms) = solar_system();
+    let (mut states, gms) = solar_system();
+    states[3] = planet(399, 1.00000, 0.01671, 0.0, 4.8);
+    let (_, pole) = sun_oblateness::<Ecliptic>().unwrap();
     let mut sim = WisdomHolman::new(&states, &gms, &[], &[], 4.0, false, true, false).unwrap();
     let l0 = sim.angular_momentum();
     let (amplitude, half_drift) = energy_drift_stats(&mut sim, 50_000, 100);
     let l1 = sim.angular_momentum();
-    let lz_rel = ((l1.z - l0.z) / l0.norm()).abs();
+    let lz_rel = ((l1 - l0).dot(&pole) / l0.norm()).abs();
 
     println!("j2_invariants: 8 planets, dt = 4 d, 5e4 steps, J2 on");
     println!("  relative energy amplitude: {amplitude:.3e}");
@@ -1623,6 +1635,7 @@ fn dust_matches_radau() {
         Time::new(J2000 + t_final),
         (),
         None,
+        None,
     )
     .unwrap();
     let radau_helio = Vector3::new(rpos[6] - rpos[0], rpos[7] - rpos[1], rpos[8] - rpos[2]);
@@ -1762,6 +1775,7 @@ fn jpl_comet_matches_radau() {
         Time::new(J2000),
         Time::new(J2000 + t_final),
         (),
+        None,
         None,
     )
     .unwrap();

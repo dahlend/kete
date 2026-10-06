@@ -19,11 +19,12 @@
 //! y(t_0 + H)   = y_0  +  H ( F_0  +  b . U ),        U_k = 1 / (k + 2)
 //! ```
 //!
-//! This is the same machinery as the second-order [`RadauIntegrator`] with the second
-//! integral dropped. `U` is the first-integral coefficient vector that integrator already
-//! uses for its velocity update; the Gauss-Radau node spacings, the divided-difference
-//! ladder that produces `g`, and the fixed lower-triangular `C` that converts `g -> b` are
-//! all independent of the order form and are shared from that module.
+//! This is the same machinery as the second-order
+//! [`RadauIntegrator`](super::RadauIntegrator) with the second integral dropped. `U` is
+//! the first-integral coefficient vector that integrator already uses for its velocity
+//! update; the Gauss-Radau node spacings, the divided-difference ladder that produces
+//! `g`, and the fixed lower-triangular `C` that converts `g -> b` are all independent
+//! of the order form and are shared through the parent module.
 //!
 //! The `b` coefficients are implicit - each node's `y` depends on them - and are found by
 //! fixed-point iteration, at most [`MAX_SWEEPS`] sweeps per step.
@@ -48,20 +49,21 @@
 //! `scale_i = 0` are skipped: if `F_i` vanishes at every node then every divided difference
 //! vanishes and `b_i` is exactly zero, so they carry no information.
 //!
-//! [`RadauIntegrator`] takes the same idea but a cheaper scale, `max(|F_i|)` over just the
-//! two evaluations bracketing the step, which needs no accumulation and no per-sweep
-//! allocation. That form is slightly looser on a problem stiff enough to push the corrector
-//! past its contraction limit, where it can accept an under-converged step unless
-//! [`SWEEP_TOL`] is tightened. Stiffness of that order does not arise in the second-order
-//! integrator's gravitational problems, so the two definitions are each kept where they are
-//! used rather than unified.
+//! [`RadauIntegrator`](super::RadauIntegrator) takes the same idea but a cheaper scale,
+//! `max(|F_i|)` over just the two evaluations bracketing the step, which needs no
+//! accumulation and no per-sweep allocation. That form is slightly looser on a problem
+//! stiff enough to push the corrector past its contraction limit, where it can accept
+//! an under-converged step unless [`SWEEP_TOL`] is tightened. Stiffness of that order
+//! does not arise in the second-order integrator's gravitational problems, so the two
+//! definitions are each kept where they are used rather than unified.
 //!
 //! # Predictor
 //!
-//! The corrector starts each step from `b` extrapolated from the last accepted step: the
-//! previous polynomial re-expanded about the end of that step and rescaled to the new step
-//! size, plus the error of the previous prediction. This is shared with
-//! [`RadauIntegrator`]; see `BPredictor` in that module for the formula.
+//! The corrector starts each step from `b` extrapolated from the last accepted step:
+//! the previous polynomial re-expanded about the end of that step and rescaled to the
+//! new step size, plus the error of the previous prediction. This is shared with
+//! [`RadauIntegrator`](super::RadauIntegrator); see `BPredictor` in the parent module
+//! for the formula.
 //!
 //! # Order
 //!
@@ -127,10 +129,10 @@
 // CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-use crate::errors::Error;
-use crate::integrators::radau::{
+use super::{
     BPredictor, C_MAT, EPSILON, GAUSS_RADAU_SPACINGS, MIN_RATIO, MIN_STEP, U_POW_TABLE, U_VEC,
 };
+use crate::errors::Error;
 use crate::integrators::util::FirstOrderODEDyn;
 use crate::prelude::KeteResult;
 use crate::time::{TDB, Time};
@@ -793,6 +795,7 @@ mod tests {
             900.0.into(),
             CentralAccelMeta::default(),
             Some(3),
+            None,
         )
         .unwrap();
 
@@ -860,7 +863,7 @@ mod tests {
     /// Evaluation counts for the two order forms as perihelion sharpens, at fixed period so
     /// the arc is one full orbit and the initial state is an exact reference.
     ///
-    /// `cargo test -p kete_core --release --lib radau_first_order -- --ignored --nocapture`
+    /// `cargo test -p kete_core --release --lib radau::first_order -- --ignored --nocapture`
     #[test]
     #[ignore = "reports a table, run explicitly"]
     fn order_form_cost_vs_eccentricity() {
@@ -880,6 +883,7 @@ mod tests {
                 period.into(),
                 CentralAccelMeta::default(),
                 Some(3),
+                None,
             );
             let first = RadauFirstOrder::integrate(
                 &two_body,

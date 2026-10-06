@@ -9,16 +9,20 @@
 //! - [`compute_state_transition`]: state transition matrix between two epochs.
 //! - [`propagate_n_body_vec`] / [`closest_approach`]: batch propagation and
 //!   close-encounter utilities.
+//! - [`IntegratedEphemeris`]: an [`Ephemeris`] of the
+//!   planets that integrates them from saved states, needing no kernels.
 //! - [`sun_resolver`]: the Sun's state over time, as the uncertain and diffuse
 //!   propagation take it.
 
 mod analysis;
 mod batch;
+mod integrated;
 mod n_body;
 mod stm;
 
 pub use analysis::closest_approach;
 pub use batch::propagate_n_body_vec;
+pub use integrated::IntegratedEphemeris;
 pub use n_body::{EphemerisCache, NBody};
 pub use stm::compute_state_transition;
 

@@ -490,9 +490,11 @@ impl<T: InertialFrame> WisdomHolman<T> {
     ///   coefficient and spin pole of the Sun's [`GravParams`] entry, as used by
     ///   the Radau N-body path. This is a position-only potential, so the map
     ///   remains symplectic; it drives the small secular nodal regression and
-    ///   apsidal precession of low-`a` orbits. When enabled, only the
-    ///   component of [`Self::angular_momentum`] along the ecliptic pole is
-    ///   conserved (the reaction torque on the solar spin is not modeled).
+    ///   apsidal precession of low-`a` orbits. The term is symmetric about
+    ///   the solar spin pole, so of [`Self::angular_momentum`] only the
+    ///   component along that pole is conserved (the reaction torque on the
+    ///   solar spin is not modeled), and only when no Earth-Moon barycenter
+    ///   carries the lunar quadrupole, whose axis is the ecliptic pole.
     /// * `use_correctors` - Wrap each integration call in the order-17
     ///   symplectic corrector (Wisdom 2006), which removes the dominant
     ///   oscillating error of the map (roughly a factor of the planet/Sun
@@ -896,10 +898,12 @@ impl<T: InertialFrame> WisdomHolman<T> {
     ///
     /// Every sub-flow of the map is rotationally invariant, so this is
     /// conserved to roundoff (the center-of-mass contribution is excluded and
-    /// separately constant). With the solar J2 term enabled only the
-    /// component along the ecliptic pole is conserved; the transverse
-    /// components precess, since the reaction torque on the solar spin is
-    /// not modeled. With the GR term enabled the magnitude oscillates at the
+    /// separately constant). The solar J2 term is symmetric about the solar
+    /// spin pole and the lunar quadrupole on an Earth-Moon barycenter about
+    /// the ecliptic pole; each conserves only the component along its own
+    /// axis, since the reaction torques on the solar spin and on the lunar
+    /// orbit are not modeled. With both enabled no component is exactly
+    /// conserved. With the GR term enabled the magnitude oscillates at the
     /// tiny 1PN scale over each orbit with no secular trend.
     #[must_use]
     pub fn angular_momentum(&self) -> Vector3<f64> {

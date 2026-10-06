@@ -103,7 +103,8 @@ fn freeze_non_gravs(non_gravs: Option<Vec<Option<PyNonGravModel>>>) -> Vec<Optio
 ///     trend.
 /// include_j2:
 ///     Apply the solar J2 oblateness term, with the same coefficient and
-///     ecliptic-pole approximation used by :func:`~kete.propagate_n_body`.
+///     solar spin pole (the IAU pole, as in DE440) used by
+///     :func:`~kete.propagate_n_body`.
 ///     This is a position-only potential, so the integrator remains
 ///     symplectic; it drives the small secular nodal regression and apsidal
 ///     precession of low semi-major axis orbits.

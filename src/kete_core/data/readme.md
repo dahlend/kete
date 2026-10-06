@@ -15,5 +15,10 @@ These are loaded and packed into the final rust binary, and are included automat
     https://hpiers.obspm.fr/iers/bul/bulc/Leap_Second.dat
     https://data.iana.org/time-zones/data/leap-seconds.list
 
-`masses.tsv` - List of masses of asteroids from the DE441 header contents, with the very
-    distant objects removed.
+`masses.tsv` - List of masses of asteroids from the DE441 header contents, followed by
+    Kuiper belt objects whose masses are identified in DE440 or published; each group's
+    source is noted in a comment.
+
+`planet_states.tsv` - Barycentric states of the Sun, planets, Moon, Pluto and the five
+    most massive asteroids at one epoch (J2000), from JPL DE440 and JPL Horizons. These
+    are the starting point of the integrated ephemeris (`IntegratedEphemeris`).

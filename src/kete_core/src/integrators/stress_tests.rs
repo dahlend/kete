@@ -114,6 +114,7 @@ impl Scenario {
                 self.t_days.into(),
                 meta.clone(),
                 None,
+                None,
             );
             let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
             if let Ok((p, v, m)) = res {
@@ -467,6 +468,7 @@ fn integrator_reversibility() {
             (*t).into(),
             CentralAccelMeta::default(),
             None,
+            None,
         ) {
             if let Ok((pf, vf, _)) = RadauIntegrator::integrate(
                 &central_accel,
@@ -475,6 +477,7 @@ fn integrator_reversibility() {
                 (*t).into(),
                 0.0.into(),
                 CentralAccelMeta::default(),
+                None,
                 None,
             ) {
                 eprintln!(
