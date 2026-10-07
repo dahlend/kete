@@ -901,9 +901,9 @@ mod tests {
     fn equinoctial_jacobian_phase_column_is_kepler_flow() {
         // The identity itself is exact. What is measured is the rounding of the two
         // sides, which is set by the orbit equation's cancellation: it is formed as a
-        // difference from one, so its relative error is `eps / orbit_eq`, and the bound
-        // is set by the grid point where that denominator is smallest.
-        const TOL: f64 = 1e-13;
+        // difference from one, so its relative error is `eps / orbit_eq`. The residual
+        // is held to a small multiple of that at each grid point.
+        const ULPS: f64 = 8.0;
         let mut worst = 0.0_f64;
         let mut worst_case = String::new();
         equinoctial_grid(|elem, pos, vel| {
@@ -918,19 +918,22 @@ mod tests {
             let accel = -pos * (elem.gm_sqrt.powi(2) / pos.norm().powi(3));
             let residual = ((d_pos * rate - vel).norm() / vel.norm())
                 .max((d_vel * rate - accel).norm() / accel.norm());
-            if residual > worst {
-                worst = residual;
+            let ulps = residual / (f64::EPSILON / elem.orbit_equation());
+            if ulps > worst {
+                worst = ulps;
                 worst_case = format!(
-                    "e={:.4} nu={:.3} r_0={:.4} eps/orbit_eq={:.2e}",
+                    "e={:.4} nu={:.3} r_0={:.4} residual={residual:.2e}",
                     elem.eccentricity(),
                     elem.true_anomaly(),
                     elem.epoch_distance(),
-                    f64::EPSILON / elem.orbit_equation()
                 );
             }
         });
-        println!("worst phase column vs Keplerian flow: {worst:e} at {worst_case}");
-        assert!(worst < TOL, "phase column {worst:e} exceeded {TOL:e}");
+        println!("worst phase column vs Keplerian flow: {worst:.2} eps/orbit_eq at {worst_case}");
+        assert!(
+            worst < ULPS,
+            "phase column {worst:.2} eps/orbit_eq exceeded {ULPS}"
+        );
     }
 
     /// The frame parameter on the Jacobian must actually rotate, and must rotate the

@@ -1055,6 +1055,8 @@ mod tests {
 
     #[test]
     fn test_residual_optical() {
+        // `residual` reads the loaded SPK, which other tests may be loading.
+        kete_spice::test_data::ensure_test_spk();
         // Observer at ~1 AU (Earth-like), object at ~2 AU along +x.
         let observer = make_state([1.0, 0.0, 0.0], [0.0, 0.017, 0.0], 2460000.5);
         let obj = make_state([2.0, 0.0, 0.0], [0.0, 0.012, 0.0], 2460000.5);
