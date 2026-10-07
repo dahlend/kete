@@ -5,13 +5,14 @@
 //! Visibility checks with body states from the loaded SPK files.
 
 use kete_core::constants::C_AU_PER_DAY_INV;
-use kete_core::constants::GMS_SQRT;
+use kete_core::constants::{GMS, GMS_SQRT};
 use kete_core::desigs::Desig;
 use kete_core::forces::{DustNonGrav, NonGravKind, ParameterMask};
-use kete_core::fov::{GenericRectangle, OmniDirectional};
-use kete_core::fov::{check_ephemeris, check_n_body, check_two_body, check_visible};
-use kete_core::frames::{Equatorial, SunCenter};
+use kete_core::fov::{FovLike, GenericRectangle, OmniDirectional};
+use kete_core::fov::{check_ephemeris, check_visible};
+use kete_core::frames::{Equatorial, Vector};
 use kete_core::state::State;
+use kete_core::time::{TDB, Time};
 use kete_spice::ephemeris::SpiceEphemeris;
 use kete_spice::spk::LOADED_SPK;
 
@@ -47,42 +48,11 @@ fn test_check_rectangle_visible() {
             .clone()
             .propagate_with(&force, circular_back_ssb.epoch - offset)
             .unwrap();
-        drop(eph);
 
         let vec = circular_back.pos - circular.pos;
-
         let fov = GenericRectangle::new(vec, 0.0001, 0.01, 0.01, circular.clone());
-        let off_sun = {
-            let spk = LOADED_SPK.try_read().unwrap();
-            spk.try_to_sun(off_state.clone()).unwrap()
-        };
-        assert!(check_two_body(&fov, &off_sun).is_ok());
-        assert!(
-            check_n_body(
-                &SpiceEphemeris::loaded().unwrap(),
-                &fov,
-                off_state.clone(),
-                None,
-                false
-            )
-            .is_ok()
-        );
-
-        let off_dyn: State<Equatorial> = off_state.into();
-        assert!(
-            check_visible(
-                &SpiceEphemeris::loaded().unwrap(),
-                &fov,
-                &[off_dyn],
-                &[],
-                6.0,
-                false
-            )
-            .unwrap()
-            .first()
-            .unwrap()
-            .is_some()
-        );
+        let seen = check_visible(&eph, &[fov], &[off_state.into()], &[], false).unwrap();
+        assert_eq!(seen.len(), 1);
     }
 }
 
@@ -113,14 +83,13 @@ fn linear_prefilter_matches_the_observer_center() {
     let fov = GenericRectangle::new([1.0, 0.0, 0.0].into(), 0.0, 0.01, 0.01, observer);
     let seen = check_visible(
         &SpiceEphemeris::loaded().unwrap(),
-        &fov,
+        &[fov],
         &[object_ssb],
         &[],
-        3.0,
         false,
     )
     .unwrap();
-    assert!(seen[0].is_some());
+    assert_eq!(seen.len(), 1);
 }
 
 /// Test the light delay computations for the different checks
@@ -144,27 +113,13 @@ fn test_check_omni_visible() {
         let asteroid = spk
             .try_get_state_with_center(20000042, observer.epoch + offset, 10)
             .unwrap();
-
         let fov = OmniDirectional::new(observer.clone());
 
-        // Check two body approximation calculation
-        let asteroid_sun: State<_, SunCenter> = asteroid.clone().try_into().unwrap();
-        let two_body = check_two_body(&fov, &asteroid_sun);
-        assert!(two_body.is_ok());
-        let (_, _, two_body) = two_body.unwrap();
-        let dist = (two_body.pos - observer.pos).norm();
-        assert!(((observer.epoch - two_body.epoch).elapsed - dist * C_AU_PER_DAY_INV).abs() < 1e-6);
-        let exact = spk
-            .try_get_state_with_center(20000042, two_body.epoch, 10)
-            .unwrap();
-        // check that we are within about 150km - not bad for 2 body
-        assert!((two_body.pos - exact.pos).norm() < 1e-6);
-
-        // Check n body approximation calculation
-        let asteroid_ssb = spk.try_to_ssb(asteroid.clone()).unwrap();
-        let n_body = check_n_body(&eph, &fov, asteroid_ssb, None, false);
-        assert!(n_body.is_ok());
-        let (_, _, n_body) = n_body.unwrap();
+        let seen =
+            check_visible(&eph, std::slice::from_ref(&fov), &[asteroid], &[], false).unwrap();
+        assert_eq!(seen.len(), 1);
+        let n_body = &seen[0].2.states[0];
+        let dist = (n_body.pos - observer.pos).norm();
         assert!(((observer.epoch - n_body.epoch).elapsed - dist * C_AU_PER_DAY_INV).abs() < 1e-6);
         let exact = spk
             .try_get_state_with_center(20000042, n_body.epoch, 10)
@@ -184,14 +139,6 @@ fn test_check_omni_visible() {
             .unwrap();
         // check that we are within about 150 micron
         assert!((spk_check.pos - exact.pos).norm() < 1e-12);
-
-        assert!(
-            check_visible(&eph, &fov, &[asteroid], &[], 6.0, false)
-                .unwrap()
-                .first()
-                .unwrap()
-                .is_some()
-        );
     }
 
     // The Sun is co-located with itself in a Sun-centered FOV check
@@ -203,9 +150,263 @@ fn test_check_omni_visible() {
     assert!(sun_state.pos.norm() < 1e-12);
 }
 
+/// An object almost at rest relative to the observer passes the pre-filter at the
+/// edge of a window, where its path has curved away from a straight line by more
+/// than it moves relative to the observer.
+#[test]
+fn prefilter_allows_for_curvature() {
+    kete_spice::test_data::ensure_test_spk();
+    // The observer and the object share a circular orbit at 1 au, the object a
+    // little ahead. Circular motion is exact here to well inside the FOV size.
+    let circular = |phase: f64, jd: f64| {
+        let angle = phase + GMS_SQRT * (jd - 2451545.0);
+        State::<Equatorial>::new(
+            Desig::Name("circular".into()),
+            jd,
+            [angle.cos(), angle.sin(), 0.0],
+            [-GMS_SQRT * angle.sin(), GMS_SQRT * angle.cos(), 0.0],
+            10,
+        )
+    };
+    let phase = 0.005;
+    // Two FOVs in one window, each about dt_limit from the window center.
+    let fovs: Vec<_> = [2451545.0, 2451545.0 + 5.9]
+        .into_iter()
+        .map(|jd| {
+            let observer = circular(0.0, jd);
+            let pointing = circular(phase, jd).pos - observer.pos;
+            GenericRectangle::new(pointing, 0.0, 0.01, 0.01, observer)
+        })
+        .collect();
+    let seen = check_visible(
+        &SpiceEphemeris::loaded().unwrap(),
+        &fovs,
+        &[circular(phase, 2451545.0)],
+        &[],
+        false,
+    )
+    .unwrap();
+    assert_eq!(seen.len(), 2);
+}
+
+/// An object that impacts the Earth is still seen in the FOVs before the impact,
+/// including those in the window of the impact.
+#[test]
+fn seen_until_impact() {
+    kete_spice::test_data::ensure_test_spk();
+    let eph = SpiceEphemeris::loaded().unwrap();
+    let spk = eph.spk();
+    let epoch = Time::<TDB>::new(2451545.0);
+    // 0.01 au from the Earth, closing at 0.01 au/day, so it hits in under a day.
+    let earth = spk.try_get_state_with_center(399, epoch, 10).unwrap();
+    let impactor = State::<Equatorial>::new(
+        Desig::Name("impactor".into()),
+        epoch,
+        earth.pos + Vector::new([0.01, 0.0, 0.0]),
+        earth.vel - Vector::new([0.01, 0.0, 0.0]),
+        10,
+    );
+    let observer =
+        |jd: f64| State::<Equatorial>::new(Desig::Empty, jd, [0.0, 1.5, 0.0], [0.0; 3], 10);
+    // One window holds every FOV, and its center is after the impact.
+    let fovs: Vec<_> = [0.2, 0.5, 3.0]
+        .into_iter()
+        .map(|dt| OmniDirectional::new(observer(2451545.0 + dt)))
+        .collect();
+    let seen = check_visible(&eph, &fovs, &[impactor], &[], false).unwrap();
+    let fov_idx: Vec<usize> = seen.iter().map(|(idx, _, _)| *idx).collect();
+    assert_eq!(fov_idx, vec![0, 1]);
+}
+
+/// An object moving with the observer passes the pre-filter at the edge of a window,
+/// where its path has curved away from a straight line.
+#[test]
+fn prefilter_allows_for_curvature_at_zero_relative_velocity() {
+    kete_spice::test_data::ensure_test_spk();
+    let circular = |phase: f64, jd: f64| {
+        let angle = phase + GMS_SQRT * (jd - 2451545.0);
+        State::<Equatorial>::new(
+            Desig::Name("circular".into()),
+            jd,
+            [angle.cos(), angle.sin(), 0.0],
+            [-GMS_SQRT * angle.sin(), GMS_SQRT * angle.cos(), 0.0],
+            10,
+        )
+    };
+    let phase = 0.005;
+    let center = 2451545.0 + 2.95;
+    // Two FOVs in one window, each about dt_limit from the window center. Each
+    // observer has the velocity of the object at the window center, so the two do not
+    // move relative to each other there.
+    let fovs: Vec<_> = [2451545.0, 2451545.0 + 5.9]
+        .into_iter()
+        .map(|jd| {
+            let mut observer = circular(0.0, jd);
+            observer.vel = circular(phase, center).vel;
+            let pointing = circular(phase, jd).pos - observer.pos;
+            GenericRectangle::new(pointing, 0.0, 0.01, 0.01, observer)
+        })
+        .collect();
+    let seen = check_visible(
+        &SpiceEphemeris::loaded().unwrap(),
+        &fovs,
+        &[circular(phase, 2451545.0)],
+        &[],
+        false,
+    )
+    .unwrap();
+    assert_eq!(seen.len(), 2);
+}
+
+/// Narrow FOVs tracking an asteroid through a night see it in every FOV, although
+/// it moves farther than the width of a FOV between the middle of the night and the
+/// first and last FOVs.
+#[test]
+fn seen_through_a_night() {
+    kete_spice::test_data::ensure_test_spk();
+    let eph = SpiceEphemeris::loaded().unwrap();
+    let spk = eph.spk();
+    let start = Time::<TDB>::new(2451545.0);
+    let fovs: Vec<_> = (0..=10)
+        .map(|hour| {
+            let jd = start + f64::from(hour) / 24.0;
+            let earth = spk.try_get_state_with_center(399, jd, 10).unwrap();
+            let target = spk.try_get_state_with_center(20000042, jd, 10).unwrap();
+            let light_time = (target.pos - earth.pos).norm() * C_AU_PER_DAY_INV;
+            let target = spk
+                .try_get_state_with_center(20000042, jd - light_time, 10)
+                .unwrap();
+            GenericRectangle::new(target.pos - earth.pos, 0.0, 2e-4, 2e-4, earth)
+        })
+        .collect();
+    let asteroid = spk.try_get_state_with_center(20000042, start, 10).unwrap();
+    let seen = check_visible(&eph, &fovs, &[asteroid], &[], false).unwrap();
+    assert_eq!(seen.len(), fovs.len());
+}
+
+/// An object falling into Jupiter against Jupiter's orbital motion is at rest relative
+/// to the SSB in the middle of the night, so its speed there allows for none of its
+/// motion. Narrow FOVs centered on it still see it in every FOV.
+#[test]
+fn seen_while_at_rest_relative_to_the_ssb() {
+    kete_spice::test_data::ensure_test_spk();
+    let eph = SpiceEphemeris::loaded().unwrap();
+    let spk = eph.spk();
+    let epoch = Time::<TDB>::new(2451545.0);
+    let gm_jupiter = GMS / 1047.348644;
+    let jupiter = spk.try_get_state_with_center(5, epoch, 0).unwrap();
+    let unit = jupiter.vel / jupiter.vel.norm();
+    // The distance at which the speed of a fall from rest equals Jupiter's speed.
+    let dist = 2.0 * gm_jupiter / jupiter.vel.norm().powi(2);
+    let falling = State::<Equatorial>::new(
+        Desig::Name("falling".into()),
+        epoch,
+        jupiter.pos + unit * dist,
+        jupiter.vel - unit * (2.0 * gm_jupiter / dist).sqrt(),
+        0,
+    );
+    assert!(falling.vel.norm() < 1e-12);
+
+    let fovs: Vec<_> = (-5..=5)
+        .map(|step| {
+            let earth = spk
+                .try_get_state_with_center(399, epoch + f64::from(step) * 0.05, 10)
+                .unwrap();
+            let omni = OmniDirectional::new(earth.clone());
+            let exact =
+                check_visible(&eph, &[omni], std::slice::from_ref(&falling), &[], false).unwrap();
+            let pos = exact[0].2.states[0].pos;
+            GenericRectangle::new(pos - earth.pos, 0.0, 1e-5, 1e-5, earth)
+        })
+        .collect();
+    let seen = check_visible(&eph, &fovs, &[falling], &[], false).unwrap();
+    assert_eq!(seen.len(), fovs.len());
+}
+
+/// A FOV whose observer the ephemeris cannot place is an error.
+#[test]
+fn unknown_observer_center_is_an_error() {
+    kete_spice::test_data::ensure_test_spk();
+    let eph = SpiceEphemeris::loaded().unwrap();
+    let observer = State::<Equatorial>::new(Desig::Empty, 2451545.0, [0.0; 3], [0.0; 3], 987_654);
+    let asteroid = eph
+        .spk()
+        .try_get_state_with_center(20000042, Time::<TDB>::new(2451545.0), 10)
+        .unwrap();
+    let fov = [OmniDirectional::new(observer)];
+    assert!(check_visible(&eph, &fov, &[asteroid], &[], false).is_err());
+}
+
+/// States from several blocks of integration that land in one patch keep their
+/// input order.
+#[test]
+fn patch_keeps_input_order() {
+    kete_spice::test_data::ensure_test_spk();
+    let eph = SpiceEphemeris::loaded().unwrap();
+    let spk = eph.spk();
+    let asteroid = spk
+        .try_get_state_with_center(20000042, Time::<TDB>::new(2451545.0), 10)
+        .unwrap();
+    let states: Vec<_> = (0..300)
+        .map(|idx| {
+            let mut state = asteroid.clone();
+            state.desig = Desig::Name(format!("copy {idx}"));
+            state
+        })
+        .collect();
+    let observer = State::<Equatorial>::new(Desig::Empty, 2451546.0, [0.0, 1.0, 0.0], [0.0; 3], 10);
+    let fov = [OmniDirectional::new(observer)];
+    let seen = check_visible(&eph, &fov, &states, &[], false).unwrap();
+    assert_eq!(seen.len(), 1);
+    let desigs: Vec<_> = seen[0].2.states.iter().map(|s| s.desig.clone()).collect();
+    let expected: Vec<_> = states.iter().map(|s| s.desig.clone()).collect();
+    assert_eq!(desigs, expected);
+}
+
+/// One propagation serves FOVs both before and after the state epoch, and each
+/// reported state matches the SPK at the time light left the object.
+#[test]
+fn many_fovs_from_one_trajectory() {
+    kete_spice::test_data::ensure_test_spk();
+    let eph = SpiceEphemeris::loaded().unwrap();
+    let spk = eph.spk();
+    let epoch = Time::<TDB>::new(2451545.0);
+    let asteroid = spk.try_get_state_with_center(20000042, epoch, 10).unwrap();
+
+    // Weekly FOVs from Earth over a year centered on the state epoch, alternately
+    // pointed at the asteroid and away from it. Given in reverse time order.
+    let mut fovs = Vec::new();
+    let mut expected = Vec::new();
+    for week in (-26..26).rev() {
+        let jd = epoch + f64::from(week) * 7.0;
+        let earth = spk.try_get_state_with_center(399, jd, 10).unwrap();
+        let target = spk.try_get_state_with_center(20000042, jd, 10).unwrap();
+        let mut pointing = target.pos - earth.pos;
+        if week % 2 == 0 {
+            expected.push(fovs.len());
+        } else {
+            pointing = -pointing;
+        }
+        fovs.push(GenericRectangle::new(pointing, 0.0, 0.01, 0.01, earth));
+    }
+
+    let seen = check_visible(&eph, &fovs, std::slice::from_ref(&asteroid), &[], false).unwrap();
+    let fov_idx: Vec<usize> = seen.iter().map(|(idx, _, _)| *idx).collect();
+    assert_eq!(fov_idx, expected);
+    for (idx, _, patch) in &seen {
+        let observer = fovs[*idx].observer();
+        let state = &patch.states[0];
+        let dist = (state.pos - observer.pos).norm();
+        assert!(((observer.epoch - state.epoch).elapsed - dist * C_AU_PER_DAY_INV).abs() < 1e-6);
+        let exact = spk
+            .try_get_state_with_center(20000042, state.epoch, 10)
+            .unwrap();
+        assert!((state.pos - exact.pos).norm() < 1e-8);
+    }
+}
+
 /// A non-gravitational model must change the observed state, including when the
-/// state epoch is close enough to the observer that the two body check would
-/// otherwise be used.
+/// state epoch is close to the observer epoch.
 #[test]
 fn test_check_visible_non_grav() {
     kete_spice::test_data::ensure_test_spk();
@@ -216,9 +417,9 @@ fn test_check_visible_non_grav() {
         [-GMS_SQRT, 0.0, 0.0],
         10,
     );
-    let fov = OmniDirectional::new(observer.clone());
+    let fov = [OmniDirectional::new(observer.clone())];
 
-    // One day before the observation, well within the dt_limit used below.
+    // One day before the observation.
     let asteroid: State<Equatorial> = {
         let spk = LOADED_SPK.try_read().unwrap();
         spk.try_get_state_with_center(20000042, observer.epoch - 1.0, 10)
@@ -226,43 +427,18 @@ fn test_check_visible_non_grav() {
     };
 
     // beta = 0.5 removes half of the solar gravity, which over a day is a
-    // deflection of order 1e-5 au, far above the two body vs n-body difference.
+    // deflection of order 1e-5 au.
     let dust = ParameterMask::all_fixed(NonGravKind::Dust(DustNonGrav), vec![0.5]).unwrap();
 
+    let eph = SpiceEphemeris::loaded().unwrap();
     let states = [asteroid];
-    let grav_only = check_visible(
-        &SpiceEphemeris::loaded().unwrap(),
-        &fov,
-        &states,
-        &[],
-        3.0,
-        false,
-    )
-    .unwrap();
-    let with_dust = check_visible(
-        &SpiceEphemeris::loaded().unwrap(),
-        &fov,
-        &states,
-        &[Some(dust)],
-        3.0,
-        false,
-    )
-    .unwrap();
+    let grav_only = check_visible(&eph, &fov, &states, &[], false).unwrap();
+    let with_dust = check_visible(&eph, &fov, &states, &[Some(dust)], false).unwrap();
 
-    let grav_pos = grav_only[0].as_ref().unwrap().states[0].pos;
-    let dust_pos = with_dust[0].as_ref().unwrap().states[0].pos;
+    let grav_pos = grav_only[0].2.states[0].pos;
+    let dust_pos = with_dust[0].2.states[0].pos;
     assert!((grav_pos - dust_pos).norm() > 1e-6);
 
     // A non-empty non_gravs which does not cover every state is rejected.
-    assert!(
-        check_visible(
-            &SpiceEphemeris::loaded().unwrap(),
-            &fov,
-            &states,
-            &[None, None],
-            3.0,
-            false
-        )
-        .is_err()
-    );
+    assert!(check_visible(&eph, &fov, &states, &[None, None], false).is_err());
 }

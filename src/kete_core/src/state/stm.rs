@@ -27,6 +27,7 @@ use crate::elements::EquinoctialElements;
 use crate::errors::{Error, KeteResult};
 use crate::forces::ParameterizedForce;
 use crate::frames::{CenterBody, DynCenter, InertialFrame, Vector};
+use crate::integrators::RadauDense;
 use crate::prelude::State;
 use crate::time::{TDB, Time};
 
@@ -305,6 +306,9 @@ where
 /// function exists for the fewer cases where caller-supplied
 /// `free_params` are needed without an `UncertainState` wrapper.
 ///
+/// `dense`, when given, receives the integrator's dense output, see
+/// [`RadauIntegrator::integrate`](crate::integrators::RadauIntegrator::integrate).
+///
 /// # Errors
 /// Returns an error if integration fails or if the force returns an
 /// error.
@@ -315,6 +319,7 @@ pub fn propagate_state<F: ParameterizedForce>(
     free_params: &[f64],
     epoch_init: Time<TDB>,
     epoch_final: Time<TDB>,
+    dense: Option<&mut RadauDense>,
 ) -> KeteResult<(Vector3<f64>, Vector3<f64>)> {
     use crate::integrators::RadauIntegrator;
 
@@ -339,7 +344,7 @@ pub fn propagate_state<F: ParameterizedForce>(
         epoch_final,
         F::Meta::default(),
         None,
-        None,
+        dense,
     )?;
     Ok((pos_f, vel_f))
 }
@@ -376,6 +381,7 @@ where
             &[],
             self.epoch,
             to,
+            None,
         )?;
         Ok(Self {
             desig: self.desig,
@@ -487,9 +493,9 @@ mod tests {
                     vm[j - 3] -= eps;
                 }
                 let (fp, fvp) =
-                    propagate_state(&forces, pp, vp, &[], 0.0.into(), arc.into()).unwrap();
+                    propagate_state(&forces, pp, vp, &[], 0.0.into(), arc.into(), None).unwrap();
                 let (fm, fvm) =
-                    propagate_state(&forces, pm, vm, &[], 0.0.into(), arc.into()).unwrap();
+                    propagate_state(&forces, pm, vm, &[], 0.0.into(), arc.into(), None).unwrap();
                 for i in 0..3 {
                     nonlin_fd[(i, j)] = (fp[i] - fm[i]) / (2.0 * eps);
                     nonlin_fd[(3 + i, j)] = (fvp[i] - fvm[i]) / (2.0 * eps);

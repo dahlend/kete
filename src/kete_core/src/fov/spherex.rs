@@ -4,6 +4,7 @@
 //! # Spherex Fov definitions.
 
 use super::FovLike;
+use super::fov_like::{patches_corners, patches_pointing};
 use crate::fov::FOV;
 use crate::frames::Vector;
 use crate::geometry::closest_inside;
@@ -164,30 +165,11 @@ impl FovLike for SpherexField {
         self.cmos_frames.len()
     }
 
-    #[inline]
     fn pointing(&self) -> KeteResult<Vector<Equatorial>> {
-        if self.cmos_frames.is_empty() {
-            Err(Error::ValueError("SphereField has no cmos frames".into()))
-        } else {
-            // return the average pointing of all cmos frames
-            Ok(self
-                .cmos_frames
-                .iter()
-                .fold(Vector::new([0.0; 3]), |acc, x| acc + x.pointing().unwrap()))
-        }
+        patches_pointing(&self.cmos_frames)
     }
 
-    #[inline]
     fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
-        if self.cmos_frames.is_empty() {
-            Err(Error::ValueError("SphereField has no cmos frames".into()))
-        } else {
-            // return all the corners of all cmos frames
-            Ok(self
-                .cmos_frames
-                .iter()
-                .flat_map(|x| x.corners().unwrap())
-                .collect())
-        }
+        patches_corners(&self.cmos_frames)
     }
 }

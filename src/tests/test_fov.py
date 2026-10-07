@@ -51,3 +51,12 @@ def test_fov_state_check_non_gravs_length(observer, ceres):
     fov = kete.OmniDirectionalFOV(observer)
     with pytest.raises(ValueError, match="same length"):
         kete.fov_state_check([ceres, ceres], [fov], non_gravs=[None])
+
+
+def test_fov_state_check_dt_limit_deprecated(observer, ceres):
+    """Passing dt_limit warns and does not change the result."""
+    fov = kete.OmniDirectionalFOV(observer)
+    expected = kete.fov_state_check([ceres], [fov])[0]
+    with pytest.warns(DeprecationWarning, match="dt_limit"):
+        calc = kete.fov_state_check([ceres], [fov], dt_limit=0.1)[0]
+    assert np.allclose(expected[0].pos, calc[0].pos)

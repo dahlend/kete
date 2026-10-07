@@ -69,9 +69,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - FOV `corners` are unit vectors, starting at the first corner given.
 - Rust: a `NonInertialFrame` without a rotation rate errors on velocity transforms.
 - `instrument_frame_to_equatorial` and `instrument_equatorial_to_frame` take names.
+- `fov_state_check` is exact n-body, and raises if a FOV's observer cannot be placed.
+  `dt_limit` is deprecated.
+- Rust: `check_visible` drops `dt_limit`; `check_n_body`, `check_two_body` and
+  `check_linear` are removed. `propagate_state` takes an optional `RadauDense`.
 
 ### Fixed
 
+- `fov_state_check` could miss objects near a FOV edge or moving with the observer.
 - Leap seconds took effect 36-37 s before 00:00 UTC, so UTC conversions were 1 s off
   in that window.
 - `Time(jd, scaling="tt")` and `Time.from_mjd(mjd, "tt")` treated TT as TDB.

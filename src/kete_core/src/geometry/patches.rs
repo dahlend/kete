@@ -98,12 +98,13 @@ pub struct SphericalPolygon {
 }
 
 impl SphericalPolygon {
-    /// The convex polygon whose edges lie on the planes with the unit normals
-    /// `edge_normals`, given in order and pointing toward the inside.
+    /// The convex polygon whose edges lie on the planes with the normals
+    /// `edge_normals`, given in order and pointing toward the inside. The normals
+    /// are kept as unit vectors.
     #[must_use]
     pub fn from_normals(edge_normals: &[Vector<Equatorial>]) -> Self {
         Self {
-            edge_normals: edge_normals.into(),
+            edge_normals: edge_normals.iter().map(Vector::normalize).collect(),
             center: None,
         }
     }
@@ -697,6 +698,23 @@ mod tests {
         assert!(fov_rot.contains(&inside).is_inside());
         assert!(!fov_rot.contains(&just_inside).is_inside());
         assert!((fov_rot.pointing() - Vector::new([1.0, 0.0, 0.0])).norm() < 1e-10);
+    }
+
+    /// The distance outside a rectangle is the distance to the plane of its edge,
+    /// for any length of the pointing vector and any declination.
+    #[test]
+    fn rectangle_distance_outside() {
+        let (half, offset) = (0.05_f64, 0.2_f64);
+        for (length, dec) in [(1.0, 0.0_f64), (3.0, 0.0), (0.01, 0.0), (1.0, 1.0)] {
+            let pointing = Vector::new([dec.cos(), 0.0, dec.sin()]) * length;
+            let fov = SphericalPolygon::new(pointing, 0.0, 2.0 * half, 2.0 * half);
+            // Two au away, `offset` radians toward the north of the pointing.
+            let point = Vector::new([(dec + offset).cos(), 0.0, (dec + offset).sin()]) * 2.0;
+            let Contains::Outside(dist) = fov.contains(&point) else {
+                panic!("the point is outside");
+            };
+            assert!((dist - 2.0 * (offset - half).sin()).abs() < 1e-12);
+        }
     }
 
     #[test]

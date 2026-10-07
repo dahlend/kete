@@ -5,13 +5,11 @@
 //! # Field of View like trait
 //! This trait defines field of view checks for portions of the sky.
 
-use crate::geometry::Contains;
-
-use crate::constants::C_AU_PER_DAY_INV;
+use crate::errors::{Error, KeteResult};
 use crate::fov::FOV;
-use crate::frames::{Equatorial, SunCenter, Vector};
-use crate::kepler::light_time_correct;
-use crate::prelude::*;
+use crate::frames::{Equatorial, Vector};
+use crate::geometry::Contains;
+use crate::state::State;
 
 /// Field of View like objects.
 /// These may contain multiple unique sky patches, so as a result the expected
@@ -82,40 +80,32 @@ pub fn check_statics<F: FovLike>(
         .collect()
 }
 
-/// Check whether an object in linear motion is in the field of view.
-///
-/// The object moves along a straight line at the velocity of `state`. The light
-/// delay uses the distance from the observer to `state` at the epoch of
-/// `state`. `state` must have the same center as the FOV observer.
-#[inline]
-pub fn check_linear<F: FovLike>(fov: &F, state: &State<Equatorial>) -> (usize, Contains) {
-    let obs = fov.observer();
-    let obs_pos = obs.pos;
-    let rel_pos = state.pos - obs_pos;
-
-    // This also accounts for first order light delay.
-    let dt = (obs.epoch - state.epoch).elapsed - rel_pos.norm() * C_AU_PER_DAY_INV;
-    let new_pos = state.pos + state.vel * dt;
-    fov.contains(&(new_pos - obs_pos))
-}
-
-/// Assuming the object undergoes two-body motion, check to see if it is within the
-/// field of view.
-///
-/// Both the state and the FOV observer must be Sun-centered.
+/// Unit vector along the sum of the pointings of `patches`.
 ///
 /// # Errors
-/// Returns an error if the Kepler solver fails.
-pub fn check_two_body<F: FovLike>(
-    fov: &F,
-    state: &State<Equatorial, SunCenter>,
-) -> KeteResult<(usize, Contains, State<Equatorial, SunCenter>)> {
-    let obs = fov.observer();
+/// Fails if `patches` is empty, or if the pointing of a patch fails.
+pub(crate) fn patches_pointing<F: FovLike>(patches: &[F]) -> KeteResult<Vector<Equatorial>> {
+    if patches.is_empty() {
+        Err(Error::ValueError("FOV has no patches.".into()))?;
+    }
+    let mut pointing = Vector::new([0.0; 3]);
+    for patch in patches {
+        pointing += &patch.pointing()?;
+    }
+    Ok(pointing.normalize())
+}
 
-    let final_state = propagate_two_body(state, obs.epoch)?;
-    let final_state = light_time_correct(&final_state, &obs.pos)?;
-    let rel_pos = final_state.pos - obs.pos;
-
-    let (idx, contains) = fov.contains(&rel_pos);
-    Ok((idx, contains, final_state))
+/// All corners of all `patches`.
+///
+/// # Errors
+/// Fails if `patches` is empty, or if the corners of a patch fail.
+pub(crate) fn patches_corners<F: FovLike>(patches: &[F]) -> KeteResult<Vec<Vector<Equatorial>>> {
+    if patches.is_empty() {
+        Err(Error::ValueError("FOV has no patches.".into()))?;
+    }
+    let mut corners = Vec::with_capacity(4 * patches.len());
+    for patch in patches {
+        corners.extend(patch.corners()?);
+    }
+    Ok(corners)
 }
