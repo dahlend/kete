@@ -5,6 +5,7 @@
 //! # NEOS field of views
 
 use super::FovLike;
+use super::fov_like::{patches_corners, patches_pointing};
 use crate::constants::{NEOS_HEIGHT, NEOS_WIDTH};
 use crate::fov::FOV;
 use crate::frames::Vector;
@@ -367,19 +368,10 @@ impl FovLike for NeosVisit {
 
     #[inline]
     fn pointing(&self) -> KeteResult<Vector<Equatorial>> {
-        let mut pointing = Vector::new([0.0; 3]);
-        self.chips
-            .iter()
-            .for_each(|chip| pointing += &chip.patch.pointing());
-        Ok(pointing.normalize())
+        patches_pointing(self.chips.as_slice())
     }
 
-    #[inline]
     fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
-        let mut corners = Vec::with_capacity(4 * 4);
-        for chip in self.chips.iter() {
-            corners.extend(chip.patch.corners());
-        }
-        Ok(corners)
+        patches_corners(self.chips.as_slice())
     }
 }

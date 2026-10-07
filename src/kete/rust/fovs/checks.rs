@@ -3,57 +3,63 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 use super::*;
-use kete_core::errors::{Error, KeteResult};
+use kete_core::errors::Error;
 use kete_core::forces::NonGravMask;
-use kete_core::fov::{FOV, FovLike, check_ephemeris, check_statics, check_visible};
-use kete_core::frames::Equatorial;
-use kete_core::propagation::NBody;
-use kete_core::state::State;
-use kete_core::time::{TDB, Time};
+use kete_core::fov::{FOV, check_ephemeris, check_statics, check_visible};
+use kete_core::state::SimultaneousStates;
 use kete_spice::ephemeris::SpiceEphemeris;
+use pyo3::exceptions::PyDeprecationWarning;
 use pyo3::prelude::*;
 use rayon::prelude::*;
+use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 
 use crate::{nongrav::PyNonGravModel, state::PySimultaneousStates, vector::VectorLike};
 
 /// Given states and field of view, return only the objects which are visible to the
 /// observer, adding a correction for optical light delay.
 ///
-/// Objects are propagated using 2 body physics to the time of the FOV if time steps are
-/// less than the specified `dt_limit`. Objects which have a non-gravitational model are
-/// always propagated using n-body physics, since the 2 body approximation cannot
-/// represent the non-gravitational acceleration.
+/// Each object is propagated once with n-body physics across the time span of the
+/// FOVs, including its non-gravitational model if one is given, and checked against
+/// every FOV.
 ///
-/// parameters
+/// Parameters
 /// ----------
 /// obj_state: list[State]
 ///     States which do not already have a specified FOV.
 /// fovs: list
 ///     A field of view from which to subselect objects which are visible.
 /// dt_limit: float
-///     Length of time in days where 2-body mechanics is a good approximation.
+///     Deprecated and unused, passing it raises a :class:`DeprecationWarning`.
 /// include_asteroids: bool
 ///     Include the additional registered gravitational masses during the computation.
 /// non_gravs: list
 ///     A list of non-gravitational terms for each object. If provided, then every
 ///     object must have an associated :class:`~NonGravModel` or `None`.
 #[pyfunction]
-#[pyo3(name = "fov_state_check", signature = (obj_state, fovs, dt_limit=3.0,
+#[pyo3(name = "fov_state_check", signature = (obj_state, fovs, dt_limit=None,
     include_asteroids=false, non_gravs=None))]
 pub fn fov_checks_py(
     py: Python<'_>,
     obj_state: PySimultaneousStates,
     mut fovs: Vec<AllowedFOV>,
-    dt_limit: f64,
+    dt_limit: Option<f64>,
     include_asteroids: bool,
     non_gravs: Option<Vec<Option<PyNonGravModel>>>,
 ) -> PyResult<Vec<PySimultaneousStates>> {
-    let pop = obj_state.0;
-
-    let mut non_gravs: Vec<Option<NonGravMask>> = match non_gravs {
-        None => vec![None; pop.states.len()],
+    if dt_limit.is_some() {
+        PyErr::warn(
+            py,
+            &py.get_type::<PyDeprecationWarning>(),
+            c"fov_state_check: dt_limit is unused and will be removed.",
+            1,
+        )?;
+    }
+    let states = obj_state.0.states;
+    let non_gravs: Vec<Option<NonGravMask>> = match non_gravs {
+        None => Vec::new(),
         Some(models) => {
-            if models.len() != pop.states.len() {
+            if models.len() != states.len() {
                 Err(Error::ValueError(
                     "non_gravs must be the same length as states.".into(),
                 ))?;
@@ -66,117 +72,34 @@ pub fn fov_checks_py(
     };
 
     fovs.sort_by(|a, b| a.jd().jd().total_cmp(&b.jd().jd()));
+    let fovs: Vec<FOV> = fovs.into_iter().map(AllowedFOV::unwrap).collect();
 
-    // break the fovs into groups based upon the dt_limit
-    let mut fov_chunks: Vec<Vec<FOV>> = Vec::new();
-    let mut chunk: Vec<FOV> = Vec::new();
-    for fov in fovs.into_iter() {
-        let fov = fov.unwrap();
-        if chunk.is_empty() {
-            chunk.push(fov);
-            continue;
-        };
-        let jd_start = chunk.first().unwrap().observer().epoch;
-
-        // chunk is complete
-        if (fov.observer().epoch - jd_start).elapsed.abs() >= 2.0 * dt_limit {
-            fov_chunks.push(chunk);
-            chunk = vec![fov];
-        } else {
-            chunk.push(fov);
-        }
-    }
-    if !chunk.is_empty() {
-        fov_chunks.push(chunk);
-    }
-    // Epoch that the states sit at, and the reference epoch of the last big step. Note
-    // that `big_jd` is when the last big step was triggered, not the epoch the big step
-    // states are at, which is `jd` at the moment that step is taken.
-    let mut jd = pop.epoch().jd();
-    let mut big_jd = jd;
-
-    // The states are stepped forward often, in steps of order dt_limit. The big step
-    // states are a second copy which lags behind and is only ever moved in single large
-    // jumps, so they do not accumulate the error of many short integrations. They are
-    // periodically swapped in to replace the small step states.
-    let mut states = pop.states;
-    let mut big_step_states = states.clone();
-    let mut big_step_non_gravs = non_gravs.clone();
-    let mut visible: Vec<PySimultaneousStates> = Vec::new();
-
-    let eph = SpiceEphemeris::loaded()?;
-    let spk = eph.spk();
-
-    // Propagate every state to the given time, dropping any which fail. Failures drop
-    // the state and its non-gravitational model together, keeping the two lists aligned.
-    let propagate =
-        |states: Vec<State<Equatorial>>, non_gravs: Vec<Option<NonGravMask>>, jd: Time<TDB>| {
-            states
-                .into_par_iter()
-                .zip(non_gravs)
-                .filter_map(|(state, non_grav)| {
-                    let ssb = spk.try_to_ssb(state).ok()?;
-                    let force = NBody::with_non_grav(&eph, include_asteroids, non_grav.clone());
-                    let moved = ssb.propagate_with(&force, jd);
-                    moved.ok().map(|moved| (moved.into(), non_grav))
-                })
-                .unzip()
-        };
-
-    for fovs in fov_chunks {
-        let jd_mean = (fovs.last().unwrap().observer().epoch.jd()
-            + fovs.first().unwrap().observer().epoch.jd())
-            / 2.0;
-
-        // Take large steps which are 10x the smaller steps, this helps long term numerical stability
-        if (jd_mean - big_jd).abs() >= dt_limit * 50.0 {
-            big_jd = jd_mean;
-            (big_step_states, big_step_non_gravs) =
-                propagate(big_step_states, big_step_non_gravs, jd.into());
-        };
-        // Take small steps based off of the large steps.
-        if (jd_mean - jd).abs() >= dt_limit {
-            if (jd - big_jd).abs() >= dt_limit * 25.0 {
-                states.clone_from(&big_step_states);
-                non_gravs.clone_from(&big_step_non_gravs);
-            }
-            jd = jd_mean;
-            (states, non_gravs) = propagate(states, non_gravs, jd.into());
-        };
-
-        // Release the GIL during CPU-intensive parallel work so Python can
-        // handle signals and other threads can proceed.
-        // With no non-gravitational models, an empty list skips a lookup for every
-        // state and FOV pair.
-        let chunk_non_gravs: &[Option<NonGravMask>] = if non_gravs.iter().any(Option::is_some) {
-            &non_gravs
-        } else {
-            &[]
-        };
-        let vis: Vec<Vec<PySimultaneousStates>> = py.detach(|| {
-            fovs.par_chunks(100)
-                .map(|chunk| {
-                    let mut found = Vec::new();
-                    for fov in chunk {
-                        let seen = check_visible(
-                            &eph,
-                            fov,
-                            &states,
-                            chunk_non_gravs,
-                            dt_limit,
-                            include_asteroids,
-                        )?;
-                        found.extend(seen.into_iter().flatten().map(PySimultaneousStates::from));
-                    }
-                    Ok(found)
-                })
-                .collect::<KeteResult<Vec<_>>>()
+    // Objects are checked in batches, so that Python can handle signals in between.
+    const BATCH: usize = 1000;
+    let mut visible: BTreeMap<(usize, usize), SimultaneousStates> = BTreeMap::new();
+    for (batch_idx, batch) in states.chunks(BATCH).enumerate() {
+        // An empty `non_gravs` means no state has a model, and has no batch slice.
+        let batch_non_gravs = non_gravs
+            .get(batch_idx * BATCH..batch_idx * BATCH + batch.len())
+            .unwrap_or_default();
+        let seen = py.detach(|| {
+            let eph = SpiceEphemeris::loaded()?;
+            check_visible(&eph, &fovs, batch, batch_non_gravs, include_asteroids)
         })?;
-        visible.extend(vis.into_iter().flatten());
-
+        for (fov_idx, patch_idx, patch) in seen {
+            match visible.entry((fov_idx, patch_idx)) {
+                Entry::Vacant(entry) => {
+                    let _ = entry.insert(patch);
+                }
+                Entry::Occupied(mut entry) => entry.get_mut().states.extend(patch.states),
+            }
+        }
         py.check_signals()?;
     }
-    Ok(visible)
+    Ok(visible
+        .into_values()
+        .map(|patch| PySimultaneousStates(Box::new(patch)))
+        .collect())
 }
 
 /// Check if a list of loaded spice kernel objects are visible in the provided FOVs.

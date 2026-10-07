@@ -20,8 +20,8 @@ use crate::frames::{Equatorial, Vector};
 use crate::geometry::Contains;
 use crate::state::State;
 
-pub use self::checks::{check_ephemeris, check_n_body, check_visible};
-pub use self::fov_like::{FovLike, check_linear, check_statics, check_two_body};
+pub use self::checks::{check_ephemeris, check_visible};
+pub use self::fov_like::{FovLike, check_statics};
 pub use self::generic::{GenericCone, GenericPolygon, GenericRectangle, OmniDirectional};
 pub use self::neos::{NeosCmos, NeosVisit};
 pub use self::ptf::{PTFFilter, PtfCcd, PtfField};

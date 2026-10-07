@@ -5,6 +5,7 @@
 //! # ZTF Fov definitions.
 
 use super::FovLike;
+use super::fov_like::{patches_corners, patches_pointing};
 use crate::fov::FOV;
 use crate::geometry::closest_inside;
 use crate::geometry::{Contains, SkyPatch, SphericalPolygon};
@@ -206,30 +207,11 @@ impl FovLike for ZtfField {
         self.ccd_quads.len()
     }
 
-    #[inline]
     fn pointing(&self) -> KeteResult<Vector<Equatorial>> {
-        if self.ccd_quads.is_empty() {
-            Err(Error::ValueError("ZtfField has no ccd quads".into()))
-        } else {
-            // return the average pointing of all ccd quads
-            Ok(self
-                .ccd_quads
-                .iter()
-                .fold(Vector::new([0.0; 3]), |acc, x| acc + x.pointing().unwrap()))
-        }
+        patches_pointing(&self.ccd_quads)
     }
 
-    #[inline]
     fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
-        if self.ccd_quads.is_empty() {
-            Err(Error::ValueError("ZtfField has no ccd quads".into()))
-        } else {
-            // return all the corners of all ccd quads
-            Ok(self
-                .ccd_quads
-                .iter()
-                .flat_map(|x| x.corners().unwrap())
-                .collect())
-        }
+        patches_corners(&self.ccd_quads)
     }
 }

@@ -1,53 +1,25 @@
 // SPDX-FileCopyrightText: 2026 Dar Dahlen
 // SPDX-License-Identifier: BSD-3-Clause
 
-//! Visibility checks that need body states: N-body propagation to the observer epoch,
-//! or objects looked up by NAIF id, from an [`Ephemeris`].
+//! Visibility checks that need body states: N-body propagation across the observer
+//! epochs, or objects looked up by NAIF id, from an [`Ephemeris`].
 
-use super::{FovLike, check_two_body};
+use super::FovLike;
 use crate::constants::C_AU_PER_DAY_INV;
-use crate::desigs::Desig;
 use crate::ephemeris::Ephemeris;
 use crate::errors::{Error, KeteResult};
 use crate::forces::NonGravMask;
-use crate::frames::{Equatorial, SSB, SunCenter};
+use crate::frames::{Equatorial, SunCenter, Vector};
 use crate::geometry::{Contains, SkyPatch, SphericalCone};
-use crate::kepler::light_time_correct;
+use crate::integrators::RadauDense;
 use crate::propagation::NBody;
-use crate::state::{SimultaneousStates, State};
+use crate::state::{SimultaneousStates, State, propagate_state};
 use crate::time::{TDB, Time};
 
+use itertools::Itertools;
+use nalgebra::Vector3;
 use rayon::prelude::*;
 use std::f64::consts::FRAC_PI_2;
-
-/// Assuming the object undergoes n-body motion, check to see if it is within the
-/// field of view.
-///
-/// If a non-gravitational model is provided, it is added to the gravitational
-/// force model during the propagation. Body states come from `ephem`.
-///
-/// # Errors
-/// Errors can occur for numerous reasons, typically from numerical integration failing.
-pub fn check_n_body<E: Ephemeris, F: FovLike>(
-    ephem: &E,
-    fov: &F,
-    state: State<Equatorial, SSB>,
-    non_grav: Option<&NonGravMask>,
-    include_extended: bool,
-) -> KeteResult<(usize, Contains, State<Equatorial>)> {
-    let obs = fov.observer();
-
-    let force = NBody::with_non_grav(ephem, include_extended, non_grav.cloned());
-    let exact_state = state.propagate_with(&force, obs.epoch)?;
-    let sun_state = ephem.try_to_sun(exact_state.into())?;
-
-    let final_state = light_time_correct(&sun_state, &obs.pos)?;
-    let rel_pos = final_state.pos - obs.pos;
-
-    let (idx, contains) = fov.contains(&rel_pos);
-
-    Ok((idx, contains, final_state.into()))
-}
 
 /// Look up objects by NAIF ID in `ephem` and check which are in the FOV.
 ///
@@ -78,9 +50,7 @@ pub fn check_ephemeris<E: Ephemeris, F: FovLike>(
                 .try_get_state_with_center(obj_id, obs.epoch, 10)
                 .ok()?;
             let mut corrected: State<Equatorial, SunCenter> = state.try_into().ok()?;
-            // Light-time correct by querying the ephemeris at the emission epoch
-            // directly. This handles all objects (including the Sun at r0=0) without
-            // two-body propagation.
+            // Light-time correct by querying the ephemeris at the emission epoch.
             let mut tau = 0.0_f64;
             for _ in 0..3 {
                 let new_tau = (corrected.pos - obs.pos).norm() * C_AU_PER_DAY_INV;
@@ -115,47 +85,46 @@ pub fn check_ephemeris<E: Ephemeris, F: FovLike>(
         .collect()
 }
 
-/// Check which states are in the FOV at the observer epoch.
+/// Check which states are seen in which FOVs.
 ///
-/// The result has one entry per patch of `fov`. An entry holds the Sun-centered
-/// states seen in that patch, at the time light left the object. An entry is
-/// `None` if the patch has no object.
+/// Each state is integrated once with N-body physics across the span of the FOV
+/// epochs, keeping the integrator's dense output. Its position at any time in the
+/// span then comes from that output without integrating again, so every check is
+/// exact, including the light-time correction and any non-gravitational model.
+/// `include_asteroids` adds the registered asteroid masses to the force model, and
+/// body states come from `ephem`.
 ///
-/// The checks become progressively more exact. A state without a
-/// non-gravitational model, and less than `dt_limit` days from the observer
-/// epoch, gets a linear check and then a two-body check. Every other state gets
-/// a two-body check and then an n-body propagation. `include_asteroids` adds
-/// the registered asteroid masses to the n-body force model. A pre-filter
-/// rejects a state only if the state is outside the FOV by more than twice the
-/// distance it moves relative to the observer in `dt_limit`.
+/// The FOVs are grouped into half days from the first FOV epoch, such as one night
+/// of a ground based survey. As a pre-filter, each state is evaluated once for each
+/// group, at the middle of it, and rejected for a FOV of the group if it is outside
+/// the FOV by more than twice its speed times the time to the FOV epoch plus the
+/// light time. The speed is the largest of those at the start, middle and end of
+/// the group.
 ///
 /// `non_gravs` is either empty or holds one entry per state. An empty
-/// `non_gravs` means that no state has a non-gravitational model. The linear
-/// and two-body checks do not include non-gravitational accelerations. Thus a
-/// state with a model always takes the n-body path, and the two-body check is
-/// only a coarse pre-filter. This pre-filter assumes that the
-/// non-gravitational deviation between the state epoch and the observer epoch
-/// is small compared to the pre-filter distance.
+/// `non_gravs` means that no state has a non-gravitational model.
 ///
-/// Body states come from `ephem`. A state is reported as not visible if a
-/// center change or a propagation fails, for example outside the ephemeris
+/// The result holds the FOV index, the patch index, and the Sun-centered states
+/// seen in that patch at the time light left them, ordered by FOV and then by
+/// patch. Patches with no state are left out. A state is not visible where its
+/// integration fails, for example after an impact or outside the ephemeris
 /// coverage.
 ///
 /// # Errors
 /// Returns [`Error::ValueError`] if `non_gravs` is not empty and does not have
-/// one entry per state.
+/// one entry per state, and the error of `ephem` if the observer of a FOV cannot
+/// be moved to the SSB.
 ///
 /// # Panics
-/// Panics if `fov` is inconsistent: `contains` returns a patch index of
+/// Panics if a FOV is inconsistent: `contains` returns a patch index of
 /// `n_patches` or more, or `get_child` panics for an index below `n_patches`.
 pub fn check_visible<E: Ephemeris, F: FovLike>(
     ephem: &E,
-    fov: &F,
+    fovs: &[F],
     states: &[State<Equatorial>],
     non_gravs: &[Option<NonGravMask>],
-    dt_limit: f64,
     include_asteroids: bool,
-) -> KeteResult<Vec<Option<SimultaneousStates>>> {
+) -> KeteResult<Vec<(usize, usize, SimultaneousStates)>> {
     if !(non_gravs.is_empty() || non_gravs.len() == states.len()) {
         Err(Error::ValueError(format!(
             "non_gravs must be empty or have one entry per state, found {} entries for \
@@ -164,125 +133,229 @@ pub fn check_visible<E: Ephemeris, F: FovLike>(
             states.len()
         )))?;
     }
-    let obs_state = fov.observer();
-    let cone = bounding_cone(fov);
 
-    // The linear check compares positions directly, so each state moves to the
-    // center of the observer. States usually share a center and an epoch. Thus
-    // the offset between the two centers is kept for reuse by the next state.
-    let mut center_offset: Option<(i32, Time<TDB>, State<Equatorial>)> = None;
-
-    let final_states: Vec<(usize, State<Equatorial>)> = states
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, state)| {
-            let non_grav = non_gravs.get(idx).and_then(Option::as_ref);
-            let elapsed = (obs_state.epoch - state.epoch).elapsed;
-
-            if non_grav.is_none() && elapsed.abs() < dt_limit {
-                let offset = match &center_offset {
-                    Some((center, epoch, offset))
-                        if *center == state.center_id() && *epoch == state.epoch =>
-                    {
-                        offset
-                    }
-                    _ => {
-                        let mut offset = State::<Equatorial>::new(
-                            Desig::Empty,
-                            state.epoch,
-                            [0.0; 3],
-                            [0.0; 3],
-                            state.center_id(),
-                        );
-                        ephem
-                            .try_change_center(&mut offset, obs_state.center_id())
-                            .ok()?;
-                        &center_offset
-                            .insert((state.center_id(), state.epoch, offset))
-                            .2
-                    }
-                };
-                // Linear motion with first order light delay, in the frame of the
-                // observer center, as in `check_linear`. This runs for every state
-                // and FOV pair, so it works on the vectors without building a state.
-                let pos = state.pos + offset.pos;
-                let vel = state.vel + offset.vel;
-                let max_dist = (vel - obs_state.vel).norm() * dt_limit * 2.0;
-                let dt = elapsed - (pos - obs_state.pos).norm() * C_AU_PER_DAY_INV;
-                let obs_to_obj = (pos + vel * dt) - obs_state.pos;
-                // The cone holds every patch, so its distance is also a lower bound,
-                // and rejecting on it skips checking each patch of the FOV.
-                if let Some(Contains::Outside(dist)) =
-                    cone.as_ref().map(|c| c.contains(&obs_to_obj))
-                    && dist > max_dist
-                {
-                    return None;
-                }
-                let (_, contains) = fov.contains(&obs_to_obj);
-                if let Contains::Outside(dist) = contains
-                    && dist > max_dist
-                {
-                    return None;
-                }
-                let sun_state = ephem.try_to_sun(state.clone()).ok()?;
-                let (idx, contains, state) = check_two_body(fov, &sun_state).ok()?;
-                match contains {
-                    Contains::Inside => Some((idx, state.into())),
-                    Contains::Outside(_) => None,
-                }
+    // The FOVs in epoch order. Sorting indices keeps the sort small.
+    let mut order: Vec<usize> = (0..fovs.len()).collect();
+    order.par_sort_unstable_by(|a, b| {
+        let (a, b) = (fovs[*a].observer().epoch, fovs[*b].observer().epoch);
+        a.jd().total_cmp(&b.jd())
+    });
+    // For each FOV in epoch order: its index, and the epoch and position of its
+    // observer relative to the SSB, with a cone holding every patch of a FOV of
+    // several patches.
+    let observers: Vec<KeteResult<_>> = order
+        .par_iter()
+        .map(|&idx| {
+            let fov = &fovs[idx];
+            let observer = ephem.try_to_ssb(fov.observer().clone())?;
+            // A cone of less than a hemisphere around the corners also holds the great
+            // circle edges between them.
+            let cone = if fov.n_patches() > 1 {
+                fov.pointing()
+                    .ok()
+                    .zip(fov.corners().ok())
+                    .and_then(|(center, corners)| {
+                        let radius = corners
+                            .iter()
+                            .map(|corner| center.angle(corner))
+                            .fold(0.0, f64::max);
+                        (radius < FRAC_PI_2).then(|| SphericalCone::new(&center, radius))
+                    })
             } else {
-                let sun_state = ephem.try_to_sun(state.clone()).ok()?;
-                let max_dist = (sun_state.vel - obs_state.vel).norm() * dt_limit * 2.0;
-                let (_, contains, _) = check_two_body(fov, &sun_state).ok()?;
-                if let Contains::Outside(dist) = contains
-                    && dist > max_dist
-                {
-                    return None;
-                }
-                let ssb_state = ephem.try_to_ssb(state.clone()).ok()?;
-                let (idx, contains, state) =
-                    check_n_body(ephem, fov, ssb_state, non_grav, include_asteroids).ok()?;
-                match contains {
-                    Contains::Inside => Some((idx, state)),
-                    Contains::Outside(_) => None,
-                }
-            }
+                None
+            };
+            Ok((idx, observer.epoch, observer.pos, cone))
+        })
+        .collect();
+    drop(order);
+    let observers = observers.into_iter().collect::<KeteResult<Vec<_>>>()?;
+    let (Some(first), Some(last)) = (observers.first(), observers.last()) else {
+        return Ok(Vec::new());
+    };
+    let (first_epoch, last_epoch) = (first.1, last.1);
+    let max_obs_dist = observers
+        .iter()
+        .map(|(_, _, pos, _)| pos.norm())
+        .fold(0.0, f64::max);
+
+    // The FOVs in groups of `MAX_GROUP_SPAN` days from the first epoch, each with its
+    // first, middle and last epochs. Each group is split into parallel tasks of
+    // `FOV_GROUP` FOVs.
+    let span_idx = |epoch: Time<TDB>| ((epoch - first_epoch).elapsed / MAX_GROUP_SPAN).floor();
+    let groups: Vec<_> = observers
+        .chunk_by(|a, b| span_idx(a.1) == span_idx(b.1))
+        .flat_map(|group| {
+            let (first, last) = (group[0].1, group[group.len() - 1].1);
+            let center = first + (last - first).elapsed / 2.0;
+            group
+                .chunks(FOV_GROUP)
+                .map(move |chunk| ([first, center, last], chunk))
         })
         .collect();
 
-    // Most FOVs contain nothing, skip building their empty results.
-    if final_states.is_empty() {
-        return Ok(vec![None; fov.n_patches()]);
+    // States are checked a block at a time: the block is integrated first, then each
+    // FOV is checked against every state of the block while it is in cache.
+    let mut hits: Vec<(usize, usize, usize, State<Equatorial>)> = Vec::new();
+    for (block_idx, block) in states.chunks(STATE_BLOCK).enumerate() {
+        let trajectories: Vec<Option<RadauDense>> = block
+            .par_iter()
+            .enumerate()
+            .map(|(idx, state)| {
+                let non_grav = non_gravs
+                    .get(block_idx * STATE_BLOCK + idx)
+                    .and_then(Option::as_ref);
+                let force = NBody::with_non_grav(ephem, include_asteroids, non_grav.cloned());
+                let at_first = ephem
+                    .try_to_ssb(state.clone())
+                    .ok()?
+                    .propagate_with(&force, first_epoch)
+                    .ok()?;
+                // Light from the object reaches any observer within this many days, so
+                // the trajectory starts early enough for the earliest emission time.
+                let max_light_time = (at_first.pos.norm() + max_obs_dist) * C_AU_PER_DAY_INV;
+                let start = at_first
+                    .propagate_with(&force, first_epoch - max_light_time)
+                    .ok()?;
+                // A failure part way keeps the trajectory up to the failure.
+                let mut trajectory = RadauDense::new();
+                let _ = propagate_state(
+                    &force,
+                    start.pos.into(),
+                    start.vel.into(),
+                    &[],
+                    start.epoch,
+                    last_epoch,
+                    Some(&mut trajectory),
+                );
+                Some(trajectory)
+            })
+            .collect();
+
+        let block_hits: Vec<_> = groups
+            .par_iter()
+            .flat_map_iter(|([first, center, last], group)| {
+                // Each state at the center of the group, with the largest of its speeds
+                // at the first, center and last epochs of the group. A trajectory ends
+                // early if its integration fails, so the times stay inside it to check
+                // the FOVs before the failure.
+                let at_center: Vec<_> = trajectories
+                    .iter()
+                    .map(|trajectory| {
+                        let trajectory = trajectory.as_ref()?;
+                        let end = trajectory.end()?;
+                        let clamp = |time: Time<TDB>| if time > end { end } else { time };
+                        let center = clamp(*center);
+                        let (pos, vel) = trajectory.evaluate(center).ok()?;
+                        let speed = [*first, *last]
+                            .into_iter()
+                            .filter_map(|time| trajectory.evaluate(clamp(time)).ok())
+                            .map(|(_, vel)| Vector3::from_column_slice(&vel).norm())
+                            .fold(Vector3::from_column_slice(&vel).norm(), f64::max);
+                        let pos: Vector<Equatorial> = Vector3::from_column_slice(&pos).into();
+                        Some((center, pos, speed))
+                    })
+                    .collect();
+
+                let mut found = Vec::new();
+                for (fov_idx, obs_epoch, obs_pos, cone) in *group {
+                    let fov = &fovs[*fov_idx];
+                    for (idx, (trajectory, at_center)) in
+                        trajectories.iter().zip(&at_center).enumerate()
+                    {
+                        let (Some(trajectory), Some((center, pos, speed))) =
+                            (trajectory, at_center)
+                        else {
+                            continue;
+                        };
+
+                        // Light reaching the observer left the object at the observer epoch
+                        // less the light time. Between the center and then, the object
+                        // moves at most its speed times the time between them; twice the
+                        // largest sampled speed allows for a change of speed.
+                        let obs_to_obj = *pos - *obs_pos;
+                        let light_time = obs_to_obj.norm() * C_AU_PER_DAY_INV;
+                        let max_dist =
+                            2.0 * speed * ((*obs_epoch - *center).elapsed.abs() + light_time);
+                        // The cone holds every patch, so its distance is also a lower
+                        // bound, and rejecting on it skips checking each patch.
+                        if let Some(Contains::Outside(dist)) =
+                            cone.as_ref().map(|c| c.contains(&obs_to_obj))
+                            && dist > max_dist
+                        {
+                            continue;
+                        }
+                        if let (_, Contains::Outside(dist)) = fov.contains(&obs_to_obj)
+                            && dist > max_dist
+                        {
+                            continue;
+                        }
+
+                        let mut light_time = obs_to_obj.norm() * C_AU_PER_DAY_INV;
+                        let mut emission = None;
+                        for _ in 0..5 {
+                            let Ok((pos, vel)) = trajectory.evaluate(*obs_epoch - light_time)
+                            else {
+                                break;
+                            };
+                            let pos: Vector<Equatorial> = Vector3::from_column_slice(&pos).into();
+                            let vel: Vector<Equatorial> = Vector3::from_column_slice(&vel).into();
+                            let new_light_time = (pos - *obs_pos).norm() * C_AU_PER_DAY_INV;
+                            let converged = (new_light_time - light_time).abs() < 1e-12;
+                            emission = Some((*obs_epoch - light_time, pos, vel));
+                            if converged {
+                                break;
+                            }
+                            light_time = new_light_time;
+                        }
+                        let Some((epoch, pos, vel)) = emission else {
+                            continue;
+                        };
+                        let (patch_idx, Contains::Inside) = fov.contains(&(pos - *obs_pos)) else {
+                            continue;
+                        };
+                        let state_idx = block_idx * STATE_BLOCK + idx;
+                        let emitted = State::<Equatorial>::new(
+                            states[state_idx].desig.clone(),
+                            epoch,
+                            pos,
+                            vel,
+                            0,
+                        );
+                        if let Ok(emitted) = ephem.try_to_sun(emitted) {
+                            found.push((*fov_idx, patch_idx, state_idx, emitted.into()));
+                        }
+                    }
+                }
+                found
+            })
+            .collect();
+        hits.extend(block_hits);
     }
 
-    let mut detector_states = vec![Vec::<State<_>>::new(); fov.n_patches()];
-    for (idx, state) in final_states {
-        detector_states[idx].push(state);
-    }
-
-    Ok(detector_states
+    hits.sort_by_key(|(fov_idx, patch_idx, state_idx, _)| (*fov_idx, *patch_idx, *state_idx));
+    let mut visible = Vec::new();
+    for ((fov_idx, patch_idx), patch) in &hits
         .into_iter()
-        .enumerate()
-        .map(|(idx, states)| {
-            SimultaneousStates::new_exact(states, Some(fov.get_child(idx).into_fov())).ok()
-        })
-        .collect())
+        .chunk_by(|(fov_idx, patch_idx, _, _)| (*fov_idx, *patch_idx))
+    {
+        let states = patch.map(|(_, _, _, state)| state).collect();
+        let child = fovs[fov_idx].get_child(patch_idx).into_fov();
+        visible.push((
+            fov_idx,
+            patch_idx,
+            SimultaneousStates::new_exact(states, Some(child))?,
+        ));
+    }
+    Ok(visible)
 }
 
-/// A cone around a FOV of several patches, holding all of them. `None` for a FOV of
-/// one patch, where checking the patch costs no more than checking the cone.
-fn bounding_cone<F: FovLike>(fov: &F) -> Option<SphericalCone> {
-    if fov.n_patches() < 2 {
-        return None;
-    }
-    let center = fov.pointing().ok()?;
-    let radius = fov
-        .corners()
-        .ok()?
-        .iter()
-        .map(|corner| center.angle(corner))
-        .fold(0.0, f64::max);
-    // A cone of less than a hemisphere around the corners also holds the great
-    // circle edges between them.
-    (radius < FRAC_PI_2).then(|| SphericalCone::new(&center, radius))
-}
+/// Number of states integrated together in [`check_visible`], which bounds the memory
+/// held by their dense output.
+const STATE_BLOCK: usize = 256;
+
+/// Number of FOVs in one parallel task of [`check_visible`].
+const FOV_GROUP: usize = 1024;
+
+/// Length in days of the spans of FOV epochs that [`check_visible`] checks from one
+/// state of each object.
+const MAX_GROUP_SPAN: f64 = 0.5;

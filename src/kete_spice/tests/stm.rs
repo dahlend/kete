@@ -402,7 +402,7 @@ fn linearity_horizon(
                     let clone_pos = Vector3::from(clone_state.pos) + sun_pos;
                     let clone_vel = Vector3::from(clone_state.vel) + sun_vel;
                     let (truth_pos, truth_vel) =
-                        propagate_state(force, clone_pos, clone_vel, &[], epoch, epoch_final)
+                        propagate_state(force, clone_pos, clone_vel, &[], epoch, epoch_final, None)
                             .unwrap();
 
                     // Cartesian. The exact initial offset is used, so the element
@@ -696,6 +696,7 @@ fn encounter_neo_at(
         &[],
         encounter,
         epoch,
+        None,
     )
     .unwrap();
 
@@ -726,6 +727,7 @@ fn encounter_neo_at(
             &[],
             Time::<TDB>::new(walk_time),
             Time::<TDB>::new(next),
+            None,
         )
         .unwrap();
         (walk_pos, walk_vel) = stepped;
@@ -973,6 +975,7 @@ fn mixture_vs_ensemble(
                 &[],
                 epoch,
                 target,
+                None,
             )
             .unwrap();
             equinoctial_at(target, pos_f - sunf_pos, vel_f - sunf_vel)
