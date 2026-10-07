@@ -12,10 +12,9 @@
 use crate::elements::{CometElements, EquinoctialElements};
 use crate::forces::NonGravMask;
 use crate::frames::{CenterBody, DynCenter, Ecliptic, InertialFrame};
-use crate::prelude::{Desig, Error, KeteResult, State};
-use crate::state::ProbeSet;
+use crate::prelude::{Error, KeteResult, State};
 use crate::time::{TDB, Time};
-use nalgebra::{DMatrix, Matrix6, Vector3, Vector6};
+use nalgebra::{DMatrix, Matrix6, Vector6};
 use rand::SeedableRng;
 use rand_distr::{Distribution, StandardNormal};
 
@@ -34,9 +33,7 @@ use rand_distr::{Distribution, StandardNormal};
 ///
 /// The reason is not stylistic. A linear map describes the propagated distribution far more
 /// accurately in these coordinates than in cartesian ones, because a cartesian covariance
-/// shears into a curved distribution that no linear map can represent. The gain is
-/// reported by `element_vs_cartesian_linearity_horizon` in `kete_spice`, which scores both
-/// bases against a clone ensemble under the real N-body force model.
+/// shears into a curved distribution that no linear map can represent.
 ///
 /// Use [`Self::cartesian_covariance`] for reporting, interchange, or comparison against an
 /// externally supplied covariance, and [`Self::from_state`] to enter from a cartesian one.
@@ -65,60 +62,6 @@ pub struct UncertainState {
     /// without a model does not describe something that can be propagated, so the two
     /// travel together rather than being paired up by a caller.
     pub non_grav: Option<NonGravMask>,
-
-    /// Probes carried since this component was last seeded, or `None` for a component
-    /// that has never been marched.
-    ///
-    /// See [`ProbeSet`]. The probes measure this covariance's departure from linearity
-    /// under one force model, so they belong to this component and are dropped by any
-    /// constructor that builds a new one - a split child, a mixture mean, a fitted state.
-    /// `None` means [`step_diffuse_state`](crate::state::step_diffuse_state) seeds fresh,
-    /// which restarts the measurement.
-    ///
-    /// The probes themselves are the controller's own machinery and are not reachable
-    /// from outside the crate. What a caller can do is ask whether they are there, with
-    /// [`Self::has_probes`], and drop them, with [`Self::clear_probes`].
-    pub(crate) probes: Option<ProbeSet>,
-
-    /// Covariance whose position image whitens [`Self::eta`], `(6 + Np) x (6 + Np)` in the
-    /// same element coordinates as [`Self::cov_matrix`], or `None` for a component that has
-    /// never been marched.
-    ///
-    /// **This is not the component's own covariance once it has split.** A component that
-    /// has never split carries its own, so the two are equal and `eta` reads in sigma of
-    /// the component itself. A split child inherits its parent's and carries it onward, so
-    /// `eta` keeps reading against the width the density had before the split rather than
-    /// against the narrower width the split produced.
-    ///
-    /// The reason is that a yardstick which shrinks with every split makes the threshold
-    /// mean something different at every depth: the residual falls when a component is
-    /// split, but so does its own covariance, so their ratio barely moves and the
-    /// controller cannot tell a resolved cascade from a stalled one. Holding the reference
-    /// fixed across a split makes `eta` fall when a split helps, which is what
-    /// `split_threshold` is thresholding on.
-    ///
-    /// The cost is that a deep child reports how much its error matters to the mixture,
-    /// not how well it describes its own local density; those are the same number only
-    /// until the first split. [`Self::residual_meters`] is unwhitened and answers the
-    /// second question at any depth.
-    pub whitening_cov: Option<DMatrix<f64>>,
-
-    /// Departure from linearity this component was carrying at its epoch, in sigma of the
-    /// position distribution [`Self::whitening_cov`] describes, or `None` if it has never
-    /// been marched.
-    ///
-    /// Measured against probes carried since the component last split, so it says how far
-    /// the component is from linear now rather than what the last leg added. Read it with
-    /// [`Self::residual_meters`]: against the propagator's own resolution the pair
-    /// separates curvature from numerical noise.
-    pub eta: Option<f64>,
-
-    /// The residual behind [`Self::eta`], as a cartesian position offset in meters, or
-    /// `None` if this component has never been marched.
-    ///
-    /// The propagator places a position to roughly a meter, so `eta 0.003` standing on a
-    /// residual of `1.2` m is numerical noise rather than a curved flow.
-    pub residual_meters: Option<f64>,
 }
 
 impl UncertainState {
@@ -147,22 +90,9 @@ impl UncertainState {
             elements,
             cov_matrix,
             free_params,
-            // A newly built component has no march behind it. Every other constructor
-            // routes through here, so a split child, a mixture mean or a fitted state all
-            // start with the measurement unstarted rather than inheriting one taken
-            // against a covariance that no longer exists.
-            //
-            // The whitening reference starts unset for the same reason, and the controller
-            // seeds it to this covariance on the first leg. A split child is the one case
-            // where it must survive rather than restart, so the splitter writes the
-            // parent's onto the children after building them here.
-            // The model is set by whoever knows it: a constructor that was given
-            // one, or the splitter and the propagator carrying the parent's forward.
+            // The model is set by whoever knows it: a constructor that was given one, or
+            // a caller that fitted it.
             non_grav: None,
-            probes: None,
-            whitening_cov: None,
-            eta: None,
-            residual_meters: None,
         })
     }
 
@@ -209,27 +139,6 @@ impl UncertainState {
     /// Fails if the elements are outside their physical domain, or too close to the seam.
     pub fn cartesian_covariance<F: InertialFrame>(&self) -> KeteResult<DMatrix<f64>> {
         covariance_from_equinoctial::<F>(&self.elements, &self.cov_matrix)
-    }
-
-    /// Whether this state carries probes, and so continues a measurement rather than
-    /// restarting one.
-    ///
-    /// A state without them is seeded on the next leg, which restarts `eta` from zero.
-    /// [`StepReport::seeded`](crate::state::StepReport::seeded) counts that when it
-    /// happens; this answers it in advance.
-    #[must_use]
-    pub fn has_probes(&self) -> bool {
-        self.probes.is_some()
-    }
-
-    /// Drop the probes, so the next leg seeds fresh ones.
-    ///
-    /// Use this when a state is being reused rather than marched onward: its probes were
-    /// integrated under one force model from one anchor, and against any other they
-    /// measure a flow that was never propagated. The cost is a restarted `eta`, which the
-    /// next step reports.
-    pub fn clear_probes(&mut self) {
-        self.probes = None;
     }
 
     /// Epoch of the best-fit orbit.
@@ -397,27 +306,6 @@ impl UncertainState {
 
         Ok(results)
     }
-
-    /// How faithfully this state's element covariance and its cartesian image describe
-    /// the same distribution, as a sigma-point divergence.
-    ///
-    /// The conversion between the two bases is exact as a linear map, but a Gaussian in
-    /// one basis is not a Gaussian in the other: the change of chart is nonlinear off the
-    /// mean, and the linear map keeps only its value and first derivative there. Called
-    /// immediately after construction from a cartesian covariance, this measures what the
-    /// entry conversion discarded - the fidelity of the *initial* Gaussian, before any
-    /// propagation adds loss of its own.
-    ///
-    /// See [`equinoctial_conversion_divergence`] for the definition, the scale, and the
-    /// probe placement. The result is frame invariant, so no frame is exposed here.
-    ///
-    /// # Errors
-    /// Fails if `sigma_factor` is not positive and finite, if the covariance is zero, or
-    /// if the orbit is outside the covariance domain.
-    pub fn conversion_divergence(&self, sigma_factor: f64) -> KeteResult<f64> {
-        let cartesian = self.cartesian_covariance::<Ecliptic>()?;
-        equinoctial_conversion_divergence::<Ecliptic>(&self.elements, &cartesian, sigma_factor)
-    }
 }
 
 /// Re-express an augmented covariance in equinoctial element coordinates.
@@ -460,116 +348,6 @@ pub fn covariance_from_equinoctial<F: InertialFrame>(
 ) -> KeteResult<DMatrix<f64>> {
     equinoctial_covariance_domain(elements)?;
     congruence(cov, &elements.state_jacobian::<F>()?)
-}
-
-/// Sigma-point divergence of converting a cartesian covariance into equinoctial element
-/// coordinates: how far the exact nonlinear change of coordinates moves the input
-/// Gaussian's sigma points from where the linear conversion puts them, as a Mahalanobis
-/// distance inside the converted covariance.
-///
-/// [`covariance_to_equinoctial`] is exact as a linear map, but a Gaussian in cartesian
-/// coordinates is not a Gaussian in element coordinates: the change of chart is nonlinear
-/// off the mean, and the linear conversion keeps only its value and first derivative at
-/// the mean. This measures what it discards, which grows as the square of the input's
-/// width and is invisible to any comparison of the matrices alone.
-///
-/// The returned value reads as "how many sigma the exact answer sits from the linear
-/// one, inside the converted Gaussian". A value well below one means the element
-/// Gaussian is a faithful description of the input and any structure that develops
-/// later comes from the dynamics, not from the entry conversion. A larger value means
-/// the input is already too wide for a single Gaussian in element coordinates and
-/// should be split or sampled rather than converted whole. Infinity is returned when a
-/// probe point has no element representation at all. This measures the conversion in
-/// full element space, which is a different question from the position-space `eta` the
-/// adaptive splitter thresholds on; the two are not on a shared scale.
-///
-/// The probes are placed at `+/- sigma_factor` standard deviations along each eigenvector
-/// of the leading `6 x 6` block of `cov`, in frame `F`. Rows and columns beyond the sixth
-/// are ignored: force-model parameters convert exactly, so they carry no loss.
-///
-/// # Errors
-/// Fails if `sigma_factor` is not positive and finite, if the covariance is not square
-/// and at least `6 x 6` or is zero, or if the orbit is outside the covariance domain, see
-/// [`equinoctial_covariance_domain`].
-pub fn equinoctial_conversion_divergence<F: InertialFrame>(
-    elements: &EquinoctialElements,
-    cov: &DMatrix<f64>,
-    sigma_factor: f64,
-) -> KeteResult<f64> {
-    if !sigma_factor.is_finite() || sigma_factor <= 0.0 {
-        return Err(Error::ValueError(
-            "sigma_factor must be positive and finite".into(),
-        ));
-    }
-    if cov.nrows() < 6 || cov.nrows() != cov.ncols() {
-        return Err(Error::ValueError(format!(
-            "Covariance must be square and at least 6x6, got {}x{}",
-            cov.nrows(),
-            cov.ncols()
-        )));
-    }
-    equinoctial_covariance_domain(elements)?;
-
-    let linear = elements.state_jacobian_inverse::<F>()?;
-    let cart = Matrix6::from_iterator(cov.view((0, 0), (6, 6)).iter().copied());
-    let converted = linear * cart * linear.transpose();
-
-    // The whitening factor for the Mahalanobis norm. The trace-scaled ridge keeps an
-    // input that is singular along some directions whitenable; directions the input
-    // actually has no extent in contribute nothing, since their probes are skipped.
-    let trace = converted.trace();
-    if !trace.is_finite() || trace <= 0.0 {
-        return Err(Error::ValueError(
-            "Covariance must be non-zero and finite.".into(),
-        ));
-    }
-    let ridge = Matrix6::identity() * (trace / 6.0 * 1e-12);
-    let whitener = (converted + ridge)
-        .cholesky()
-        .ok_or_else(|| Error::ValueError("Converted covariance is not positive definite.".into()))?
-        .l();
-
-    let nominal: State<F> = elements.try_to_state()?.into_frame();
-    let nominal_pos = Vector3::from(nominal.pos);
-    let nominal_vel = Vector3::from(nominal.vel);
-    // The exact image of a cartesian displacement, as an offset of the element
-    // coordinates. A probe whose image does not exist reads as infinite divergence: the
-    // input Gaussian reaches configurations the element chart cannot represent, which no
-    // finite number understates.
-    let exact = |delta: &Vector6<f64>| -> KeteResult<Vector6<f64>> {
-        let moved: State<Ecliptic> = State::<F>::new(
-            Desig::Empty,
-            elements.epoch,
-            nominal_pos + Vector3::new(delta[0], delta[1], delta[2]),
-            nominal_vel + Vector3::new(delta[3], delta[4], delta[5]),
-            elements.center_id,
-        )
-        .into_frame();
-        Ok(elements.offset_to(&EquinoctialElements::from_state(&moved)?))
-    };
-
-    let eig = nalgebra::SymmetricEigen::new(cart);
-    let mut worst = 0.0_f64;
-    for axis in 0..6 {
-        let lambda = eig.eigenvalues[axis];
-        if lambda <= 0.0 {
-            continue;
-        }
-        let direction: Vector6<f64> = eig.eigenvectors.column(axis).into();
-        let probe = direction * (sigma_factor * lambda.sqrt());
-        let prediction = linear * probe;
-        for sign in [1.0_f64, -1.0] {
-            let Ok(offset) = exact(&(probe * sign)) else {
-                return Ok(f64::INFINITY);
-            };
-            let residual = offset - prediction * sign;
-            let Some(whitened) = whitener.solve_lower_triangular(&residual) else {
-                return Ok(f64::INFINITY);
-            };
-            worst = worst.max(whitened.norm());
-        }
-    }
-    Ok(worst)
 }
 
 /// Reject orbits too close to the equinoctial seam to carry a covariance.
@@ -726,92 +504,6 @@ fn perturb_element(elements: &CometElements, col: usize, delta: f64) -> CometEle
         _ => unreachable!("column index must be 0..6"),
     }
     e
-}
-
-impl UncertainState {
-    /// Save into a binary file.
-    ///
-    /// # Errors
-    /// Returns an error if the file cannot be created or written.
-    pub fn save(&self, filename: String) -> KeteResult<()> {
-        use flate2::Compression;
-        use flate2::write::GzEncoder;
-        use std::fs::File;
-        use std::io::BufWriter;
-        let f = BufWriter::new(File::create(filename)?);
-        let mut gz = GzEncoder::new(f, Compression::default());
-        crate::io::binary::write_uncertain_kete_file(self, &mut gz)?;
-        let _ = gz.finish()?;
-        Ok(())
-    }
-
-    /// Save a vector of `UncertainState` into a binary file.
-    ///
-    /// # Errors
-    /// Returns an error if the file cannot be created or written.
-    pub fn save_vec(vec: &[Self], filename: String) -> KeteResult<()> {
-        use flate2::Compression;
-        use flate2::write::GzEncoder;
-        use std::fs::File;
-        use std::io::BufWriter;
-        let f = BufWriter::new(File::create(filename)?);
-        let mut gz = GzEncoder::new(f, Compression::default());
-        crate::io::binary::write_uncertain_vec_kete_file(vec, &mut gz)?;
-        let _ = gz.finish()?;
-        Ok(())
-    }
-
-    /// Load from a binary file.
-    ///
-    /// # Errors
-    /// Returns an error if the file cannot be read, or if it holds a collection
-    /// or a different type rather than a single state.
-    pub fn load(filename: String) -> KeteResult<Self> {
-        match Self::load_file(filename)? {
-            crate::io::binary::KeteFileType::Uncertain(state) => Ok(*state),
-            crate::io::binary::KeteFileType::UncertainVec(v) => Err(Error::ValueError(format!(
-                "Expected a single UncertainState, but found a vector of length {}.",
-                v.len()
-            ))),
-            crate::io::binary::KeteFileType::Single(_)
-            | crate::io::binary::KeteFileType::Vec(_) => Err(Error::ValueError(
-                "Expected an UncertainState, but the file holds SimultaneousStates.".into(),
-            )),
-            crate::io::binary::KeteFileType::Diffuse(_)
-            | crate::io::binary::KeteFileType::DiffuseVec(_) => Err(Error::ValueError(
-                "Expected an UncertainState, but the file holds DiffuseStates.".into(),
-            )),
-        }
-    }
-
-    /// Load a vector of `UncertainState` from a binary file.
-    ///
-    /// A file holding a single state reads back as a collection of one.
-    ///
-    /// # Errors
-    /// Returns an error if the file cannot be read, or holds a different type.
-    pub fn load_vec(filename: String) -> KeteResult<Vec<Self>> {
-        match Self::load_file(filename)? {
-            crate::io::binary::KeteFileType::UncertainVec(states) => Ok(states),
-            crate::io::binary::KeteFileType::Uncertain(state) => Ok(vec![*state]),
-            crate::io::binary::KeteFileType::Single(_)
-            | crate::io::binary::KeteFileType::Vec(_) => Err(Error::ValueError(
-                "Expected UncertainStates, but the file holds SimultaneousStates.".into(),
-            )),
-            crate::io::binary::KeteFileType::Diffuse(_)
-            | crate::io::binary::KeteFileType::DiffuseVec(_) => Err(Error::ValueError(
-                "Expected UncertainStates, but the file holds DiffuseStates.".into(),
-            )),
-        }
-    }
-
-    fn load_file(filename: String) -> KeteResult<crate::io::binary::KeteFileType> {
-        use flate2::read::GzDecoder;
-        use std::fs::File;
-        use std::io::BufReader;
-        let mut f = BufReader::new(GzDecoder::new(File::open(filename)?));
-        crate::io::binary::read_kete_file(&mut f)
-    }
 }
 
 #[cfg(test)]
@@ -1500,159 +1192,5 @@ mod tests {
                 "{ecc:>10.1e}  {incl_deg:>10.1e}  {cond_j:>12.3e}  {cond_k:>12.3e}  {sigma_w:>12.3e}"
             );
         }
-    }
-
-    /// The conversion divergence is the size of the quadratic term the linear conversion
-    /// drops, so it must scale as the square of the probe distance and linearly with the
-    /// width of the input covariance.
-    #[test]
-    fn conversion_divergence_scales_with_width() {
-        let state: State<Ecliptic> = test_state().into_frame();
-        let elements = EquinoctialElements::from_state(&state).unwrap();
-
-        let mut cov = DMatrix::<f64>::zeros(6, 6);
-        for i in 0..3 {
-            cov[(i, i)] = 1e-10;
-            cov[(i + 3, i + 3)] = 1e-14;
-        }
-
-        let d1 = equinoctial_conversion_divergence::<Ecliptic>(&elements, &cov, 1.0).unwrap();
-        let d2 = equinoctial_conversion_divergence::<Ecliptic>(&elements, &cov, 2.0).unwrap();
-        let ratio = d2 / d1;
-        println!("1 sigma {d1:e}, 2 sigma {d2:e}, ratio {ratio}");
-        assert!(d1 > 0.0, "divergence must be positive, got {d1:e}");
-        assert!(
-            (3.5..4.5).contains(&ratio),
-            "probe scaling {ratio} is not quadratic"
-        );
-
-        // Widening every sigma by 100x scales the divergence by 100x.
-        let wide = &cov * 1e4;
-        let d_wide = equinoctial_conversion_divergence::<Ecliptic>(&elements, &wide, 1.0).unwrap();
-        let ratio = d_wide / d1;
-        println!("100x wider: {d_wide:e}, ratio {ratio}");
-        assert!((50.0..200.0).contains(&ratio), "width scaling {ratio}");
-    }
-
-    /// A well observed orbit converts faithfully; an uncertainty comparable to the orbit
-    /// itself does not, and the divergence must separate the two on the splitting scale.
-    #[test]
-    fn conversion_divergence_separates_faithful_from_lossy() {
-        let state: State<Ecliptic> = test_state().into_frame();
-        let elements = EquinoctialElements::from_state(&state).unwrap();
-
-        // Distinct eigenvalues, so the probe directions are unique and the self-measured
-        // comparison below is well posed; with a degenerate eigenspace the probe basis
-        // inside it is arbitrary.
-        let mut small = DMatrix::<f64>::zeros(6, 6);
-        let mut huge = DMatrix::<f64>::zeros(6, 6);
-        for i in 0..3 {
-            #[allow(clippy::cast_precision_loss, reason = "index is at most 2")]
-            let scale = (i + 1) as f64;
-            small[(i, i)] = scale * 1e-14;
-            small[(i + 3, i + 3)] = scale * 1e-18;
-            // Sigma of half the orbit radius and a third of the circular speed.
-            huge[(i, i)] = 0.25;
-            huge[(i + 3, i + 3)] = 2.5e-5;
-        }
-
-        let faithful =
-            equinoctial_conversion_divergence::<Ecliptic>(&elements, &small, 1.0).unwrap();
-        let lossy = equinoctial_conversion_divergence::<Ecliptic>(&elements, &huge, 1.0).unwrap();
-        // At three sigma the quadratic term has grown ninefold, which is where an
-        // uncertainty this wide crosses the splitting threshold.
-        let lossy_tail =
-            equinoctial_conversion_divergence::<Ecliptic>(&elements, &huge, 3.0).unwrap();
-        println!("faithful {faithful:e}, lossy {lossy:e}, lossy at 3 sigma {lossy_tail:e}");
-        assert!(faithful < 1e-2, "well observed case read as {faithful:e}");
-        assert!(lossy > 0.1, "orbit-sized uncertainty read as {lossy:e}");
-        assert!(
-            lossy_tail > 3.0,
-            "orbit-sized uncertainty at 3 sigma read as {lossy_tail:e}"
-        );
-
-        // The method on the state reports the same quantity for the stored covariance,
-        // since the cartesian image it probes is the exact linear image of the storage.
-        let us = UncertainState::from_state(&state, &small, vec![]).unwrap();
-        let self_measured = us.conversion_divergence(1.0).unwrap();
-        let relative = (self_measured - faithful).abs() / faithful;
-        println!("self measured {self_measured:e}, relative {relative:e}");
-        assert!(relative < 1e-6, "self measurement differs by {relative:e}");
-    }
-
-    /// The divergence is a Mahalanobis distance between physical distributions, so the
-    /// frame the input covariance is written in must not move it.
-    #[test]
-    fn conversion_divergence_is_frame_invariant() {
-        let ecliptic: State<Ecliptic> = test_state().into_frame();
-        let elements = EquinoctialElements::from_state(&ecliptic).unwrap();
-
-        // Distinct eigenvalues, so the probe directions are the same physical directions
-        // in both frames rather than an arbitrary basis of a degenerate eigenspace.
-        let mut cov_ecl = DMatrix::<f64>::zeros(6, 6);
-        for (i, v) in [9e-11, 4e-11, 1e-11, 9e-15, 4e-15, 1e-15]
-            .iter()
-            .enumerate()
-        {
-            cov_ecl[(i, i)] = *v;
-        }
-        let rotation = Ecliptic::rotation_to_frame::<Equatorial>();
-        let mut rot6 = DMatrix::<f64>::zeros(6, 6);
-        rot6.view_mut((0, 0), (3, 3)).copy_from(rotation.matrix());
-        rot6.view_mut((3, 3), (3, 3)).copy_from(rotation.matrix());
-        let cov_eq = &rot6 * &cov_ecl * rot6.transpose();
-
-        let d_ecl =
-            equinoctial_conversion_divergence::<Ecliptic>(&elements, &cov_ecl, 1.0).unwrap();
-        let d_eq =
-            equinoctial_conversion_divergence::<Equatorial>(&elements, &cov_eq, 1.0).unwrap();
-        let relative = (d_ecl - d_eq).abs() / d_ecl;
-        println!("ecliptic {d_ecl:e}, equatorial {d_eq:e}, relative {relative:e}");
-        assert!(relative < 1e-6, "frame dependence {relative:e}");
-    }
-
-    /// Force-model parameters convert exactly, so the parameter block must not move the
-    /// divergence at all.
-    #[test]
-    fn conversion_divergence_ignores_the_parameter_block() {
-        let state: State<Ecliptic> = test_state().into_frame();
-        let elements = EquinoctialElements::from_state(&state).unwrap();
-
-        let mut cov6 = DMatrix::<f64>::zeros(6, 6);
-        for i in 0..3 {
-            cov6[(i, i)] = 1e-10;
-            cov6[(i + 3, i + 3)] = 1e-14;
-        }
-        let mut cov8 = DMatrix::<f64>::zeros(8, 8);
-        cov8.view_mut((0, 0), (6, 6)).copy_from(&cov6);
-        cov8[(6, 6)] = 1e-16;
-        cov8[(7, 7)] = 1e-16;
-        cov8[(0, 6)] = 1e-14;
-        cov8[(6, 0)] = 1e-14;
-
-        let d6 = equinoctial_conversion_divergence::<Ecliptic>(&elements, &cov6, 1.0).unwrap();
-        let d8 = equinoctial_conversion_divergence::<Ecliptic>(&elements, &cov8, 1.0).unwrap();
-        assert_eq!(d6, d8, "the parameter block moved the divergence");
-    }
-
-    /// Input validation of the entry measurement.
-    #[test]
-    fn conversion_divergence_validates_inputs() {
-        let state: State<Ecliptic> = test_state().into_frame();
-        let elements = EquinoctialElements::from_state(&state).unwrap();
-        let cov = DMatrix::<f64>::identity(6, 6) * 1e-12;
-
-        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-            assert!(
-                equinoctial_conversion_divergence::<Ecliptic>(&elements, &cov, bad).is_err(),
-                "sigma_factor {bad} was accepted"
-            );
-        }
-        let wrong_shape = DMatrix::<f64>::identity(5, 5);
-        assert!(
-            equinoctial_conversion_divergence::<Ecliptic>(&elements, &wrong_shape, 1.0).is_err()
-        );
-        let zero = DMatrix::<f64>::zeros(6, 6);
-        assert!(equinoctial_conversion_divergence::<Ecliptic>(&elements, &zero, 1.0).is_err());
     }
 }

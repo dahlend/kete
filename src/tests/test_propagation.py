@@ -125,105 +125,30 @@ class TestFreeParameters:
 
     def test_free_beta_extends_the_covariance(self, state):
         free = NonGravModel.new_dust(beta=float("nan"))
-        us = UncertainState.from_state(
-            state,
-            1e-8,
-            1e-7,
-            non_grav=free,
-            free_params=[0.01],
-            param_sigmas=[0.003],
-        )
+        us = UncertainState.from_state(state, 1e-8, 1e-7, non_grav=free)
         assert us.param_names == ["p", "f", "g", "h", "k", "L", "beta"]
-        cov = np.array(us.cov_matrix)
-        assert cov.shape == (7, 7)
-        assert np.isclose(cov[6, 6], 0.003**2)
-        # The central value is what was asked for, not the zero default.
-        assert np.isclose(us.non_grav.beta, 0.01)
+        assert np.array(us.cov_matrix).shape == (7, 7)
+        assert np.array(us.cartesian_cov_matrix).shape == (7, 7)
 
-    def test_free_params_defaults_to_zero(self, state):
-        """The documented default, which is why supplying it matters: a dust
-        beta of zero is a grain feeling no radiation pressure."""
+    def test_free_params_default_to_zero(self, state):
         free = NonGravModel.new_dust(beta=float("nan"))
         us = UncertainState.from_state(state, 1e-8, 1e-7, non_grav=free)
         assert us.non_grav.beta == 0.0
 
     def test_frozen_parameters_take_no_row(self, state):
-        """A concrete beta is frozen, not fitted, so the covariance stays 6x6
-        and free_params is rejected."""
+        """A concrete beta is frozen, not fitted, so the covariance stays 6x6."""
         fixed = NonGravModel.new_dust(beta=0.01)
         us = UncertainState.from_state(state, 1e-8, 1e-7, non_grav=fixed)
         assert us.param_names == ["p", "f", "g", "h", "k", "L"]
         assert np.array(us.cov_matrix).shape == (6, 6)
-        with pytest.raises(ValueError, match="free_params has length"):
-            UncertainState.from_state(
-                state, 1e-8, 1e-7, non_grav=fixed, free_params=[0.01]
-            )
+        assert np.isclose(us.non_grav.beta, 0.01)
 
-    def test_propagation_builds_state_parameter_covariance(self, state):
-        """The point of the augmented row: the STM carries d(state)/d(beta),
-        so an initially diagonal covariance develops element-beta
-        correlations, and beta itself is preserved (it is constant along a
-        trajectory)."""
+    def test_sampling_carries_the_model(self, state):
         free = NonGravModel.new_dust(beta=float("nan"))
-        us = UncertainState.from_state(
-            state,
-            1e-8,
-            1e-7,
-            non_grav=free,
-            free_params=[0.01],
-            param_sigmas=[0.003],
-        )
-        assert np.allclose(np.array(us.cov_matrix)[6, :6], 0.0)
-        prop = us.propagate(state.jd + 60.0)
-        cov = np.array(prop.cov_matrix)
-        assert np.isclose(cov[6, 6], 0.003**2, rtol=1e-9)
-        assert not np.allclose(cov[6, :6], 0.0)
-
-    def test_sampling_draws_parameters_with_states(self, state):
-        """Samples carry their own beta, jointly with the orbit."""
-        free = NonGravModel.new_dust(beta=float("nan"))
-        us = UncertainState.from_state(
-            state,
-            1e-8,
-            1e-7,
-            non_grav=free,
-            free_params=[0.02],
-            param_sigmas=[0.004],
-        )
-        _, non_gravs = us.sample(4000, seed=11)
-        betas = np.array([n.beta for n in non_gravs])
-        assert np.isclose(betas.mean(), 0.02, atol=5e-4)
-        assert np.isclose(betas.std(), 0.004, rtol=0.1)
-
-    def test_from_cartesian_accepts_the_augmented_matrix(self, state):
-        free = NonGravModel.new_dust(beta=float("nan"))
-        cov = np.diag([1e-16] * 3 + [1e-20] * 3 + [9e-6])
-        us = UncertainState.from_cartesian(
-            state, cov.tolist(), non_grav=free, free_params=[0.01]
-        )
-        back = np.array(us.cartesian_cov_matrix)
-        assert back.shape == (7, 7)
-        assert np.isclose(back[6, 6], 9e-6)
-
-    def test_free_params_validation(self, state):
-        free = NonGravModel.new_dust(beta=float("nan"))
-        with pytest.raises(ValueError, match="free_params has length"):
-            UncertainState.from_state(
-                state, 1e-8, 1e-7, non_grav=free, free_params=[0.01, 0.02]
-            )
-        with pytest.raises(ValueError, match="finite"):
-            UncertainState.from_state(
-                state, 1e-8, 1e-7, non_grav=free, free_params=[float("nan")]
-            )
-        with pytest.raises(ValueError, match="param_sigmas"):
-            UncertainState.from_state(
-                state,
-                1e-8,
-                1e-7,
-                non_grav=free,
-                free_params=[0.01],
-                param_sigmas=[1.0, 2.0],
-            )
+        us = UncertainState.from_state(state, 1e-8, 1e-7, non_grav=free)
+        states, non_gravs = us.sample(10, seed=11)
+        assert len(states) == len(non_gravs) == 10
+        assert all(n is not None for n in non_gravs)
 
 
 class TestDustBeta:

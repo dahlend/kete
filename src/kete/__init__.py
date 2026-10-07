@@ -77,12 +77,10 @@ from .propagation import (
 from .time import Time
 from .vector import (
     CometElements,
-    DiffuseState,
     EquinoctialElements,
     Frames,
     SimultaneousStates,
     State,
-    StepReport,
     UncertainState,
     Vector,
 )
@@ -103,7 +101,6 @@ __all__ = [
     "constants",
     "covariance",
     "Data",
-    "DiffuseState",
     "EquinoctialElements",
     "flux",
     "flux_to_mag",
@@ -147,7 +144,6 @@ __all__ = [
     "spitzer",
     "SpitzerFrame",
     "State",
-    "StepReport",
     "state_transition",
     "tap",
     "Time",

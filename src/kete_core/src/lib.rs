@@ -73,6 +73,6 @@ pub mod prelude {
         NonInertialFrame, SSB, SunCenter,
     };
     pub use crate::kepler::propagate_two_body;
-    pub use crate::state::{DiffuseState, SimultaneousStates, State, UncertainState};
+    pub use crate::state::{SimultaneousStates, State, UncertainState};
     pub use crate::time::{TDB, Time, UTC};
 }

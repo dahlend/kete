@@ -118,8 +118,7 @@ fn prop_n_body_frozen_dust(state: State<Ecliptic>, dt: f64) {
     let _ = eq_state.propagate_with(&force, jd).unwrap();
 }
 
-/// Variational propagation through an all-free mask, as used by the fitter and
-/// `UncertainState`.
+/// Variational propagation through an all-free mask, as used by the fitter.
 fn prop_n_body_stm_masked_dust(state: State<Ecliptic>, dt: f64) {
     let eph = SpiceEphemeris::loaded().unwrap();
     let jd = state.epoch + dt;

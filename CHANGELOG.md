@@ -16,7 +16,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `register_polyhedron`, `register_spherical_harmonics`, `kete.shape.read_obj`.
 - `NonGravModel.new_ramped_thrust`.
 - `NonGravModel.with_free` to warm-start non-grav fits.
-- `DiffuseState.mean_eta` and `max_unresolved_weight`.
 - SPK segment type 19 (ESOC/DDID piecewise interpolation).
 - CK segment types 5 and 6 (MEX/Rosetta attitude interpolation).
 - `kernel_reload` also loads CK and SCLK kernels, detecting each file's type from
@@ -50,9 +49,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the frame bias to the ICRF. `earth_rotation_angle` is replaced by
   `greenwich_mean_sidereal_time`.
 - Rust: `NonInertialFrame` no longer has a `frame_id` field.
-- Adaptive splitting needs fewer components; `split_axial_k3_along` is now
-  `split_axial_along`.
 - `register_mass` replaces a body already registered with the same NAIF id.
+- `UncertainState.cov_matrix` is over modified equinoctial elements; `elements` and
+  `cartesian_cov_matrix` give its mean orbit and cartesian form. Rust: moved to `kete_core`.
 - Propagation reads ephemerides once per step and raises force errors directly.
 - Rust: force API reworked; `ParameterMask` replaces `FrozenForce`, `Sum`,
   `Recenter` and `StateLike` are removed.

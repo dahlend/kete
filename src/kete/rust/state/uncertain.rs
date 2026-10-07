@@ -15,9 +15,6 @@ use crate::time::PyTime;
 use kete_core::forces::ParameterizedForce;
 use kete_core::frames::{Ecliptic, Equatorial};
 use kete_core::prelude::*;
-use kete_core::propagation::{NBody, sun_resolver};
-use kete_core::state::propagate_uncertain;
-use kete_spice::ephemeris::SpiceEphemeris;
 use kete_spice::spk::LOADED_SPK;
 use nalgebra::DMatrix;
 use pyo3::prelude::*;
@@ -64,51 +61,12 @@ impl std::fmt::Debug for PyUncertainState {
     }
 }
 
-/// Resolve the central values of a model's free parameters.
-///
-/// The mask says WHICH parameters are free; this says what they currently
-/// equal. `None` falls back to the model's own starting values, which are
-/// zero for every free parameter -- fine for seeding a fit, wrong for a
-/// physical cloud, hence the explicit override.
-fn resolve_free_params(
-    non_grav: &Option<PyNonGravModel>,
-    supplied: Option<Vec<f64>>,
-) -> PyResult<Vec<f64>> {
-    let defaults = non_grav
-        .as_ref()
+/// Central values of a model's free parameters: its own starting values, which are
+/// zero for every free parameter.
+fn initial_free_params(non_grav: Option<&PyNonGravModel>) -> Vec<f64> {
+    non_grav
         .map(PyNonGravModel::initial_values)
-        .unwrap_or_default();
-    let Some(values) = supplied else {
-        return Ok(defaults);
-    };
-    if values.len() != defaults.len() {
-        return Err(Error::ValueError(format!(
-            "free_params has length {}, but the model has {} free parameter(s); \
-             free parameters are those passed as float(\"nan\")",
-            values.len(),
-            defaults.len()
-        ))
-        .into());
-    }
-    if let Some(bad) = values.iter().find(|v| !v.is_finite()) {
-        return Err(Error::ValueError(format!("free_params must all be finite, got {bad}")).into());
-    }
-    Ok(values)
-}
-
-impl PyUncertainState {
-    /// Build the SSB-centered force model used by all propagation paths.
-    ///
-    /// Gravity-only `NBody` when `non_grav` is `None`, or `NBody` carrying the
-    /// non-grav force template otherwise. Borrows the loaded SPK read guard so the
-    /// borrow lifetime is well-defined.
-    fn build_forces<'a>(
-        &self,
-        eph: &'a SpiceEphemeris,
-        include_extended: bool,
-    ) -> NBody<'a, SpiceEphemeris> {
-        NBody::with_non_grav(eph, include_extended, self.state.non_grav.clone())
-    }
+        .unwrap_or_default()
 }
 
 #[pymethods]
@@ -135,27 +93,15 @@ impl PyUncertainState {
     ///     1-sigma velocity uncertainty in AU/day (default 0.0001).
     /// non_grav : :class:`~kete.propagation.NonGravModel`, optional
     ///     Non-gravitational model template.  Parameters left free (passed as
-    ///     ``float("nan")``) extend the covariance to (6+Np)x(6+Np).
-    /// free_params : list[float], optional
-    ///     Central values of the free force parameters, in the order given by
-    ///     :attr:`param_names`.  Defaults to zero for each, which is rarely
-    ///     what a physical cloud means -- a free dust ``beta`` of zero is a
-    ///     grain that feels no radiation pressure -- so supply this whenever
-    ///     the parameter is free.
-    /// param_sigmas : list[float], optional
-    ///     1-sigma uncertainty of each free parameter.  Defaults to a
-    ///     negligible value, making the parameter effectively fixed at its
-    ///     central value while still occupying a covariance row.
+    ///     ``float("nan")``) extend the covariance to (6+Np)x(6+Np) with
+    ///     negligible variance, centered on the model's starting values.
     #[staticmethod]
-    #[pyo3(signature = (state, pos_sigma=0.01, vel_sigma=0.0001, non_grav=None,
-                        free_params=None, param_sigmas=None))]
+    #[pyo3(signature = (state, pos_sigma=0.01, vel_sigma=0.0001, non_grav=None))]
     fn from_state(
         state: PyState,
         pos_sigma: f64,
         vel_sigma: f64,
         non_grav: Option<PyNonGravModel>,
-        free_params: Option<Vec<f64>>,
-        param_sigmas: Option<Vec<f64>>,
     ) -> PyResult<Self> {
         if pos_sigma <= 0.0 || vel_sigma <= 0.0 {
             return Err(
@@ -163,26 +109,15 @@ impl PyUncertainState {
             );
         }
         // Elements are defined about a gravitating body, so this centers on the Sun
-        // rather than the barycenter. The propagation paths cross to the force model's
-        // center themselves, see `kete_core::propagation::sun_resolver`.
+        // rather than the barycenter.
         let mut eq_state = state.raw;
         if eq_state.center_id() != 10 {
             let spk = LOADED_SPK.try_read().map_err(Error::from)?;
             spk.try_change_center(&mut eq_state, 10)?;
         }
         let ng_mask = non_grav.as_ref().map(|m| m.to_mask());
-        let free_params = resolve_free_params(&non_grav, free_params)?;
-        let np = free_params.len();
-        if let Some(ref sig) = param_sigmas
-            && sig.len() != np
-        {
-            return Err(Error::ValueError(format!(
-                "param_sigmas has length {}, but the model has {np} free parameter(s)",
-                sig.len()
-            ))
-            .into());
-        }
-        let d = 6 + np;
+        let free_params = initial_free_params(non_grav.as_ref());
+        let d = 6 + free_params.len();
         let mut cov = DMatrix::<f64>::zeros(d, d);
         for i in 0..3 {
             cov[(i, i)] = pos_sigma * pos_sigma;
@@ -190,93 +125,12 @@ impl PyUncertainState {
         for i in 3..6 {
             cov[(i, i)] = vel_sigma * vel_sigma;
         }
-        // A tiny default keeps the matrix positive-definite when the caller
-        // wants the parameter carried but not spread.
+        // A tiny variance keeps the matrix positive-definite while the parameter is
+        // carried but not spread.
         for i in 6..d {
-            cov[(i, i)] = match param_sigmas {
-                Some(ref sig) => {
-                    let s = sig[i - 6];
-                    if !s.is_finite() || s < 0.0 {
-                        return Err(Error::ValueError(
-                            "param_sigmas must be finite and non-negative".into(),
-                        )
-                        .into());
-                    }
-                    (s * s).max(1e-30)
-                }
-                None => 1e-30,
-            };
+            cov[(i, i)] = 1e-30;
         }
         let mut us = UncertainState::from_state(&eq_state, &cov, free_params)?;
-        us.non_grav = ng_mask;
-        Ok(Self { state: us })
-    }
-
-    /// Build an ``UncertainState`` from a state and a full cartesian covariance
-    /// matrix.
-    ///
-    /// This is the matrix-valued counterpart of :meth:`from_state` and the inverse of
-    /// :attr:`cartesian_cov_matrix`: the covariance uses the same convention, rows and
-    /// columns 0-5 being ``[x, y, z, vx, vy, vz]`` in AU and AU/day, Sun-centered and
-    /// **ecliptic**, the frame :attr:`state` reports in. Rows 6 onward are the fitted
-    /// force parameters in the order given by :attr:`param_names`.
-    ///
-    /// The input state is automatically re-centered on the Sun if needed, since
-    /// orbital elements are defined about a gravitating body. That re-centering is a
-    /// translation by a function of time, so it leaves the covariance unchanged.
-    ///
-    /// Use :meth:`conversion_divergence` on the result to bound how faithfully the
-    /// stored element-space covariance represents the cartesian one supplied here.
-    ///
-    /// Parameters
-    /// ----------
-    /// state : :class:`~kete.State`
-    ///     Object state (any center -- will be converted to Sun-centered internally).
-    /// cov_matrix : list[list[float]]
-    ///     Cartesian covariance matrix, (6+Np)x(6+Np), in the ecliptic frame.
-    /// non_grav : :class:`~kete.propagation.NonGravModel`, optional
-    ///     Non-gravitational model template. Required when the covariance carries
-    ///     rows beyond the sixth; those rows correspond to the parameters left
-    ///     free (passed as ``float("nan")``), in :attr:`param_names` order.
-    /// free_params : list[float], optional
-    ///     Central values of the free force parameters. Defaults to zero for
-    ///     each, which for a free dust ``beta`` means a grain feeling no
-    ///     radiation pressure -- supply this whenever a parameter is free.
-    #[staticmethod]
-    #[pyo3(signature = (state, cov_matrix, non_grav=None, free_params=None))]
-    fn from_cartesian(
-        state: PyState,
-        cov_matrix: Vec<Vec<f64>>,
-        non_grav: Option<PyNonGravModel>,
-        free_params: Option<Vec<f64>>,
-    ) -> PyResult<Self> {
-        let n = cov_matrix.len();
-        for (i, row) in cov_matrix.iter().enumerate() {
-            if row.len() != n {
-                return Err(Error::ValueError(format!(
-                    "Covariance matrix row {i} has length {}, expected {n}",
-                    row.len()
-                ))
-                .into());
-            }
-        }
-        let mat = DMatrix::from_fn(n, n, |r, c| cov_matrix[r][c]);
-
-        // Elements are defined about a gravitating body, so this centers on the Sun
-        // rather than the barycenter; the offset is a function of time alone and does
-        // not touch the covariance.
-        let mut eq_state = state.raw;
-        if eq_state.center_id() != 10 {
-            let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-            spk.try_change_center(&mut eq_state, 10)?;
-        }
-        // The covariance convention is ecliptic, so the state crosses to that frame
-        // before the pair enters the core conversion together.
-        let ecl_state: State<Ecliptic> = eq_state.into_frame();
-
-        let ng_mask = non_grav.as_ref().map(|m| m.to_mask());
-        let free_params = resolve_free_params(&non_grav, free_params)?;
-        let mut us = UncertainState::from_state(&ecl_state, &mat, free_params)?;
         us.non_grav = ng_mask;
         Ok(Self { state: us })
     }
@@ -298,17 +152,14 @@ impl PyUncertainState {
     ///     variances are therefore in degrees squared and their cross terms in
     ///     degrees.
     /// non_grav : :class:`~kete.propagation.NonGravModel`, optional
-    ///     Non-gravitational model template.
-    /// free_params : list[float], optional
-    ///     Central values of the free force parameters, in
-    ///     :attr:`param_names` order. Defaults to zero for each.
+    ///     Non-gravitational model template. Free parameters are centered on the
+    ///     model's starting values.
     #[staticmethod]
-    #[pyo3(signature = (elements, cov_matrix, non_grav=None, free_params=None))]
+    #[pyo3(signature = (elements, cov_matrix, non_grav=None))]
     fn from_cometary(
         elements: PyCometElements,
         cov_matrix: Vec<Vec<f64>>,
         non_grav: Option<PyNonGravModel>,
-        free_params: Option<Vec<f64>>,
     ) -> PyResult<Self> {
         let n = cov_matrix.len();
         for (i, row) in cov_matrix.iter().enumerate() {
@@ -333,42 +184,10 @@ impl PyUncertainState {
             cov_matrix[r][c] * to_radians(r) * to_radians(c)
         });
         let ng_mask = non_grav.as_ref().map(|m| m.to_mask());
-        let free_params = resolve_free_params(&non_grav, free_params)?;
+        let free_params = initial_free_params(non_grav.as_ref());
         let mut us = UncertainState::from_cometary(&elements.0, &mat, free_params)?;
         us.non_grav = ng_mask;
         Ok(Self { state: us })
-    }
-
-    /// How faithfully the stored covariance and its cartesian image describe the same
-    /// distribution, as a sigma-point divergence.
-    ///
-    /// The conversion between the element and cartesian bases is exact as a linear
-    /// map, but a Gaussian in one basis is not a Gaussian in the other: the change
-    /// of coordinates is nonlinear off the mean. Probe points placed
-    /// ``sigma_factor`` standard deviations out along the cartesian covariance's
-    /// principal axes are carried through the exact nonlinear change of coordinates
-    /// and compared against the linear image; the result is how many sigma the
-    /// exact answer sits from the linear one.
-    ///
-    /// This asks a different question from :meth:`nonlinearity`, which measures the
-    /// propagation rather than the coordinate change, and the two are not on a common
-    /// scale: this one probes at ``sigma_factor`` on the cartesian principal axes, and
-    /// the propagation metric probes every element direction on its own width.
-    ///
-    /// Call this immediately after building the state from a fitted or catalog
-    /// covariance to bound the loss of the entry conversion itself. A value well
-    /// below 1 means the initial Gaussian is faithful, so structure that develops
-    /// during propagation is dynamical rather than an entry artifact. A larger value means the uncertainty is already too
-    /// wide for a single Gaussian and should be split or sampled instead. Infinity
-    /// means it reaches configurations orbital elements cannot represent at all.
-    ///
-    /// Parameters
-    /// ----------
-    /// sigma_factor : float
-    ///     How many standard deviations out to place the probe points (default 1).
-    #[pyo3(signature = (sigma_factor=1.0))]
-    fn conversion_divergence(&self, sigma_factor: f64) -> PyResult<f64> {
-        Ok(self.state.conversion_divergence(sigma_factor)?)
     }
 
     /// Best-fit state at the reference epoch (Sun-centered, Ecliptic).
@@ -487,28 +306,6 @@ impl PyUncertainState {
         self.state.elements.epoch.into()
     }
 
-    /// Departure from linearity this component is carrying, in sigma of its own
-    /// propagated position distribution, or ``None`` if it has never been marched.
-    ///
-    /// Set by :meth:`kete.DiffuseState.step` and :meth:`kete.DiffuseState.propagate`, and
-    /// measured against probes carried since this component last split - so it says how
-    /// far the component is from linear now, not what the last leg added.  Read it with
-    /// :attr:`residual_meters`.
-    #[getter]
-    fn eta(&self) -> Option<f64> {
-        self.state.eta
-    }
-
-    /// The residual behind :attr:`eta`, as a cartesian position offset in meters, or
-    /// ``None`` if this component has never been marched.
-    ///
-    /// The propagator places a position to roughly a meter, so an ``eta`` of ``0.003``
-    /// standing on a residual of ``1.2`` m is numerical noise rather than curvature.
-    #[getter]
-    fn residual_meters(&self) -> Option<f64> {
-        self.state.residual_meters
-    }
-
     /// Names of all parameters in the covariance matrix, in row/column
     /// order.
     ///
@@ -569,100 +366,6 @@ impl PyUncertainState {
             non_gravs.push(ng);
         }
         Ok((states, non_gravs))
-    }
-
-    /// Propagate this :class:`~kete.UncertainState` linearly to ``jd``.
-    ///
-    /// The mean state is integrated by the full N-body Radau-15
-    /// integrator and the covariance is updated by the augmented
-    /// ``(6 + Np) x (6 + Np)`` state transition matrix.  The result's
-    /// :attr:`state` is Sun-centered and ecliptic, as it is on the input;
-    /// the integration crosses to the force model's center internally.
-    ///
-    /// Parameters
-    /// ----------
-    /// jd : :class:`~kete.Time` or float
-    ///     Target epoch (TDB).
-    /// include_asteroids : bool, optional
-    ///     If True, include asteroid masses in the force model.
-    #[pyo3(signature = (jd, include_asteroids=false))]
-    fn propagate(&self, py: Python<'_>, jd: PyTime, include_asteroids: bool) -> PyResult<Self> {
-        let target: Time<TDB> = jd.into();
-        py.detach(|| {
-            let eph = SpiceEphemeris::loaded()?;
-            let forces = self.build_forces(&eph, include_asteroids);
-            let result = propagate_uncertain(&self.state, &forces, target, &sun_resolver(&eph))?;
-            Ok(Self { state: result })
-        })
-    }
-
-    /// Save this state to a file.
-    ///
-    /// The file keeps the covariance, the free-parameter values, the
-    /// non-gravitational model those parameters belong to, and any probes the
-    /// state was carrying. A state loaded back is the state that was saved, so
-    /// a march can continue from it without restarting its ``eta``.
-    ///
-    /// Use :meth:`save_list` when saving more than one. A directory of
-    /// single-state files costs a file and a header for each.
-    ///
-    /// Parameters
-    /// ----------
-    /// filename :
-    ///     Path to write. The format is the gzipped kete binary format.
-    fn save(&self, filename: String) -> PyResult<()> {
-        self.state.save(filename)?;
-        Ok(())
-    }
-
-    /// Load a single state from a file.
-    ///
-    /// Parameters
-    /// ----------
-    /// filename :
-    ///     Path to read.
-    ///
-    /// Raises
-    /// ------
-    /// ValueError
-    ///     If the file holds several states, or a different type. Use
-    ///     :meth:`load_list` for a file holding several.
-    #[staticmethod]
-    fn load(filename: String) -> PyResult<Self> {
-        Ok(Self {
-            state: UncertainState::load(filename)?,
-        })
-    }
-
-    /// Save many states to one file.
-    ///
-    /// Parameters
-    /// ----------
-    /// states :
-    ///     States to save. They do not have to share an epoch or a model.
-    /// filename :
-    ///     Path to write.
-    #[staticmethod]
-    fn save_list(states: Vec<Self>, filename: String) -> PyResult<()> {
-        let states: Vec<UncertainState> = states.into_iter().map(|s| s.state).collect();
-        UncertainState::save_vec(&states, filename)?;
-        Ok(())
-    }
-
-    /// Load many states from a file.
-    ///
-    /// A file holding a single state reads back as a list of one.
-    ///
-    /// Parameters
-    /// ----------
-    /// filename :
-    ///     Path to read.
-    #[staticmethod]
-    fn load_list(filename: String) -> PyResult<Vec<Self>> {
-        Ok(UncertainState::load_vec(filename)?
-            .into_iter()
-            .map(|state| Self { state })
-            .collect())
     }
 
     /// String representation.

@@ -85,8 +85,6 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<state::PyState>()?;
     m.add_class::<state::PySimultaneousStates>()?;
     m.add_class::<state::PyUncertainState>()?;
-    m.add_class::<state::PyDiffuseState>()?;
-    m.add_class::<state::PyStepReport>()?;
     m.add_class::<simulation::PySymplecticSim>()?;
 
     m.add_class::<fovs::PyNeosCmos>()?;

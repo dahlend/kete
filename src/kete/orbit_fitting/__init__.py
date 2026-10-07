@@ -29,7 +29,6 @@ Observation ingestion:
 """
 
 from .._core import (
-    DiffuseState,
     Observation,
     OrbitFit,
     OrbitSamples,
@@ -51,7 +50,6 @@ __all__ = [
     "Observation",
     "OrbitFit",
     "OrbitSamples",
-    "DiffuseState",
     "RangingSamples",
     "UncertainState",
     "fit_orbit",

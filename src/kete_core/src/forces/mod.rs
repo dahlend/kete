@@ -28,7 +28,7 @@
 //! caller.
 //!
 //! With every parameter free ([`ParameterMask::all_free`]) it is what gets stored on an
-//! [`UncertainState`](crate::state::UncertainState) for uncertainty propagation. With
+//! [`UncertainState`](crate::state::UncertainState) alongside its fitted values. With
 //! some fixed it restricts a fit, e.g. holding `a1` and `a3` while fitting only `a2`.
 //! With every parameter fixed ([`ParameterMask::all_fixed`]) it has no free parameters,
 //! which is what you use to propagate a single trajectory from a best-fit estimate.

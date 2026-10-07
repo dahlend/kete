@@ -71,11 +71,10 @@ impl JplCometNonGrav {
             match analytic_2_body((-self.dt).into(), &pos, vel, None) {
                 Ok((p, _)) => pos = p,
                 Err(err) => {
-                    // For sigma-point perturbations with large sigma_factor the
-                    // perturbed orbit can be unbound, where the Kepler solve may
-                    // fail and the delayed-position model is out of its regime
-                    // anyway; fall back to the current position (dt=0
-                    // approximation) rather than propagating the error up
+                    // An orbit drawn from a wide covariance can be unbound, where
+                    // the Kepler solve may fail and the delayed-position model is
+                    // out of its regime anyway; fall back to the current position
+                    // (dt=0 approximation) rather than propagating the error up
                     // through the integrator.  For bound orbits a failure is a
                     // genuine convergence problem and must surface loudly.
                     let specific_energy = 0.5 * vel.norm_squared() - GMS / pos.norm();

@@ -11,8 +11,8 @@
 //!
 //! The three cases it covers:
 //! - **All free** ([`ParameterMask::all_free`]): the same free parameters as the inner
-//!   force. This is the parameterized template stored on an `UncertainState` or
-//!   `DiffuseState`; values come from the carrying state's `free_params`.
+//!   force. This is the parameterized template stored on an `UncertainState`; values
+//!   come from the carrying state's `free_params`.
 //! - **Partly fixed**: in orbit fitting, expose only a subset of parameters (e.g. JPL
 //!   non-grav `A2` only, leaving `A1`/`A3` at fixed values).
 //! - **All fixed** ([`ParameterMask::all_fixed`], [`ParameterMask::fixed_at`]): no free
