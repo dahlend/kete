@@ -152,7 +152,9 @@ impl RadauDense {
         }
         let base = step * self.n_comp * DENSE_STRIDE;
         self.coeffs[base..base + self.n_comp * DENSE_STRIDE]
-            .chunks_exact(DENSE_STRIDE)
+            .as_chunks::<DENSE_STRIDE>()
+            .0
+            .iter()
             .map(|c| {
                 let (mut bw, mut bu) = (0.0, 0.0);
                 for k in 0..7 {
