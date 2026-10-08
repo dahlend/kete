@@ -72,9 +72,8 @@ pub enum KernelValue {
 ///
 /// Returns
 /// -------
-/// FOV
-///   The field of view: a :class:`~kete.RectangleFOV`, a :class:`~kete.ConeFOV`
-///   or a :class:`~kete.PolygonFOV`.
+/// :class:`~kete.fov.RectangleFOV`, :class:`~kete.fov.ConeFOV` or :class:`~kete.fov.PolygonFOV`
+///   The field of view.
 ///
 /// Raises
 /// ------

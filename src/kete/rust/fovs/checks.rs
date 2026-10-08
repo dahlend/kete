@@ -35,7 +35,7 @@ use crate::{nongrav::PyNonGravModel, state::PySimultaneousStates, vector::Vector
 ///     Include the additional registered gravitational masses during the computation.
 /// non_gravs: list
 ///     A list of non-gravitational terms for each object. If provided, then every
-///     object must have an associated :class:`~NonGravModel` or `None`.
+///     object must have an associated :class:`~kete.propagation.NonGravModel` or `None`.
 #[pyfunction]
 #[pyo3(name = "fov_state_check", signature = (obj_state, fovs, dt_limit=None,
     include_asteroids=false, non_gravs=None))]

@@ -305,7 +305,7 @@ impl PyObservation {
     /// measurement for this observation against a given object state.
     ///
     /// The state is expected at this observation's epoch (use
-    /// :func:`~kete.propagate_n_body` to bring an arbitrary-epoch state to
+    /// :func:`~kete.propagation.propagate_n_body` to bring an arbitrary-epoch state to
     /// ``self.epoch`` first).  Light-time correction is applied internally;
     /// for radar the iterative ``t_tx`` refinement and relativistic two-way
     /// Doppler are handled by the same code path used during fitting.

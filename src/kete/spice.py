@@ -71,12 +71,14 @@ SpkInfo.spk_type.__doc__ = "SPK Segment Type ID."
 
 FovDefinition = namedtuple("FovDefinition", "shape, frame, boresight, bounds")
 """The field of view definition of an instrument, in its own frame."""
-FovDefinition.shape.__doc__ = 'Shape: "CIRCLE", "ELLIPSE", "RECTANGLE" or "POLYGON".'
+FovDefinition.shape.__doc__ = (
+    'The shape, "CIRCLE", "ELLIPSE", "RECTANGLE" or "POLYGON".'
+)
 FovDefinition.frame.__doc__ = "Name of the frame of the vectors."
 FovDefinition.boresight.__doc__ = "Boresight vector, as the kernel gives it."
 FovDefinition.bounds.__doc__ = (
-    "Boundary vectors: one for a circle, two for an ellipse, and the corners, in "
-    "order, for a rectangle or a polygon."
+    "The boundary vectors. There is one for a circle, two for an ellipse, and the "
+    "corners, in order, for a rectangle or a polygon."
 )
 
 

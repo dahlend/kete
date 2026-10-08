@@ -559,7 +559,7 @@ impl GravParams {
     /// NAIF id.
     ///
     /// # Panics
-    /// Panic if a write lock cannot be put on [`MASSES_SELECTED`].
+    /// Panic if a write lock cannot be put on the selected masses.
     pub fn register(self) {
         let mut params = MASSES_SELECTED.write().unwrap();
         params.retain(|p| p.naif_id != self.naif_id);
@@ -576,7 +576,7 @@ impl GravParams {
     /// Currently selected masses for use in orbit propagation.
     ///
     /// # Panics
-    /// Panic if a read lock cannot be put on [`MASSES_SELECTED`].
+    /// Panic if a read lock cannot be put on the selected masses.
     pub fn selected_masses() -> crossbeam::sync::ShardedLockReadGuard<'static, Vec<Self>> {
         MASSES_SELECTED.read().unwrap()
     }

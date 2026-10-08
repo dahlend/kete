@@ -33,7 +33,7 @@ from .._core import (
     OrbitFit,
     OrbitSamples,
     RangingSamples,
-    UncertainState,
+    UncertainState,  # noqa: F401  (documented under kete.vector)
     fit_orbit,
     fit_orbit_mcmc,
     fit_orbit_ranging,
@@ -51,7 +51,6 @@ __all__ = [
     "OrbitFit",
     "OrbitSamples",
     "RangingSamples",
-    "UncertainState",
     "fit_orbit",
     "fit_orbit_mcmc",
     "fit_orbit_ranging",

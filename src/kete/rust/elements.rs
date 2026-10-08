@@ -257,8 +257,8 @@ impl PyCometElements {
 /// Owens (1985).
 ///
 /// Six floats, no constraints between them, describing one conic about a gravitating
-/// body. This is the representation :attr:`~kete.UncertainState.cov_matrix` stores a
-/// covariance over, and :attr:`~kete.UncertainState.elements` returns one of; unlike
+/// body. This is the representation :attr:`~kete.vector.UncertainState.cov_matrix` stores a
+/// covariance over, and :attr:`~kete.vector.UncertainState.elements` returns one of; unlike
 /// :class:`CometElements` there is no Kepler solve or eccentricity branch anywhere in
 /// its conversions, which is why it is what a fitted covariance is carried in.
 ///
@@ -274,7 +274,7 @@ impl PyCometElements {
 /// ================ ======= ==================================================
 ///
 /// Every angle here is in degrees, as everywhere else in the Python interface.
-/// :attr:`~kete.UncertainState.cov_matrix` follows the same convention, so its
+/// :attr:`~kete.vector.UncertainState.cov_matrix` follows the same convention, so its
 /// ``L`` row and column are in degrees and degrees squared and line up with these
 /// six directly. The Rust core stores and works in radians throughout; the
 /// conversion happens at this boundary.
@@ -430,7 +430,7 @@ impl PyEquinoctialElements {
 
     /// True longitude at the epoch, in degrees.
     ///
-    /// Matches row/column 5 of :attr:`~kete.UncertainState.cov_matrix`, which is in
+    /// Matches row/column 5 of :attr:`~kete.vector.UncertainState.cov_matrix`, which is in
     /// degrees for the same reason. It wraps; use :meth:`offset_to` rather than
     /// subtracting two values directly.
     #[getter]
@@ -542,7 +542,7 @@ impl PyEquinoctialElements {
     /// ----------
     /// delta : list[float]
     ///     Length-6 offset, in the order ``[p, f, g, h, k, L]`` -- the same order as
-    ///     :attr:`~kete.UncertainState.cov_matrix`, with ``L`` in degrees.
+    ///     :attr:`~kete.vector.UncertainState.cov_matrix`, with ``L`` in degrees.
     ///     ``true_lon`` is not reduced by this; see :meth:`offset_to`.
     pub fn displaced_by(&self, delta: Vec<f64>) -> PyResult<Self> {
         if delta.len() != 6 {

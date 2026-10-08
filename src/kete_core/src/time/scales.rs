@@ -2,13 +2,13 @@
 // SPDX-FileCopyrightText: 2025 California Institute of Technology
 // SPDX-License-Identifier: BSD-3-Clause
 
-//! Available Time Scales
+//! Available time scales: [`TDB`], [`TT`], [`TAI`] and [`UTC`].
 //!
-//! TT Varies from TDB by up to about 1.7 ms per year in a period manner.
-//! This correction is a complicated relationship due to relativistic motion of
-//! the observer on Earth vs the rest of the solar system. For performance reasons,
-//! the conversion from TDB to TT is unnecessary, as they are never more than about
-//! 2 ms apart over a century.
+//! Each scale is defined by its offset from TDB. TT differs from TDB by a periodic
+//! term of amplitude about 1.7 ms with a period of a year, from the relativistic
+//! motion of an observer on Earth relative to the solar system barycenter. TAI is
+//! offset from TT by a constant 32.184 s, and UTC from TAI by the leap seconds.
+//! Conversions between any two scales go through TDB and include the periodic term.
 
 use super::leap_second::{tai_minus_utc_at_tai, tai_minus_utc_at_utc};
 

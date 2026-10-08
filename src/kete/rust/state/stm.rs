@@ -30,7 +30,7 @@ use crate::time::PyTime;
 /// include_asteroids : bool, optional
 ///   If ``True``, the force model includes the selected massive asteroids.
 ///   Default is ``False``.
-/// non_grav : :class:`~kete.NonGravModel`, optional
+/// non_grav : :class:`~kete.propagation.NonGravModel`, optional
 ///   Non-gravitational force model. Default is ``None``.
 ///
 /// Returns

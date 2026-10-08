@@ -135,8 +135,8 @@ pub fn calc_obliquity_py(time: f64) -> f64 {
 ///
 /// Parameters
 /// ----------
-/// time : Time or float
-///   Time, as a :class:`Time` or in TDB scaled Julian Days.
+/// time : :class:`~kete.Time` or float
+///   Time, as a :class:`~kete.Time` or in TDB scaled Julian Days.
 ///
 /// Returns
 /// -------
@@ -186,8 +186,8 @@ pub fn solar_noon_py(time: PyTime, geodetic_lon: f64) -> f64 {
 ///
 /// Parameters
 /// ----------
-/// time : Time or float
-///   Time, as a :class:`Time` or in TDB scaled Julian Days.
+/// time : :class:`~kete.Time` or float
+///   Time, as a :class:`~kete.Time` or in TDB scaled Julian Days.
 ///
 /// Returns
 /// -------

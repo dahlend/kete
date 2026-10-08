@@ -38,7 +38,7 @@ class MPCObservation:
         # Download the database of unnumbered observations from the MPC
         url = "https://www.minorplanetcenter.net/iau/ECS/MPCAT-OBS/UnnObs.txt.gz"
         url = "https://www.minorplanetcenter.net/iau/ECS/MPCAT-OBS/NumObs.txt.gz"
-        path = kete.data.download_file(url)
+        path = kete.cache.download_file(url)
 
         # Fetch all lines from the file which contain C51 (WISE) observatory code.
         obs_code = "C51".encode()
@@ -46,7 +46,7 @@ class MPCObservation:
             lines = [line.decode() for line in f if obs_code == line[77:80]]
 
         # Parse lines into a list of MPCObservations
-        observations = kete.observations.MPCObservation.from_lines(lines)
+        observations = kete.orbit_fitting.MPCObservation.from_lines(lines)
 
     """
 
@@ -245,8 +245,7 @@ def mpc_obs_to_observations(
 
     Per-observatory uncertainties are applied when available from the
     pre-computed residual table.  When no table entry exists for an observatory
-    code, an epoch- and observation-type-based fallback is used (see
-    :func:`~kete.orbit_fitting.common._time_sigma_for_obs`).
+    code, a fallback based on the epoch and observation type is used.
 
     When ``debias`` is True, the EFCC18 star-catalog bias correction is applied
     using the catalog code stored on each observation (column 72 of the 80-char
@@ -256,7 +255,7 @@ def mpc_obs_to_observations(
     Parameters
     ----------
     mpc_obs :
-        List of ``MPCObservation`` objects (see :mod:`kete.observations`).
+        List of :class:`MPCObservation` objects.
     apply_over_obs_reweight :
         When True (default), inflate sigma by sqrt(n/4) for groups of more
         than 4 observations from the same observatory on the same night,
@@ -278,9 +277,9 @@ def mpc_obs_to_observations(
         import kete
 
         lines = [...]  # 80-char MPC observation lines
-        mpc_obs = kete.observations.MPCObservation.from_lines(lines)
-        observations = kete.observations.mpc_obs_to_observations(mpc_obs)
-        fit = kete.fitting.fit_orbit(initial_state, observations)
+        mpc_obs = kete.orbit_fitting.MPCObservation.from_lines(lines)
+        observations = kete.orbit_fitting.mpc_obs_to_observations(mpc_obs)
+        fit = kete.orbit_fitting.fit_orbit(initial_state, observations)
     """
     from .. import spice
     from ..time import Time as _Time

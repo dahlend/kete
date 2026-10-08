@@ -202,7 +202,7 @@ def query_tap(
     timeout :
         Timeout for web queries. This raises an exception if the servers do
         not respond within this time. Result downloads use the timeouts of
-        :func:`kete.cache.download_file` if this is not specified. A download
+        ``kete.cache.download_file`` if this is not specified. A download
         which stops receiving data is then retried.
     verbose :
         Print status responses as they are fetched from the TAP service.

@@ -181,54 +181,54 @@ fn check_ephemeris_accepts_any_observer_center() {
     }
 }
 
-/// An object almost at rest relative to the observer passes the pre-filter at the
-/// edge of a window, where its path has curved away from a straight line by more
-/// than it moves relative to the observer.
+/// An object at rest relative to the observer is seen in FOVs at both edges of one
+/// half-day group. The pre-filter places the object at the middle of the group,
+/// where a quarter day of its own motion carries it across the line of sight, far
+/// outside the FOVs, although it does not move relative to the observer.
 #[test]
 fn prefilter_allows_for_curvature() {
     kete_spice::test_data::ensure_test_spk();
-    // The observer and the object share a circular orbit at 1 au, the object a
-    // little ahead. Circular motion is exact here to well inside the FOV size.
-    let circular = |phase: f64, jd: f64| {
-        let angle = phase + GMS_SQRT * (jd - 2451545.0);
-        State::<Equatorial>::new(
-            Desig::Name("circular".into()),
-            jd,
-            [angle.cos(), angle.sin(), 0.0],
-            [-GMS_SQRT * angle.sin(), GMS_SQRT * angle.cos(), 0.0],
-            10,
-        )
-    };
-    let phase = 0.005;
-    // Two FOVs in one window, each about dt_limit from the window center.
-    let fovs: Vec<_> = [2451545.0, 2451545.0 + 5.9]
+    let eph = SpiceEphemeris::loaded().unwrap();
+    let force = NBody::new(&eph, false);
+    // An object on a circular orbit at 1 au. Each observer sits 0.005 au sunward of
+    // it, looking out along the radius, across the direction of motion.
+    let object = State::<Equatorial>::new(
+        Desig::Name("companion".into()),
+        2451545.0,
+        [1.0, 0.0, 0.0],
+        [0.0, GMS_SQRT, 0.0],
+        10,
+    );
+    let object_ssb = eph.spk().try_to_ssb(object.clone()).unwrap();
+    let offset = Vector::<Equatorial>::new([0.005, 0.0, 0.0]);
+    // Two FOVs at the edges of one half-day group.
+    let fovs: Vec<_> = [2451545.0, 2451545.0 + 0.49]
         .into_iter()
         .map(|jd| {
-            let observer = circular(0.0, jd);
-            let pointing = circular(phase, jd).pos - observer.pos;
-            GenericRectangle::new(pointing, 0.0, 0.01, 0.01, observer)
+            let mut at: State<Equatorial> = object_ssb
+                .clone()
+                .propagate_with(&force, jd.into())
+                .unwrap()
+                .into();
+            eph.spk().try_change_center(&mut at, 10).unwrap();
+            let radial = at.pos.normalize() * offset.norm();
+            let observer = State::<Equatorial>::new(Desig::Empty, jd, at.pos - radial, at.vel, 10);
+            GenericRectangle::new(radial, 0.0, 0.01, 0.01, observer)
         })
         .collect();
-    let seen = check_visible(
-        &SpiceEphemeris::loaded().unwrap(),
-        &fovs,
-        &[circular(phase, 2451545.0)],
-        &[],
-        false,
-    )
-    .unwrap();
+    let seen = check_visible(&eph, &fovs, &[object], &[], false).unwrap();
     assert_eq!(seen.len(), 2);
 }
 
 /// An object that impacts the Earth is still seen in the FOVs before the impact,
-/// including those in the window of the impact.
+/// including those in the half-day group of the impact, whose middle is after it.
 #[test]
 fn seen_until_impact() {
     kete_spice::test_data::ensure_test_spk();
     let eph = SpiceEphemeris::loaded().unwrap();
     let spk = eph.spk();
     let epoch = Time::<TDB>::new(2451545.0);
-    // 0.01 au from the Earth, closing at 0.01 au/day, so it hits in under a day.
+    // 0.01 au from the Earth, closing at 0.01 au/day, so it hits about a day later.
     let earth = spk.try_get_state_with_center(399, epoch, 10).unwrap();
     let impactor = State::<Equatorial>::new(
         Desig::Name("impactor".into()),
@@ -239,54 +239,15 @@ fn seen_until_impact() {
     );
     let observer =
         |jd: f64| State::<Equatorial>::new(Desig::Empty, jd, [0.0, 1.5, 0.0], [0.0; 3], 10);
-    // One window holds every FOV, and its center is after the impact.
-    let fovs: Vec<_> = [0.2, 0.5, 3.0]
+    // One half-day group holds every FOV, the impact falls between the second and the
+    // third, and the middle of the group is after it.
+    let fovs: Vec<_> = [0.80, 0.95, 1.29]
         .into_iter()
         .map(|dt| OmniDirectional::new(observer(2451545.0 + dt)))
         .collect();
     let seen = check_visible(&eph, &fovs, &[impactor], &[], false).unwrap();
     let fov_idx: Vec<usize> = seen.iter().map(|(idx, _, _)| *idx).collect();
     assert_eq!(fov_idx, vec![0, 1]);
-}
-
-/// An object moving with the observer passes the pre-filter at the edge of a window,
-/// where its path has curved away from a straight line.
-#[test]
-fn prefilter_allows_for_curvature_at_zero_relative_velocity() {
-    kete_spice::test_data::ensure_test_spk();
-    let circular = |phase: f64, jd: f64| {
-        let angle = phase + GMS_SQRT * (jd - 2451545.0);
-        State::<Equatorial>::new(
-            Desig::Name("circular".into()),
-            jd,
-            [angle.cos(), angle.sin(), 0.0],
-            [-GMS_SQRT * angle.sin(), GMS_SQRT * angle.cos(), 0.0],
-            10,
-        )
-    };
-    let phase = 0.005;
-    let center = 2451545.0 + 2.95;
-    // Two FOVs in one window, each about dt_limit from the window center. Each
-    // observer has the velocity of the object at the window center, so the two do not
-    // move relative to each other there.
-    let fovs: Vec<_> = [2451545.0, 2451545.0 + 5.9]
-        .into_iter()
-        .map(|jd| {
-            let mut observer = circular(0.0, jd);
-            observer.vel = circular(phase, center).vel;
-            let pointing = circular(phase, jd).pos - observer.pos;
-            GenericRectangle::new(pointing, 0.0, 0.01, 0.01, observer)
-        })
-        .collect();
-    let seen = check_visible(
-        &SpiceEphemeris::loaded().unwrap(),
-        &fovs,
-        &[circular(phase, 2451545.0)],
-        &[],
-        false,
-    )
-    .unwrap();
-    assert_eq!(seen.len(), 2);
 }
 
 /// Narrow FOVs tracking an asteroid through a night see it in every FOV, although

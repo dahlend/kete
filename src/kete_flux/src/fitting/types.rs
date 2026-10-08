@@ -474,9 +474,9 @@ impl FitProblem {
 
 /// A single flux constraint at a known geometry.
 ///
-/// The constraint on the model flux is a **sum of independent [`Penalty`]
-/// terms** -- e.g. a hard [`Penalty::TopHat`] interval and/or a
-/// [`Penalty::Center`] point estimate -- the same primitives a [`ParamPrior`]
+/// The constraint on the model flux is a **sum of independent penalty terms**
+/// -- e.g. a hard interval and/or a point estimate -- the same primitives a
+/// [`ParamPrior`]
 /// composes for a parameter, here applied to the model flux (the projection
 /// differs; the penalties are shared). Use the [`Self::detection`],
 /// [`Self::upper_limit`], and [`Self::bounded`] constructors for the common

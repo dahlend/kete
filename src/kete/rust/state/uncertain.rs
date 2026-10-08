@@ -198,7 +198,7 @@ impl PyUncertainState {
         Ok(self.state.state::<Equatorial>()?.into())
     }
 
-    /// Best-fit orbit as an :class:`~kete.EquinoctialElements`, the basis
+    /// Best-fit orbit as an :class:`~kete.vector.EquinoctialElements`, the basis
     /// :attr:`cov_matrix` is a covariance over.
     ///
     /// This is the mean the covariance is centered on: :attr:`state` gives the same
@@ -226,7 +226,7 @@ impl PyUncertainState {
     /// :attr:`param_names`.
     ///
     /// The ``L`` row and column are reported in degrees to match
-    /// :attr:`~kete.EquinoctialElements.true_lon` and every other angle in the Python
+    /// :attr:`~kete.vector.EquinoctialElements.true_lon` and every other angle in the Python
     /// interface, so the variance there is in degrees squared and its cross terms in
     /// degrees. The Rust core holds the same matrix in radians.
     ///

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Dar Dahlen
 // SPDX-License-Identifier: BSD-3-Clause
 
-//! N-body propagation with body states from an [`Ephemeris`].
+//! N-body propagation with body states from an [`Ephemeris`](crate::ephemeris::Ephemeris).
 //!
 //! Pure-math integrators and force models live in [`integrators`](crate::integrators),
 //! [`forces`](crate::forces), and [`kepler`](crate::kepler). The functions here need the
@@ -12,7 +12,7 @@
 //! - [`compute_state_transition`]: state transition matrix between two epochs.
 //! - [`propagate_n_body_vec`] / [`closest_approach`]: batch propagation and
 //!   close-encounter utilities.
-//! - [`IntegratedEphemeris`]: an [`Ephemeris`] of the
+//! - [`IntegratedEphemeris`]: an [`Ephemeris`](crate::ephemeris::Ephemeris) of the
 //!   planets that integrates them from saved states, needing no kernels.
 
 mod analysis;

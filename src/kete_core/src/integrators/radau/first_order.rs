@@ -671,10 +671,10 @@ mod tests {
     /// condition is its own exact reference, so this carries no reference-integrator
     /// error.
     ///
-    /// The evaluation budget guards the predictor. Without the `b` rescaling of
-    /// [`RadauFirstOrder::predict`] each of these costs several times as much, so a budget
-    /// set well above the working cost catches the predictor silently ceasing to work
-    /// without being brittle about small changes.
+    /// The evaluation budget guards the predictor: without the `b` rescaling of
+    /// [`BPredictor::predict`](super::BPredictor::predict) each of these costs several
+    /// times as much, so a budget set well above the working cost catches the predictor
+    /// silently ceasing to work without being brittle about small changes.
     #[test]
     fn kepler_period_return() {
         // (eccentricity, evaluation budget)
@@ -782,11 +782,10 @@ mod tests {
 
     /// A slow component of magnitude 1 alongside a fast component of magnitude 1e-8.
     ///
-    /// The fast component's right-hand side is `5e-8`, far below the `1e-6` absolute
-    /// floor the second-order integrator adds to its denominator, so under that rule it
-    /// would be invisible to the step-size controller and the step would be set by the
-    /// slow component alone.  The per-component scale of this integrator has to resolve
-    /// both.  This is the discriminating test for that design choice.
+    /// The fast component's right-hand side is `5e-8`. An error scale with an absolute
+    /// floor above that would leave the fast component invisible to the step-size
+    /// controller, and the step would be set by the slow component alone. The
+    /// per-component scale has to resolve both.
     #[test]
     fn mixed_scale_error_control() {
         const OMEGA: f64 = 5.0;

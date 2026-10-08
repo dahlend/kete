@@ -32,7 +32,7 @@ fn freeze_non_gravs(non_gravs: Option<Vec<Option<PyNonGravModel>>>) -> Vec<Optio
 /// This is a fixed-step Wisdom-Holman integrator (democratic heliocentric
 /// splitting) intended for million-to-billion year orbital evolution of the
 /// planets, massive asteroids, and massless test particles. Unlike
-/// :func:`~kete.propagate_n_body`, which follows the SPICE kernels and is
+/// :func:`~kete.propagation.propagate_n_body`, which follows the SPICE kernels and is
 /// limited to their time span, this evolves the entire system
 /// self-consistently and has no time limit.
 ///
@@ -45,14 +45,14 @@ fn freeze_non_gravs(non_gravs: Option<Vec<Option<PyNonGravModel>>>) -> Vec<Optio
 /// Test particles which fall into the Sun are removed and recorded in
 /// :attr:`lost_particles`.
 ///
-/// Test particles may optionally carry a :class:`~kete.NonGravModel`, the
+/// Test particles may optionally carry a :class:`~kete.propagation.NonGravModel`, the
 /// same per-object non-gravitational description accepted by
-/// :func:`~kete.propagate_n_body`. A Farnocchia model gives the particle
+/// :func:`~kete.propagation.propagate_n_body`. A Farnocchia model gives the particle
 /// radiation pressure and thermal recoil (Yarkovsky), whose along-track
 /// component drifts the semi-major axis at a rate set by the angle between
 /// the spin pole and the orbit normal; over millions of years this is what
 /// spreads a collisional family, so a population should be given randomly
-/// oriented poles (see :meth:`~kete.NonGravModel.new_farnocchia_from_h_mag`).
+/// oriented poles (see :meth:`~kete.propagation.NonGravModel.new_farnocchia_from_h_mag`).
 /// A dust model makes the particle a dust grain: it moves on the
 /// radiation-reduced two-body orbit ``(1 - beta) * GM_sun`` and is damped by
 /// Poynting-Robertson drag, so its orbit decays secularly. A JPL-style
@@ -60,7 +60,7 @@ fn freeze_non_gravs(non_gravs: Option<Vec<Option<PyNonGravModel>>>) -> Vec<Optio
 /// accelerations with their ``g(r)`` scaling -- the form JPL orbit solutions
 /// use both for comet outgassing and for asteroid Yarkovsky detections via
 /// ``A2``, so covariance samples from
-/// :meth:`~kete.HorizonsProperties.sample` feed directly into ``non_gravs``.
+/// :meth:`~kete.horizons.HorizonsProperties.sample` feed directly into ``non_gravs``.
 /// The fitted constants are extrapolated unchanged over the whole
 /// integration, and the time-lagged (``dt != 0``) outgassing variant is
 /// rejected.
@@ -80,7 +80,7 @@ fn freeze_non_gravs(non_gravs: Option<Vec<Option<PyNonGravModel>>>) -> Vec<Optio
 /// the full 15 kyr except Neptune, which reaches ~1e-2 AU unless the Pluto
 /// system is included (``kete.register_mass(9)`` before :meth:`from_spice`
 /// reduces Neptune's drift by roughly an order of magnitude). For
-/// ephemeris-accurate short-term work use :func:`~kete.propagate_n_body`.
+/// ephemeris-accurate short-term work use :func:`~kete.propagation.propagate_n_body`.
 ///
 /// Parameters
 /// ----------
@@ -98,7 +98,7 @@ fn freeze_non_gravs(non_gravs: Option<Vec<Option<PyNonGravModel>>>) -> Vec<Optio
 ///     Fixed step size in days. Negative integrates backwards in time.
 /// include_gr:
 ///     Apply the general relativity correction of the Sun: the first-order
-///     Schwarzschild acceleration shared with :func:`~kete.propagate_n_body`,
+///     Schwarzschild acceleration shared with :func:`~kete.propagation.propagate_n_body`,
 ///     which reproduces both the secular apsidal precession (43 arcsec/century
 ///     for Mercury) and the relativistic mean motion. The term is velocity
 ///     dependent, so with it enabled the integrator is only approximately
@@ -107,7 +107,7 @@ fn freeze_non_gravs(non_gravs: Option<Vec<Option<PyNonGravModel>>>) -> Vec<Optio
 /// include_j2:
 ///     Apply the solar J2 oblateness term, with the same coefficient and
 ///     solar spin pole (the IAU pole, as in DE440) used by
-///     :func:`~kete.propagate_n_body`.
+///     :func:`~kete.propagation.propagate_n_body`.
 ///     This is a position-only potential, so the integrator remains
 ///     symplectic; it drives the small secular nodal regression and apsidal
 ///     precession of low semi-major axis orbits.
@@ -119,7 +119,7 @@ fn freeze_non_gravs(non_gravs: Option<Vec<Option<PyNonGravModel>>>) -> Vec<Optio
 ///     :meth:`integrate_to` call, so batch many steps per call rather than
 ///     looping over :meth:`step`.
 /// non_gravs:
-///     Optional list of :class:`~kete.NonGravModel`, one per test particle,
+///     Optional list of :class:`~kete.propagation.NonGravModel`, one per test particle,
 ///     with ``None`` entries for particles which feel gravity alone. A
 ///     ``NaN`` parameter, left free for orbit fitting, is treated as 0, as in
 ///     every other propagation.
@@ -184,7 +184,7 @@ impl PySymplecticSim {
     /// The Sun and the 8 planets (Earth and Moon merged into their
     /// barycenter) are always included. The currently registered massive
     /// bodies (by default Ceres, Pallas, Vesta, Hygiea, and Interamnia; see
-    /// :func:`~kete.register_mass` and :func:`~kete.register_custom_mass` to
+    /// :func:`~kete.propagation.register_mass` and :func:`~kete.propagation.register_custom_mass` to
     /// add more, for example the Pluto system with
     /// ``kete.register_mass(9)``) may optionally be added as fully massive
     /// bodies.
@@ -208,7 +208,7 @@ impl PySymplecticSim {
     ///     Wrap each integration call in the order-17 symplectic corrector,
     ///     see the class documentation.
     /// non_gravs:
-    ///     Optional list of :class:`~kete.NonGravModel`, one per test
+    ///     Optional list of :class:`~kete.propagation.NonGravModel`, one per test
     ///     particle, with ``None`` entries for particles which feel gravity
     ///     alone; see the class documentation.
     #[staticmethod]

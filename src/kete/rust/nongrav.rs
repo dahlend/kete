@@ -210,6 +210,9 @@ impl PyNonGravModel {
     ///     
     ///     \text{accel} = \frac{\beta G}{r^2} \bigg((1 - \frac{\dot{r}}{c}) \vec{S} - \vec{v} / c \bigg)
     ///
+    /// :py:meth:`NonGravModel.diameter` is the inverse conversion and shares these
+    /// defaults, so ``new_dust(diameter=d).diameter() == d``.
+    ///
     /// Parameters
     /// ==========
     /// beta:
@@ -226,11 +229,6 @@ impl PyNonGravModel {
     /// q_pr:
     ///     Scattering efficiency for radiation pressure, defaults to 1.0
     ///     1.0 is a good estimate for particles larger than 1um (Burns, Lamy & Soter 1979)
-    ///
-    /// See Also
-    /// ========
-    /// :py:meth:`NonGravModel.diameter` - the inverse conversion, which shares
-    /// these defaults, so ``new_dust(diameter=d).diameter() == d``.
     #[staticmethod]
     #[pyo3(signature=(beta=None, diameter=None, density=1000.0, c_pr=C_PR, q_pr=1.0))]
     pub fn new_dust(
@@ -447,7 +445,7 @@ impl PyNonGravModel {
     ///    (see :func:`~kete.propagation.lambda_0_from_physical`).
     ///
     /// The result is an ordinary Farnocchia :class:`NonGravModel`, usable
-    /// with both :func:`~kete.propagate_n_body` and
+    /// with both :func:`~kete.propagation.propagate_n_body` and
     /// :class:`~kete.SymplecticSim`; the stored :attr:`a_over_m` and
     /// :attr:`lambda_0` are readable so the chain can be checked, and
     /// :meth:`bulk_density` / :meth:`thermal_inertia` invert it.
@@ -714,8 +712,8 @@ impl PyNonGravModel {
         })
     }
 
-    /// Names of the parameters an orbit fit would fit: NaN values and those freed
-    /// by :py:meth:`with_free`.
+    /// The names of the parameters an orbit fit would fit. These are the NaN values
+    /// and those freed by :py:meth:`with_free`.
     #[getter]
     pub fn free_parameters(&self) -> Vec<String> {
         self.force

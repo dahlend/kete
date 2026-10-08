@@ -247,8 +247,8 @@ impl PyFluxObs {
         self.0.point_estimate()
     }
 
-    /// 1-sigma uncertainty in Jy: the lower-side width of a detection, the noise
-    /// scale of an upper limit, or ``None`` if there is no point estimate.
+    /// The 1-sigma uncertainty in Jy. This is the lower-side width of a detection,
+    /// the noise scale of an upper limit, or ``None`` if there is no point estimate.
     #[getter]
     fn sigma(&self) -> Option<f64> {
         self.0.sigma_lo().or_else(|| self.0.sigma_hi())
