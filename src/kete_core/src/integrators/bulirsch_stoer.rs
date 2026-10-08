@@ -487,7 +487,7 @@ mod tests {
         let init_vel = Vector3::new(0.01518942, 0.00807426, 0.0);
 
         let (exact_pos, exact_vel) =
-            analytic_2_body(1000.0_f64.into(), &init_pos, &init_vel, None).unwrap();
+            analytic_2_body(1000.0_f64.into(), &init_pos, &init_vel).unwrap();
 
         let (bs_pos, bs_vel, _) = BulirschStoerIntegrator::integrate(
             &central_accel,

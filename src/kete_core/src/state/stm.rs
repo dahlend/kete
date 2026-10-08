@@ -339,7 +339,7 @@ mod tests {
     /// state can sit at 1e-16 while the STM is wrong by orders of magnitude.
     ///
     /// Two references, because one is not enough to say which side is wrong:
-    ///   * `analytic_2_body_stm` - central differences on the closed-form Kepler solution
+    ///   * central differences on the two-body solution `analytic_2_body`
     ///   * central differences on the nonlinear propagation of this same force
     ///
     /// Both are finite-difference at a fixed `eps = 1e-8`, so roughly `1e-9` relative is
@@ -351,7 +351,30 @@ mod tests {
     /// radius cannot catch a radius-dependent error.
     #[test]
     fn stm_matches_independent_references_across_distance() {
-        use crate::kepler::analytic_2_body_stm;
+        use crate::kepler::analytic_2_body;
+
+        // Central differences of the closed-form solution.
+        let kepler_stm = |arc: f64, pos0: &Vector3<f64>, vel0: &Vector3<f64>| {
+            let eps = 1e-8;
+            let mut stm = DMatrix::<f64>::zeros(6, 6);
+            for j in 0..6 {
+                let (mut pp, mut vp, mut pm, mut vm) = (*pos0, *vel0, *pos0, *vel0);
+                if j < 3 {
+                    pp[j] += eps;
+                    pm[j] -= eps;
+                } else {
+                    vp[j - 3] += eps;
+                    vm[j - 3] -= eps;
+                }
+                let (fp, fvp) = analytic_2_body(arc.into(), &pp, &vp).unwrap();
+                let (fm, fvm) = analytic_2_body(arc.into(), &pm, &vm).unwrap();
+                for i in 0..3 {
+                    stm[(i, j)] = (fp[i] - fm[i]) / (2.0 * eps);
+                    stm[(3 + i, j)] = (fvp[i] - fvm[i]) / (2.0 * eps);
+                }
+            }
+            stm
+        };
 
         for (semi_major, arc) in [(1.0, 365.0), (2.5, 289.0), (2.5, 1444.0), (5.0, 4084.0)] {
             let pos0 = Vector3::new(-semi_major, 0.0, 0.0);
@@ -360,8 +383,7 @@ mod tests {
 
             let (_pf, _vf, variational) =
                 propagate_with_stm(&forces, pos0, vel0, &[], 0.0.into(), arc.into()).unwrap();
-            let (_rp, _rv, kepler_fd) =
-                analytic_2_body_stm(arc.into(), &pos0, &vel0, None).unwrap();
+            let kepler_fd = kepler_stm(arc, &pos0, &vel0);
 
             let mut nonlin_fd = DMatrix::<f64>::zeros(6, 6);
             let eps = 1e-8;

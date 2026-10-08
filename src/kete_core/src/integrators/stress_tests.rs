@@ -61,7 +61,7 @@ fn picard_2body_init<const N: usize>(
     vel_mat.set_column(0, init_vel);
     for (idx, t) in times.iter().enumerate().skip(1) {
         let dt = *t - t0;
-        let (p, v) = analytic_2_body(dt, init_pos, init_vel, None).unwrap();
+        let (p, v) = analytic_2_body(dt, init_pos, init_vel).unwrap();
         pos_mat.set_column(idx, &p);
         vel_mat.set_column(idx, &v);
     }
@@ -91,7 +91,7 @@ struct Scenario {
 impl Scenario {
     /// Compute the analytic two-body solution at `t_days`.
     fn exact(&self) -> (Vector3<f64>, Vector3<f64>) {
-        analytic_2_body(self.t_days.into(), &self.pos, &self.vel, None).unwrap()
+        analytic_2_body(self.t_days.into(), &self.pos, &self.vel).unwrap()
     }
 
     /// Orbital energy (specific).

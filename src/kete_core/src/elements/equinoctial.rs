@@ -483,17 +483,7 @@ impl EquinoctialElements {
 
         // The pole components have to be formed before the basis, and the basis before
         // the remaining three.
-        let scale_sq = 1.0 + pole_h * pole_h + pole_k * pole_k;
-        let f_hat = Vector3::new(
-            1.0 + pole_h * pole_h - pole_k * pole_k,
-            2.0 * pole_h * pole_k,
-            -2.0 * pole_k,
-        ) / scale_sq;
-        let g_hat = Vector3::new(
-            2.0 * pole_h * pole_k,
-            1.0 - pole_h * pole_h + pole_k * pole_k,
-            2.0 * pole_h,
-        ) / scale_sq;
+        let (f_hat, g_hat, _) = Self::basis(pole_h, pole_k);
 
         Ok(Self {
             desig,
@@ -526,7 +516,7 @@ impl EquinoctialElements {
             return Err(Self::domain_error());
         }
         let (sin_lon, cos_lon) = self.true_lon.sin_cos();
-        let (f_hat, g_hat, _) = self.basis();
+        let (f_hat, g_hat, _) = Self::basis(self.pole_h, self.pole_k);
 
         let pos = (f_hat * cos_lon + g_hat * sin_lon) * (self.semi_latus / orbit_eq);
         // The identity `v = sqrt(GM/p) what x (e + rhat)` expanded in the basis. It is
@@ -537,10 +527,10 @@ impl EquinoctialElements {
         Ok([[pos.x, pos.y, pos.z], [vel.x, vel.y, vel.z]])
     }
 
-    /// The equinoctial basis `(fhat, ghat, what)`, orthonormal and right handed, with
-    /// `what` the orbit pole.
-    fn basis(&self) -> (Vector3<f64>, Vector3<f64>, Vector3<f64>) {
-        let (pole_h, pole_k) = (self.pole_h, self.pole_k);
+    /// Compute the equinoctial basis `(fhat, ghat, what)` from `(h, k)`.
+    ///
+    /// The basis is orthonormal and right handed, with `what` the orbit pole.
+    fn basis(pole_h: f64, pole_k: f64) -> (Vector3<f64>, Vector3<f64>, Vector3<f64>) {
         let scale_sq = 1.0 + pole_h * pole_h + pole_k * pole_k;
         (
             Vector3::new(
@@ -700,7 +690,7 @@ mod tests {
         for &incl in &[0.0, 0.3, 1.2, std::f64::consts::FRAC_PI_2, 2.4, 3.0] {
             for &lon_asc in &[0.0, 0.7, 2.5, 4.9] {
                 let (elem, pos, vel) = build_equinoctial(1.6, 0.4, 0.9, incl, lon_asc, 1.3);
-                let (f_hat, g_hat, w_hat) = elem.basis();
+                let (f_hat, g_hat, w_hat) = EquinoctialElements::basis(elem.pole_h, elem.pole_k);
 
                 worst_frame = worst_frame
                     .max((f_hat.norm() - 1.0).abs())
@@ -777,9 +767,9 @@ mod tests {
 
     #[test]
     fn equinoctial_regular_at_branch_points() {
-        // `CometElements` switches formulas at |e - 1| < PARABOLIC_ECC_LIMIT and at
-        // e < 1e-6. This set has no branch, so these must round trip at the precision of
-        // any other eccentricity.
+        // Unit and zero eccentricity are the degenerate points of the classical
+        // elements. This set has no branch there, so these must round trip at
+        // the precision of any other eccentricity.
         const TOL: f64 = 4e-16;
 
         let mut worst = 0.0_f64;

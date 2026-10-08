@@ -284,7 +284,7 @@ fn kepler_limit() {
     let sun_state = &sim.massive_states()[0];
     let (pos, vel) = heliocentric(&states[0], sun_state);
 
-    let (exact_pos, exact_vel) = analytic_2_body(t_total.into(), &pos0, &vel0, None).unwrap();
+    let (exact_pos, exact_vel) = analytic_2_body(t_total.into(), &pos0, &vel0).unwrap();
     let pos_err = (pos - exact_pos).norm();
     let vel_err = (vel - exact_vel).norm();
 
@@ -507,7 +507,7 @@ fn corrector_kepler_limit() {
     let sun_state = &sim.massive_states()[0];
     let (pos, vel) = heliocentric(&states[0], sun_state);
 
-    let (exact_pos, _) = analytic_2_body(t_total.into(), &pos0, &vel0, None).unwrap();
+    let (exact_pos, _) = analytic_2_body(t_total.into(), &pos0, &vel0).unwrap();
     let pos_err = (pos - exact_pos).norm();
     let energy0 = 0.5 * vel0.norm_squared() - GMS / pos0.norm();
     let energy1 = 0.5 * vel.norm_squared() - GMS / pos.norm();

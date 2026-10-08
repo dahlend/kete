@@ -4,26 +4,26 @@
 
 //! Python support for orbital elements
 use kete_core::elements;
+use kete_core::forces::GravParams;
 use kete_core::frames::Ecliptic;
 use kete_core::prelude;
-use kete_core::{constants::GMS_SQRT, forces::GravParams};
 use nalgebra::Vector6;
 use pyo3::{PyResult, pyclass, pymethods};
 
 use crate::{state::PyState, time::PyTime};
 
 /// Resolve the square root of a central body's gravitational parameter from its
-/// NAIF ID, falling back to the Sun's when the body is unrecognized.
+/// NAIF ID.
 ///
 /// Shared by [`PyCometElements::new`] and [`PyEquinoctialElements::new`], which both
 /// build an element set directly from user-supplied floats rather than from a `State`
 /// and so need this looked up rather than carried along.
-fn gm_sqrt_for(center_id: i32) -> f64 {
-    let known = GravParams::known_masses();
-    known
-        .iter()
-        .find(|p| p.naif_id == center_id)
-        .map_or(GMS_SQRT, |p| p.mass.sqrt())
+///
+/// # Errors
+/// Returns [`kete_core::errors::Error::ValueError`] if the body has no known mass.
+/// The solar system barycenter, NAIF 0, is one such case.
+fn gm_sqrt_for(center_id: i32) -> PyResult<f64> {
+    Ok(GravParams::try_mass_from_naif_id(center_id)?.sqrt())
 }
 
 /// Cometary Elements class made accessible to python.
@@ -80,6 +80,12 @@ impl PyCometElements {
     ///     Longitude of ascending node in degrees.
     /// center_id: int
     ///     NAIF ID of the central body (default 10 = Sun).
+    ///
+    /// Raises
+    /// ------
+    /// ValueError
+    ///     If the central body has no known mass. The solar system barycenter,
+    ///     NAIF ID 0, is one such case.
     #[new]
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature=(desig, epoch, eccentricity, inclination, peri_dist, peri_arg, peri_time, lon_of_ascending, center_id=10))]
@@ -93,9 +99,9 @@ impl PyCometElements {
         peri_time: PyTime,
         lon_of_ascending: f64,
         center_id: i32,
-    ) -> Self {
-        let gm_sqrt = gm_sqrt_for(center_id);
-        Self(elements::CometElements {
+    ) -> PyResult<Self> {
+        let gm_sqrt = gm_sqrt_for(center_id)?;
+        Ok(Self(elements::CometElements {
             desig: prelude::Desig::Name(desig),
             epoch: epoch.into(),
             eccentricity,
@@ -106,7 +112,7 @@ impl PyCometElements {
             peri_dist,
             center_id,
             gm_sqrt,
-        })
+        }))
     }
 
     /// Construct a new CometElements object from a `State`.
@@ -182,6 +188,9 @@ impl PyCometElements {
     }
 
     /// Semi Major Axis of the orbit in au.
+    ///
+    /// The value is negative for a hyperbolic orbit and infinite for a
+    /// parabolic orbit.
     #[getter]
     pub fn semi_major(&self) -> f64 {
         self.0.semi_major()
@@ -189,8 +198,7 @@ impl PyCometElements {
 
     /// Mean Motion of the orbit in degrees per day.
     ///
-    /// A parabolic orbit has no angular mean motion, and this is not an angular rate
-    /// for one; see :attr:`mean_anomaly`.
+    /// The value is zero for a parabolic orbit.
     #[getter]
     pub fn mean_motion(&self) -> f64 {
         self.0.mean_motion().to_degrees()
@@ -203,6 +211,9 @@ impl PyCometElements {
     }
 
     /// Eccentric Anomaly in degrees.
+    ///
+    /// For a hyperbolic orbit this is the hyperbolic anomaly. For a parabolic
+    /// orbit the value is zero.
     #[getter]
     pub fn eccentric_anomaly(&self) -> PyResult<f64> {
         Ok(self.0.eccentric_anomaly().map(|x| x.to_degrees())?)
@@ -210,10 +221,7 @@ impl PyCometElements {
 
     /// Mean Anomaly in degrees.
     ///
-    /// Near-parabolic orbits, those within 1e-4 of unit eccentricity, are solved through
-    /// Barker's equation, whose independent variable is not an angle. This value is not
-    /// meaningful in degrees there; :attr:`true_anomaly` and :attr:`eccentric_anomaly`
-    /// are.
+    /// The value is zero for a parabolic orbit.
     #[getter]
     pub fn mean_anomaly(&self) -> f64 {
         self.0.mean_anomaly().to_degrees()
@@ -334,6 +342,12 @@ impl PyEquinoctialElements {
     ///     True longitude at the epoch, in degrees.
     /// center_id: int
     ///     NAIF ID of the central body (default 10 = Sun).
+    ///
+    /// Raises
+    /// ------
+    /// ValueError
+    ///     If the central body has no known mass. The solar system barycenter,
+    ///     NAIF ID 0, is one such case.
     #[new]
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature=(desig, epoch, semi_latus, ecc_f, ecc_g, pole_h, pole_k, true_lon, center_id=10))]
@@ -347,8 +361,8 @@ impl PyEquinoctialElements {
         pole_k: f64,
         true_lon: f64,
         center_id: i32,
-    ) -> Self {
-        Self(elements::EquinoctialElements {
+    ) -> PyResult<Self> {
+        Ok(Self(elements::EquinoctialElements {
             desig: prelude::Desig::Name(desig),
             epoch: epoch.into(),
             semi_latus,
@@ -358,8 +372,8 @@ impl PyEquinoctialElements {
             pole_k,
             true_lon: true_lon.to_radians(),
             center_id,
-            gm_sqrt: gm_sqrt_for(center_id),
-        })
+            gm_sqrt: gm_sqrt_for(center_id)?,
+        }))
     }
 
     /// Construct a new EquinoctialElements object from a `State`.

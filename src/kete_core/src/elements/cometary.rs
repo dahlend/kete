@@ -5,10 +5,15 @@
 //! # Cometary Orbital Elements
 //!
 //! Conversion to and from cometary orbital elements and [`State`].
+//!
+//! The universal Kepler solver carries the two-body state at perihelion to the
+//! epoch. The time of perihelion comes from the closed form inverse of the same
+//! formulation. These formulas apply from a circular orbit through the
+//! parabolic limit. For a circular orbit perihelion is at the ascending node.
 
 use super::gm_sqrt_for_center;
 use crate::frames::{CenterBody, DynCenter, Ecliptic};
-use crate::kepler::{PARABOLIC_ECC_LIMIT, compute_eccentric_anomaly, compute_true_anomaly};
+use crate::kepler::{analytic_2_body_delta, compute_eccentric_anomaly, universal_g};
 use crate::prelude::{Desig, KeteResult, State};
 use crate::time::{TDB, Time};
 
@@ -76,10 +81,113 @@ impl CometElements {
         ))
     }
 
+    /// Convert cometary elements to an [`State`] if possible.
+    ///
+    /// # Errors
+    /// Returns [`Error::Convergence`](crate::errors::Error::Convergence) if the
+    /// elements are not finite, the perihelion distance is not positive, or the
+    /// Kepler solver does not converge.
+    pub fn try_to_state(&self) -> KeteResult<State<Ecliptic>> {
+        let [pos, vel] = self.to_pos_vel()?;
+        Ok(State::new(
+            self.desig.clone(),
+            self.epoch,
+            pos,
+            vel,
+            self.center_id,
+        ))
+    }
+
+    /// Compute the eccentric anomaly for the cometary elements.
+    ///
+    /// For an elliptical orbit this is the eccentric anomaly `E` in
+    /// `[0, 2 pi)`. For a hyperbolic orbit it is the hyperbolic anomaly `H`.
+    /// For a parabolic orbit it is zero, which is the limit of both as the
+    /// eccentricity approaches one. This solves Kepler's equation at the
+    /// [`Self::mean_anomaly`].
+    ///
+    /// # Errors
+    /// Returns [`Error::ValueError`](crate::errors::Error::ValueError) if the
+    /// eccentricity or the mean anomaly is not finite, or the eccentricity is
+    /// negative. Returns
+    /// [`Error::Convergence`](crate::errors::Error::Convergence) if the
+    /// iteration does not converge.
+    pub fn eccentric_anomaly(&self) -> KeteResult<f64> {
+        compute_eccentric_anomaly(self.eccentricity, self.mean_anomaly())
+    }
+
+    /// Compute the semi major axis in AU.
+    ///
+    /// The value is negative for a hyperbolic orbit and infinite for a
+    /// parabolic orbit.
+    #[must_use]
+    pub fn semi_major(&self) -> f64 {
+        self.peri_dist / (1.0 - self.eccentricity)
+    }
+
+    /// Compute the orbital period in days.
+    ///
+    /// Infinity is returned if the orbit is not bound.
+    #[must_use]
+    pub fn orbital_period(&self) -> f64 {
+        if self.eccentricity >= 1.0 {
+            return f64::INFINITY;
+        }
+        TAU / self.mean_motion()
+    }
+
+    /// Compute the aphelion distance in AU.
+    ///
+    /// Infinity is returned if the orbit is not bound.
+    #[must_use]
+    pub fn aphelion(&self) -> f64 {
+        if self.eccentricity >= 1.0 {
+            return f64::INFINITY;
+        }
+        self.peri_dist * (1.0 + self.eccentricity) / (1.0 - self.eccentricity)
+    }
+
+    /// Compute the mean motion in radians per day, `sqrt(GM / |a|^3)`.
+    ///
+    /// The value is zero for a parabolic orbit. This is its limit as the
+    /// eccentricity approaches one.
+    #[must_use]
+    pub fn mean_motion(&self) -> f64 {
+        self.gm_sqrt * ((1.0 - self.eccentricity).abs() / self.peri_dist).powf(1.5)
+    }
+
+    /// Compute the mean anomaly in radians.
+    ///
+    /// The value is in `[0, 2 pi)` for an elliptical orbit. An open orbit has
+    /// no period, so the value is not reduced. The value is zero for a
+    /// parabolic orbit, see [`Self::mean_motion`].
+    #[must_use]
+    pub fn mean_anomaly(&self) -> f64 {
+        let mean_anomaly = (self.epoch - self.peri_time).elapsed * self.mean_motion();
+        if self.eccentricity < 1.0 {
+            mean_anomaly.rem_euclid(TAU)
+        } else {
+            mean_anomaly
+        }
+    }
+
+    /// Compute the true anomaly in radians.
+    ///
+    /// This is the angle from perihelion to the current position as seen from
+    /// the origin, in `[0, 2 pi)`.
+    ///
+    /// # Errors
+    /// Returns [`Error::Convergence`](crate::errors::Error::Convergence) if the
+    /// elements are not finite, the perihelion distance is not positive, or the
+    /// Kepler solver does not converge.
+    pub fn true_anomaly(&self) -> KeteResult<f64> {
+        let (pos, _) = self.perifocal()?;
+        Ok(pos.y.atan2(pos.x).rem_euclid(TAU))
+    }
+
     /// Construct Cometary Orbital elements from a position and velocity vector.
     ///
     /// The units of the vectors are AU and AU/Day.
-    ///
     pub(super) fn from_pos_vel(
         desig: Desig,
         epoch: Time<TDB>,
@@ -100,81 +208,40 @@ impl CometElements {
 
         let ecc = ecc_vec.norm();
         let ang_vec_mag = ang_vec.norm();
-        let lon_asc_mag = lon_asc_vec.norm();
 
         let peri_dist = ang_vec_mag.powi(2) / (1.0 + ecc);
-        let incl = (ang_vec.z / ang_vec_mag).acos();
+        let incl = (ang_vec.x * ang_vec.x + ang_vec.y * ang_vec.y)
+            .sqrt()
+            .atan2(ang_vec.z);
 
-        let lon_of_asc: f64 = {
-            // if mag near zero, set the longitude to 0
-            if lon_asc_mag < 1e-8 {
-                lon_asc_vec = Vector3::new(1.0, 0.0, 0.0);
-                0.0
-            } else {
-                (lon_asc_vec.y / lon_asc_mag).atan2(lon_asc_vec.x / lon_asc_mag)
-            }
-        };
+        // For a nearly equatorial orbit the node direction is mostly rounding.
+        // The argument of perihelion is measured from this same direction, so
+        // the state is unaffected. An exactly equatorial orbit has its node on
+        // the x axis.
+        if lon_asc_vec == Vector3::zeros() {
+            lon_asc_vec = Vector3::new(1.0, 0.0, 0.0);
+        }
+        let lon_of_asc = lon_asc_vec.y.atan2(lon_asc_vec.x);
 
-        let peri_arg: f64 = {
-            if ecc < 1e-8 {
-                0.0
-            } else if lon_asc_mag < 1e-8 {
-                let mut tmp = f64::atan2(ecc_vec.y, ecc_vec.x);
-                if ang_vec.z < 0.0 {
-                    tmp = TAU - tmp;
-                }
-                tmp
-            } else {
-                let mut tmp = (lon_asc_vec.dot(&ecc_vec) / (ecc * lon_asc_mag))
-                    .clamp(-1.0, 1.0)
-                    .acos();
-                if ecc_vec.z < 0.0 {
-                    tmp = TAU - tmp;
-                }
-                tmp
-            }
-        };
+        // The angle from the node to the eccentricity vector, about the angular
+        // momentum. It is zero for a zero eccentricity vector.
+        let sin_w = lon_asc_vec.cross(&ecc_vec).dot(&ang_vec) / ang_vec_mag;
+        let peri_arg = sin_w.atan2(lon_asc_vec.dot(&ecc_vec)).rem_euclid(TAU);
 
-        let peri_time: Time<TDB> = {
-            if (ecc - 1.0).abs() < PARABOLIC_ECC_LIMIT {
-                // Parabolic
-                let mut true_anomaly = ecc_vec.angle(pos);
-                if vp_mag.is_sign_negative() {
-                    true_anomaly = -true_anomaly;
-                }
-                let d = (true_anomaly / 2.0).tan();
-                let dt = (2_f64.sqrt() * peri_dist.powf(1.5) / gm_sqrt) * (d + d.powi(3) / 3.0);
-                epoch - dt
-            } else if ecc < 1e-6 {
-                let semi_major = (2.0 / p_mag - v_mag2).recip();
-                let mean_motion = semi_major.abs().powf(-1.5) * gm_sqrt;
-                // for circular cases mean_anomaly == true_anomaly
-                // for circular orbits, the eccentric vector is 0, so we use the
-                // ascending node as the reference for the true anomaly.
-                let mut true_anomaly = lon_asc_vec.angle(pos);
-                if ang_vec.cross(&lon_asc_vec).dot(pos).is_sign_negative() {
-                    true_anomaly = -true_anomaly;
-                }
-                epoch - true_anomaly / mean_motion
-            } else {
-                // Hyperbolic or elliptical
-                let semi_major = (2.0 / p_mag - v_mag2).recip();
-                let mean_motion = semi_major.abs().powf(-1.5) * gm_sqrt;
-                let mean_anomaly: f64 = {
-                    let x_bar = (ang_vec_mag.powi(2) - p_mag) / ecc;
-                    let y_bar = vp_mag / ecc * ang_vec_mag;
-                    let b = semi_major * (1.0 - ecc.powi(2)).abs().sqrt();
-                    let s_e = y_bar / b;
-                    if ecc < 1.0 {
-                        let c_e = x_bar / semi_major + ecc;
-                        f64::atan2(s_e, c_e) - ecc * s_e
-                    } else {
-                        -ecc * s_e - f64::asinh(-s_e)
-                    }
-                };
-                epoch - mean_anomaly / mean_motion
-            }
+        // The position in the perifocal frame. Its x axis is the eccentricity
+        // vector, the direction the argument of perihelion was measured to, so
+        // the anomaly agrees with that angle even where the direction is mostly
+        // rounding. A zero eccentricity vector puts perihelion at the node.
+        let p_axis = if ecc > 0.0 {
+            ecc_vec / ecc
+        } else {
+            lon_asc_vec.normalize()
         };
+        let q_axis = (ang_vec / ang_vec_mag).cross(&p_axis);
+        let (x, y) = (pos.dot(&p_axis), pos.dot(&q_axis));
+        let mu = gm_sqrt * gm_sqrt;
+        let beta = mu * (2.0 / p_mag - v_mag2);
+        let peri_time = epoch - time_since_perihelion(x, y, ang_vec_mag, ecc, peri_dist, beta, mu);
 
         Self {
             desig,
@@ -190,80 +257,12 @@ impl CometElements {
         }
     }
 
-    /// Convert cometary elements to an [`State`] if possible.
-    ///
-    /// # Errors
-    /// Conversion can fail for numerous reasons, examples include non-finite values, or if
-    /// the eccentric anomaly computation fails.
-    pub fn try_to_state(&self) -> KeteResult<State<Ecliptic>> {
-        let [pos, vel] = self.to_pos_vel()?;
-        Ok(State::new(
-            self.desig.clone(),
-            self.epoch,
-            pos,
-            vel,
-            self.center_id,
-        ))
-    }
-
     /// Convert orbital elements into a cartesian coordinate position and velocity.
     /// Units are in AU and AU/Day.
     pub(super) fn to_pos_vel(&self) -> KeteResult<[[f64; 3]; 2]> {
-        let elliptical = self.eccentricity < 1.0 - PARABOLIC_ECC_LIMIT;
-        let hyperbolic = self.eccentricity > 1.0 + PARABOLIC_ECC_LIMIT;
-        let parabolic = !elliptical && !hyperbolic;
-
-        // these handle parabolic in a non-standard way which allows for the
-        // eccentric anomaly calculation to be useful later.
-        let semi_major = if parabolic {
-            0.0
-        } else {
-            self.peri_dist / (1.0 - self.eccentricity)
-        };
-
-        let mean_motion = if parabolic {
-            self.gm_sqrt
-        } else {
-            semi_major.abs().powf(-1.5) * self.gm_sqrt
-        };
-
-        let mean_anom = mean_motion * (self.epoch - self.peri_time).elapsed;
-        let ecc_anom = compute_eccentric_anomaly(self.eccentricity, mean_anom, self.peri_dist)?;
-
-        let x: f64;
-        let y: f64;
-        let x_dot: f64;
-        let y_dot: f64;
-
-        if elliptical {
-            let (sin_e, cos_e) = ecc_anom.sin_cos();
-            let e_dot = semi_major.powf(1.5) * (1.0 - self.eccentricity * cos_e);
-            let b = semi_major * (1.0 - self.eccentricity.powi(2)).sqrt();
-
-            x = semi_major * (cos_e - self.eccentricity);
-            y = b * sin_e;
-            x_dot = -semi_major / e_dot * sin_e * self.gm_sqrt;
-            y_dot = b / e_dot * cos_e * self.gm_sqrt;
-        } else if hyperbolic {
-            let sinh_h = ecc_anom.sinh();
-            let cosh_h = ecc_anom.cosh();
-            let b = -semi_major * (self.eccentricity.powi(2) - 1.0).sqrt();
-
-            let h_dot = semi_major.abs().powf(1.5) * (1.0 - self.eccentricity * cosh_h);
-
-            x = semi_major * (cosh_h - self.eccentricity);
-            y = b * sinh_h;
-            x_dot = -semi_major / h_dot * sinh_h * self.gm_sqrt;
-            y_dot = -b / h_dot * cosh_h * self.gm_sqrt;
-        } else {
-            // Parabolic
-            let d_dot = self.peri_dist + ecc_anom.powi(2) / 2.0;
-
-            x = self.peri_dist - ecc_anom.powi(2) / 2.0;
-            y = (2.0 * self.peri_dist).sqrt() * ecc_anom;
-            x_dot = -ecc_anom / d_dot * self.gm_sqrt;
-            y_dot = (2.0 * self.peri_dist).sqrt() / d_dot * self.gm_sqrt;
-        }
+        let (perifocal_pos, perifocal_vel) = self.perifocal()?;
+        let (x, y) = (perifocal_pos.x, perifocal_pos.y);
+        let (x_dot, y_dot) = (perifocal_vel.x, perifocal_vel.y);
 
         let (s_w, c_w) = self.peri_arg.sin_cos();
         let (s_o, c_o) = self.lon_of_ascending.sin_cos();
@@ -286,89 +285,73 @@ impl CometElements {
         Ok([pos, vel])
     }
 
-    /// Compute the eccentric anomaly for the cometary elements.
+    /// Compute the perifocal position and velocity in AU and AU/Day.
+    ///
+    /// The x axis points toward perihelion. The y axis is the direction of
+    /// motion at perihelion. The state at perihelion is position `(q, 0, 0)`
+    /// and velocity `(0, sqrt(GM (1 + e) / q), 0)`. The universal Kepler solver
+    /// carries it to the epoch.
     ///
     /// # Errors
-    /// May fail if extremum values are provided.
-    pub fn eccentric_anomaly(&self) -> KeteResult<f64> {
-        compute_eccentric_anomaly(self.eccentricity, self.mean_anomaly(), self.peri_dist).map(|x| {
-            match self.eccentricity {
-                ecc if ecc > 1.0 - PARABOLIC_ECC_LIMIT => x,
-                _ => x.rem_euclid(TAU),
-            }
-        })
+    /// Returns [`Error::Convergence`](crate::errors::Error::Convergence) if the
+    /// elements are not finite, the perihelion distance is not positive, or the
+    /// Kepler solver does not converge.
+    fn perifocal(&self) -> KeteResult<(Vector3<f64>, Vector3<f64>)> {
+        let mu = self.gm_sqrt * self.gm_sqrt;
+        let peri_pos = Vector3::new(self.peri_dist, 0.0, 0.0);
+        let peri_vel = Vector3::new(
+            0.0,
+            (mu * (1.0 + self.eccentricity) / self.peri_dist).sqrt(),
+            0.0,
+        );
+        let (d_pos, d_vel) = analytic_2_body_delta(
+            (self.epoch - self.peri_time).elapsed,
+            &peri_pos,
+            &peri_vel,
+            mu,
+        )?;
+        Ok((peri_pos + d_pos, peri_vel + d_vel))
     }
+}
 
-    /// Compute the semi major axis in AU.
-    /// NAN is returned if the orbit is parabolic.
-    #[must_use]
-    pub fn semi_major(&self) -> f64 {
-        match self.eccentricity {
-            ecc if ((ecc - 1.0).abs() <= PARABOLIC_ECC_LIMIT) => f64::NAN,
-            ecc => self.peri_dist / (1.0 - ecc),
-        }
-    }
-
-    /// Compute the orbital period in days.
-    /// Infinity is returned if the orbit is not bound.
-    #[must_use]
-    pub fn orbital_period(&self) -> f64 {
-        if self.eccentricity >= 1.0 - PARABOLIC_ECC_LIMIT {
-            return f64::INFINITY;
-        }
-        TAU * self.semi_major().powf(1.5) / self.gm_sqrt
-    }
-
-    /// Compute the Aphelion distance in AU.
-    /// Infinity is returned if the orbit is not bound.
-    #[must_use]
-    pub fn aphelion(&self) -> f64 {
-        if self.eccentricity >= 1.0 - PARABOLIC_ECC_LIMIT {
-            return f64::INFINITY;
-        }
-        self.peri_dist * (1.0 + self.eccentricity) / (1.0 - self.eccentricity)
-    }
-
-    /// Compute the mean motion in radians per day.
-    ///
-    /// A parabolic orbit has no angular mean motion. In the parabolic band this returns
-    /// `sqrt(GM)` in AU^(3/2)/day, the rate conjugate to the Barker variable the parabolic
-    /// branch of [`compute_eccentric_anomaly`] solves in, so that the product with the time
-    /// since perihelion is the quantity that solver expects.
-    #[must_use]
-    pub fn mean_motion(&self) -> f64 {
-        match self.eccentricity {
-            ecc if ((ecc - 1.0).abs() <= PARABOLIC_ECC_LIMIT) => self.gm_sqrt,
-            _ => self.gm_sqrt / self.semi_major().abs().powf(1.5),
-        }
-    }
-
-    /// Compute the mean anomaly in radians.
-    ///
-    /// Reduced to `[0, 2 pi)` only for an elliptical orbit. Open orbits have no period to
-    /// reduce against, and in the parabolic band this is not an angle at all but the Barker
-    /// variable described on [`Self::mean_motion`], in AU^(3/2).
-    #[must_use]
-    pub fn mean_anomaly(&self) -> f64 {
-        let mm = self.mean_motion();
-        let mean_anomaly = (self.epoch - self.peri_time).elapsed * mm;
-        match self.eccentricity {
-            ecc if ecc < 1.0 - PARABOLIC_ECC_LIMIT => mean_anomaly.rem_euclid(TAU),
-            _ => mean_anomaly,
-        }
-    }
-
-    /// Compute the True Anomaly
-    /// The angular distance between perihelion and the current position as seen
-    /// from the origin.
-    ///
-    /// # Errors
-    ///
-    /// Fails for numerous reasons, including if negative eccentricity is provided or if it
-    /// is a non finite value.
-    pub fn true_anomaly(&self) -> KeteResult<f64> {
-        compute_true_anomaly(self.eccentricity, self.mean_anomaly(), self.peri_dist)
-    }
+/// Compute the time since perihelion in days of a two-body orbit.
+///
+/// `x` and `y` are the position in the perifocal frame, in AU. `h_scaled` is
+/// the specific angular momentum divided by `sqrt(mu)`, so its square is the
+/// semi-latus rectum `p`. `ecc` and `peri_dist` are the eccentricity and the
+/// perihelion distance. `beta = 2 mu / r - v^2`, and `mu` is the gravitational
+/// parameter.
+///
+/// From perihelion at universal anomaly `s`, `G1(s) = y / sqrt(mu p)` and
+/// `G2(s) = (r - x) / (mu (1 + e))`, see [`universal_g`]. Neither divides by
+/// the eccentricity. Let `z = sqrt(|beta|) s`. On an elliptical orbit
+/// `sin(z) = sqrt(beta) G1` and `cos(z) = G0 = 1 - beta G2`. On a hyperbolic
+/// orbit `sinh(z) = sqrt(-beta) G1`. These give `s` in closed form, and
+/// `s = G1` when `beta = 0`. The time is `q G1(s) + mu G3(s)`.
+fn time_since_perihelion(
+    x: f64,
+    y: f64,
+    h_scaled: f64,
+    ecc: f64,
+    peri_dist: f64,
+    beta: f64,
+    mu: f64,
+) -> f64 {
+    let r = (x * x + y * y).sqrt();
+    // r - x cancels near perihelion, where it equals y^2 / (r + x).
+    let r_minus_x = if x > 0.0 { y * y / (r + x) } else { r - x };
+    let g1 = y / (mu.sqrt() * h_scaled);
+    let g2 = r_minus_x / (mu * (1.0 + ecc));
+    let b_sqrt = beta.abs().sqrt();
+    let anomaly = if beta > 0.0 {
+        (b_sqrt * g1).atan2(1.0 - beta * g2) / b_sqrt
+    } else if beta < 0.0 {
+        (b_sqrt * g1).asinh() / b_sqrt
+    } else {
+        g1
+    };
+    let [_, g1, _, g3] = universal_g(anomaly, beta);
+    peri_dist * g1 + mu * g3
 }
 
 #[cfg(test)]
@@ -412,13 +395,13 @@ mod tests {
             assert!(elem.to_pos_vel().is_ok());
         }
         {
-            // Inside the parabolic band, so this exercises Barker's equation. The
-            // reference is Barker solved independently: with `n = sqrt(GM / (2 q^3))`,
-            // `n (t - T) = D + D^3 / 3` for `D = tan(nu / 2)`.
+            // A parabolic orbit, checked against Barker's equation. With
+            // `n = sqrt(GM / (2 q^3))` and `D = tan(nu / 2)`,
+            // `n (t - T) = D + D^3 / 3`.
             let elem = CometElements {
                 desig: Desig::Empty,
                 epoch: 2455562.5.into(),
-                eccentricity: 0.99999,
+                eccentricity: 1.0,
                 inclination: 2.792526803,
                 lon_of_ascending: 0.349065850,
                 peri_time: 2455369.7.into(),
@@ -451,13 +434,10 @@ mod tests {
         }
     }
 
-    /// The reported anomalies and the reported position must describe the same point.
+    /// Check that the true anomaly and the position lie on the same conic.
     ///
-    /// `to_pos_vel` and `true_anomaly` both go through the Kepler solver but reach it by
-    /// different routes, and nothing else in this suite compares them: the round trip
-    /// tests convert state to elements and back, so a shared error in the anomaly path
-    /// cancels. The parabolic band is the case that matters, because it is the one where
-    /// the solver's input is not an angle and the two routes can disagree on its scale.
+    /// `to_pos_vel` and `true_anomaly` both use the perifocal state. The test
+    /// checks the distance against the conic equation at the true anomaly.
     #[test]
     fn test_true_anomaly_agrees_with_position() {
         for ecc in [0.0, 0.5, 0.9999, 1.0, 1.0001, 1.5, 3.0] {
@@ -477,24 +457,163 @@ mod tests {
                 let [pos, _] = elem.to_pos_vel().unwrap();
                 let radius = Vector3::new(pos[0], pos[1], pos[2]).norm();
 
-                // The conic equation, evaluated at the reported true anomaly. Inside the
-                // parabolic band both routes use `e = 1` geometry regardless of the stored
-                // eccentricity, so the reference has to as well; comparing against the
-                // stored value there measures the width of `PARABOLIC_ECC_LIMIT` instead.
-                let ecc_used = if (ecc - 1.0).abs() <= PARABOLIC_ECC_LIMIT {
-                    1.0
-                } else {
-                    ecc
-                };
+                // The conic equation, evaluated at the reported true anomaly.
                 let nu = elem.true_anomaly().unwrap();
-                let semi_latus = peri_dist * (1.0 + ecc_used);
-                let expected = semi_latus / (1.0 + ecc_used * nu.cos());
+                let semi_latus = peri_dist * (1.0 + ecc);
+                let expected = semi_latus / (1.0 + ecc * nu.cos());
 
                 assert!(
                     (radius - expected).abs() / radius < 1e-8,
                     "e={ecc} q={peri_dist}: position gives r={radius}, \
                      true anomaly {nu} gives r={expected}",
                 );
+            }
+        }
+    }
+
+    /// Convert elements to a state and back near the parabolic limit.
+    ///
+    /// The eccentricities are below, at and above one. The epochs are before
+    /// and after perihelion. The time of perihelion and the state must match.
+    #[test]
+    fn test_elements_roundtrip_near_parabolic() {
+        for de in [
+            -1e-2, -1e-4, -1e-6, -1e-8, -1e-10, 0.0, 1e-10, 1e-8, 1e-6, 1e-4, 1e-2,
+        ] {
+            for peri_dist in [0.01, 1.0, 30.0] {
+                for dt in [-3650.0, -30.0, -1.0, 0.0, 1.0, 30.0, 3650.0] {
+                    let elem = CometElements {
+                        desig: Desig::Empty,
+                        epoch: 2460000.5.into(),
+                        eccentricity: 1.0 + de,
+                        inclination: 0.7,
+                        lon_of_ascending: 2.1,
+                        peri_time: (2460000.5 - dt).into(),
+                        peri_arg: -0.4,
+                        peri_dist,
+                        center_id: 10,
+                        gm_sqrt: GMS_SQRT,
+                    };
+                    let [pos, vel] = elem
+                        .to_pos_vel()
+                        .unwrap_or_else(|e| panic!("{de:e} {peri_dist} {dt}: {e}"));
+                    let new_elem = CometElements::from_pos_vel(
+                        Desig::Empty,
+                        elem.epoch,
+                        &pos.into(),
+                        &vel.into(),
+                        10,
+                        GMS_SQRT,
+                    );
+                    // A bound orbit passes perihelion once per period, so the
+                    // test compares the time of perihelion modulo the period.
+                    let mut peri_time_err = (new_elem.peri_time - elem.peri_time).elapsed;
+                    let period = elem.orbital_period();
+                    if period.is_finite() {
+                        peri_time_err -= period * (peri_time_err / period).round();
+                    }
+                    let peri_time_err = peri_time_err.abs();
+                    assert!(
+                        peri_time_err < 1e-9 * dt.abs().max(1.0),
+                        "e - 1 = {de:e}, q = {peri_dist}, dt = {dt}: peri time off by {peri_time_err:e} days"
+                    );
+                    let [new_pos, _] = new_elem.to_pos_vel().unwrap();
+                    let (pos, new_pos) = (Vector3::from(pos), Vector3::from(new_pos));
+                    let rel = (new_pos - pos).norm() / pos.norm();
+                    assert!(
+                        rel < 1e-12,
+                        "e - 1 = {de:e}, q = {peri_dist}, dt = {dt}: position off by {rel:e}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Check that the state is continuous in the eccentricity.
+    ///
+    /// Each pair of eccentricities is 2e-13 apart. The pairs are at several
+    /// distances below and above one. Ten years after perihelion the two
+    /// positions must agree to within 1e-10 AU.
+    #[test]
+    fn test_state_continuous_in_eccentricity() {
+        let at = |ecc: f64| {
+            let elem = CometElements {
+                desig: Desig::Empty,
+                epoch: 2460000.5.into(),
+                eccentricity: ecc,
+                inclination: 0.7,
+                lon_of_ascending: 2.1,
+                peri_time: (2460000.5 - 3650.0).into(),
+                peri_arg: -0.4,
+                peri_dist: 1.0,
+                center_id: 10,
+                gm_sqrt: GMS_SQRT,
+            };
+            Vector3::from(elem.to_pos_vel().unwrap()[0])
+        };
+        for edge in [1e-2, 1e-4, 1e-6, 1e-8, 1e-10, 0.0] {
+            for sign in [-1.0, 1.0] {
+                let below = at(1.0 + sign * edge - 1e-13);
+                let above = at(1.0 + sign * edge + 1e-13);
+                let jump = (above - below).norm();
+                assert!(
+                    jump < 1e-10,
+                    "e - 1 = {:e}: position jumped by {jump:e} AU",
+                    sign * edge
+                );
+            }
+        }
+    }
+    /// Convert elements to a state and back for nearly circular orbits.
+    ///
+    /// The eccentricities run from zero to 1e-3. The planes include exactly and
+    /// nearly equatorial ones, prograde and retrograde. The direction of a tiny
+    /// eccentricity vector or node vector is mostly rounding, so the test
+    /// compares states, not elements.
+    #[test]
+    fn test_state_roundtrip_near_circular() {
+        for ecc in [0.0, 1e-12, 1e-10, 5e-9, 1e-8, 2e-8, 1e-7, 1e-6, 1e-5, 1e-3] {
+            for peri_arg in [0.0, 1.0, 2.5, 3.0, 5.0] {
+                for incl in [
+                    0.0,
+                    1e-9,
+                    0.3,
+                    std::f64::consts::PI - 1e-9,
+                    std::f64::consts::PI,
+                ] {
+                    for days in [0.0, 70.0, 200.0, 333.0] {
+                        let elem = CometElements {
+                            desig: Desig::Empty,
+                            epoch: 2460000.5.into(),
+                            eccentricity: ecc,
+                            inclination: incl,
+                            lon_of_ascending: 2.1,
+                            peri_time: (2460000.5 - days).into(),
+                            peri_arg,
+                            peri_dist: 1.0,
+                            center_id: 10,
+                            gm_sqrt: GMS_SQRT,
+                        };
+                        let [pos, vel] = elem.to_pos_vel().unwrap();
+                        let new_elem = CometElements::from_pos_vel(
+                            Desig::Empty,
+                            elem.epoch,
+                            &pos.into(),
+                            &vel.into(),
+                            10,
+                            GMS_SQRT,
+                        );
+                        let [new_pos, new_vel] = new_elem.to_pos_vel().unwrap();
+                        let pos_err = (Vector3::from(new_pos) - Vector3::from(pos)).norm();
+                        let vel_err = (Vector3::from(new_vel) - Vector3::from(vel)).norm()
+                            / Vector3::from(vel).norm();
+                        assert!(
+                            pos_err < 1e-11 && vel_err < 1e-11,
+                            "e = {ecc}, w = {peri_arg}, i = {incl}, {days} days: \
+                             position off by {pos_err:e} AU, velocity by {vel_err:e}"
+                        );
+                    }
+                }
             }
         }
     }

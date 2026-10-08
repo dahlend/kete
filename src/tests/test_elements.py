@@ -101,3 +101,13 @@ class TestEquinoctialElements:
         # the mean state must match UncertainState.state (same reconstruction)
         assert np.allclose(np.array(back.pos), np.array(us.state.pos))
         assert np.allclose(np.array(back.vel), np.array(us.state.vel))
+
+
+@pytest.mark.parametrize("cls", [CometElements, EquinoctialElements])
+def test_unknown_center_raises(cls):
+    """A center with no known mass has no two-body parameter, so construction
+    must fail rather than fall back to the Sun. The barycenter is one such case."""
+    args = ("t", 2460000.5, 0.5, 0.1, 0.2, 0.3, 0.4, 10.0)
+    cls(*args)
+    with pytest.raises(ValueError):
+        cls(*args, center_id=0)

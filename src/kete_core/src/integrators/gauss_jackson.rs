@@ -407,7 +407,7 @@ mod tests {
         let init_vel = Vector3::new(0.01518942, 0.00807426, 0.0);
 
         let (exact_pos, exact_vel) =
-            analytic_2_body(1000.0_f64.into(), &init_pos, &init_vel, None).unwrap();
+            analytic_2_body(1000.0_f64.into(), &init_pos, &init_vel).unwrap();
 
         let (gj_pos, gj_vel, _) = GaussJacksonIntegrator::integrate(
             &central_accel,
@@ -551,7 +551,7 @@ mod tests {
         let init_pos = Vector3::new(0.46937657, -0.8829981, 0.0);
         let init_vel = Vector3::new(0.01518942, 0.00807426, 0.0);
 
-        let (exact_pos, _) = analytic_2_body(100.0_f64.into(), &init_pos, &init_vel, None).unwrap();
+        let (exact_pos, _) = analytic_2_body(100.0_f64.into(), &init_pos, &init_vel).unwrap();
 
         let steps = [8.0, 4.0, 2.0];
         let mut errors = Vec::new();
@@ -603,7 +603,7 @@ mod tests {
         let init_pos = Vector3::new(0.46937657, -0.8829981, 0.0);
         let init_vel = Vector3::new(0.01518942, 0.00807426, 0.0);
         let (exact_pos, exact_vel) =
-            analytic_2_body(1000.0_f64.into(), &init_pos, &init_vel, None).unwrap();
+            analytic_2_body(1000.0_f64.into(), &init_pos, &init_vel).unwrap();
 
         let (gj_pos, gj_vel, _) = GaussJacksonIntegrator::integrate(
             &central_accel,

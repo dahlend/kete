@@ -1049,7 +1049,7 @@ mod tests {
             let (pos0, vel0, t0, _) = eccentric_dense_run(direction, &mut dense);
             let error_at = |time: Time<TDB>| {
                 let (pos, _) = dense.evaluate(time).unwrap();
-                let (exact, _) = analytic_2_body(time - t0, &pos0, &vel0, None).unwrap();
+                let (exact, _) = analytic_2_body(time - t0, &pos0, &vel0).unwrap();
                 (Vector3::from_column_slice(&pos) - exact).norm()
             };
             let mut boundary = 0.0_f64;

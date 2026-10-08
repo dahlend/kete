@@ -68,7 +68,7 @@ impl JplCometNonGrav {
         if self.dt != 0.0 {
             // Back-propagate by dt to get the perihelion-referenced position
             // for the g(r) scaling.
-            match analytic_2_body((-self.dt).into(), &pos, vel, None) {
+            match analytic_2_body((-self.dt).into(), &pos, vel) {
                 Ok((p, _)) => pos = p,
                 Err(err) => {
                     // An orbit drawn from a wide covariance can be unbound, where

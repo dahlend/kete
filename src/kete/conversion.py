@@ -258,25 +258,35 @@ def compute_earth_radius(geodetic_latitude: float) -> float:
 
 
 def compute_eccentric_anomaly(
-    eccentricity: NDArray, mean_anomaly: NDArray, peri_dist: NDArray
+    eccentricity: NDArray, mean_anomaly: NDArray, peri_dist: NDArray | None = None
 ) -> np.ndarray:
     """
     Solve Kepler's equation for the eccentric anomaly.
 
+    For eccentricity up to and including 1 the result is the eccentric anomaly
+    in degrees, in ``[0, 360)``. At eccentricity 1 this is the limit of the
+    elliptical solution. For a hyperbolic orbit the result is the hyperbolic
+    anomaly in degrees. Invalid inputs give NaN.
+
     Parameters
     ----------
-    eccentricity:
+    eccentricity : float or array of float
         The eccentricity of the orbit, greater than or equal to 0.
-    mean_anomaly:
+    mean_anomaly : float or array of float
         The mean anomaly of the orbit in degrees.
-    peri_dist:
-        The perihelion distance, only required for parabolic objects. (Units of AU).
+    peri_dist : float or array of float, optional
+        Not used by the calculation. It is accepted for compatibility. Defaults
+        to None.
+
+    Returns
+    -------
+    numpy.ndarray
+        The eccentric or hyperbolic anomaly in degrees.
     """
     eccentricity = np.atleast_1d(eccentricity)
     mean_anomaly = np.radians(np.atleast_1d(mean_anomaly))
-    peri_dist = np.atleast_1d(peri_dist)
     return np.degrees(
-        _core.compute_eccentric_anomaly(eccentricity, mean_anomaly, peri_dist),
+        _core.compute_eccentric_anomaly(eccentricity, mean_anomaly),
         dtype=float,
     )
 

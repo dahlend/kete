@@ -15,37 +15,8 @@
 
 use kete_core::constants::GMS;
 use kete_core::frames::{InertialFrame, Vector};
+use kete_core::kepler::stumpff_c2_c3;
 use kete_core::prelude::{Error, KeteResult};
-
-/// Stumpff function C(z) = (1 - cos(sqrt(z))) / z.
-///
-/// Handles elliptic (z > 0), parabolic (z ~ 0), and hyperbolic (z < 0).
-fn stumpff_c(z: f64) -> f64 {
-    if z.abs() < 1e-8 {
-        0.5 - z / 24.0 + z * z / 720.0
-    } else if z > 0.0 {
-        let sz = z.sqrt();
-        (1.0 - sz.cos()) / z
-    } else {
-        let sz = (-z).sqrt();
-        (sz.cosh() - 1.0) / (-z)
-    }
-}
-
-/// Stumpff function S(z) = (sqrt(z) - sin(sqrt(z))) / sqrt(z)^3.
-///
-/// Handles elliptic (z > 0), parabolic (z ~ 0), and hyperbolic (z < 0).
-fn stumpff_s(z: f64) -> f64 {
-    if z.abs() < 1e-8 {
-        1.0 / 6.0 - z / 120.0 + z * z / 5040.0
-    } else if z > 0.0 {
-        let sz = z.sqrt();
-        (sz - sz.sin()) / (sz * sz * sz)
-    } else {
-        let sz = (-z).sqrt();
-        (sz.sinh() - sz) / (sz * sz * sz)
-    }
-}
 
 /// Solve Lambert's problem for up to `max_revs` complete revolutions.
 ///
@@ -176,11 +147,11 @@ fn lambert_core<T: InertialFrame>(
 
     // y(z) helper.
     let y_of_z = |z: f64| -> f64 {
-        let cz = stumpff_c(z);
+        let (cz, sz) = stumpff_c2_c3(z);
         if cz.abs() < 1e-30 {
             return f64::MAX;
         }
-        r1_mag + r2_mag + a_coeff * (z * stumpff_s(z) - 1.0) / cz.sqrt()
+        r1_mag + r2_mag + a_coeff * (z * sz - 1.0) / cz.sqrt()
     };
 
     // F(z) = [y/C]^{3/2} * S + A * sqrt(y) - sqrt(mu) * dt.
@@ -189,8 +160,7 @@ fn lambert_core<T: InertialFrame>(
         if y < 0.0 {
             return f64::MAX;
         }
-        let cz = stumpff_c(z);
-        let sz = stumpff_s(z);
+        let (cz, sz) = stumpff_c2_c3(z);
         if cz.abs() < 1e-30 {
             return f64::MAX;
         }
@@ -203,7 +173,7 @@ fn lambert_core<T: InertialFrame>(
         if y < 1e-30 {
             return 1.0;
         }
-        let cz = stumpff_c(z);
+        let (cz, sz) = stumpff_c2_c3(z);
         if cz.abs() < 1e-30 {
             return 1.0;
         }
@@ -213,7 +183,6 @@ fn lambert_core<T: InertialFrame>(
             return (f_of_z(eps) - f_of_z(-eps)) / (2.0 * eps);
         }
 
-        let sz = stumpff_s(z);
         let y_over_c = y / cz;
         let yc32 = y_over_c.powf(1.5);
 
