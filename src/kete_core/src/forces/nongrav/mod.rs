@@ -17,7 +17,6 @@ mod dust;
 mod farnocchia;
 mod jpl_comet;
 mod kind;
-mod ramped_thrust;
 
 pub use dust::DustNonGrav;
 pub(crate) use farnocchia::radiation_accel;
@@ -27,4 +26,3 @@ pub use farnocchia::{
 };
 pub use jpl_comet::JplCometNonGrav;
 pub use kind::NonGravKind;
-pub use ramped_thrust::RampedThrustNonGrav;

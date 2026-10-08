@@ -60,9 +60,8 @@ pub use gravity::{
 pub(crate) use gravity::{apply_gr_correction, j2_correction};
 pub(crate) use nongrav::radiation_accel;
 pub use nongrav::{
-    DustNonGrav, FarnocchiaNonGrav, JplCometNonGrav, NonGravKind, RampedThrustNonGrav,
-    a_over_m_from_physical, density_from_a_over_m, lambda_0_from_physical,
-    thermal_inertia_from_lambda_0,
+    DustNonGrav, FarnocchiaNonGrav, JplCometNonGrav, NonGravKind, a_over_m_from_physical,
+    density_from_a_over_m, lambda_0_from_physical, thermal_inertia_from_lambda_0,
 };
 pub use parameter_mask::ParameterMask;
 pub use polyhedron::Polyhedron;

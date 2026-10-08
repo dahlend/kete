@@ -2739,11 +2739,12 @@ mod tests {
     }
 
     /// A fit that stops where a parameter is unconstrained has a NaN covariance, not
-    /// a zero variance for that parameter. With zero thrust the ramp rate has no
-    /// effect on the observations.
+    /// a zero variance for that parameter. With a zero area-to-mass ratio the
+    /// thermal lag has no effect on the observations.
     #[test]
     fn test_non_converged_unconstrained_covariance_is_nan() {
-        use kete_core::forces::{ParameterMask, RampedThrustNonGrav};
+        use kete_core::forces::{FarnocchiaNonGrav, ParameterMask};
+        use kete_core::frames::Vector;
         ensure_test_spk();
         let r = 1.2;
         let v = (GMS / r).sqrt();
@@ -2751,8 +2752,8 @@ mod tests {
         let epochs: Vec<f64> = (0..15).map(|i| 2460000.5 + f64::from(i) * 6.0).collect();
         let observations = synth_observations(&state, &epochs, earth_observer, 1e-7, None);
         let included = vec![true; observations.len()];
-        let mask = ParameterMask::all_free(NonGravKind::RampedThrust(
-            RampedThrustNonGrav::new(2460000.5.into(), None).unwrap(),
+        let mask = ParameterMask::all_free(NonGravKind::Farnocchia(
+            FarnocchiaNonGrav::new(0.15, 0.9, 0.9, Vector::new([0.2, -0.3, 0.93])).unwrap(),
         ));
         let fit = make_non_converged_result(
             &state,
@@ -2760,7 +2761,7 @@ mod tests {
             &included,
             false,
             Some(&mask),
-            &[0.0; 4],
+            &[0.0; 2],
         )
         .unwrap();
         assert!(!fit.converged);

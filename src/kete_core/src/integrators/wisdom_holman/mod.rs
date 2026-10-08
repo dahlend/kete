@@ -1362,8 +1362,7 @@ impl CompVec3 {
 ///
 /// Returns an error if any parameter is left free, any fixed value is non-finite or out of range (a NaN left free for orbit
 /// fitting cannot be simulated), the surface or `g(r)` description is
-/// invalid, a [`NonGravKind::JplComet`] carries a nonzero time lag `dt`, or the
-/// force is a [`NonGravKind::RampedThrust`], which this map does not support.
+/// invalid, or a [`NonGravKind::JplComet`] carries a nonzero time lag `dt`.
 fn bind_non_grav<T: InertialFrame>(frozen: &NonGravMask, desig: &Desig) -> KeteResult<NonGrav> {
     let values = frozen
         .fixed_values()
@@ -1468,10 +1467,6 @@ fn bind_non_grav<T: InertialFrame>(frozen: &NonGravMask, desig: &Desig) -> KeteR
                 a3,
             })
         }
-        NonGravKind::RampedThrust(_) => Err(Error::ValueError(format!(
-            "Test particle {desig:?}: the ramped thrust model depends on time, which this \
-             map does not support; propagate such objects with the Radau N-body propagator."
-        ))),
     }
 }
 

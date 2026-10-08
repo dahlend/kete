@@ -6,7 +6,7 @@
 //!
 //! Exposes the non-grav variants to Python as a single class
 //! (`NonGravModel`): dust radiation pressure, JPL comet outgassing, the
-//! Farnocchia thermal recoil model, and a ramped thrust fixed in the RTN frame. Each variant stores the physical
+//! Farnocchia thermal recoil model. Each variant stores the physical
 //! inputs given at construction time (e.g. `beta` for dust, `a1/a2/a3`
 //! for comets) and converts them to the underlying Rust force type on
 //! demand.
@@ -17,15 +17,14 @@ use kete_core::{
     errors::Error,
     forces::{
         DustNonGrav, FarnocchiaNonGrav, JplCometNonGrav, NonGravKind, NonGravMask, ParameterMask,
-        ParameterizedForce, RampedThrustNonGrav, a_over_m_from_physical, density_from_a_over_m,
-        lambda_0_from_physical, thermal_inertia_from_lambda_0,
+        ParameterizedForce, a_over_m_from_physical, density_from_a_over_m, lambda_0_from_physical,
+        thermal_inertia_from_lambda_0,
     },
 };
 use kete_flux::diam_from_h_mag_albedo;
 use pyo3::{PyResult, exceptions::PyValueError, pyclass, pyfunction, pymethods};
 
 use crate::frame::PyFrames;
-use crate::time::PyTime;
 use crate::vector::VectorLike;
 
 /// Radiation-pressure coefficient in kg/m^2, the constant in the
@@ -54,8 +53,6 @@ const C_PR: f64 = 1.19e-3;
 ///   for asteroids with the Yarkovsky effect.
 /// - :py:meth:`NonGravModel.new_farnocchia`: the Farnocchia et al. radiation
 ///   model.
-/// - :py:meth:`NonGravModel.new_ramped_thrust`: an RTN thrust whose magnitude ramps
-///   linearly in time.
 ///
 /// The orbit fitting tools read the fittable parameters of each model (for example
 /// A1, A2 and A3 of the comet model) with a NaN convention. A NaN value marks the
@@ -169,7 +166,7 @@ impl PyNonGravModel {
     pub fn new() -> PyResult<Self> {
         Err(Error::ValueError(
             "Non-gravitational force models need to be constructed using new_dust, new_comet, \
-             new_asteroid, new_farnocchia, or new_ramped_thrust."
+             new_asteroid, or new_farnocchia."
                 .into(),
         ))?
     }
@@ -348,102 +345,6 @@ impl PyNonGravModel {
             NonGravKind::JplComet(JplCometNonGrav::new(alpha, r_0, m, n, k, dt)),
             vec![a1, a2, a3],
         )
-    }
-
-    /// Thrust fixed in the radial / transverse / normal frame, with a strength that
-    /// changes linearly in time, and optionally a part that turns at a fixed period.
-    ///
-    /// .. math::
-    ///
-    ///     \text{accel} = f(t) \big(A_1 \vec{r} + A_2 \vec{t} + A_3 \vec{n}\big),
-    ///     \qquad f(t) = \max\big(0, 1 + \text{rate}\,(t - t_0)\big)
-    ///
-    /// where :math:`\vec{r}`, :math:`\vec{t}`, :math:`\vec{n}` are the radial,
-    /// transverse, and normal unit vectors of the object's heliocentric motion. The
-    /// A terms are the thrust at the reference epoch ``t0``, and ``rate`` is its
-    /// fractional change per day. The ramp scales the whole thrust, which is zero,
-    /// not reversed, where :math:`1 + \text{rate}\,(t - t_0)` is negative.
-    ///
-    /// Without ``period`` the A terms are the constants ``a1, a2, a3``, and the
-    /// direction stays fixed in this frame. With ``period`` (days) they also turn:
-    ///
-    /// .. math::
-    ///
-    ///     A_i = a_i + b_i \cos\phi + c_i \sin\phi,
-    ///     \qquad \phi = 2\pi (t - t_0) / \text{period}
-    ///
-    /// the lowest-order signature of a spinning body whose outgassing is not
-    /// symmetric about its spin axis. ``b`` and ``c`` span the plane the thrust turns
-    /// in; the period is not fitted, so scan it.
-    ///
-    /// There is no dependence on heliocentric distance, so the model suits arcs over
-    /// which the distance to the Sun changes little, such as a body near a comet
-    /// nucleus over hours to days. With ``rate=0`` and no period it is
-    /// :py:meth:`NonGravModel.new_comet` with :math:`g(r) = 1`
-    /// (``alpha=1, r_0=1, m=0, n=0, k=0``).
-    ///
-    /// The a, b and c terms and ``rate`` follow the NaN convention: NaN leaves a
-    /// parameter free for orbit fitting (starting from 0), a value freezes it.
-    /// Propagation treats NaN as 0. The fit is best conditioned with ``t0`` near the
-    /// middle of the observed arc.
-    ///
-    /// Parameters
-    /// ==========
-    /// t0:
-    ///     Reference epoch of the ramp and of the phase, a :class:`~kete.Time` or a
-    ///     JD (TDB).
-    /// a1:
-    ///     Radial thrust at ``t0`` in AU / day^2, or NaN to fit it.
-    /// a2:
-    ///     Transverse thrust at ``t0`` in AU / day^2, or NaN to fit it.
-    /// a3:
-    ///     Normal thrust at ``t0`` in AU / day^2, or NaN to fit it.
-    /// rate:
-    ///     Fractional change of the thrust per day, or NaN to fit it.
-    /// period:
-    ///     Period of the turning part in days, or None for a thrust without one.
-    /// b1, b2, b3:
-    ///     RTN components of the turning part at phase 0 in AU / day^2, or NaN to
-    ///     fit them. Only with ``period``.
-    /// c1, c2, c3:
-    ///     RTN components of the turning part a quarter period later in
-    ///     AU / day^2, or NaN to fit them. Only with ``period``.
-    #[staticmethod]
-    #[pyo3(signature = (
-        t0, a1=f64::NAN, a2=f64::NAN, a3=f64::NAN, rate=f64::NAN, period=None,
-        b1=f64::NAN, b2=f64::NAN, b3=f64::NAN, c1=f64::NAN, c2=f64::NAN, c3=f64::NAN,
-    ))]
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one keyword argument per model parameter, as in the other factories"
-    )]
-    pub fn new_ramped_thrust(
-        t0: PyTime,
-        a1: f64,
-        a2: f64,
-        a3: f64,
-        rate: f64,
-        period: Option<f64>,
-        b1: f64,
-        b2: f64,
-        b3: f64,
-        c1: f64,
-        c2: f64,
-        c3: f64,
-    ) -> PyResult<Self> {
-        let force = RampedThrustNonGrav::new(t0.into(), period)?;
-        let (b, c) = ([b1, b2, b3], [c1, c2, c3]);
-        if period.is_none() && b.iter().chain(&c).any(|v| !v.is_nan()) {
-            Err(PyValueError::new_err(
-                "b1-b3 and c1-c3 are the turning part of the thrust, which needs a period.",
-            ))?;
-        }
-        let mut values = vec![a1, a2, a3, rate];
-        if period.is_some() {
-            values.extend(b);
-            values.extend(c);
-        }
-        Ok(Self::from_parts(NonGravKind::RampedThrust(force), values))
     }
 
     /// This is the same as :py:meth:`NonGravModel.new_comet`, but with default values
@@ -714,12 +615,6 @@ impl PyNonGravModel {
                 constant("spin_pole_y", raw[1]);
                 constant("spin_pole_z", raw[2]);
             }
-            NonGravKind::RampedThrust(ref f) => {
-                constant("t0", f.t0.jd());
-                if let Some(period) = f.period {
-                    constant("period", period);
-                }
-            }
         }
         values
     }
@@ -761,28 +656,6 @@ impl PyNonGravModel {
                     c.albedo,
                     c.absorptivity,
                     c.flattening,
-                )
-            }
-            NonGravKind::RampedThrust(ref c) => {
-                let turning = match c.period {
-                    Some(p) => format!(
-                        ", period={p:?}, b1={}, b2={}, b3={}, c1={}, c2={}, c3={}",
-                        f(v[4]),
-                        f(v[5]),
-                        f(v[6]),
-                        f(v[7]),
-                        f(v[8]),
-                        f(v[9]),
-                    ),
-                    None => String::new(),
-                };
-                format!(
-                    "kete.propagation.NonGravModel.new_ramped_thrust(t0={:?}, a1={}, a2={}, a3={}, rate={}{turning})",
-                    c.t0.jd(),
-                    f(v[0]),
-                    f(v[1]),
-                    f(v[2]),
-                    f(v[3]),
                 )
             }
         };

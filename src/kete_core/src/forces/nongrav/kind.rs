@@ -5,9 +5,8 @@
 //! non-gravitational force models.
 //!
 //! `NonGravKind` aggregates the non-grav variants kete ships with -- dust
-//! radiation pressure, JPL comet outgassing, the Farnocchia 2025 oblate
-//! thermal recoil model, and a thrust fixed in the RTN frame with a linear ramp in
-//! time. All share
+//! radiation pressure, JPL comet outgassing, and the Farnocchia 2025 oblate
+//! thermal recoil model. All share
 //! `Frame = Equatorial` and `Center = SunCenter`, so the enum slots
 //! into `ParameterMask` and `NBody` interchangeably.
 //!
@@ -21,7 +20,6 @@ use nalgebra::{Matrix3, Matrix3xX};
 use super::dust::DustNonGrav;
 use super::farnocchia::FarnocchiaNonGrav;
 use super::jpl_comet::JplCometNonGrav;
-use super::ramped_thrust::RampedThrustNonGrav;
 use crate::errors::KeteResult;
 use crate::forces::ParameterizedForce;
 use crate::frames::{Equatorial, SunCenter, Vector};
@@ -39,8 +37,6 @@ pub enum NonGravKind {
     JplComet(JplCometNonGrav),
     /// Farnocchia 2025 oblate-spheroid radiation + thermal recoil.
     Farnocchia(FarnocchiaNonGrav),
-    /// Thrust fixed in the RTN frame with a linear ramp in time.
-    RampedThrust(RampedThrustNonGrav),
 }
 
 impl From<DustNonGrav> for NonGravKind {
@@ -61,12 +57,6 @@ impl From<FarnocchiaNonGrav> for NonGravKind {
     }
 }
 
-impl From<RampedThrustNonGrav> for NonGravKind {
-    fn from(value: RampedThrustNonGrav) -> Self {
-        Self::RampedThrust(value)
-    }
-}
-
 impl ParameterizedForce for NonGravKind {
     type Frame = Equatorial;
     type Center = SunCenter;
@@ -77,7 +67,6 @@ impl ParameterizedForce for NonGravKind {
             Self::Dust(f) => f.n_free_params(),
             Self::JplComet(f) => f.n_free_params(),
             Self::Farnocchia(f) => f.n_free_params(),
-            Self::RampedThrust(f) => f.n_free_params(),
         }
     }
 
@@ -86,7 +75,6 @@ impl ParameterizedForce for NonGravKind {
             Self::Dust(f) => f.free_param_names(),
             Self::JplComet(f) => f.free_param_names(),
             Self::Farnocchia(f) => f.free_param_names(),
-            Self::RampedThrust(f) => f.free_param_names(),
         }
     }
 
@@ -95,7 +83,6 @@ impl ParameterizedForce for NonGravKind {
             Self::Dust(f) => f.lower_bounds(),
             Self::JplComet(f) => f.lower_bounds(),
             Self::Farnocchia(f) => f.lower_bounds(),
-            Self::RampedThrust(f) => f.lower_bounds(),
         }
     }
 
@@ -112,7 +99,6 @@ impl ParameterizedForce for NonGravKind {
             Self::Dust(f) => f.accel(time, pos, vel, free_params, meta, exact_eval),
             Self::JplComet(f) => f.accel(time, pos, vel, free_params, meta, exact_eval),
             Self::Farnocchia(f) => f.accel(time, pos, vel, free_params, meta, exact_eval),
-            Self::RampedThrust(f) => f.accel(time, pos, vel, free_params, meta, exact_eval),
         }
     }
 
@@ -128,7 +114,6 @@ impl ParameterizedForce for NonGravKind {
             Self::Dust(f) => f.jacobians(time, pos, vel, free_params, meta),
             Self::JplComet(f) => f.jacobians(time, pos, vel, free_params, meta),
             Self::Farnocchia(f) => f.jacobians(time, pos, vel, free_params, meta),
-            Self::RampedThrust(f) => f.jacobians(time, pos, vel, free_params, meta),
         }
     }
 
@@ -144,7 +129,6 @@ impl ParameterizedForce for NonGravKind {
             Self::Dust(f) => f.parameter_jacobian(time, pos, vel, free_params, meta),
             Self::JplComet(f) => f.parameter_jacobian(time, pos, vel, free_params, meta),
             Self::Farnocchia(f) => f.parameter_jacobian(time, pos, vel, free_params, meta),
-            Self::RampedThrust(f) => f.parameter_jacobian(time, pos, vel, free_params, meta),
         }
     }
 }
