@@ -88,9 +88,10 @@ pub fn dec_dms_to_degrees_py(py: Python<'_>, dec: MaybeVec<String>) -> PyResult<
 
     for dms in dec {
         let deg = Degrees::try_from_dms_str(&dms)
-            .map_err(|_| {
+            .map_err(|err| {
                 PyErr::new::<PyValueError, _>(format!(
-                    "Invalid declination format: '{dms}'. Expected 'degrees arcminutes arcseconds'.",
+                    "Invalid declination '{dms}', expected 'degrees arcminutes arcseconds': \
+                     {err}"
                 ))
             })?
             .to_degrees();
@@ -128,9 +129,9 @@ pub fn ra_hms_to_degrees_py(py: Python<'_>, ra: MaybeVec<String>) -> PyResult<Py
 
     for hms in ra {
         let deg = Degrees::try_from_hms_str(&hms)
-            .map_err(|_| {
+            .map_err(|err| {
                 PyErr::new::<PyValueError, _>(format!(
-                    "Invalid right ascension format: '{hms}'. Expected 'hours minutes seconds'.",
+                    "Invalid right ascension '{hms}', expected 'hours minutes seconds': {err}"
                 ))
             })?
             .to_degrees();

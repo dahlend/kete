@@ -240,7 +240,8 @@ fn combine_sexagesimal(first: f64, minutes: f64, seconds: f64) -> KeteResult<f64
     }
     if !(0.0..60.0).contains(&minutes) || !(0.0..60.0).contains(&seconds) {
         return Err(Error::ValueError(format!(
-            "Minutes and seconds must be in [0, 60): {minutes}, {seconds}"
+            "Minutes and seconds must each be at least 0 and less than 60, found \
+             {minutes} and {seconds}."
         )));
     }
     Ok(first + minutes.copysign(first) / 60.0 + seconds.copysign(first) / 3600.0)
@@ -274,7 +275,12 @@ fn split_sexagesimal(units: u64, scale: u64) -> (u32, u32, f64) {
 /// [`Error::ValueError`] if the string does not match this format, or holds
 /// more than three numbers.
 fn parse_str_to_floats(text: &str) -> KeteResult<(f64, f64, f64)> {
-    let err = || Error::ValueError(format!("Failed to parse string: {text}"));
+    let err = || {
+        Error::ValueError(format!(
+            "'{text}' is not one to three numbers separated by spaces, commas, colons \
+             or semicolons."
+        ))
+    };
     let is_separator = |c: char| " ,:;".contains(c);
     let body = text.trim_start_matches([' ', '\t']).trim_end();
     if body.is_empty() || body.starts_with(is_separator) || body.ends_with(is_separator) {
@@ -300,7 +306,7 @@ fn parse_str_to_floats(text: &str) -> KeteResult<(f64, f64, f64)> {
         [x, y] => Ok((x, y, 0.0)),
         [x, y, z] => Ok((x, y, z)),
         _ => Err(Error::ValueError(format!(
-            "String has too many numbers: {text}",
+            "'{text}' has more than three numbers."
         ))),
     }
 }

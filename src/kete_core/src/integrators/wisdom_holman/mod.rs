@@ -709,17 +709,13 @@ impl<T: InertialFrame> WisdomHolman<T> {
         Ok(())
     }
 
-    /// Advance the simulation to approximately the target time.
-    ///
-    /// The map has a fixed step size, so the integration lands on the whole
-    /// step closest to `time`; no partial step is taken. The final epoch is
-    /// reported by [`Self::epoch`].
+    /// Number of whole steps from the current epoch to the step closest to `time`.
     ///
     /// # Errors
     ///
     /// Returns an error if the target time is behind the current epoch with
-    /// respect to the sign of `dt`, or if stepping fails (see [`Self::step`]).
-    pub fn integrate_to(&mut self, time: Time<TDB>) -> KeteResult<()> {
+    /// respect to the sign of `dt`.
+    pub fn steps_to(&self, time: Time<TDB>) -> KeteResult<u64> {
         let n_steps = (time - self.epoch()).elapsed / self.dt;
         if n_steps < -0.5 {
             Err(Error::ValueError(format!(
@@ -735,7 +731,21 @@ impl<T: InertialFrame> WisdomHolman<T> {
             clippy::cast_sign_loss,
             reason = "clamped non-negative and bounded by f64 integer range"
         )]
-        let n_steps = n_steps.round().max(0.0) as u64;
+        Ok(n_steps.round().max(0.0) as u64)
+    }
+
+    /// Advance the simulation to approximately the target time.
+    ///
+    /// The map has a fixed step size, so the integration lands on the whole
+    /// step closest to `time`; no partial step is taken. The final epoch is
+    /// reported by [`Self::epoch`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the target time is behind the current epoch with
+    /// respect to the sign of `dt`, or if stepping fails (see [`Self::step`]).
+    pub fn integrate_to(&mut self, time: Time<TDB>) -> KeteResult<()> {
+        let n_steps = self.steps_to(time)?;
         self.integrate_n_steps(n_steps)
     }
 

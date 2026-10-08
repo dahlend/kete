@@ -1375,6 +1375,10 @@ pub fn fit_orbit_ranging(
     seed: u64,
 ) -> KeteResult<RangingSamples> {
     const ATTR_WINDOW_DAYS: f64 = 0.1;
+    /// Observations nearest a window's epoch that it is screened against.
+    const SCREEN_OBS: usize = 32;
+    /// Screened windows that are then scored against every observation.
+    const FINALISTS: usize = 4;
 
     let n_optical = obs.iter().filter(|o| o.as_optical().is_ok()).count();
     if n_optical < 3 {
@@ -1408,11 +1412,22 @@ pub fn fit_orbit_ranging(
         }
     }
 
-    // Select the window with the highest peak log-weight (lowest chi^2_min).
-    // Selecting by ESS is wrong: a biased attributable produces a wider,
-    // shallower posterior with high ESS while the correct one has a sharp peak.
+    // Windows are screened first: each is scored against only the `SCREEN_OBS`
+    // optical observations nearest its epoch, which keeps the cost of a window independent of
+    // the length of the arc. The `FINALISTS` with the highest screening peaks are then
+    // scored against every observation, and the one with the highest peak log-weight
+    // (lowest chi^2_min) is kept. Selecting by ESS is wrong: a biased attributable
+    // produces a wider, shallower posterior with high ESS while the correct one has a
+    // sharp peak. With no more than `SCREEN_OBS` optical observations the screening
+    // already scores every one of them.
+    let optical: Vec<AstrometricObservation> = sorted
+        .iter()
+        .filter(|o| o.as_optical().is_ok())
+        .cloned()
+        .collect();
+    let mut screened: Vec<(f64, Attributable)> = Vec::new();
+    let mut best_screen_lw = f64::NEG_INFINITY;
     let mut best: Option<(Vec<Cell>, Attributable, ObsTable)> = None;
-    let mut best_peak_lw = f64::NEG_INFINITY;
 
     for (_, group) in &groups {
         if group.len() < 2 {
@@ -1488,7 +1503,7 @@ pub fn fit_orbit_ranging(
             let Some(attr) = compute_attributable(window_obs) else {
                 continue;
             };
-            let table = ObsTable::new(spk, &sorted, attr.t_ref)?;
+            let table = ObsTable::new(spk, nearest(&optical, attr.t_ref, SCREEN_OBS), attr.t_ref)?;
             let cells = score_patch(
                 spk,
                 &table,
@@ -1498,22 +1513,54 @@ pub fn fit_orbit_ranging(
                 N_RHO,
                 N_RHO_DOT,
                 temperature,
-                // A window wins on its peak score, so cells that far below an earlier
-                // window's peak belong either to a window that loses or below the
-                // floor of one that wins.
-                best_peak_lw,
+                best_screen_lw,
             )?;
-            if cells.is_empty() {
-                continue;
-            }
             let peak_lw = cells
                 .iter()
                 .map(|c| c.log_w)
                 .fold(f64::NEG_INFINITY, f64::max);
-            if peak_lw > best_peak_lw {
-                best_peak_lw = peak_lw;
-                best = Some((cells, attr, table));
+            if peak_lw > best_screen_lw {
+                best_screen_lw = peak_lw;
+                best = Some((cells, attr.clone(), table));
             }
+            if peak_lw.is_finite() {
+                screened.push((peak_lw, attr));
+            }
+        }
+    }
+
+    // The screening scored every observation, so its best window is the result.
+    if optical.len() > SCREEN_OBS {
+        screened.sort_by(|a, b| b.0.total_cmp(&a.0));
+        screened.truncate(FINALISTS);
+        best = None;
+    } else {
+        screened.clear();
+    }
+    let mut best_peak_lw = f64::NEG_INFINITY;
+    for (_, attr) in screened {
+        let table = ObsTable::new(spk, &sorted, attr.t_ref)?;
+        let cells = score_patch(
+            spk,
+            &table,
+            &attr,
+            (LOG_RHO_MIN, LOG_RHO_MAX),
+            None,
+            N_RHO,
+            N_RHO_DOT,
+            temperature,
+            // A window wins on its peak score, so cells that far below an earlier
+            // window's peak belong either to a window that loses or below the floor
+            // of one that wins.
+            best_peak_lw,
+        )?;
+        let peak_lw = cells
+            .iter()
+            .map(|c| c.log_w)
+            .fold(f64::NEG_INFINITY, f64::max);
+        if peak_lw > best_peak_lw {
+            best_peak_lw = peak_lw;
+            best = Some((cells, attr, table));
         }
     }
 
@@ -1586,6 +1633,35 @@ pub fn fit_orbit_ranging(
         effective_sample_size: final_ess,
         convergence_warning,
     })
+}
+
+/// The `count` observations of `sorted` nearest in time to `epoch`, as one contiguous
+/// time-sorted run; all of them when there are no more than `count`.
+fn nearest(
+    sorted: &[AstrometricObservation],
+    epoch: Time<TDB>,
+    count: usize,
+) -> &[AstrometricObservation] {
+    if sorted.len() <= count {
+        return sorted;
+    }
+    let mut lo = sorted.partition_point(|o| o.epoch() < epoch);
+    let mut hi = lo;
+    while hi - lo < count {
+        let take_low = match (lo.checked_sub(1), sorted.get(hi)) {
+            (Some(below), Some(above)) => {
+                (epoch - sorted[below].epoch()).elapsed <= (above.epoch() - epoch).elapsed
+            }
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        if take_low {
+            lo -= 1;
+        } else {
+            hi += 1;
+        }
+    }
+    &sorted[lo..hi]
 }
 
 // ---------------------------------------------------------------------------
@@ -2675,6 +2751,81 @@ mod tests {
 
         let samples = fit_orbit_ranging(&obs, 200, 1.0, 3).expect("ranging must succeed");
         assert!(!samples.draws.is_empty());
+        let spk = LOADED_SPK.try_read().unwrap();
+        let obj_sun = spk.try_to_sun(obj.clone()).unwrap();
+        let truth = spk
+            .try_to_ssb(propagate_two_body(&obj_sun, samples.epoch).unwrap())
+            .unwrap();
+        let best = samples
+            .draws
+            .iter()
+            .map(|d| (Vector::<Equatorial>::new([d[0], d[1], d[2]]) - truth.pos).norm())
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            best < 0.05,
+            "no draw within 0.05 AU of the true position: closest {best:.3} AU"
+        );
+    }
+
+    /// `nearest` returns a contiguous run of the requested length around the epoch,
+    /// clipped at either end of the arc, and every observation when there are fewer.
+    #[test]
+    fn nearest_observations_around_an_epoch() {
+        ensure_test_spk();
+        let obj = make_ssb_state([0.0, 2.0, 0.0], [-0.012, 0.0, 0.0], 2_460_000.5);
+        let epochs: Vec<f64> = (0..10).map(|i| 2_460_000.5 + f64::from(i)).collect();
+        let obs = synth_obs_offset(
+            &obj,
+            &epochs,
+            1e-6,
+            [0.0; 3],
+            &Desig::ObservatoryCode("500".into()),
+        );
+        let jds = |run: &[AstrometricObservation]| -> Vec<f64> {
+            run.iter().map(|o| o.epoch().jd() - 2_460_000.5).collect()
+        };
+        assert_eq!(
+            jds(nearest(&obs, Time::new(2_460_005.1), 3)),
+            vec![4.0, 5.0, 6.0]
+        );
+        assert_eq!(
+            jds(nearest(&obs, Time::new(2_460_000.0), 3)),
+            vec![0.0, 1.0, 2.0]
+        );
+        assert_eq!(
+            jds(nearest(&obs, Time::new(2_460_020.0), 3)),
+            vec![7.0, 8.0, 9.0]
+        );
+        assert_eq!(nearest(&obs, Time::new(2_460_005.1), 20).len(), 10);
+    }
+
+    /// A long arc from one observer recovers the orbit: windows are screened against
+    /// their nearest observations, and the finalists against every one.
+    #[test]
+    fn long_arc_recovers_the_orbit() {
+        ensure_test_spk();
+        let r = 2.0_f64;
+        let v = (GMS / r).sqrt();
+        let obl = 23.44_f64.to_radians();
+        let obj = make_ssb_state(
+            [0.0, r, 0.0],
+            [-v * obl.cos(), 0.0, v * obl.sin()],
+            2_460_000.5,
+        );
+        let sigma = 1.0_f64.to_radians() / 3600.0;
+        let epochs: Vec<f64> = (0..20)
+            .flat_map(|night| {
+                (0..4).map(move |k| 2_460_000.5 + f64::from(night) * 3.0 + f64::from(k) * 0.02)
+            })
+            .collect();
+        let obs = synth_obs_offset(
+            &obj,
+            &epochs,
+            sigma,
+            [0.0; 3],
+            &Desig::ObservatoryCode("500".into()),
+        );
+        let samples = fit_orbit_ranging(&obs, 200, 1.0, 3).expect("ranging must succeed");
         let spk = LOADED_SPK.try_read().unwrap();
         let obj_sun = spk.try_to_sun(obj.clone()).unwrap();
         let truth = spk

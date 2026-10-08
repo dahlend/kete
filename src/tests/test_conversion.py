@@ -77,7 +77,7 @@ def test_dec_deg_dms():
         dec_out = dec_dms_to_degrees(dec_degrees_to_dms(deg))
         assert np.allclose(deg, dec_out)
 
-    with pytest.raises(ValueError, match="format"):
+    with pytest.raises(ValueError, match="more than three numbers"):
         dec_dms_to_degrees("+0 1 2 3 4")
     with pytest.raises(ValueError, match="between"):
         dec_degrees_to_dms(95)
@@ -145,3 +145,12 @@ def test_tisserand():
 
     val = compute_tisserand(2, 0, 0, 2)
     assert np.isclose(val, 3)
+
+
+def test_sexagesimal_error_names_the_cause():
+    with pytest.raises(ValueError, match="less than 60, found 75"):
+        ra_hms_to_degrees("10 75 00")
+    with pytest.raises(ValueError, match="less than 60, found 30 and 61"):
+        dec_dms_to_degrees("+10 30 61")
+    with pytest.raises(ValueError, match="not one to three numbers"):
+        ra_hms_to_degrees("10h 30")

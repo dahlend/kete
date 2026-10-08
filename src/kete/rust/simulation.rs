@@ -129,6 +129,23 @@ pub struct PySymplecticSim {
     sim: WisdomHolman<Equatorial>,
 }
 
+impl PySymplecticSim {
+    /// Integrate `n` steps with the GIL released, in chunks of `CHUNK_STEPS` with a
+    /// check for a keyboard interrupt before each.
+    fn integrate_interruptible(&mut self, py: Python<'_>, n: u64) -> PyResult<()> {
+        /// Steps between checks for a pending signal.
+        const CHUNK_STEPS: u64 = 10_000;
+        let mut left = n;
+        while left > 0 {
+            py.check_signals()?;
+            let chunk = left.min(CHUNK_STEPS);
+            py.detach(|| self.sim.integrate_n_steps(chunk))?;
+            left -= chunk;
+        }
+        Ok(())
+    }
+}
+
 #[pymethods]
 impl PySymplecticSim {
     /// Construct the simulation from explicit states and masses.
@@ -284,10 +301,11 @@ impl PySymplecticSim {
 
     /// Advance the simulation by the given number of steps.
     ///
-    /// The GIL is released for the duration of the integration.
+    /// The GIL is released for the duration of the integration. A keyboard
+    /// interrupt stops it within a few thousand steps, at the end of a step, with
+    /// the simulation usable from there.
     pub fn integrate_n_steps(&mut self, py: Python<'_>, n: u64) -> PyResult<()> {
-        py.detach(|| self.sim.integrate_n_steps(n))
-            .map_err(Into::into)
+        self.integrate_interruptible(py, n)
     }
 
     /// Advance the simulation to approximately the target time.
@@ -295,7 +313,8 @@ impl PySymplecticSim {
     /// The step size is fixed, so the integration lands on the whole step
     /// closest to the requested time and no partial step is taken; check
     /// :attr:`jd` for the resulting epoch. The GIL is released for the
-    /// duration of the integration.
+    /// duration of the integration. A keyboard interrupt stops it within a few
+    /// thousand steps, at the end of a step, with the simulation usable from there.
     ///
     /// Parameters
     /// ----------
@@ -303,8 +322,8 @@ impl PySymplecticSim {
     ///     Target time. Must not be behind the current epoch with respect to
     ///     the sign of ``dt``.
     pub fn integrate_to(&mut self, py: Python<'_>, jd: PyTime) -> PyResult<()> {
-        py.detach(|| self.sim.integrate_to(jd.0))
-            .map_err(Into::into)
+        let n = self.sim.steps_to(jd.0)?;
+        self.integrate_interruptible(py, n)
     }
 
     /// Current epoch of the simulation as a TDB scaled JD.
