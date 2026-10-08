@@ -342,11 +342,18 @@ impl SphericalPolygon {
         let corner = self.edge_normals[(i + n - 1) % n]
             .cross(&self.edge_normals[i])
             .normalize();
-        // At a reflex corner of a non-convex polygon the cross product points to
-        // the opposite side of the sphere.
-        match self.center {
-            Some(center) if corner.dot(&center) < 0.0 => -corner,
-            _ => corner,
+        // The cross product points to the opposite side of the sphere at a reflex
+        // corner of a non-convex polygon, and at every corner of a convex polygon
+        // whose edges go clockwise. A corner of a convex polygon is strictly
+        // inside the next edge, which settles the sign there.
+        let reference = match self.center {
+            Some(center) => center,
+            None => self.edge_normals[(i + 1) % n],
+        };
+        if corner.dot(&reference) < 0.0 {
+            -corner
+        } else {
+            corner
         }
     }
 
@@ -406,13 +413,9 @@ impl SkyPatch for SphericalPolygon {
         if let Some(center) = self.center {
             return center;
         }
-        let n = self.edge_normals.len();
         let mut point: Vector<Equatorial> = [0.0; 3].into();
-        for idx in 0..n {
-            let v = self.edge_normals[idx]
-                .cross(&self.edge_normals[(idx + 1) % n])
-                .normalize();
-            point += &v;
+        for corner in self.corners() {
+            point += &corner;
         }
         point.normalize()
     }
@@ -848,11 +851,19 @@ mod tests {
             dir(-deg, 2.0 * deg),
             dir(-3.0 * deg, 2.0 * deg),
         ];
-        for corners in [&given[..], &given[..3]] {
+        // Counterclockwise and clockwise, non-convex and convex.
+        let mut reversed = given;
+        reversed.reverse();
+        for corners in [&given[..], &given[..3], &reversed[..], &reversed[5..]] {
             let poly = SphericalPolygon::try_from_corners(corners).unwrap();
             for (got, want) in poly.corners().iter().zip(corners) {
                 assert!((*got - want.normalize()).norm() < 1e-15);
             }
+            let mut sum: Vector<Equatorial> = [0.0; 3].into();
+            for c in corners {
+                sum += &c.normalize();
+            }
+            assert!(poly.pointing().dot(&sum.normalize()) > 0.99);
         }
         // Three corners on one great circle.
         let line = [

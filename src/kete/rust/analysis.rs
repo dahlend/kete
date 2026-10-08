@@ -72,7 +72,8 @@ pub fn specific_energy_py(state: PyState) -> PyResult<f64> {
 /// Raises
 /// ------
 /// ValueError
-///     If the orbit is not hyperbolic (energy <= 0 or non-finite).
+///     If the orbit is not hyperbolic (energy <= 0 or non-finite, or eccentricity
+///     <= 1).
 #[pyfunction]
 #[pyo3(name = "compute_b_plane")]
 pub fn compute_b_plane_py(state: PyState) -> PyResult<analysis::BPlane> {

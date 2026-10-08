@@ -33,18 +33,6 @@ const EXPANSION_SIGMA_FLOOR_RAD: f64 = 0.5 / 3600.0 * (std::f64::consts::PI / 18
 /// CMC recovery threshold = rejection threshold * this factor (Carpino et al. 2003).
 const CMC_RECOVERY_FRACTION: f64 = 6.0 / 7.0;
 
-/// CMC early-exit threshold.  When a pass flips fewer observations than
-/// `max(n_obs * this, 1)`, declare the rejection set stable and exit the loop.
-///
-/// On long arcs with many marginal observations the included mask can enter
-/// a multi-step cycle (A->B->C->A->...) that the per-observation hysteresis can't
-/// break: pass 0 does the bulk of the rejections (dozens), then subsequent
-/// passes flip a handful of obs back and forth across the threshold without
-/// the LSQ state meaningfully changing.  Treating "fewer than 0.5% of obs
-/// flipped" as stable terminates these cycles after one or two passes while
-/// still letting legitimate multi-pass cleanups proceed.
-const CMC_CHANGE_FRACTION_EXIT: f64 = 0.005;
-
 /// Minimum leverage-corrected expected chi2 denominator (prevents division instability).
 const CMC_MIN_EXPECTED: f64 = 0.5;
 
@@ -153,6 +141,7 @@ impl std::fmt::Debug for OrbitFit {
     }
 }
 
+/// The best-fit state of an [`UncertainState`], referred to the solar system barycenter.
 ///
 /// An element-native uncertain state reports its state about its **element** center, which
 /// for a minor planet is the Sun. Most of the fitting machinery works barycentrically, so
@@ -220,7 +209,6 @@ pub(crate) fn ssb_state(uncertain: &UncertainState) -> KeteResult<State<Equatori
 /// # Errors
 /// Fails if any internal propagation or solve fails, or if `non_grav_start`
 /// is given without `non_grav` or with the wrong length.
-/// The best-fit state of an [`UncertainState`], referred to the solar system barycenter.
 pub fn fit_orbit(
     initial_state: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
@@ -576,41 +564,11 @@ fn solve_with_rejection(
     let chi2_rej = chi2_threshold;
     let chi2_rec = chi2_threshold * CMC_RECOVERY_FRACTION;
 
-    for pass in 0..max_reject_passes {
-        // Sweep over every caller-allowed observation (mask = `included`)
-        // so that currently rejected observations also receive z-scores
-        // and can be recovered.  stm_sweep emits one StmObs per included
-        // observation in time-sorted order.
-        let sweep_state = ssb_state(&fit.uncertain_state)?;
-        let sweep_ng_values = fit.uncertain_state.free_params.clone();
-        let sweep = stm_sweep(
-            &sweep_state,
-            sorted_obs,
-            included,
-            include_asteroids,
-            mask,
-            &sweep_ng_values,
-        )?;
-        // CMC leverage uses the Fisher inverse C_0 = (H^T W H)^+ (no chi-square
-        // scaling applied), in the cartesian coordinates of the design matrix; the
-        // state holds it in element coordinates. Re-centering does not change it.
-        let cov_fisher = &fit.uncertain_state.cartesian_covariance::<Equatorial>()?;
-
-        let mut z_scores: Vec<f64> = Vec::with_capacity(sweep.len());
-        for entry in &sweep {
-            let m = entry.weight_matrix.nrows();
-            let leverage = cmc_leverage(entry, cov_fisher);
-            // chi2 = r^T W r  (full weight matrix, includes timing correction).
-            let wr = &entry.weight_matrix * &entry.residual;
-            let chi2: f64 = entry.residual.dot(&wr);
-            let expected = (m as f64 - leverage).max(CMC_MIN_EXPECTED);
-            // z = chi2 / (m - leverage): reject when the weighted squared
-            // residual exceeds chi2_threshold times the leverage-corrected
-            // expected value.  With calibrated weights this is equivalent to
-            // an absolute sigma threshold: threshold 4.5 rejects at ~3-sigma
-            // per component for a 2-component optical observation.
-            z_scores.push(chi2 / expected);
-        }
+    let mut seen: Vec<Vec<bool>> = Vec::new();
+    for _ in 0..max_reject_passes {
+        // Every caller-allowed observation (mask = `included`) is scored, so that
+        // currently rejected observations can be recovered.
+        let z_scores = cmc_z_scores(&fit, sorted_obs, included, include_asteroids, mask)?;
 
         // Apply hysteresis to build the new included mask.
         // Radar observations are never rejected -- they are too few and
@@ -659,25 +617,13 @@ fn solve_with_rejection(
             }
         }
 
-        if new_included == current_included {
+        // The loop stops when a pass changes nothing. On long arcs with many marginal
+        // observations the mask can instead cycle (A -> B -> A, or longer) without the
+        // fit changing; a mask seen before ends the loop at the fit already solved.
+        if new_included == current_included || seen.contains(&new_included) {
             break;
         }
-
-        // Small-change exit: long-arc fits with many marginal observations can
-        // enter a multi-step cycle of a few obs flipping at the threshold
-        // without the LSQ state meaningfully improving. When the per-pass
-        // change is a tiny fraction of the total, treat it as converged.
-        // First pass always runs in full (initial rejection burst can be large).
-        let n_changed = new_included
-            .iter()
-            .zip(current_included.iter())
-            .filter(|(a, b)| a != b)
-            .count();
-        #[allow(clippy::cast_sign_loss, reason = "always positive by construction")]
-        let change_floor = ((sorted_obs.len() as f64 * CMC_CHANGE_FRACTION_EXIT) as usize).max(1);
-        if pass > 0 && n_changed <= change_floor {
-            break;
-        }
+        seen.push(current_included.clone());
 
         current_included = new_included;
 
@@ -694,6 +640,53 @@ fn solve_with_rejection(
     }
 
     Ok(fit)
+}
+
+/// Leverage-corrected CMC z-score of every observation allowed by `included`, in
+/// time-sorted order, against the state and covariance of `fit`.
+///
+/// # Errors
+/// Fails if the sweep cannot propagate to an observation, or the fit's covariance
+/// has no cartesian form.
+fn cmc_z_scores(
+    fit: &OrbitFit,
+    sorted_obs: &[AstrometricObservation],
+    included: &[bool],
+    include_asteroids: bool,
+    mask: Option<&NonGravMask>,
+) -> KeteResult<Vec<f64>> {
+    // stm_sweep emits one StmObs per included observation in time-sorted order.
+    let sweep_state = ssb_state(&fit.uncertain_state)?;
+    let sweep_ng_values = fit.uncertain_state.free_params.clone();
+    let sweep = stm_sweep(
+        &sweep_state,
+        sorted_obs,
+        included,
+        include_asteroids,
+        mask,
+        &sweep_ng_values,
+    )?;
+    // CMC leverage uses the Fisher inverse C_0 = (H^T W H)^+ (no chi-square
+    // scaling applied), in the cartesian coordinates of the design matrix; the
+    // state holds it in element coordinates. Re-centering does not change it.
+    let cov_fisher = &fit.uncertain_state.cartesian_covariance::<Equatorial>()?;
+
+    let mut z_scores: Vec<f64> = Vec::with_capacity(sweep.len());
+    for entry in &sweep {
+        let m = entry.weight_matrix.nrows();
+        let leverage = cmc_leverage(entry, cov_fisher);
+        // chi2 = r^T W r  (full weight matrix, includes timing correction).
+        let wr = &entry.weight_matrix * &entry.residual;
+        let chi2: f64 = entry.residual.dot(&wr);
+        let expected = (m as f64 - leverage).max(CMC_MIN_EXPECTED);
+        // z = chi2 / (m - leverage): reject when the weighted squared
+        // residual exceeds chi2_threshold times the leverage-corrected
+        // expected value.  With calibrated weights this is equivalent to
+        // an absolute sigma threshold: threshold 4.5 rejects at ~3-sigma
+        // per component for a 2-component optical observation.
+        z_scores.push(chi2 / expected);
+    }
+    Ok(z_scores)
 }
 
 /// CMC leverage of one observation, `tr(H C_0 H^T W)` (the full trace, for a
@@ -908,14 +901,14 @@ fn iterate_to_convergence(
         &ng_values,
     ) else {
         // Can't even linearize the initial state -- return it as-is.
-        return Ok(make_non_converged_result(
+        return make_non_converged_result(
             &state_epoch,
             obs,
             included,
             include_asteroids,
             mask,
             &ng_values,
-        ));
+        );
     };
 
     for _ in 0..max_iter {
@@ -1070,14 +1063,14 @@ fn iterate_to_convergence(
     }
 
     // Did not converge -- return the best accepted state.
-    Ok(make_non_converged_result(
+    make_non_converged_result(
         &state_epoch,
         obs,
         included,
         include_asteroids,
         mask,
         &ng_values,
-    ))
+    )
 }
 
 /// Build an `OrbitFit` with `converged: false` for the given state.
@@ -1087,6 +1080,10 @@ fn iterate_to_convergence(
 /// NaN covariance and NaN residuals so that the caller still gets a
 /// valid `OrbitFit` instead of a hard error.  The covariance is also NaN
 /// when the observations do not constrain every parameter.
+///
+/// # Errors
+/// Fails if the state cannot be referred to the Sun, or has no
+/// [`UncertainState`] representation, such as an orbit at the retrograde seam.
 fn make_non_converged_result(
     state: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
@@ -1094,7 +1091,7 @@ fn make_non_converged_result(
     include_asteroids: bool,
     mask: Option<&NonGravMask>,
     ng_values: &[f64],
-) -> OrbitFit {
+) -> KeteResult<OrbitFit> {
     let n_params = 6 + ng_values.len();
 
     // Try to compute covariance and residuals together; fall back to
@@ -1124,25 +1121,14 @@ fn make_non_converged_result(
                 )
             });
 
-    // Dimensions are correct by construction -- `new` cannot fail.
     let free_params = ng_values.to_vec();
     let mut helio = State::<Equatorial>::from(state.clone());
-    LOADED_SPK
-        .try_read()
-        .expect("SPK lock")
-        .try_change_center(&mut helio, 10)
-        .expect("the fitted state can be referred to the Sun");
-    let mut uncertain_state = UncertainState::from_state(&helio, &covariance, free_params)
-        .expect("the fitted state is a valid orbit with matching covariance dimensions");
+    LOADED_SPK.try_read()?.try_change_center(&mut helio, 10)?;
+    let mut uncertain_state = UncertainState::from_state(&helio, &covariance, free_params)?;
     uncertain_state.non_grav = mask.cloned();
+    let non_grav = mask.map(|m| m.fixed_at(ng_values)).transpose()?;
 
-    #[allow(clippy::missing_panics_doc, reason = "wont panic by construction")]
-    let non_grav = mask
-        .map(|m| m.fixed_at(ng_values))
-        .transpose()
-        .expect("ng_values length matches mask n_free_params");
-
-    OrbitFit {
+    Ok(OrbitFit {
         uncertain_state,
         non_grav,
         residuals,
@@ -1150,7 +1136,7 @@ fn make_non_converged_result(
         included: included.to_vec(),
         rms,
         converged: false,
-    }
+    })
 }
 
 /// Apply the Danby unit-weight-variance rescaling to a fit's covariance.
@@ -2721,6 +2707,37 @@ mod tests {
         assert_eq!(pair, vec![0, 1]);
     }
 
+    /// A non-converged result for an orbit with no `UncertainState` representation is an
+    /// error rather than a panic. The orbit is 0.01 degrees from the retrograde seam.
+    #[test]
+    fn test_non_converged_at_the_seam_is_an_error() {
+        use kete_core::frames::Ecliptic;
+        ensure_test_spk();
+        let r = 1.5;
+        let v = (GMS / r).sqrt();
+        let tilt = 0.01_f64.to_radians();
+        let helio: State<Equatorial> = State::<Ecliptic>::new(
+            Desig::Empty,
+            2460000.5,
+            [r, 0.0, 0.0],
+            [0.0, -v * tilt.cos(), v * tilt.sin()],
+            10,
+        )
+        .into_frame();
+        let mut ssb = helio.clone();
+        LOADED_SPK
+            .try_read()
+            .unwrap()
+            .try_change_center(&mut ssb, 0)
+            .unwrap();
+        let state = State::<Equatorial, SSB>::try_from(ssb).unwrap();
+        let epochs: Vec<f64> = (0..10).map(|i| 2460000.5 + f64::from(i) * 6.0).collect();
+        let observations = synth_observations(&state, &epochs, earth_observer, 1e-7, None);
+        let included = vec![true; observations.len()];
+        let result = make_non_converged_result(&state, &observations, &included, false, None, &[]);
+        assert!(result.is_err());
+    }
+
     /// A fit that stops where a parameter is unconstrained has a NaN covariance, not
     /// a zero variance for that parameter. With zero thrust the ramp rate has no
     /// effect on the observations.
@@ -2744,10 +2761,12 @@ mod tests {
             false,
             Some(&mask),
             &[0.0; 4],
-        );
+        )
+        .unwrap();
         assert!(!fit.converged);
         assert!(fit.uncertain_state.cov_matrix.iter().all(|x| x.is_nan()));
-        let fit = make_non_converged_result(&state, &observations, &included, false, None, &[]);
+        let fit =
+            make_non_converged_result(&state, &observations, &included, false, None, &[]).unwrap();
         assert!(fit.uncertain_state.cov_matrix.iter().all(|x| x.is_finite()));
     }
 
@@ -2902,6 +2921,62 @@ mod tests {
             "Adaptive widening should preserve >= 2/3 of observations; \
              got {n_included}/{n_total}"
         );
+    }
+
+    /// The returned rejection mask satisfies the hysteresis rule against the returned
+    /// fit: no rejected observation is below the recovery threshold, and no included
+    /// observation is above the rejection threshold unless the minimum-count floor
+    /// kept it. Checked over a range of outlier sizes, since which pass makes the
+    /// last change depends on the geometry and the outliers.
+    #[test]
+    fn test_rejection_mask_satisfies_hysteresis() {
+        ensure_test_spk();
+        let r = 1.5;
+        let v = (GMS / r).sqrt();
+        let true_state = make_state([r, 0.0, 0.0], [0.0, v, 0.0], 2460000.5);
+        let epochs: Vec<f64> = (0..12).map(|i| 2460000.5 + f64::from(i) * 5.0).collect();
+        let sigma = 1e-7;
+        let threshold = 4.5;
+        let clean = synth_observations(&true_state, &epochs, earth_observer, sigma, None);
+        let allowed = vec![true; clean.len()];
+        for large in [10.0, 20.0, 30.0, 40.0, 60.0] {
+            for small in [1.5, 1.8, 2.1, 2.4, 3.0, 5.0] {
+                let mut observations = clean.clone();
+                for (idx, offset) in [(2, large), (9, small)] {
+                    if let AstrometricObservation::Optical { ra, .. } = &mut observations[idx] {
+                        *ra += offset * sigma;
+                    }
+                }
+                let fit = solve_with_rejection(
+                    &true_state,
+                    &observations,
+                    &allowed,
+                    false,
+                    None,
+                    &[],
+                    20,
+                    threshold,
+                    10,
+                )
+                .unwrap();
+                let z = cmc_z_scores(&fit, &observations, &allowed, false, None).unwrap();
+                let at_floor = fit.included.iter().filter(|&&v| v).count() <= 6;
+                for (i, (&kept, &z)) in fit.included.iter().zip(&z).enumerate() {
+                    let case = format!("outliers of {large} and {small} sigma, obs {i}, z {z}");
+                    if kept {
+                        assert!(
+                            at_floor || z <= threshold,
+                            "included above threshold: {case}"
+                        );
+                    } else {
+                        assert!(
+                            z > threshold * CMC_RECOVERY_FRACTION,
+                            "rejected below recovery: {case}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// A single large outlier (100 sigma) should still be rejected even

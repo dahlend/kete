@@ -390,6 +390,7 @@ fn hessian_whitening_scales(
 /// thermal emissivity (not fitted).
 ///
 /// # Errors
+/// - If a prior's bounds do not satisfy `lo < hi`.
 /// - If Nelder-Mead fails to find a feasible starting point.
 /// - If all MCMC chains fail to produce valid draws.
 pub fn fit_mcmc(
@@ -402,6 +403,7 @@ pub fn fit_mcmc(
     num_tune: usize,
     num_draws: usize,
 ) -> KeteResult<FitResult> {
+    priors.validate()?;
     let problem = FitProblem::new(model, obs, c_hg, emissivity, priors);
 
     // 1. Multi-start NM seed.

@@ -266,11 +266,12 @@ impl PyTime {
         format!("Time({})", self.0.jd())
     }
 
+    /// Times compare by their Julian date as an f64, the value :attr:`jd` reports.
     fn __eq__(&self, other: PyTime) -> bool {
-        self.0 == other.0
+        self.0.jd() == other.0.jd()
     }
 
     fn __lt__(&self, other: PyTime) -> bool {
-        self.0 < other.0
+        self.0.jd() < other.0.jd()
     }
 }

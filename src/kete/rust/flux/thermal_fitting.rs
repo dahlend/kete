@@ -247,11 +247,11 @@ impl PyFluxObs {
         self.0.point_estimate()
     }
 
-    /// Lower-side 1-sigma uncertainty in Jy. ``None`` if no point estimate, or
-    /// for an upper limit (whose constrained side is ``sigma_hi``).
+    /// 1-sigma uncertainty in Jy: the lower-side width of a detection, the noise
+    /// scale of an upper limit, or ``None`` if there is no point estimate.
     #[getter]
     fn sigma(&self) -> Option<f64> {
-        self.0.sigma_lo()
+        self.0.sigma_lo().or_else(|| self.0.sigma_hi())
     }
 
     /// Upper-side 1-sigma uncertainty in Jy, or ``None`` if no point estimate.
@@ -368,7 +368,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for PyParamPrior {
 
 /// Gaussian centering argument: symmetric `(mean, sigma)` or asymmetric
 /// `(mean, sigma_lo, sigma_hi)`.
-#[derive(FromPyObject)]
+#[derive(FromPyObject, IntoPyObject)]
 enum GaussianArg {
     Sym((f64, f64)),
     Asym((f64, f64, f64)),
@@ -395,10 +395,17 @@ impl PyParamPrior {
         self.0.bounds
     }
 
-    /// Gaussian center as ``(mean, sigma_lo, sigma_hi)``, or ``None``.
+    /// Gaussian center as ``(mean, sigma)``, ``(mean, sigma_lo, sigma_hi)`` when
+    /// the two widths differ, or ``None``.
     #[getter]
-    fn gaussian(&self) -> Option<(f64, f64, f64)> {
-        self.0.gaussian
+    fn gaussian(&self) -> Option<GaussianArg> {
+        self.0.gaussian.map(|(mean, sigma_lo, sigma_hi)| {
+            if sigma_lo == sigma_hi {
+                GaussianArg::Sym((mean, sigma_lo))
+            } else {
+                GaussianArg::Asym((mean, sigma_lo, sigma_hi))
+            }
+        })
     }
 
     fn __repr__(&self) -> String {

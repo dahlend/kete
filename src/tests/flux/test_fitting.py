@@ -29,3 +29,25 @@ def test_fluxobs_positional_order():
 
     with pytest.raises(ValueError, match="at least one"):
         kete.flux.FluxObs(None, None, "W3", sun2obj, sun2obs)
+
+    assert lim.sigma == 3.0e-4
+
+
+def test_param_prior_gaussian():
+    assert kete.flux.ParamPrior((0.5, 3.0), (1.0, 0.3)).gaussian == (1.0, 0.3)
+    asym = kete.flux.ParamPrior((0.5, 3.0), (1.0, 0.2, 0.4))
+    assert asym.gaussian == (1.0, 0.2, 0.4)
+    assert kete.flux.ParamPrior((0.5, 3.0)).gaussian is None
+
+
+@pytest.mark.parametrize("bounds", [(5.0, 5.0), (10.0, 5.0), (float("nan"), 10.0)])
+def test_unordered_prior_bounds_raise(bounds):
+    sun2obj = [2.0, 0.0, 0.0]
+    sun2obs = [2.5, 0.3, 0.0]
+    obs = [
+        kete.flux.FluxObs(f, f * 0.05, band, sun2obj, sun2obs)
+        for f, band in [(1e-3, "W3"), (3e-3, "W4"), (1e-5, "W2")]
+    ]
+    priors = kete.flux.FluxPriors(diameter=kete.flux.ParamPrior(bounds))
+    with pytest.raises(ValueError, match="diameter prior bounds"):
+        kete.flux.fit_model("neatm", obs, h_mag=15.0, priors=priors)

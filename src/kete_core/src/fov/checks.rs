@@ -26,8 +26,12 @@ use std::f64::consts::FRAC_PI_2;
 /// The position of each object comes from `ephem` at the light-time corrected
 /// epoch. The result has one entry per patch of `fov`. An entry holds the
 /// Sun-centered states seen in that patch, or `None` if the patch has no
-/// object. An object is reported as not visible if its lookup fails, for
-/// example outside the ephemeris coverage.
+/// object. The observer is referred to the Sun through `ephem` first, so it may
+/// have any center. An object is reported as not visible if its lookup fails,
+/// for example outside the ephemeris coverage.
+///
+/// # Errors
+/// Fails if the observer cannot be referred to the Sun at its epoch.
 ///
 /// # Panics
 /// Panics if `fov` is inconsistent: `contains` returns a patch index of
@@ -36,8 +40,9 @@ pub fn check_ephemeris<E: Ephemeris, F: FovLike>(
     ephem: &E,
     fov: &F,
     obj_ids: &[i32],
-) -> Vec<Option<SimultaneousStates>> {
-    let obs = fov.observer();
+) -> KeteResult<Vec<Option<SimultaneousStates>>> {
+    let mut obs = fov.observer().clone();
+    ephem.try_change_center(&mut obs, 10)?;
 
     let mut visible: Vec<Vec<State<_>>> = vec![Vec::new(); fov.n_patches()];
 
@@ -76,13 +81,13 @@ pub fn check_ephemeris<E: Ephemeris, F: FovLike>(
         visible[patch_idx].push(state);
     }
 
-    visible
+    Ok(visible
         .into_iter()
         .enumerate()
         .map(|(idx, states_patch)| {
             SimultaneousStates::new_exact(states_patch, Some(fov.get_child(idx).into_fov())).ok()
         })
-        .collect()
+        .collect())
 }
 
 /// Check which states are seen in which FOVs.

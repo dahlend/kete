@@ -60,6 +60,10 @@ def read_obj(path: str | os.PathLike) -> tuple[np.ndarray, np.ndarray]:
                         f"Only triangular faces are supported, found {len(idx)} "
                         f"vertices in: {line.strip()}"
                     )
+                if 0 in idx:
+                    raise ValueError(
+                        f"Face indices start at 1, found 0 in: {line.strip()}"
+                    )
                 n = len(vert_rows)
                 face_rows.append([i - 1 if i > 0 else n + i for i in idx])
     vertices = np.array(vert_rows, dtype=float).reshape(-1, 3)

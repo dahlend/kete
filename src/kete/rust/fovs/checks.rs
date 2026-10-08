@@ -126,17 +126,15 @@ pub fn fov_spk_checks_py(
     // holding the GIL and waiting to load kernels cannot block on it.
     let visible: Vec<Vec<PySimultaneousStates>> = py.detach(|| {
         let eph = SpiceEphemeris::loaded()?;
-        Ok::<_, Error>(
-            fovs.into_par_iter()
-                .map(|fov| {
-                    let fov = fov.unwrap();
-                    check_ephemeris(&eph, &fov, &obj_ids)
-                        .into_iter()
-                        .filter_map(|pop| pop.map(|p| PySimultaneousStates(Box::new(p))))
-                        .collect()
-                })
-                .collect(),
-        )
+        fovs.into_par_iter()
+            .map(|fov| {
+                let fov = fov.unwrap();
+                Ok(check_ephemeris(&eph, &fov, &obj_ids)?
+                    .into_iter()
+                    .filter_map(|pop| pop.map(|p| PySimultaneousStates(Box::new(p))))
+                    .collect())
+            })
+            .collect::<Result<_, Error>>()
     })?;
     Ok(visible.into_iter().flatten().collect())
 }

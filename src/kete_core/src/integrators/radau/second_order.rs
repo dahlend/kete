@@ -471,7 +471,8 @@ where
     /// ```
     ///
     /// over the first `control_dim` components, with `da/dt` from one extra evaluation
-    /// a small fraction of `|v| / |a|` ahead. Both are ratios of the state's own
+    /// a small fraction of `|v| / |a|` ahead, and never past `final_time`, so the force
+    /// is only evaluated at times the integration itself covers. Both are ratios of the state's own
     /// quantities, so the estimate does not depend on the units. The step is half the
     /// estimate: the first step starts from `b = 0` rather than from a prediction, and a
     /// first step whose error is still above target is redone once (see [`Self::step`]).
@@ -487,7 +488,8 @@ where
         }
         let tau_v = v_norm / a_norm;
 
-        let dt = 1e-3 * tau_v;
+        let span = (self.final_time - self.cur_time).elapsed.abs();
+        let dt = (1e-3 * tau_v).min(span);
         let pos = &self.cur_state
             + &self.cur_state_der * (dir * dt)
             + &self.cur_state_der_der * (0.5 * dt * dt);

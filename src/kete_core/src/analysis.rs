@@ -16,7 +16,7 @@
 use crate::errors::{Error, KeteResult};
 use crate::forces::GravParams;
 use crate::frames::{Ecliptic, InertialFrame};
-use crate::kepler::{compute_peri_dist, compute_semi_major};
+use crate::kepler::compute_peri_dist;
 use crate::state::State;
 use nalgebra::Vector3;
 
@@ -193,7 +193,7 @@ impl BPlane {
 ///
 /// # Errors
 /// Returns an error if the center body's GM is unknown, or if the orbit is
-/// not hyperbolic (energy <= 0 or non-finite).
+/// not hyperbolic (energy <= 0 or non-finite, or eccentricity <= 1).
 pub fn compute_b_plane<T: InertialFrame>(state: &State<T>) -> KeteResult<BPlane> {
     let gm = GravParams::try_mass_from_naif_id(state.center_id())?;
     let state = state.clone().into_frame::<Ecliptic>();
@@ -211,9 +211,7 @@ pub fn compute_b_plane<T: InertialFrame>(state: &State<T>) -> KeteResult<BPlane>
 
     let v_inf = (2.0 * energy).sqrt();
 
-    // Semi-major axis (negative for hyperbola) and periapsis, both from the shared
-    // two-body forms rather than re-derived here.
-    let a = compute_semi_major(&pos, &vel, gm);
+    // Periapsis from the shared two-body form rather than re-derived here.
     let closest_approach = compute_peri_dist(&pos, &vel, gm);
 
     // Angular momentum
@@ -236,9 +234,18 @@ pub fn compute_b_plane<T: InertialFrame>(state: &State<T>) -> KeteResult<BPlane>
     // Eccentricity vector
     let e_vec = vel.cross(&h) / gm - pos / r;
     let ecc = e_vec.norm();
+    // Rounding can leave an orbit with energy just above zero with an eccentricity
+    // at or below one, where the asymptote does not exist.
+    if ecc <= 1.0 {
+        return Err(Error::ValueError(format!(
+            "compute_b_plane requires a hyperbolic orbit, the eccentricity is {ecc}"
+        )));
+    }
 
-    // B-plane miss distance.
-    let b_mag = a.abs() * (ecc * ecc - 1.0).sqrt();
+    // B-plane miss distance, the impact parameter `|h| / v_inf`. This equals
+    // `|a| sqrt(e^2 - 1)` but stays finite as the energy approaches zero, where `a`
+    // diverges.
+    let b_mag = h_mag / v_inf;
 
     // Incoming asymptote direction. In the perifocal basis (e_hat, p_hat), the
     // velocity at true anomaly nu is proportional to (-sin(nu), e + cos(nu)).
@@ -548,5 +555,34 @@ mod tests {
             399,
         );
         assert!(compute_b_plane(&state).is_err());
+    }
+
+    /// Within rounding of the escape speed the result is either an error or finite;
+    /// it is never NaN.
+    #[test]
+    fn test_b_plane_near_escape_is_never_nan() {
+        let gm = EARTH_GM;
+        for i in 0..40 {
+            let r = 1e-4 * (1.0 + f64::from(i) * 0.25);
+            let escape = (2.0 * gm / r).sqrt();
+            for k in 0..40 {
+                let v = escape * (1.0 + f64::from(k) * f64::EPSILON);
+                let state = State::<Ecliptic>::new(
+                    Desig::Empty,
+                    Time::<TDB>::new(2451545.0),
+                    Vector::new([r * 0.6, r * 0.8, 0.0]),
+                    Vector::new([v * 0.6, -v * 0.48, v * 0.64]),
+                    399,
+                );
+                if let Ok(bp) = compute_b_plane(&state) {
+                    assert!(
+                        [bp.b_t, bp.b_r, bp.b_mag, bp.theta]
+                            .iter()
+                            .all(|x| x.is_finite()),
+                        "r = {r}, v = {v}: {bp:?}"
+                    );
+                }
+            }
+        }
     }
 }

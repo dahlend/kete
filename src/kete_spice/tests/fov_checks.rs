@@ -8,7 +8,7 @@ use kete_core::constants::C_AU_PER_DAY_INV;
 use kete_core::constants::{GMS, GMS_SQRT};
 use kete_core::desigs::Desig;
 use kete_core::forces::{DustNonGrav, NonGravKind, ParameterMask};
-use kete_core::fov::{FovLike, GenericRectangle, OmniDirectional};
+use kete_core::fov::{FovLike, GenericCone, GenericRectangle, OmniDirectional};
 use kete_core::fov::{check_ephemeris, check_visible};
 use kete_core::frames::{Equatorial, Vector};
 use kete_core::state::State;
@@ -128,7 +128,7 @@ fn test_check_omni_visible() {
         assert!((n_body.pos - exact.pos).norm() < 1e-9);
 
         // Check spk queries
-        let spk_check = &check_ephemeris(&eph, &fov, &[20000042])[0];
+        let spk_check = &check_ephemeris(&eph, &fov, &[20000042]).unwrap()[0];
         assert!(spk_check.is_some());
         let spk_check = &spk_check.as_ref().unwrap().states[0];
         assert!(
@@ -143,11 +143,42 @@ fn test_check_omni_visible() {
 
     // The Sun is co-located with itself in a Sun-centered FOV check
     let sun_fov = OmniDirectional::new(observer.clone());
-    let sun_check = &check_ephemeris(&eph, &sun_fov, &[10])[0];
+    let sun_check = &check_ephemeris(&eph, &sun_fov, &[10]).unwrap()[0];
     assert!(sun_check.is_some());
     let sun_state = &sun_check.as_ref().unwrap().states[0];
     // The Sun is always at the solar center.
     assert!(sun_state.pos.norm() < 1e-12);
+}
+
+/// The observer may have any center: the same FOV finds the same object whether its
+/// observer is stored relative to the Sun or to the solar system barycenter.
+#[test]
+fn check_ephemeris_accepts_any_observer_center() {
+    kete_spice::test_data::ensure_test_spk();
+    let eph = SpiceEphemeris::loaded().unwrap();
+    let spk = eph.spk();
+    let observer = State::new(
+        Desig::Empty,
+        2451545.0,
+        [0.0, 1., 0.0],
+        [-GMS_SQRT, 0.0, 0.0],
+        10,
+    );
+    let target = spk
+        .try_get_state_with_center(20000042, observer.epoch, 10)
+        .unwrap();
+    let pointing = target.pos - observer.pos;
+
+    let mut barycentric = observer.clone();
+    spk.try_change_center(&mut barycentric, 0).unwrap();
+    // A 1e-3 radian cone is much narrower than the Sun's offset from the barycenter
+    // as seen from the asteroid, so a check that ignored the observer's center
+    // would look in the wrong place.
+    for obs in [observer, barycentric] {
+        let fov = GenericCone::new(pointing, 1e-3, obs);
+        let seen = &check_ephemeris(&eph, &fov, &[20000042]).unwrap()[0];
+        assert!(seen.is_some());
+    }
 }
 
 /// An object almost at rest relative to the observer passes the pre-filter at the

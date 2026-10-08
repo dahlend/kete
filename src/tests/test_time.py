@@ -16,3 +16,9 @@ class TestTime:
 
         assert Time.j2000().jd == 2451545
         assert Time.now().jd > Time.j2000().jd
+
+    def test_equality_across_construction_routes(self):
+        for mjd in (40000.123456789, 51544.5, 60676.0008007399, 69999.987654321):
+            assert Time.from_mjd(mjd) == Time(mjd + 2400000.5)
+        assert Time(2460000.123456789) == Time(2460000.0) + 0.123456789
+        assert Time(2460000.0) < Time(2460000.0) + 1e-6

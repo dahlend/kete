@@ -67,6 +67,12 @@ class TestReadObj:
         with pytest.raises(ValueError, match="triangular"):
             kete.shape.read_obj(path)
 
+    def test_rejects_zero_index(self, tmp_path):
+        path = tmp_path / "zero.obj"
+        path.write_text("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 0 1 2\nv 0 0 1\n")
+        with pytest.raises(ValueError, match="start at 1"):
+            kete.shape.read_obj(path)
+
 
 class TestPolyhedron:
     def test_cube_properties(self):

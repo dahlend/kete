@@ -5,6 +5,7 @@
 
 use crate::common::ThermalGeometry;
 use crate::{BandInfo, bond_albedo, hg_apparent_flux};
+use kete_core::errors::{Error, KeteResult};
 use nalgebra::Vector3;
 
 /// Degrees of freedom for the Student-t likelihood.
@@ -976,6 +977,33 @@ impl Default for FluxPriors {
             vis_albedo: ParamPrior::bounds_only(0.01, 1.0),
             f_sigma: ParamPrior::bounds_only(0.5, 5.0),
         }
+    }
+}
+
+impl FluxPriors {
+    /// Check that every prior has bounds with `lo < hi`.
+    ///
+    /// # Errors
+    /// [`Error::ValueError`] naming the first prior whose bounds are not ordered,
+    /// including bounds that are NaN.
+    pub fn validate(&self) -> KeteResult<()> {
+        for (name, prior) in [
+            ("diameter", &self.diameter),
+            ("beaming", &self.beaming),
+            ("r_ir", &self.r_ir),
+            ("h_mag", &self.h_mag),
+            ("g_param", &self.g_param),
+            ("vis_albedo", &self.vis_albedo),
+            ("f_sigma", &self.f_sigma),
+        ] {
+            let (lo, hi) = prior.bounds;
+            if lo.is_nan() || hi.is_nan() || lo >= hi {
+                return Err(Error::ValueError(format!(
+                    "The {name} prior bounds must satisfy lo < hi, got ({lo}, {hi})."
+                )));
+            }
+        }
+        Ok(())
     }
 }
 
