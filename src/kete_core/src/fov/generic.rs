@@ -30,20 +30,24 @@ pub struct GenericRectangle {
 
 impl GenericRectangle {
     /// Create a new Generic Rectangular FOV
-    #[must_use]
+    ///
+    /// # Errors
+    /// Returns [`Error::ValueError`](crate::errors::Error::ValueError) if
+    /// `pointing` is not finite or points at a celestial pole, where the rotation
+    /// is undefined. See [`SphericalPolygon::new`](crate::geometry::SphericalPolygon::new).
     pub fn new(
         pointing: Vector<Equatorial>,
         rotation: f64,
         lon_width: f64,
         lat_width: f64,
         observer: State<Equatorial>,
-    ) -> Self {
-        let patch = SphericalPolygon::new(pointing, rotation, lon_width, lat_width);
-        Self {
+    ) -> KeteResult<Self> {
+        let patch = SphericalPolygon::new(pointing, rotation, lon_width, lat_width)?;
+        Ok(Self {
             observer,
             patch,
             rotation,
-        }
+        })
     }
 
     /// Create a Field of view from a collection of corners.

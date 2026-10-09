@@ -48,10 +48,17 @@ pub fn closest_approach<E: Ephemeris>(
     }
 
     // Adaptive sample count: at least 20 samples per orbital period of the
-    // shorter-period object, minimum 200 total.
-    let elem_a = CometElements::from_state(&state_a.clone().into_frame::<Ecliptic>())?;
-    let elem_b = CometElements::from_state(&state_b.clone().into_frame::<Ecliptic>())?;
-    let min_period = elem_a.orbital_period().min(elem_b.orbital_period());
+    // shorter-period object, minimum 200 total. The period is heliocentric. A
+    // state the ephemeris cannot move to the Sun only loses the adaptive count.
+    let period = |state: &State<Equatorial>| {
+        let mut sun_state = state.clone();
+        if ephem.try_change_center(&mut sun_state, 10).is_err() {
+            return f64::NAN;
+        }
+        CometElements::from_state(&sun_state.into_frame::<Ecliptic>())
+            .map_or(f64::NAN, |elem| elem.orbital_period())
+    };
+    let min_period = period(state_a).min(period(state_b));
     #[allow(clippy::cast_sign_loss, reason = "always positive by construction")]
     let n_samples = if min_period.is_finite() && min_period > 0.0 {
         ((span / min_period) * 20.0).ceil().max(200.0) as usize

@@ -122,13 +122,20 @@ impl SphericalPolygon {
     ///   longitudinally in radians.
     /// * `lat_width` - If the rotation is 0, this defines the width of the rectangle
     ///   latitudinally in radians.
-    #[must_use]
+    ///
+    /// The rotation is measured from the direction to the celestial north pole. That
+    /// direction is undefined when `pointing` is at either celestial pole, so such a
+    /// pointing is an error. Construct the rectangle from its corners instead.
+    ///
+    /// # Errors
+    /// Returns [`Error::ValueError`] if `pointing` is not finite, is zero, or points
+    /// at a celestial pole of the equatorial frame.
     pub fn new(
         pointing: Vector<Equatorial>,
         rotation: f64,
         lon_width: f64,
         lat_width: f64,
-    ) -> Self {
+    ) -> KeteResult<Self> {
         // Rotate the Z axis to match the defined rotation angle, this vector is not
         // orthogonal to the pointing vector, but is in the correct plane of the final
         // up vector.
@@ -137,6 +144,13 @@ impl SphericalPolygon {
         // construct the vector orthogonal to the pointing and rotate z axis vectors.
         // left = cross(up, pointing)
         let left_vec = pointing.cross(up_vec);
+        if !left_vec.is_finite() || left_vec.norm() <= f64::EPSILON * pointing.norm() {
+            return Err(Error::ValueError(
+                "A rectangle FOV cannot point at a celestial pole, where its rotation \
+                 from celestial north is undefined; construct it from its corners instead."
+                    .into(),
+            ));
+        }
 
         // Given the new left vector, and the existing orthogonal pointing vector,
         // construct a new up vector which is in the same plane as it was before, but
@@ -151,7 +165,7 @@ impl SphericalPolygon {
         let n3 = (-left_vec).rotate_around(up_vec, lon_width / 2.0);
         let n4 = (-up_vec).rotate_around(left_vec, -lat_width / 2.0);
 
-        Self::from_normals(&[n1, n2, n3, n4])
+        Ok(Self::from_normals(&[n1, n2, n3, n4]))
     }
 
     /// Construct the patch from the 4 corners of the field of view.
@@ -683,6 +697,19 @@ mod tests {
         );
     }
 
+    /// A rectangle pointed at a celestial pole has no defined rotation and is an
+    /// error. Just off the pole it builds and contains its center.
+    #[test]
+    fn rectangle_at_pole_is_error() {
+        for z in [1.0, -1.0] {
+            assert!(SphericalPolygon::new([0.0, 0.0, z].into(), 0.3, 0.1, 0.1).is_err());
+        }
+        assert!(SphericalPolygon::new([0.0, 0.0, 0.0].into(), 0.0, 0.1, 0.1).is_err());
+        let near: Vector<Equatorial> = [1e-6, 0.0, 1.0].into();
+        let fov = SphericalPolygon::new(near, 0.3, 0.1, 0.1).unwrap();
+        assert!(fov.contains(&near).is_inside());
+    }
+
     #[test]
     fn test_rectangular_patch() {
         let rot = (45_f64).to_radians();
@@ -690,8 +717,8 @@ mod tests {
         let outside = [1.0, 0.1, 0.0].into();
         let just_inside = [1.0, (0.05_f64).sin() * 0.99, (0.05_f64).sin() * 0.99].into();
         let just_outside = [1.0, (0.05_f64).sin() * 1.01, (0.05_f64).sin() * 1.01].into();
-        let fov = SphericalPolygon::new([1.0, 0.0, 0.0].into(), 0.0, 0.1, 0.1);
-        let fov_rot = SphericalPolygon::new([1.0, 0.0, 0.0].into(), rot, 0.1, 0.1);
+        let fov = SphericalPolygon::new([1.0, 0.0, 0.0].into(), 0.0, 0.1, 0.1).unwrap();
+        let fov_rot = SphericalPolygon::new([1.0, 0.0, 0.0].into(), rot, 0.1, 0.1).unwrap();
 
         assert!(fov.contains(&inside).is_inside());
         assert!(fov.contains(&just_inside).is_inside());
@@ -710,7 +737,7 @@ mod tests {
         let (half, offset) = (0.05_f64, 0.2_f64);
         for (length, dec) in [(1.0, 0.0_f64), (3.0, 0.0), (0.01, 0.0), (1.0, 1.0)] {
             let pointing = Vector::new([dec.cos(), 0.0, dec.sin()]) * length;
-            let fov = SphericalPolygon::new(pointing, 0.0, 2.0 * half, 2.0 * half);
+            let fov = SphericalPolygon::new(pointing, 0.0, 2.0 * half, 2.0 * half).unwrap();
             // Two au away, `offset` radians toward the north of the pointing.
             let point = Vector::new([(dec + offset).cos(), 0.0, (dec + offset).sin()]) * 2.0;
             let Contains::Outside(dist) = fov.contains(&point) else {
@@ -723,8 +750,8 @@ mod tests {
     #[test]
     fn test_rectangular_patch_latlon() {
         let rot = (45_f64).to_radians();
-        let fov = SphericalPolygon::new([1.0, 0.0, 0.0].into(), 0.0, 0.1, 0.2);
-        let fov_rot = SphericalPolygon::new([1.0, 0.0, 0.0].into(), rot, 0.1, 0.2);
+        let fov = SphericalPolygon::new([1.0, 0.0, 0.0].into(), 0.0, 0.1, 0.2).unwrap();
+        let fov_rot = SphericalPolygon::new([1.0, 0.0, 0.0].into(), rot, 0.1, 0.2).unwrap();
 
         assert!((fov.lat_width() - 0.2).abs() < 1e-10);
         assert!((fov.lon_width() - 0.1).abs() < 1e-10);

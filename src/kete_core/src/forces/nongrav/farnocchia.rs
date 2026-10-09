@@ -170,9 +170,9 @@ impl FarnocchiaNonGrav {
     /// Build, validating and pre-normalizing the spin pole.
     ///
     /// # Errors
-    /// Returns `Error::ValueError` if any of `albedo`, `absorptivity`, or
-    /// `flattening` is non-finite or negative, if `flattening > 1`, or if
-    /// the spin pole is non-finite or zero.
+    /// Returns `Error::ValueError` if `albedo` or `absorptivity` is non-finite
+    /// or negative, if `flattening` is outside `(0, 1]`, or if the spin pole is
+    /// non-finite or zero.
     pub fn new(
         albedo: f64,
         absorptivity: f64,
@@ -190,9 +190,11 @@ impl FarnocchiaNonGrav {
                 )));
             }
         }
-        if flattening > 1.0 {
+        // A flattening of 0 is a disk with no thickness, where the shape factors
+        // diverge.
+        if flattening <= 0.0 || flattening > 1.0 {
             return Err(Error::ValueError(format!(
-                "FarnocchiaNonGrav: 'flattening' must be <= 1 (got {flattening})"
+                "FarnocchiaNonGrav: 'flattening' must be in (0, 1] (got {flattening})"
             )));
         }
         if !spin_pole.is_finite() || spin_pole.norm() == 0.0 {

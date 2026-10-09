@@ -111,3 +111,19 @@ def test_unknown_center_raises(cls):
     cls(*args)
     with pytest.raises(ValueError):
         cls(*args, center_id=0)
+
+
+def test_invalid_elements_raise():
+    """Elements outside their physical domain raise rather than return a state."""
+    with pytest.raises(ValueError):
+        _ = CometElements("t", 2460000.5, -0.5, 10.0, 1.0, 0.0, 2460000.5, 0.0).state
+    with pytest.raises(ValueError):
+        _ = CometElements(
+            "t", 2460000.5, 0.5, float("nan"), 1.0, 0.0, 2460000.5, 0.0
+        ).state
+    with pytest.raises(ValueError):
+        _ = EquinoctialElements("t", 2460000.5, -1.0, 0.1, 0.0, 0.0, 0.0, 0.0).state
+    with pytest.raises(ValueError):
+        _ = EquinoctialElements(
+            "t", 2460000.5, 1.0, 0.1, 0.0, 0.0, 0.0, float("nan")
+        ).state

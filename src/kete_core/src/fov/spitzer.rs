@@ -93,7 +93,11 @@ pub struct SpitzerFrame {
 
 impl SpitzerFrame {
     /// Create a Spitzer frame from a pointing vector, rotation and explicit FOV size.
-    #[must_use]
+    ///
+    /// # Errors
+    /// Returns [`Error::ValueError`](crate::errors::Error::ValueError) if
+    /// `pointing` is not finite or points at a celestial pole, where the rotation
+    /// is undefined. See [`SphericalPolygon::new`](crate::geometry::SphericalPolygon::new).
     pub fn new(
         pointing: Vector<Equatorial>,
         rotation: f64,
@@ -104,16 +108,16 @@ impl SpitzerFrame {
         width: f64,
         height: f64,
         duration: f64,
-    ) -> Self {
-        let patch = SphericalPolygon::new(pointing, rotation, width, height);
-        Self {
+    ) -> KeteResult<Self> {
+        let patch = SphericalPolygon::new(pointing, rotation, width, height)?;
+        Ok(Self {
             observer,
             patch,
             obs_id,
             band,
             artifact_uri,
             duration,
-        }
+        })
     }
 
     /// Create a Spitzer frame from the 4 corners of the FOV.
@@ -230,7 +234,8 @@ mod tests {
             IRAC_WIDTH,
             IRAC_WIDTH,
             12.0,
-        );
+        )
+        .unwrap();
         assert_eq!(fov.band, SpitzerBand::Irac1);
         assert_eq!(&*fov.obs_id, "ivo://test/obs_id");
         assert_eq!(fov.n_patches(), 1);
@@ -288,7 +293,8 @@ mod tests {
             IRAC_WIDTH,
             IRAC_WIDTH,
             12.0,
-        );
+        )
+        .unwrap();
         let fov = frame.into_fov();
         assert!(matches!(fov, FOV::Spitzer(_)));
     }

@@ -52,7 +52,11 @@ pub struct NeosCmos {
 
 impl NeosCmos {
     /// Create a NEOS FOV
-    #[must_use]
+    ///
+    /// # Errors
+    /// Returns [`Error::ValueError`](crate::errors::Error::ValueError) if
+    /// `pointing` is not finite or points at a celestial pole, where the rotation
+    /// is undefined. See [`SphericalPolygon::new`](crate::geometry::SphericalPolygon::new).
     pub fn new(
         pointing: Vector<Equatorial>,
         rotation: f64,
@@ -65,9 +69,9 @@ impl NeosCmos {
         exposure_id: u8,
         cmos_id: u8,
         band: u8,
-    ) -> Self {
-        let patch = SphericalPolygon::new(pointing, rotation, NEOS_WIDTH, NEOS_HEIGHT);
-        Self {
+    ) -> KeteResult<Self> {
+        let patch = SphericalPolygon::new(pointing, rotation, NEOS_WIDTH, NEOS_HEIGHT)?;
+        Ok(Self {
             observer,
             patch,
             rotation,
@@ -79,7 +83,7 @@ impl NeosCmos {
             exposure_id,
             band,
             cmos_id,
-        }
+        })
     }
 }
 

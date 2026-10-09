@@ -697,9 +697,15 @@ pub(super) enum Tail {
 /// term's [`Penalty::cost_and_derivatives`]. New constraint shapes are new variants here.
 #[derive(Debug, Clone)]
 pub(super) enum Penalty {
-    /// Hard interval: logistic-barrier walls of steepness `k`, flat (zero cost)
-    /// inside `[lo, hi]`, falling off outside. Never scaled by `scale_factor`.
-    TopHat { lo: f64, hi: f64, k: f64 },
+    /// Hard interval: logistic-barrier walls of steepness `k_lo` at `lo` and `k_hi`
+    /// at `hi`, flat (zero cost) inside `[lo, hi]`, falling off outside. Never
+    /// scaled by `scale_factor`.
+    TopHat {
+        lo: f64,
+        hi: f64,
+        k_lo: f64,
+        k_hi: f64,
+    },
     /// (Possibly asymmetric / one-sided) centering term toward `mean`.
     ///
     /// `scale_lo`/`scale_hi` are the below-/above-`mean` 1-sigma widths; a `None`
@@ -717,13 +723,15 @@ pub(super) enum Penalty {
 }
 
 impl Penalty {
-    /// A hard `[lo, hi]` interval with width-aware wall steepness.
+    /// A hard `[lo, hi]` interval with a wall at each bound.
     ///
-    /// Steepness is `BARRIER_K` per unit for intervals wider than 1, and
-    /// `BARRIER_K` per interval-width for narrower ones -- so a tight interval
-    /// (flux bounds at ~1e-3 Jy, or the tight-bounds parameter-fixing idiom in
-    /// [`ParamPrior`]) reads as a wall rather than a gentle slope, while wide
-    /// intervals keep the legacy fixed steepness.
+    /// Each wall has steepness `BARRIER_K / scale`, so its soft region is about
+    /// `scale / BARRIER_K` wide. The scale of a wall is the smallest of the
+    /// bound's magnitude, the interval width, and 1. A bound near zero, such as
+    /// an albedo of 0.01, so gets a wall narrow compared with the bound, and the
+    /// prior stays flat up to it. A tight interval (the parameter-fixing idiom in
+    /// [`ParamPrior`]) reads as a wall rather than a gentle slope. A bound of
+    /// exactly zero uses the interval width and 1.
     ///
     /// # Panics
     /// Panics if `hi <= lo`; callers exposed to user input should validate
@@ -733,8 +741,20 @@ impl Penalty {
             hi > lo,
             "TopHat interval requires lo < hi, got ({lo}, {hi})"
         );
-        let k = BARRIER_K / (hi - lo).min(1.0);
-        Self::TopHat { lo, hi, k }
+        let wall_k = |bound: f64| {
+            let magnitude = if bound == 0.0 {
+                f64::INFINITY
+            } else {
+                bound.abs()
+            };
+            BARRIER_K / magnitude.min(hi - lo).min(1.0)
+        };
+        Self::TopHat {
+            lo,
+            hi,
+            k_lo: wall_k(lo),
+            k_hi: wall_k(hi),
+        }
     }
 
     /// Value of [`Self::cost_and_derivatives`].
@@ -749,8 +769,8 @@ impl Penalty {
     /// ignores it.
     pub(super) fn cost_and_derivatives(&self, x: f64, scale_factor: f64) -> (f64, f64, f64) {
         match *self {
-            Self::TopHat { lo, hi, k } => {
-                let (c, d_x) = logistic_barrier_and_derivative(x, lo, hi, k);
+            Self::TopHat { lo, hi, k_lo, k_hi } => {
+                let (c, d_x) = logistic_barrier_and_derivative(x, lo, hi, k_lo, k_hi);
                 (c, d_x, 0.0)
             }
             Self::Center {
@@ -1011,13 +1031,13 @@ impl FluxPriors {
 #[cfg(test)]
 #[must_use]
 pub(super) fn logistic_barrier(x: f64, lo: f64, hi: f64, k: f64) -> f64 {
-    logistic_barrier_and_derivative(x, lo, hi, k).0
+    logistic_barrier_and_derivative(x, lo, hi, k, k).0
 }
 
 /// Logistic barrier prior, and its derivative with respect to `x`: a smooth wall
 /// that is 0 in the interior and -> -inf at the boundaries.
 ///
-/// $$\ln\sigma(k(x - lo)) + \ln\sigma(k(hi - x))$$
+/// $$\ln\sigma(k_{lo}(x - lo)) + \ln\sigma(k_{hi}(hi - x))$$
 ///
 /// where $\sigma$ is the logistic sigmoid.
 ///
@@ -1025,8 +1045,8 @@ pub(super) fn logistic_barrier(x: f64, lo: f64, hi: f64, k: f64) -> f64 {
 /// * `x`  -- parameter value
 /// * `lo` -- lower bound
 /// * `hi` -- upper bound
-/// * `k`  -- steepness (larger = sharper wall; 30 is typical)
-fn logistic_barrier_and_derivative(x: f64, lo: f64, hi: f64, k: f64) -> (f64, f64) {
+/// * `k_lo`, `k_hi` -- steepness of the lower and upper walls (larger = sharper)
+fn logistic_barrier_and_derivative(x: f64, lo: f64, hi: f64, k_lo: f64, k_hi: f64) -> (f64, f64) {
     // ln(sigmoid(z)) = z - ln(1 + exp(z)) but for numerical stability use -ln(1+exp(-z))
     // which is equivalent and avoids overflow for large positive z. Its derivative is
     // sigmoid(-z).
@@ -1039,9 +1059,9 @@ fn logistic_barrier_and_derivative(x: f64, lo: f64, hi: f64, k: f64) -> (f64, f6
             (z - e.ln_1p(), (1.0 + e).recip())
         }
     }
-    let (lower, d_lower) = log_sigmoid(k * (x - lo));
-    let (upper, d_upper) = log_sigmoid(k * (hi - x));
-    (lower + upper, k * (d_lower - d_upper))
+    let (lower, d_lower) = log_sigmoid(k_lo * (x - lo));
+    let (upper, d_upper) = log_sigmoid(k_hi * (hi - x));
+    (lower + upper, k_lo * d_lower - k_hi * d_upper)
 }
 
 /// Result of evaluating the forward model at a parameter point.

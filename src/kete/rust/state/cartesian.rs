@@ -186,93 +186,97 @@ impl PyState {
     }
 
     /// Cometary orbital elements of the state.
+    ///
+    /// The elements are about the state's center. This and the element properties
+    /// below raise ``ValueError`` if the center has no known mass, such as the
+    /// solar system barycenter. Use :meth:`change_center` to move the state to the
+    /// Sun first.
     #[getter]
-    pub fn elements(&mut self) -> PyCometElements {
-        if self.elements.is_none() {
-            self.elements = Some(Box::new(
-                PyCometElements::from_state(self.clone())
-                    .expect("a state with a known center has cometary elements"),
-            ));
+    pub fn elements(&mut self) -> PyResult<PyCometElements> {
+        if let Some(elements) = &self.elements {
+            return Ok(*elements.clone());
         }
-        *self.elements.clone().unwrap()
+        let elements = PyCometElements::from_state(self.clone())?;
+        self.elements = Some(Box::new(elements.clone()));
+        Ok(elements)
     }
 
     /// Eccentricity of the orbit.
     #[getter]
-    pub fn eccentricity(&mut self) -> f64 {
-        self.elements().eccentricity()
+    pub fn eccentricity(&mut self) -> PyResult<f64> {
+        Ok(self.elements()?.eccentricity())
     }
 
     /// Inclination of the orbit in degrees.
     #[getter]
-    pub fn inclination(&mut self) -> f64 {
-        self.elements().inclination()
+    pub fn inclination(&mut self) -> PyResult<f64> {
+        Ok(self.elements()?.inclination())
     }
 
     /// Longitude of the ascending node of the orbit in degrees.
     #[getter]
-    pub fn lon_of_ascending(&mut self) -> f64 {
-        self.elements().lon_of_ascending()
+    pub fn lon_of_ascending(&mut self) -> PyResult<f64> {
+        Ok(self.elements()?.lon_of_ascending())
     }
 
     /// Perihelion time of the orbit in JD.
     #[getter]
-    pub fn peri_time(&mut self) -> PyTime {
-        self.elements().peri_time()
+    pub fn peri_time(&mut self) -> PyResult<PyTime> {
+        Ok(self.elements()?.peri_time())
     }
 
     /// Argument of Perihelion of the orbit in degrees.
     #[getter]
-    pub fn peri_arg(&mut self) -> f64 {
-        self.elements().peri_arg()
+    pub fn peri_arg(&mut self) -> PyResult<f64> {
+        Ok(self.elements()?.peri_arg())
     }
 
     /// Distance of Perihelion of the orbit in au.
     #[getter]
-    pub fn peri_dist(&mut self) -> f64 {
-        self.elements().peri_dist()
+    pub fn peri_dist(&mut self) -> PyResult<f64> {
+        Ok(self.elements()?.peri_dist())
     }
 
     /// Distance of Aphelion of the orbit in au, infinite if the orbit is not bound.
     #[getter]
-    pub fn aphelion(&mut self) -> f64 {
-        self.elements().aphelion()
+    pub fn aphelion(&mut self) -> PyResult<f64> {
+        Ok(self.elements()?.aphelion())
     }
 
     /// Semi Major Axis of the orbit in au.
     #[getter]
-    pub fn semi_major(&mut self) -> f64 {
-        self.elements().semi_major()
+    pub fn semi_major(&mut self) -> PyResult<f64> {
+        Ok(self.elements()?.semi_major())
     }
 
-    /// Mean Motion of the orbit in degrees.
+    /// Mean Motion of the orbit in degrees per day.
     #[getter]
-    pub fn mean_motion(&mut self) -> f64 {
-        self.elements().mean_motion()
+    pub fn mean_motion(&mut self) -> PyResult<f64> {
+        Ok(self.elements()?.mean_motion())
     }
 
     /// Orbital Period in days, infinite if the orbit is not bound.
     #[getter]
-    pub fn orbital_period(&mut self) -> f64 {
-        self.elements().orbital_period()
+    pub fn orbital_period(&mut self) -> PyResult<f64> {
+        Ok(self.elements()?.orbital_period())
     }
 
     /// Eccentric Anomaly in degrees.
     #[getter]
     pub fn eccentric_anomaly(&mut self) -> PyResult<f64> {
-        self.elements().eccentric_anomaly()
+        self.elements()?.eccentric_anomaly()
     }
 
     /// Mean Anomaly in degrees.
     #[getter]
-    pub fn mean_anomaly(&mut self) -> f64 {
-        self.elements().mean_anomaly()
+    pub fn mean_anomaly(&mut self) -> PyResult<f64> {
+        Ok(self.elements()?.mean_anomaly())
     }
 
     /// True Anomaly in degrees.
     #[getter]
     pub fn true_anomaly(&mut self) -> PyResult<f64> {
-        self.elements().true_anomaly()
+        self.elements()?.true_anomaly()
     }
 
     /// Designation of the object if defined.

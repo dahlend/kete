@@ -192,3 +192,26 @@ def test_moid(planet, ceres_traj):
 
     ceres = ceres_traj[0]
     assert np.isclose(moid(ceres, state), ceres_moid, atol=1e-2)
+
+
+def test_closest_approach_barycentric_states():
+    """States about the barycenter work, as they did before."""
+    from kete import closest_approach
+
+    a = spice.get_state("Ceres", 2460000.5, center=0)
+    b = spice.get_state("Vesta", 2460000.5, center=0)
+    _jd, dist = closest_approach(a, b, 2460000.5, 2460100.5)
+    assert np.isfinite(dist) and dist > 0
+
+
+@pytest.mark.parametrize(
+    "a_over_m, lambda_0, flattening",
+    [(1e-6, -0.1, 1.0), (-1e-6, 0.1, 1.0), (np.inf, 0.1, 1.0), (1e-6, 0.1, 0.0)],
+)
+def test_farnocchia_rejects_invalid_values(a_over_m, lambda_0, flattening):
+    with pytest.raises(ValueError):
+        NonGravModel.new_farnocchia(a_over_m, lambda_0, 0.1, 0.9, flattening, [0, 0, 1])
+
+
+def test_farnocchia_accepts_free_values():
+    NonGravModel.new_farnocchia(np.nan, np.nan, 0.1, 0.9, 1.0, [0, 0, 1])

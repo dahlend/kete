@@ -60,3 +60,14 @@ def test_fov_state_check_dt_limit_deprecated(observer, ceres):
     with pytest.warns(DeprecationWarning, match="dt_limit"):
         calc = kete.fov_state_check([ceres], [fov], dt_limit=0.1)[0]
     assert np.allclose(expected[0].pos, calc[0].pos)
+
+
+def test_rectangle_at_pole_raises():
+    """A rectangle pointed at a celestial pole has no defined rotation."""
+    observer = kete.State("obs", 2460000.5, [1.0, 0.0, 0.0], [0.0, 0.0172, 0.0])
+    pole = kete.Vector.from_ra_dec(0.0, 90.0)
+    with pytest.raises(ValueError):
+        kete.RectangleFOV(pole, 0.0, observer, 1.0, 1.0)
+    near = kete.Vector.from_ra_dec(0.0, 89.9)
+    fov = kete.RectangleFOV(near, 0.0, observer, 1.0, 1.0)
+    assert np.isfinite(fov.pointing.ra)

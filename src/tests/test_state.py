@@ -70,3 +70,12 @@ class TestlState:
         assert np.isclose(elements.peri_arg, peri_arg)
         assert np.isclose(elements.lon_of_ascending, lon)
         assert np.isclose(elements.peri_dist, peri_dist)
+
+
+def test_elements_of_barycentric_state_raise():
+    """A state about the barycenter has no two-body elements, so the element
+    properties raise ValueError rather than crash."""
+    state = State("x", 2460000.5, [1.2, 0.0, 0.0], [0.0, 0.015, 0.0], center_id=0)
+    for name in ["elements", "eccentricity", "peri_dist", "mean_anomaly"]:
+        with pytest.raises(ValueError):
+            getattr(state, name)

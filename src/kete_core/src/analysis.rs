@@ -300,8 +300,8 @@ mod tests {
 
     // Earth GM from DE441 masses.tsv: 3.00348961546514e-06 * GMS
     const EARTH_GM: f64 = 3.003_489_615_465_14e-06 * GMS;
-    // Jupiter mass fraction from masses.tsv is 9.54790662709902e-04
-    const JUPITER_GM: f64 = 9.547_906_627_099_02e-04 * GMS;
+    // Jupiter mass fraction from masses.tsv is 9.547919099414246e-04
+    const JUPITER_GM: f64 = 9.547_919_099_414_246e-04 * GMS;
 
     #[test]
     fn test_hill_radius_earth() {

@@ -228,24 +228,24 @@ impl PacketSeries<'_> {
     /// size on each side of the request time. Near either end of the series,
     /// the window is truncated, not shifted. Thus it can hold fewer packets
     /// than the nominal size.
-    #[allow(
-        clippy::cast_possible_wrap,
-        clippy::cast_sign_loss,
-        reason = "Record counts come from the file and fit in isize."
-    )]
     fn window(&self, tick: f64) -> (usize, usize) {
-        let n = self.epochs.len() as isize;
-        // Use half of the nominal window size, not half of the packets present.
-        // A series shorter than the window then uses up to `half` packets on
-        // each side of the request.
-        let half = self.window_size as isize / 2;
-        // `found` is the first tag at or after the request.
-        let found = match self.epochs.binary_search_by(|probe| probe.total_cmp(&tick)) {
-            Ok(c) | Err(c) => c as isize,
+        let n = self.epochs.len();
+        let half = self.window_size / 2;
+        // `low` and `high` bracket the request time, as in the SPICE reader: `low`
+        // is the last tag before the request and `high` the next. A request on the
+        // first tag uses the first two tags, so the window still reaches past it.
+        let before = self.epochs.partition_point(|&e| e < tick);
+        let (low, high) = if before == 0 {
+            (0, 1.min(n - 1))
+        } else {
+            (before - 1, before)
         };
-        let lo = (found - half).clamp(0, n - 1);
-        let hi = (found + half).clamp(lo + 1, n);
-        (lo as usize, (hi - lo) as usize)
+        // Use half of the nominal window size on each side, truncated at the ends
+        // of the series.
+        let left = half.min(low + 1);
+        let right = half.min(n - high);
+        let first = low + 1 - left;
+        (first, (left + right).min(n - first).max(1))
     }
 
     /// Return the per-packet signs that make the window quaternions consistent.
@@ -291,11 +291,17 @@ impl PacketSeries<'_> {
 
             match self.subtype {
                 0 | 2 => {
+                    // As for the other subtypes, a stored packet can carry the
+                    // opposite sign of its neighbors. A quaternion and its
+                    // derivative flip together, so the interpolation stays exact.
+                    // The SPICE reader raises an error here instead.
+                    let signs = self.window_signs(start, size);
                     for idx in 0..4 {
-                        let q: Box<[f64]> =
-                            (0..size).map(|i| self.packet(start + i)[idx]).collect();
+                        let q: Box<[f64]> = (0..size)
+                            .map(|i| self.packet(start + i)[idx] * signs[i])
+                            .collect();
                         let dq: Box<[f64]> = (0..size)
-                            .map(|i| self.packet(start + i)[idx + 4] * rate)
+                            .map(|i| self.packet(start + i)[idx + 4] * rate * signs[i])
                             .collect();
                         let (v, dv) = hermite_interpolation(times, &q, &dq, tick - times[0]);
                         quat[idx] = v;
@@ -738,6 +744,44 @@ mod tests {
                     "subtype {subtype}"
                 );
             }
+        }
+    }
+
+    /// At the first tag the window still reaches past it, as in the SPICE reader.
+    /// A Lagrange window of 2 then gives the chord rate, not zero.
+    #[test]
+    fn first_epoch_rate_uses_two_packets() {
+        let (_, _, expected) = attitude(0.0);
+        let seg = segment(1, 2, 6);
+        let (_, rates) = seg.get_quaternion_at_tick(seg.record_times()[0]);
+        let rates = rates.expect("segment declares angular rates");
+        for idx in 0..3 {
+            assert!(
+                (rates[idx] - expected[idx]).abs() < 1e-3 * expected[idx].abs().max(1e-12),
+                "axis {idx}: got {} want {}",
+                rates[idx],
+                expected[idx]
+            );
+        }
+    }
+
+    /// A Hermite packet stored with the opposite sign of its neighbors is the same
+    /// attitude, and the interpolation across it is unchanged.
+    #[test]
+    fn hermite_sign_flip_is_the_same_attitude() {
+        for subtype in [0, 2] {
+            let reference = segment(subtype, 4, 12);
+            let mut flipped = segment(subtype, 4, 12);
+            let rec_size = packet_size(subtype).unwrap();
+            // Flip the quaternion and its derivative of packet 6.
+            for value in &mut flipped.array.daf.data[6 * rec_size..6 * rec_size + 8] {
+                *value = -*value;
+            }
+            let tick = f64::midpoint(reference.record_times()[5], reference.record_times()[6]);
+            let (q_ref, _) = reference.get_quaternion_at_tick(tick);
+            let (q_flip, _) = flipped.get_quaternion_at_tick(tick);
+            let dot = q_ref.into_inner().dot(&q_flip.into_inner()).abs();
+            assert!((dot - 1.0).abs() < 1e-12, "subtype {subtype}: |dot| {dot}");
         }
     }
 

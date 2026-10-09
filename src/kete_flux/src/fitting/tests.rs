@@ -150,8 +150,11 @@ fn test_neatm_nll_at_truth() {
 #[test]
 fn test_neatm_fit_recovery() {
     let (obs, hg) = synthetic_neatm_obs();
+    // The synthetic object (D = 10 km, H = 18) has a geometric albedo of about
+    // 0.001, below the default lower bound of 0.01, so the bound is widened.
     let priors = FluxPriors {
         h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
+        vis_albedo: ParamPrior::bounds_only(1e-4, 1.0),
         ..FluxPriors::default()
     };
 
@@ -348,7 +351,8 @@ fn test_penalty() {
     let b = Penalty::TopHat {
         lo: 1.0,
         hi: 2.0,
-        k: 50.0,
+        k_lo: 50.0,
+        k_hi: 50.0,
     };
     assert!(b.cost(1.5, 1.0) > -1e-3, "interior is flat");
     assert!(b.cost(0.0, 1.0) < -1.0, "outside is walled off");
@@ -377,17 +381,47 @@ fn test_top_hat_steepness() {
         tight.cost(10.021, 1.0)
     );
 
-    // Intervals wider than 1 unit keep the legacy fixed steepness exactly.
+    // Intervals wider than 1 unit, with bounds of magnitude 1 or more, keep the
+    // fixed steepness `BARRIER_K` exactly.
     let wide = Penalty::top_hat(-5.0, 35.0);
-    let legacy = Penalty::TopHat {
+    let fixed = Penalty::TopHat {
         lo: -5.0,
         hi: 35.0,
-        k: 50.0,
+        k_lo: 50.0,
+        k_hi: 50.0,
     };
     for x in [-6.0, -5.1, 0.0, 20.0, 34.9, 36.0] {
         assert!(
-            (wide.cost(x, 1.0) - legacy.cost(x, 1.0)).abs() < 1e-12,
-            "wide bounds must match legacy steepness at x={x}"
+            (wide.cost(x, 1.0) - fixed.cost(x, 1.0)).abs() < 1e-12,
+            "wide bounds must keep the fixed steepness at x={x}"
+        );
+    }
+}
+
+/// A bound near zero gets a wall narrow compared with the bound, so the prior
+/// is flat a short distance inside it. The default albedo and diameter lower
+/// bounds are the cases this matters for.
+#[test]
+fn test_top_hat_flat_near_small_bounds() {
+    let albedo = Penalty::top_hat(0.01, 1.0);
+    for x in [0.012, 0.02, 0.03, 0.05, 0.3] {
+        assert!(
+            albedo.cost(x, 1.0) > -1e-3,
+            "albedo prior at {x} is {}",
+            albedo.cost(x, 1.0)
+        );
+    }
+    assert!(
+        albedo.cost(0.009, 1.0) < -4.0,
+        "below the albedo bound is walled off"
+    );
+
+    let diameter = Penalty::top_hat(0.001, 1000.0);
+    for x in [0.0012, 0.01, 0.02, 1.0] {
+        assert!(
+            diameter.cost(x, 1.0) > -1e-3,
+            "diameter prior at {x} is {}",
+            diameter.cost(x, 1.0)
         );
     }
 }
@@ -559,8 +593,11 @@ fn test_frm_fit_recovery() {
         .map(|(band, &flux)| FluxObs::detection(flux, flux * 0.05, band, sun2obj, sun2obs))
         .collect();
 
+    // The synthetic object (D = 10 km, H = 18) has a geometric albedo of about
+    // 0.001, below the default lower bound of 0.01, so the bound is widened.
     let priors = FluxPriors {
         h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
+        vis_albedo: ParamPrior::bounds_only(1e-4, 1.0),
         ..FluxPriors::default()
     };
     let res = fit_mcmc(Model::Frm, &obs, C_V, 0.9, &priors, 1, 50, 50)

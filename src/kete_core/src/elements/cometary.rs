@@ -14,7 +14,7 @@
 use super::gm_sqrt_for_center;
 use crate::frames::{CenterBody, DynCenter, Ecliptic};
 use crate::kepler::{analytic_2_body_delta, compute_eccentric_anomaly, universal_g};
-use crate::prelude::{Desig, KeteResult, State};
+use crate::prelude::{Desig, Error, KeteResult, State};
 use crate::time::{TDB, Time};
 
 use nalgebra::Vector3;
@@ -84,9 +84,11 @@ impl CometElements {
     /// Convert cometary elements to an [`State`] if possible.
     ///
     /// # Errors
-    /// Returns [`Error::Convergence`](crate::errors::Error::Convergence) if the
-    /// elements are not finite, the perihelion distance is not positive, or the
-    /// Kepler solver does not converge.
+    /// Returns [`Error::ValueError`](crate::errors::Error::ValueError) if an
+    /// element is not finite, the eccentricity is negative, or the perihelion
+    /// distance is not positive. Returns
+    /// [`Error::Convergence`](crate::errors::Error::Convergence) if the Kepler
+    /// solver does not converge.
     pub fn try_to_state(&self) -> KeteResult<State<Ecliptic>> {
         let [pos, vel] = self.to_pos_vel()?;
         Ok(State::new(
@@ -177,9 +179,11 @@ impl CometElements {
     /// the origin, in `[0, 2 pi)`.
     ///
     /// # Errors
-    /// Returns [`Error::Convergence`](crate::errors::Error::Convergence) if the
-    /// elements are not finite, the perihelion distance is not positive, or the
-    /// Kepler solver does not converge.
+    /// Returns [`Error::ValueError`](crate::errors::Error::ValueError) if an
+    /// element is not finite, the eccentricity is negative, or the perihelion
+    /// distance is not positive. Returns
+    /// [`Error::Convergence`](crate::errors::Error::Convergence) if the Kepler
+    /// solver does not converge.
     pub fn true_anomaly(&self) -> KeteResult<f64> {
         let (pos, _) = self.perifocal()?;
         Ok(pos.y.atan2(pos.x).rem_euclid(TAU))
@@ -293,10 +297,29 @@ impl CometElements {
     /// carries it to the epoch.
     ///
     /// # Errors
-    /// Returns [`Error::Convergence`](crate::errors::Error::Convergence) if the
-    /// elements are not finite, the perihelion distance is not positive, or the
-    /// Kepler solver does not converge.
+    /// Returns [`Error::ValueError`](crate::errors::Error::ValueError) if an
+    /// element is not finite, the eccentricity is negative, or the perihelion
+    /// distance is not positive. Returns
+    /// [`Error::Convergence`](crate::errors::Error::Convergence) if the Kepler
+    /// solver does not converge.
     fn perifocal(&self) -> KeteResult<(Vector3<f64>, Vector3<f64>)> {
+        let finite = [
+            self.eccentricity,
+            self.inclination,
+            self.lon_of_ascending,
+            self.peri_arg,
+            self.peri_dist,
+            self.gm_sqrt,
+        ]
+        .iter()
+        .all(|x| x.is_finite());
+        if !finite || self.eccentricity < 0.0 || self.peri_dist <= 0.0 || self.gm_sqrt <= 0.0 {
+            return Err(Error::ValueError(format!(
+                "Cometary elements must be finite, with a non-negative eccentricity and a \
+                 positive perihelion distance; found e = {}, q = {}.",
+                self.eccentricity, self.peri_dist
+            )));
+        }
         let mu = self.gm_sqrt * self.gm_sqrt;
         let peri_pos = Vector3::new(self.peri_dist, 0.0, 0.0);
         let peri_vel = Vector3::new(

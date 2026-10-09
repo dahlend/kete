@@ -99,8 +99,8 @@ impl UncertainState {
     /// Construct from a cartesian state and a **cartesian** covariance, converting the
     /// covariance into element coordinates.
     ///
-    /// This is the entry point for anything which solved in cartesian coordinates, the
-    /// orbit fitter among them. The covariance is taken to be in the same frame as the
+    /// This is the entry point for anything which solved in cartesian
+    /// coordinates. The covariance is taken to be in the same frame as the
     /// state.
     ///
     /// # Errors
@@ -251,13 +251,19 @@ impl UncertainState {
     /// * `seed` -- Optional RNG seed for reproducibility.
     ///
     /// # Errors
-    /// Returns an error if a drawn sample leaves the elements' physical domain.
+    /// Returns [`Error::ValueError`] if the covariance matrix is not finite, or
+    /// if a drawn sample leaves the physical domain of the elements.
     pub fn sample<F: InertialFrame>(
         &self,
         n_samples: usize,
         seed: Option<u64>,
     ) -> KeteResult<Vec<(State<F>, Vec<f64>)>> {
         let n = self.cov_matrix.nrows();
+        if self.cov_matrix.iter().any(|x| !x.is_finite()) {
+            return Err(Error::ValueError(
+                "The covariance matrix is not finite, so it cannot be sampled.".into(),
+            ));
+        }
 
         // Decompose using eigenvalues to handle positive semi-definite
         // matrices (e.g. when some parameters have zero variance).

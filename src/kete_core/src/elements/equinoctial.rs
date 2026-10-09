@@ -139,9 +139,10 @@ impl EquinoctialElements {
     /// Convert equinoctial elements to a [`State`] if possible.
     ///
     /// # Errors
-    /// Fails when the orbit equation `1 + f cos L_0 + g sin L_0` is not positive, which
-    /// places the true longitude outside the asymptotes of an open orbit. This cannot occur
-    /// below unit eccentricity.
+    /// Returns [`Error::ValueError`] if an element is not finite, the semi-latus
+    /// rectum is not positive, or the orbit equation `1 + f cos L_0 + g sin L_0` is
+    /// not positive. The last places the true longitude outside the asymptotes of an
+    /// open orbit, which cannot occur below unit eccentricity.
     pub fn try_to_state(&self) -> KeteResult<State<Ecliptic>> {
         let [pos, vel] = self.to_pos_vel()?;
         Ok(State::new(
@@ -180,13 +181,10 @@ impl EquinoctialElements {
     /// a function of time alone and not of the state.
     ///
     /// # Errors
-    /// Fails when the true longitude is outside the physical domain, matching
+    /// Fails when the elements are outside the physical domain, matching
     /// [`Self::try_to_state`].
     pub fn state_jacobian<F: InertialFrame>(&self) -> KeteResult<Matrix6<f64>> {
-        let orbit_eq = self.orbit_equation();
-        if orbit_eq <= 0.0 {
-            return Err(Self::domain_error());
-        }
+        let orbit_eq = self.checked_orbit_equation()?;
         let (sin_lon, cos_lon) = self.true_lon.sin_cos();
         let (pole_h, pole_k) = (self.pole_h, self.pole_k);
         let scale_sq = 1.0 + pole_h * pole_h + pole_k * pole_k;
@@ -505,16 +503,15 @@ impl EquinoctialElements {
     /// This is closed form. There is no Kepler solve and no branch on eccentricity.
     ///
     /// # Errors
-    /// Fails when the orbit equation `1 + f cos L_0 + g sin L_0` is not positive. The
+    /// Returns [`Error::ValueError`] if an element is not finite or the semi-latus
+    /// rectum is not positive. Also fails when the orbit equation
+    /// `1 + f cos L_0 + g sin L_0` is not positive. The
     /// true longitude then points outside the asymptotes of an open orbit, which is not a
     /// configuration the object can reach. This cannot occur below unit eccentricity, where
     /// the orbit equation is bounded away from zero; at exactly unit eccentricity it
     /// vanishes at the single true longitude opposite perihelion.
     pub(super) fn to_pos_vel(&self) -> KeteResult<[[f64; 3]; 2]> {
-        let orbit_eq = self.orbit_equation();
-        if orbit_eq <= 0.0 {
-            return Err(Self::domain_error());
-        }
+        let orbit_eq = self.checked_orbit_equation()?;
         let (sin_lon, cos_lon) = self.true_lon.sin_cos();
         let (f_hat, g_hat, _) = Self::basis(self.pole_h, self.pole_k);
 
@@ -556,6 +553,38 @@ impl EquinoctialElements {
     fn orbit_equation(&self) -> f64 {
         let (sin_lon, cos_lon) = self.true_lon.sin_cos();
         1.0 + self.ecc_f * cos_lon + self.ecc_g * sin_lon
+    }
+
+    /// The orbit equation at the epoch, after checking that the elements describe
+    /// a reachable point.
+    ///
+    /// # Errors
+    /// Returns [`Error::ValueError`] if an element is not finite, the semi-latus
+    /// rectum is not positive, or the orbit equation is not positive.
+    fn checked_orbit_equation(&self) -> KeteResult<f64> {
+        let finite = [
+            self.semi_latus,
+            self.ecc_f,
+            self.ecc_g,
+            self.pole_h,
+            self.pole_k,
+            self.true_lon,
+            self.gm_sqrt,
+        ]
+        .iter()
+        .all(|x| x.is_finite());
+        if !finite || self.semi_latus <= 0.0 || self.gm_sqrt <= 0.0 {
+            return Err(Error::ValueError(format!(
+                "Equinoctial elements must be finite with a positive semi-latus rectum; \
+                 found p = {}.",
+                self.semi_latus
+            )));
+        }
+        let orbit_eq = self.orbit_equation();
+        if orbit_eq <= 0.0 {
+            return Err(Self::domain_error());
+        }
+        Ok(orbit_eq)
     }
 
     /// The error returned wherever the true longitude leaves the reachable arc.

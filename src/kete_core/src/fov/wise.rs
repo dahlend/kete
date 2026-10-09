@@ -27,21 +27,25 @@ pub struct WiseCmos {
 
 impl WiseCmos {
     /// Create a Wise fov
-    #[must_use]
+    ///
+    /// # Errors
+    /// Returns [`Error::ValueError`](crate::errors::Error::ValueError) if
+    /// `pointing` is not finite or points at a celestial pole, where the rotation
+    /// is undefined. See [`SphericalPolygon::new`](crate::geometry::SphericalPolygon::new).
     pub fn new(
         pointing: Vector<Equatorial>,
         rotation: f64,
         observer: State<Equatorial>,
         frame_num: u64,
         scan_id: Box<str>,
-    ) -> Self {
-        let patch = SphericalPolygon::new(pointing, rotation, WISE_WIDTH, WISE_WIDTH);
-        Self {
+    ) -> KeteResult<Self> {
+        let patch = SphericalPolygon::new(pointing, rotation, WISE_WIDTH, WISE_WIDTH)?;
+        Ok(Self {
             observer,
             patch,
             frame_num,
             scan_id,
-        }
+        })
     }
 
     /// Create a Wise fov from corners

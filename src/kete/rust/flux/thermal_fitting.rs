@@ -327,7 +327,10 @@ impl PyFluxObs {
 /// Parameters
 /// ----------
 /// bounds :
-///     ``(low, high)`` logistic-barrier hard bounds.
+///     ``(low, high)`` hard bounds. Each bound is a smooth wall, so the sampler
+///     can use gradients. The soft part of a wall is about 2% of the smallest of
+///     the bound's magnitude, ``high - low``, and 1. Inside the bounds, away from
+///     the walls, the prior is flat.
 /// gaussian :
 ///     Optional Gaussian centering prior. Either ``(mean, sigma)`` for a
 ///     symmetric prior, or ``(mean, sigma_lo, sigma_hi)`` for an asymmetric one

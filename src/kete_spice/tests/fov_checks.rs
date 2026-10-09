@@ -50,7 +50,7 @@ fn test_check_rectangle_visible() {
             .unwrap();
 
         let vec = circular_back.pos - circular.pos;
-        let fov = GenericRectangle::new(vec, 0.0001, 0.01, 0.01, circular.clone());
+        let fov = GenericRectangle::new(vec, 0.0001, 0.01, 0.01, circular.clone()).unwrap();
         let seen = check_visible(&eph, &[fov], &[off_state.into()], &[], false).unwrap();
         assert_eq!(seen.len(), 1);
     }
@@ -80,7 +80,7 @@ fn linear_prefilter_matches_the_observer_center() {
         let spk = LOADED_SPK.try_read().unwrap();
         spk.try_to_ssb(object).unwrap().into()
     };
-    let fov = GenericRectangle::new([1.0, 0.0, 0.0].into(), 0.0, 0.01, 0.01, observer);
+    let fov = GenericRectangle::new([1.0, 0.0, 0.0].into(), 0.0, 0.01, 0.01, observer).unwrap();
     let seen = check_visible(
         &SpiceEphemeris::loaded().unwrap(),
         &[fov],
@@ -213,7 +213,7 @@ fn prefilter_allows_for_curvature() {
             eph.spk().try_change_center(&mut at, 10).unwrap();
             let radial = at.pos.normalize() * offset.norm();
             let observer = State::<Equatorial>::new(Desig::Empty, jd, at.pos - radial, at.vel, 10);
-            GenericRectangle::new(radial, 0.0, 0.01, 0.01, observer)
+            GenericRectangle::new(radial, 0.0, 0.01, 0.01, observer).unwrap()
         })
         .collect();
     let seen = check_visible(&eph, &fovs, &[object], &[], false).unwrap();
@@ -268,7 +268,7 @@ fn seen_through_a_night() {
             let target = spk
                 .try_get_state_with_center(20000042, jd - light_time, 10)
                 .unwrap();
-            GenericRectangle::new(target.pos - earth.pos, 0.0, 2e-4, 2e-4, earth)
+            GenericRectangle::new(target.pos - earth.pos, 0.0, 2e-4, 2e-4, earth).unwrap()
         })
         .collect();
     let asteroid = spk.try_get_state_with_center(20000042, start, 10).unwrap();
@@ -308,7 +308,7 @@ fn seen_while_at_rest_relative_to_the_ssb() {
             let exact =
                 check_visible(&eph, &[omni], std::slice::from_ref(&falling), &[], false).unwrap();
             let pos = exact[0].2.states[0].pos;
-            GenericRectangle::new(pos - earth.pos, 0.0, 1e-5, 1e-5, earth)
+            GenericRectangle::new(pos - earth.pos, 0.0, 1e-5, 1e-5, earth).unwrap()
         })
         .collect();
     let seen = check_visible(&eph, &fovs, &[falling], &[], false).unwrap();
@@ -379,7 +379,7 @@ fn many_fovs_from_one_trajectory() {
         } else {
             pointing = -pointing;
         }
-        fovs.push(GenericRectangle::new(pointing, 0.0, 0.01, 0.01, earth));
+        fovs.push(GenericRectangle::new(pointing, 0.0, 0.01, 0.01, earth).unwrap());
     }
 
     let seen = check_visible(&eph, &fovs, std::slice::from_ref(&asteroid), &[], false).unwrap();

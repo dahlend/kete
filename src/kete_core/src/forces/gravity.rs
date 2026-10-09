@@ -1012,6 +1012,30 @@ mod tests {
         Ok(a)
     }
 
+    /// The Earth's J2 is normalized by the WGS-84 equatorial radius, which is the
+    /// Earth's radius in the mass table. The J2 part of the acceleration at a GPS
+    /// distance must match an independent evaluation with that radius.
+    #[test]
+    fn earth_j2_uses_equatorial_radius() {
+        use crate::constants::AU_KM;
+        let planets = GravParams::planets();
+        let earth = planets.iter().find(|p| p.naif_id == 399).unwrap();
+        let mu = earth.mass;
+        let r_eq = 6378.137 / AU_KM;
+        // In the equatorial plane the J2 term points inward with magnitude
+        // 3/2 J2 mu R^2 / r^4.
+        let r = 26_560.0 / AU_KM;
+        let p = Vector3::new(r, 0.0, 0.0);
+        let j2_part = accel_of(earth, &p).unwrap() + p * (mu / r.powi(3));
+        let expected = -1.5 * EARTH_J2 * mu * r_eq * r_eq / r.powi(4);
+        // The table stores the radius as f32.
+        assert!(
+            (j2_part.x - expected).abs() <= 1e-6 * expected.abs(),
+            "J2 acceleration {:e}, expected {expected:e}",
+            j2_part.x
+        );
+    }
+
     /// J2 as a spherical harmonic body equals the oblate body, acceleration and
     /// Jacobian, with the pole carried by the orientation.
     #[test]

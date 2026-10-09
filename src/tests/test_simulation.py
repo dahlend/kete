@@ -307,19 +307,16 @@ def test_yarkovsky_validation(jd0):
     # one non-grav entry per test particle
     with pytest.raises(ValueError):
         SymplecticSim.from_spice(jd0, test_particles=[tp], non_gravs=[y, y])
-    # negative area-to-mass is unphysical; it is rejected when handed to the
-    # simulation (the model itself allows it to stay fittable-friendly)
-    sun = State("sun", jd0, Vector([0, 0, 0]), Vector([0, 0, 0]), center_id=0)
-    bad = NonGravModel.new_farnocchia(
-        a_over_m=-1.0,
-        lambda_0=0.5,
-        albedo=0.15,
-        absorptivity=0.9,
-        flattening=1.0,
-        spin_pole=[0, 0, 1],
-    )
+    # negative area-to-mass is unphysical, so the model rejects it
     with pytest.raises(ValueError):
-        SymplecticSim([sun], [1.0], test_particles=[tp], non_gravs=[bad])
+        NonGravModel.new_farnocchia(
+            a_over_m=-1.0,
+            lambda_0=0.5,
+            albedo=0.15,
+            absorptivity=0.9,
+            flattening=1.0,
+            spin_pole=[0, 0, 1],
+        )
     # a zero spin pole has no direction
     with pytest.raises(ValueError):
         NonGravModel.new_farnocchia(

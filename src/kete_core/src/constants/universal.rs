@@ -57,7 +57,7 @@ pub const GMS_SQRT: f64 = 0.01720209894996;
 /// The Astrophysical Journal, 845:166 (5pp), 2017 August 20
 pub const SUN_J2: f64 = 2.2e-7;
 
-/// Earth J2 Parameter
+/// Earth J2 Parameter, normalized by the WGS-84 equatorial radius of 6378.137 km.
 /// See "Revisiting Spacetrack Report #3" - Final page of appendix.
 pub const EARTH_J2: f64 = 0.00108262998905;
 

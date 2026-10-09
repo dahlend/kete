@@ -403,10 +403,17 @@ impl PyNonGravModel {
     ///     ``alpha = 1 - A_B`` where ``A_B`` is the Bond albedo. Multiplies
     ///     the thermal terms.
     /// flattening :
-    ///     Axis ratio ``e = R_P / R_E``. Use ``1.0`` for a sphere.
+    ///     Axis ratio ``e = R_P / R_E``, in ``(0, 1]``. Use ``1.0`` for a sphere.
     /// spin_pole :
     ///     Spin pole unit vector (any :class:`~kete.Vector` or length-3
     ///     sequence). Must be fixed in inertial space.
+    ///
+    /// Raises
+    /// ------
+    /// ValueError
+    ///     If ``a_over_m`` or ``lambda_0`` is neither NaN nor a finite value
+    ///     ``>= 0``, if ``albedo`` or ``absorptivity`` is negative or not finite,
+    ///     if ``flattening`` is outside ``(0, 1]``, or if ``spin_pole`` is zero.
     #[staticmethod]
     #[pyo3(signature = (a_over_m, lambda_0, albedo, absorptivity, flattening, spin_pole))]
     pub fn new_farnocchia(
@@ -417,6 +424,14 @@ impl PyNonGravModel {
         flattening: f64,
         spin_pole: VectorLike,
     ) -> PyResult<Self> {
+        // NaN marks a free parameter. A concrete value must be physical.
+        for (name, value) in [("a_over_m", a_over_m), ("lambda_0", lambda_0)] {
+            if !value.is_nan() && !(value.is_finite() && value >= 0.0) {
+                return Err(PyValueError::new_err(format!(
+                    "'{name}' must be NaN (free) or finite and >= 0, got {value}"
+                )));
+            }
+        }
         let pole = spin_pole.into_vector(PyFrames::Equatorial);
         let force = FarnocchiaNonGrav::new(albedo, absorptivity, flattening, pole)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;

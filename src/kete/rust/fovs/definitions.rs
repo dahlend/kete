@@ -47,6 +47,12 @@ pub struct PyWiseCmos(pub fov::WiseCmos);
 ///     Which chip of the target band this represents.
 /// band :
 ///     Band, can be either 1 or 2 to represent NC1/NC2.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If ``pointing`` is at a celestial pole, where the rotation from celestial
+///     north is undefined. Construct such a field from its corners instead.
 #[pyclass(module = "kete", frozen, name = "NeosCmos", from_py_object)]
 #[derive(Clone, Debug)]
 #[allow(clippy::upper_case_acronyms)]
@@ -223,6 +229,12 @@ pub struct PySpitzerFrame(pub fov::SpitzerFrame);
 ///     The longitudinal width of the rectangle in degrees.
 /// lat_width:
 ///     The latitudinal width of the rectangle in degrees.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If ``pointing`` is at a celestial pole, where the rotation from celestial
+///     north is undefined. Construct such a field from its corners instead.
 #[pyclass(module = "kete", frozen, name = "RectangleFOV", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyGenericRectangle(pub fov::GenericRectangle);
@@ -406,6 +418,9 @@ impl From<fov::FOV> for AllowedFOV {
 #[pymethods]
 impl PyWiseCmos {
     /// Construct a WISE CMOS fov from a pointing vector, rotation and observer state.
+    ///
+    /// Raises ``ValueError`` if ``pointing`` is at a celestial pole, where the
+    /// rotation from celestial north is undefined.
     #[staticmethod]
     pub fn from_pointing(
         pointing: VectorLike,
@@ -413,16 +428,16 @@ impl PyWiseCmos {
         observer: PyState,
         frame_num: u64,
         scan_id: String,
-    ) -> Self {
+    ) -> PyResult<Self> {
         let pointing = pointing.into_vector(observer.frame());
         let scan_id = scan_id.into();
-        PyWiseCmos(fov::WiseCmos::new(
+        Ok(PyWiseCmos(fov::WiseCmos::new(
             pointing,
             rotation.to_radians(),
             observer.raw,
             frame_num,
             scan_id,
-        ))
+        )?))
     }
 
     /// Construct a WISE CMOS fov the corners of the FOV and observer state.
@@ -505,15 +520,15 @@ impl PyGenericRectangle {
         observer: PyState,
         lon_width: f64,
         lat_width: f64,
-    ) -> Self {
+    ) -> PyResult<Self> {
         let pointing = pointing.into_vector(observer.frame());
-        PyGenericRectangle(fov::GenericRectangle::new(
+        Ok(PyGenericRectangle(fov::GenericRectangle::new(
             pointing,
             rotation.to_radians(),
             lon_width.to_radians(),
             lat_width.to_radians(),
             observer.raw,
-        ))
+        )?))
     }
 
     /// Construct a new Rectangle FOV from the corners.
@@ -732,9 +747,9 @@ impl PyNeosCmos {
         exposure_id: u8,
         cmos_id: u8,
         band: u8,
-    ) -> Self {
+    ) -> PyResult<Self> {
         let pointing = pointing.into_vector(observer.frame());
-        PyNeosCmos(fov::NeosCmos::new(
+        Ok(PyNeosCmos(fov::NeosCmos::new(
             pointing,
             rotation.to_radians(),
             observer.raw,
@@ -746,7 +761,7 @@ impl PyNeosCmos {
             exposure_id,
             cmos_id,
             band,
-        ))
+        )?))
     }
 
     /// The observer State.
@@ -1596,6 +1611,9 @@ impl PySpherexField {
 impl PySpitzerFrame {
     /// Construct a Spitzer FOV from a pointing vector, rotation, observer, and explicit
     /// FOV dimensions.
+    ///
+    /// Raises ``ValueError`` if ``pointing`` is at a celestial pole, where the
+    /// rotation from celestial north is undefined.
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
     pub fn from_pointing(
@@ -1623,7 +1641,7 @@ impl PySpitzerFrame {
             width.to_radians(),
             height.to_radians(),
             duration,
-        )))
+        )?))
     }
 
     /// Construct a Spitzer FOV from the 4 corners and observer state.
