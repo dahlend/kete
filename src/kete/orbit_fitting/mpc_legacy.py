@@ -14,6 +14,7 @@ import numpy as np
 from .._core import Observation
 from .common import (
     _fetch_debias_table,
+    _ground_observer,
     _over_obs_reweight_factors,
     _time_sigma_for_obs,
     get_observatory_std,
@@ -241,7 +242,12 @@ def mpc_obs_to_observations(
     Only optical (RA/Dec) observations are supported. Each MPCObservation is
     converted to an ``Observation.optical`` with the observer state computed
     from the MPC observatory code (ground-based), the stored spacecraft
-    position, or the stored roving observer location.
+    position, or the stored roving observer location. Ground-station positions
+    use the Earth orientation of the loaded PCK kernels. Before their coverage
+    starts, they use the approximate Earth orientation of
+    :func:`~kete.spice.approx_earth_pos_to_ecliptic`. Observations with an
+    unknown observatory code, or with an epoch outside the loaded planetary
+    ephemeris, are skipped with a logged warning.
 
     Per-observatory uncertainties are applied when available from the
     pre-computed residual table.  When no table entry exists for an observatory
@@ -254,20 +260,21 @@ def mpc_obs_to_observations(
 
     Parameters
     ----------
-    mpc_obs :
-        List of :class:`MPCObservation` objects.
-    apply_over_obs_reweight :
+    mpc_obs : list of MPCObservation
+        The observations to convert.
+    apply_over_obs_reweight : bool, optional
         When True (default), inflate sigma by sqrt(n/4) for groups of more
         than 4 observations from the same observatory on the same night,
         following Veres et al. 2017.  Spacecraft observations are exempt.
-    debias :
+    debias : bool, optional
         When True (default), apply the EFCC18 star-catalog bias correction.
         Requires the JPL ``debias_2018.tgz`` archive, downloaded on first use.
 
     Returns
     -------
     list[Observation]
-        One ``Observation.optical`` per input observation.
+        One ``Observation.optical`` per input observation that has an observer
+        state.
 
     Examples
     --------
@@ -282,6 +289,7 @@ def mpc_obs_to_observations(
         fit = kete.orbit_fitting.fit_orbit(initial_state, observations)
     """
     from .. import spice
+    from ..mpc import find_obs_code
     from ..time import Time as _Time
     from ..vector import Frames, State
 
@@ -304,6 +312,7 @@ def mpc_obs_to_observations(
         factors = [1.0] * len(mpc_obs)
 
     observations = []
+    n_no_observer = 0
     for obs, factor, is_sc in zip(mpc_obs, factors, spacecraft):
         ra = obs.ra
         dec = obs.dec
@@ -327,26 +336,33 @@ def mpc_obs_to_observations(
                 ra -= shift[0] / 3600.0
                 dec -= shift[1] / 3600.0
 
-        if is_sc and not any(np.isnan(obs.sun2sc)):
-            sun_pos = spice.get_state("Sun", obs.jd, center=0).pos
-            pos_ssb = np.array(obs.sun2sc) + np.array(list(sun_pos))
-            observer = State(
-                desig=obs.obs_code,
-                jd=obs.jd,
-                pos=pos_ssb,
-                vel=[0.0, 0.0, 0.0],
-                frame=Frames.Ecliptic,
-                center_id=0,
-            ).as_equatorial
-        elif obs.note2 == "V" and obs.geodetic is not None:
-            lat, lon, height_km = obs.geodetic
-            observer = spice.earth_pos_to_ecliptic(
-                obs.jd, lat, lon, height_km, name=obs.obs_code, center=0
-            ).as_equatorial
-        else:
-            observer = spice.mpc_code_to_ecliptic(
-                obs.obs_code, obs.jd, center=0
-            ).as_equatorial
+        try:
+            if is_sc and not any(np.isnan(obs.sun2sc)):
+                sun_pos = spice.get_state("Sun", obs.jd, center=0).pos
+                pos_ssb = np.array(obs.sun2sc) + np.array(list(sun_pos))
+                # The records give no spacecraft velocity; the Earth's is used, as for
+                # ADES spacecraft positions. It sets the apparent motion that scales
+                # the timing uncertainty.
+                earth_vel = spice.get_state("Earth", obs.jd, center=0).vel
+                observer = State(
+                    desig=obs.obs_code,
+                    jd=obs.jd,
+                    pos=pos_ssb,
+                    vel=list(earth_vel),
+                    frame=Frames.Ecliptic,
+                    center_id=0,
+                ).as_equatorial
+            elif obs.note2 == "V" and obs.geodetic is not None:
+                lat, lon, height_km = obs.geodetic
+                observer = _ground_observer(obs.jd, lat, lon, height_km, obs.obs_code)
+            else:
+                lat, lon, height_km, *_ = find_obs_code(obs.obs_code)
+                observer = _ground_observer(obs.jd, lat, lon, height_km, obs.obs_code)
+        except ValueError:
+            # An unknown observatory code, or the loaded ephemeris does not
+            # cover the epoch.
+            n_no_observer += 1
+            continue
 
         observations.append(
             Observation.optical(
@@ -359,4 +375,10 @@ def mpc_obs_to_observations(
             )
         )
 
+    if n_no_observer:
+        logger.warning(
+            "Skipped %d observations with no observer state: unknown observatory "
+            "code, or an epoch outside the loaded ephemeris.",
+            n_no_observer,
+        )
     return observations

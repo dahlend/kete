@@ -107,37 +107,6 @@ def fetch_radar_table(desig: str | None = None, update_cache: bool = False):
     return table
 
 
-def _station_coords(rec: dict, prefix: str) -> tuple[float, float, float] | None:
-    """Extract WGS84 geodetic (lat_deg, lon_deg, height_km) for a station.
-
-    ``prefix`` is either ``"rcvr"`` or ``"xmit"``.  Returns None when any
-    coordinate is missing or the altitude units are unsupported.
-    """
-    lat = rec.get(f"{prefix}_latitude")
-    lon = rec.get(f"{prefix}_longitude")
-    alt = rec.get(f"{prefix}_altitude")
-    alt_units = rec.get(f"{prefix}_alt_units") or "km"
-    code = rec.get(prefix)
-    try:
-        lat = float(lat)  # type: ignore
-        lon = float(lon)  # type: ignore
-        alt = float(alt)  # type: ignore
-    except (TypeError, ValueError):
-        logger.debug(
-            "Invalid coordinates for stn %s: lat=%s lon=%s alt=%s", code, lat, lon, alt
-        )
-        return None
-
-    if alt_units == "m":
-        alt_km = alt / 1000.0
-    elif alt_units == "km":
-        alt_km = alt
-    else:
-        logger.debug("Unsupported altitude units '%s' for stn %s", alt_units, code)
-        return None
-    return (lat, lon, alt_km)
-
-
 def fetch_radar_observations(
     desig: str, update_cache: bool = False
 ) -> list[Observation]:
@@ -148,12 +117,12 @@ def fetch_radar_observations(
     :py:meth:`Observation.radar_range` or :py:meth:`Observation.radar_rate`
     instance ready for orbit fitting.
 
-    Each record is converted using the station as the observer state.
-    For bistatic measurements (transmitter != receiver) the observer is
-    placed at the midpoint of the two stations; this approximates the
-    bistatic round-trip path to second order in (baseline / range) and
-    is accurate to a few meters for Earth-baseline NEO radar. Records
-    with missing coordinates or unrecognized units are skipped.
+    Each record keeps the geodetic coordinates of its transmitter and
+    receiver. The residual places the receiver at the receive epoch and the
+    transmitter at the transmit epoch, found by iterating on the round-trip
+    light time, so bistatic records are modeled exactly. Records with missing
+    coordinates or unrecognized units are skipped, as are records referenced to
+    the peak-power echo (``bp == "P"``) rather than the center of mass.
 
     Conversions assumed:
 
@@ -193,6 +162,11 @@ def fetch_radar_observations(
         rcvr = rec.get("rcvr")
         xmit = rec.get("xmit")
         if rcvr is None or xmit is None:
+            continue
+
+        if rec.get("bp") == "P":
+            # Referenced to the peak-power echo rather than the center of mass,
+            # which the model predicts; the offset between them is not known here.
             continue
 
         epoch = rec.get("epoch")
@@ -265,3 +239,34 @@ def fetch_radar_observations(
             continue
 
     return observations
+
+
+def _station_coords(rec: dict, prefix: str) -> tuple[float, float, float] | None:
+    """Extract WGS84 geodetic (lat_deg, lon_deg, height_km) for a station.
+
+    ``prefix`` is either ``"rcvr"`` or ``"xmit"``.  Returns None when any
+    coordinate is missing or the altitude units are unsupported.
+    """
+    lat = rec.get(f"{prefix}_latitude")
+    lon = rec.get(f"{prefix}_longitude")
+    alt = rec.get(f"{prefix}_altitude")
+    alt_units = rec.get(f"{prefix}_alt_units") or "km"
+    code = rec.get(prefix)
+    try:
+        lat = float(lat)  # type: ignore
+        lon = float(lon)  # type: ignore
+        alt = float(alt)  # type: ignore
+    except (TypeError, ValueError):
+        logger.debug(
+            "Invalid coordinates for stn %s: lat=%s lon=%s alt=%s", code, lat, lon, alt
+        )
+        return None
+
+    if alt_units == "m":
+        alt_km = alt / 1000.0
+    elif alt_units == "km":
+        alt_km = alt
+    else:
+        logger.debug("Unsupported altitude units '%s' for stn %s", alt_units, code)
+        return None
+    return (lat, lon, alt_km)

@@ -233,3 +233,203 @@ def test_ades_wgs84_altitude_meters():
         jd, 37.63058, 247.16759, 3.19, center=10
     ).as_equatorial
     assert np.allclose(observer.pos, expected.pos, atol=1e-12)
+
+
+@pytest.mark.parametrize(
+    "unpacked, packed", [("C/1680 V1", "CG80V010"), ("C/0837 F1", "C837F010")]
+)
+def test_historical_comet_designations(unpacked, packed):
+    assert mpc.pack_designation(unpacked) == packed
+    assert mpc.unpack_designation(packed) == unpacked
+
+
+def test_ades_optical_sigma_floor(tmp_path, monkeypatch):
+    """ADES optical sigmas are limited to 10 mas; occultation sigmas are not."""
+    import gzip
+    import hashlib
+    import json
+
+    from kete.orbit_fitting import mpc_api
+
+    monkeypatch.setattr(mpc_api, "cache_path", lambda sub_path: str(tmp_path))
+    base = {"obstime": "2021-06-28T20:34:20.000Z", "stn": "568", "rmscorr": "0.0"}
+    records = {
+        "ADES_DF": [
+            {
+                **base,
+                "Obstype": "optical",
+                "ra": "298.7",
+                "dec": "0.0",
+                "rmsra": "0.000004",
+                "rmsdec": "0.000004",
+            },
+            {
+                **base,
+                "Obstype": "optical",
+                "ra": "298.7",
+                "dec": "0.0",
+                "rmsra": "0.2",
+                "rmsdec": "0.3",
+            },
+            {
+                **base,
+                "Obstype": "occultation",
+                "rastar": "298.7",
+                "decstar": "0.0",
+                "rmsra": "0.001",
+                "rmsdec": "0.002",
+            },
+        ]
+    }
+    desig = "test floor"
+    h = hashlib.md5(desig.encode()).hexdigest()[:16]
+    (tmp_path / h[:3]).mkdir()
+    with gzip.open(tmp_path / h[:3] / f"{h}.json.gz", "wb") as f:
+        f.write(json.dumps(records).encode())
+
+    obs = mpc_api.fetch_mpc_observations(
+        desig, debias=False, apply_over_obs_reweight=False
+    )
+    sigmas = [(o.sigma_ra, o.sigma_dec) for o in obs]
+    assert np.allclose(sigmas, [(0.01, 0.01), (0.2, 0.3), (0.001, 0.002)])
+
+
+def _ellipse_axes(sigma_ra, sigma_dec, corr):
+    """Principal sigmas and the major-axis direction of an RA/Dec error ellipse."""
+    off = corr * sigma_ra * sigma_dec
+    vals, vecs = np.linalg.eigh(np.array([[sigma_ra**2, off], [off, sigma_dec**2]]))
+    return np.sqrt(vals), vecs[:, 1]
+
+
+def test_floor_error_ellipse_noop_above_floor():
+    """An ellipse whose axes are already above the floor is returned unchanged."""
+    from kete.orbit_fitting.common import _floor_error_ellipse
+
+    assert _floor_error_ellipse(0.2, 0.3, 0.5, 0.01) == (0.2, 0.3, 0.5)
+
+
+def test_floor_error_ellipse_keeps_orientation():
+    """Flooring raises the minor axis only, and keeps the major axis direction."""
+    from kete.orbit_fitting.common import _floor_error_ellipse
+
+    sigma_ra, sigma_dec, corr = 0.3, 0.2, 0.9999
+    axes, major = _ellipse_axes(sigma_ra, sigma_dec, corr)
+    assert axes[0] < 0.01
+    out = _floor_error_ellipse(sigma_ra, sigma_dec, corr, 0.01)
+    new_axes, new_major = _ellipse_axes(*out)
+    assert new_axes[0] == pytest.approx(0.01, rel=1e-9)
+    assert new_axes[1] == pytest.approx(axes[1], rel=1e-9)
+    assert abs(new_major @ major) == pytest.approx(1.0, abs=1e-12)
+
+
+def test_floor_error_ellipse_unit_correlation():
+    """A correlation of exactly 1 gives a finite ellipse with |corr| < 1."""
+    from kete.orbit_fitting.common import _floor_error_ellipse
+
+    sigma_ra, sigma_dec, corr = _floor_error_ellipse(0.5, 0.5, 1.0, 1e-4)
+    assert abs(corr) < 1.0
+    axes, _ = _ellipse_axes(sigma_ra, sigma_dec, corr)
+    assert axes[0] == pytest.approx(1e-4, rel=1e-6)
+
+
+def _ades_cache(tmp_path, monkeypatch, desig, records):
+    """Write ADES records to a temporary MPC cache and return the mpc_api module."""
+    import gzip
+    import hashlib
+    import json
+
+    from kete.orbit_fitting import mpc_api
+
+    monkeypatch.setattr(mpc_api, "cache_path", lambda sub_path: str(tmp_path))
+    h = hashlib.md5(desig.encode()).hexdigest()[:16]
+    (tmp_path / h[:3]).mkdir(exist_ok=True)
+    with gzip.open(tmp_path / h[:3] / f"{h}.json.gz", "wb") as f:
+        f.write(json.dumps({"ADES_DF": records}).encode())
+    return mpc_api
+
+
+def _optical(**kw):
+    rec = {
+        "Obstype": "optical",
+        "obstime": "2021-06-28T20:34:20.000Z",
+        "stn": "568",
+        "ra": "298.7",
+        "dec": "0.0",
+    }
+    rec.update(kw)
+    return rec
+
+
+def test_ades_deprecated_records_skipped(tmp_path, monkeypatch):
+    """Records the MPC marks as deprecated are not returned."""
+    mpc_api = _ades_cache(
+        tmp_path, monkeypatch, "test dep", [_optical(), _optical(deprecated="X")]
+    )
+    obs = mpc_api.fetch_mpc_observations(
+        "test dep", debias=False, apply_over_obs_reweight=False
+    )
+    assert len(obs) == 1
+
+
+def test_ades_timing_sigma(tmp_path, monkeypatch):
+    """rmsTime is used when present; spacecraft and video get their defaults."""
+    records = [
+        _optical(),
+        _optical(rmstime="0.05"),
+        _optical(mode="VID"),
+        _optical(stn="C51", sys="ICRF_KM", ctr="399", pos1="6000", pos2="0", pos3="0"),
+    ]
+    mpc_api = _ades_cache(tmp_path, monkeypatch, "test time", records)
+    obs = mpc_api.fetch_mpc_observations(
+        "test time",
+        use_observatory_residuals=False,
+        debias=False,
+        apply_over_obs_reweight=False,
+    )
+    assert [o.time_sigma for o in obs] == pytest.approx([0.5, 0.05, 0.5, 1.0])
+    # The observing mode does not change the astrometric default.
+    assert [o.sigma_dec for o in obs] == pytest.approx([0.5] * 4)
+
+
+def test_ades_station_before_pck_coverage(tmp_path, monkeypatch):
+    """Ground observations before the Earth orientation kernel are kept."""
+    mpc_api = _ades_cache(
+        tmp_path,
+        monkeypatch,
+        "test 1950",
+        [_optical(obstime="1950-06-01T00:00:00.000Z")],
+    )
+    obs = mpc_api.fetch_mpc_observations(
+        "test 1950", debias=False, apply_over_obs_reweight=False
+    )
+    assert len(obs) == 1
+    assert obs[0].observer.is_finite
+
+
+def test_radar_peak_power_records_skipped(monkeypatch):
+    """Radar records referenced to the peak-power echo are not returned."""
+    import pandas as pd
+
+    from kete.orbit_fitting import radar
+
+    row = {
+        "des": "test",
+        "epoch": pd.Timestamp("2010-01-01T00:00:00Z"),
+        "value": 1.0e6,
+        "sigma": 1.0,
+        "units": "us",
+        "freq": 2380.0,
+        "rcvr": "-1",
+        "xmit": "-1",
+        "rcvr_latitude": 18.344,
+        "rcvr_longitude": 293.247,
+        "rcvr_altitude": 0.5,
+        "rcvr_alt_units": "km",
+        "xmit_latitude": 18.344,
+        "xmit_longitude": 293.247,
+        "xmit_altitude": 0.5,
+        "xmit_alt_units": "km",
+    }
+    table = pd.DataFrame([{**row, "bp": "C"}, {**row, "bp": "P"}])
+    monkeypatch.setattr(radar, "fetch_radar_table", lambda **kw: table)
+    assert len(radar.fetch_radar_observations("test")) == 1

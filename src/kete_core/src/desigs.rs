@@ -726,8 +726,10 @@ fn pack_prov(des: &str) -> KeteResult<String> {
 fn pack_comet_prov(des: &str, fragment: Option<char>) -> KeteResult<String> {
     let err = || Error::ValueError(format!("Invalid MPC Comet Provisional Designation: {des}"));
     let (year, tail) = des.split_once(' ').ok_or_else(err)?;
+    // Comets keep provisional designations from historical apparitions, so any
+    // four-digit year before 2100 packs. Minor planet designations start at 1800.
     let year = digits(year)
-        .filter(|y| year.len() == 4 && (1800..2100).contains(y))
+        .filter(|y| year.len() == 4 && *y < 2100)
         .ok_or_else(err)?;
     let mut chars = tail.chars();
     let half_month = chars
@@ -1003,16 +1005,21 @@ fn decode_prov(packed: &str) -> Option<Desig> {
         return Some(with_orbit_type(orbit_type, des));
     }
 
-    let century = mpc_hex_value(body[0]).filter(|c| (18..=20).contains(c))?;
+    let century = mpc_hex_value(body[0]).filter(|c| *c <= 20)?;
     let year = century * 100 + digits(&body[1..3].iter().collect::<String>())?;
     let half_month = body[3];
     let number = mpc_hex_value(body[4])? * 10 + body[5].to_digit(10)?;
     let last = body[6];
+    let comet = last == '0' || last.is_ascii_lowercase();
+    // Comet designations reach back before 1800, minor planet designations do not.
+    if !comet && century < 18 {
+        return None;
+    }
 
-    if last == '0' || last.is_ascii_lowercase() {
+    if comet {
         // Comet format, the last character is '0' or the fragment.
         let fragment = (last != '0').then(|| last.to_ascii_uppercase());
-        let des = format!("{year} {half_month}{number}");
+        let des = format!("{year:04} {half_month}{number}");
         Some(Desig::CometProv(orbit_type, des, fragment))
     } else {
         // Minor planet format, the last character is the order letter.
@@ -1410,6 +1417,25 @@ mod tests {
         assert_eq!(fragment.to_string(), "73P-B");
     }
 
+    /// Comet provisional designations from before 1800 pack and unpack.
+    #[test]
+    fn historical_comet_designations_round_trip() {
+        for (unpacked, packed) in [
+            ("C/1680 V1", "CG80V010"),
+            ("C/1066 G1", "CA66G010"),
+            ("C/0837 F1", "C837F010"),
+            ("P/1772 E1", "PH72E010"),
+        ] {
+            let desig = Desig::parse_mpc_designation(unpacked).unwrap();
+            assert_eq!(desig.try_pack().unwrap(), packed, "{unpacked}");
+            let back = Desig::parse_mpc_packed_designation(packed).unwrap();
+            assert_eq!(back.to_string(), unpacked, "{packed}");
+        }
+        // The minor planet form of a packed provisional designation still starts
+        // in 1800.
+        assert!(Desig::parse_mpc_packed_designation("H99A00A").is_err());
+    }
+
     /// Input the MPC rules do not allow is an error, never a panic or a malformed
     /// packed string.
     #[test]
@@ -1430,6 +1456,8 @@ mod tests {
             "Jupiter M",     // satellite numbers have 3 digits
             "0",             // numbering starts at 1
             "2101 AA",       // packed years run from 1800 through 2099
+            "1799 AA",       // minor planet designations start in 1800
+            "C/2100 A1",     // comet years end in 2099
             "A925 AA",       // the A form is only for years before 1925
             "1995 XA0",      // no cycle count of zero
             "1995 XA01",     // no leading zero in the cycle count

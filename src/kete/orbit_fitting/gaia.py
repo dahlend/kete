@@ -15,20 +15,27 @@ import logging
 
 import numpy as np
 
+from .. import spice
 from .._core import Observation
+from ..constants import SPEED_OF_LIGHT_AUDAY, SUN_GM
 from ..tap import query_tap
 from ..time import Time
 from ..vector import Frames, State
+from .common import _MIN_AXIS_SIGMA, _floor_error_ellipse
 
 __all__ = ["fetch_gaia_observations"]
 
 logger = logging.getLogger(__name__)
+
 
 _GAIA_TABLE = "gaiadr3.sso_observation"
 
 # The epoch column stores JD_TCB(Gaia) - J2010.0 in days.
 # J2010.0 = JD 2455197.5 (TCB).  Adding this offset converts to JD_TCB.
 _J2010_JD = 2455197.5
+
+# Schwarzschild radius of the Sun, 2 GM / c^2, in AU.
+_SUN_SCHWARZSCHILD_AU = 2.0 * SUN_GM / SPEED_OF_LIGHT_AUDAY**2
 
 _COLUMNS = (
     "epoch",
@@ -41,12 +48,12 @@ _COLUMNS = (
     "dec_error_systematic",
     "ra_dec_correlation_random",
     "ra_dec_correlation_systematic",
-    "x_gaia",
-    "y_gaia",
-    "z_gaia",
-    "vx_gaia",
-    "vy_gaia",
-    "vz_gaia",
+    "x_gaia_geocentric",
+    "y_gaia_geocentric",
+    "z_gaia_geocentric",
+    "vx_gaia_geocentric",
+    "vy_gaia_geocentric",
+    "vz_gaia_geocentric",
     "g_mag",
     "astrometric_outcome_transit",
 )
@@ -65,15 +72,24 @@ def fetch_gaia_observations(
     per accepted astrometric transit.  Only transits with
     ``astrometric_outcome_transit == 1`` (good positions) are returned.
 
-    The Gaia spacecraft position and velocity are taken directly from the
-    table (barycentric ICRS, SSB-centered) so no SPICE lookup is needed.
+    The Gaia spacecraft state is the table's geocentric position and velocity
+    added to the Earth's state from the loaded SPICE kernels. The table's
+    barycentric vectors are not used: their barycenter differs from that of
+    the loaded planetary ephemeris by an amount that is large at Gaia's
+    precision.
+
+    Gaia positions are corrected for aberration but not for the solar deflection
+    of light. Each is shifted by minus the deflection of a star in the same
+    direction, which puts it in the convention of positions reduced against
+    background stars, the convention the fit models.
 
     Observation epoch is the Gaia-centric TCB epoch stored in the table,
     converted to TDB via :class:`~kete.Time` with ``scaling='tcb'``.
 
     Positional uncertainties are the quadrature sum of the random and
     systematic components from the table (in mas, already multiplied by
-    cos(dec) for the RA component).
+    cos(dec) for the RA component), with both principal axes of the error
+    ellipse limited to at least 0.1 mas.
 
     Results are cached via :func:`~kete.tap.query_tap`; pass
     ``update_cache=True`` to force a fresh query.
@@ -174,30 +190,31 @@ def fetch_gaia_observations(
         # Effective correlation from the summed covariance: in mas units,
         # dividing numerator and denominator by 1e6 cancels the scaling.
         sigma_corr_eff = c_rd / np.sqrt(c_ra2 * c_dec2)
-        # Clamp strictly inside (-1, 1) for numerical safety.
-        sigma_corr_eff = max(min(sigma_corr_eff, 0.999), -0.999)
+        sigma_ra, sigma_dec, sigma_corr_eff = _floor_error_ellipse(
+            sigma_ra, sigma_dec, sigma_corr_eff, _MIN_AXIS_SIGMA
+        )
 
         try:
-            x = float(row["x_gaia"])
-            y = float(row["y_gaia"])
-            z = float(row["z_gaia"])
-            vx = float(row["vx_gaia"])
-            vy = float(row["vy_gaia"])
-            vz = float(row["vz_gaia"])
+            geo_pos = np.array([float(row[f"{c}_gaia_geocentric"]) for c in "xyz"])
+            geo_vel = np.array([float(row[f"v{c}_gaia_geocentric"]) for c in "xyz"])
         except (KeyError, TypeError, ValueError):
             continue
 
-        if any(np.isnan(v) for v in (x, y, z, vx, vy, vz)):
+        if not (np.all(np.isfinite(geo_pos)) and np.all(np.isfinite(geo_vel))):
             continue
 
+        earth = spice.get_state("Earth", jd, center=0).as_equatorial
+        gaia_pos = np.array(list(earth.pos)) + geo_pos
         observer = State(
             "Gaia",
             jd,
-            [x, y, z],
-            [vx, vy, vz],
+            list(gaia_pos),
+            list(np.array(list(earth.vel)) + geo_vel),
             Frames.Equatorial,
             center_id=0,
         )
+        sun_pos = np.array(list(spice.get_state("Sun", jd, center=0).as_equatorial.pos))
+        ra, dec = _remove_star_deflection(ra, dec, gaia_pos - sun_pos)
 
         try:
             mag = float(row.get("g_mag") or float("nan"))
@@ -219,3 +236,31 @@ def fetch_gaia_observations(
         )
 
     return observations
+
+
+def _remove_star_deflection(
+    ra: float, dec: float, observer_helio: np.ndarray
+) -> tuple[float, float]:
+    """Shift a direction by minus the solar deflection of a star at infinity.
+
+    Gaia DR3 positions carry the full solar deflection of the light from the
+    object. The fit models positions reduced against background stars. Those
+    carry the deflection of the object less that of a star in the same
+    direction. Removing the deflection of the star converts the first convention
+    into the second. For a unit direction ``p`` and an observer at distance
+    ``|e|`` from the Sun along ``e_hat``, the deflection of the star is
+    ``2 GM / (c^2 |e|) * (e_hat - (p . e_hat) p) / (1 + p . e_hat)``.
+    """
+    ra_r, dec_r = np.radians(ra), np.radians(dec)
+    p = np.array(
+        [np.cos(dec_r) * np.cos(ra_r), np.cos(dec_r) * np.sin(ra_r), np.sin(dec_r)]
+    )
+    dist = np.linalg.norm(observer_helio)
+    e = observer_helio / dist
+    p_e = p @ e
+    delta = _SUN_SCHWARZSCHILD_AU / dist * (e - p_e * p) / max(1.0 + p_e, 1e-9)
+    q = p - delta
+    q /= np.linalg.norm(q)
+    return float(np.degrees(np.arctan2(q[1], q[0])) % 360.0), float(
+        np.degrees(np.arcsin(q[2]))
+    )

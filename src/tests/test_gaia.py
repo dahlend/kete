@@ -20,12 +20,13 @@ def _make_row(
     dec_error_random=2.0,
     ra_error_systematic=1.0,
     dec_error_systematic=1.0,
-    x_gaia=1.0,
-    y_gaia=0.1,
-    z_gaia=0.05,
-    vx_gaia=0.001,
-    vy_gaia=0.002,
-    vz_gaia=0.0,
+    x_gaia_geocentric=0.009,
+    y_gaia_geocentric=0.003,
+    z_gaia_geocentric=0.001,
+    vx_gaia_geocentric=0.0001,
+    vy_gaia_geocentric=0.0002,
+    vz_gaia_geocentric=0.0,
+    ra_dec_correlation_random=0.0,
     g_mag=15.0,
     astrometric_outcome_transit=1,
 ):
@@ -40,12 +41,13 @@ def _make_row(
                 "dec_error_random": dec_error_random,
                 "ra_error_systematic": ra_error_systematic,
                 "dec_error_systematic": dec_error_systematic,
-                "x_gaia": x_gaia,
-                "y_gaia": y_gaia,
-                "z_gaia": z_gaia,
-                "vx_gaia": vx_gaia,
-                "vy_gaia": vy_gaia,
-                "vz_gaia": vz_gaia,
+                "ra_dec_correlation_random": ra_dec_correlation_random,
+                "x_gaia_geocentric": x_gaia_geocentric,
+                "y_gaia_geocentric": y_gaia_geocentric,
+                "z_gaia_geocentric": z_gaia_geocentric,
+                "vx_gaia_geocentric": vx_gaia_geocentric,
+                "vy_gaia_geocentric": vy_gaia_geocentric,
+                "vz_gaia_geocentric": vz_gaia_geocentric,
                 "g_mag": g_mag,
                 "astrometric_outcome_transit": astrometric_outcome_transit,
             }
@@ -69,8 +71,9 @@ def test_basic_conversion(mock_query_tap):
     obs = orbit_fitting.fetch_gaia_observations("99942")
     assert len(obs) == 1
     o = obs[0]
-    assert o.ra == pytest.approx(10.0, abs=1e-9)
-    assert o.dec == pytest.approx(5.0, abs=1e-9)
+    # Within the solar deflection removed by the loader (a few mas).
+    assert o.ra == pytest.approx(10.0, abs=1e-5)
+    assert o.dec == pytest.approx(5.0, abs=1e-5)
     assert o.band == "G"
     assert math.isfinite(o.mag)
 
@@ -115,7 +118,7 @@ def test_bad_outcome_rejected(mock_query_tap):
 
 def test_nan_position_rejected(mock_query_tap):
     """Rows with NaN Gaia position are skipped."""
-    mock_query_tap(_make_row(x_gaia=float("nan")))
+    mock_query_tap(_make_row(x_gaia_geocentric=float("nan")))
     obs = orbit_fitting.fetch_gaia_observations("433")
     assert obs == []
 
@@ -184,3 +187,51 @@ def test_missing_g_mag(mock_query_tap):
     obs = orbit_fitting.fetch_gaia_observations("433")
     assert len(obs) == 1
     assert math.isnan(obs[0].mag)
+
+
+def test_observer_is_earth_plus_geocentric(mock_query_tap):
+    """The Gaia position is the Earth's state plus the table's geocentric vector."""
+    import numpy as np
+
+    import kete
+
+    mock_query_tap(_make_row())
+    obs = orbit_fitting.fetch_gaia_observations("433")
+    jd = obs[0].epoch.jd
+    earth = kete.spice.get_state("Earth", jd, center=0).as_equatorial
+    observer = obs[0].observer.as_equatorial
+    if observer.center_id != 0:
+        sun = kete.spice.get_state("Sun", jd, center=0).as_equatorial
+        pos = np.array(list(observer.pos)) + np.array(list(sun.pos))
+    else:
+        pos = np.array(list(observer.pos))
+    expected = np.array(list(earth.pos)) + np.array([0.009, 0.003, 0.001])
+    assert np.allclose(pos, expected, atol=1e-12)
+
+
+def test_high_correlation_kept(mock_query_tap):
+    """An along-scan error ellipse with correlation near 1 is not limited to 0.999."""
+    mock_query_tap(
+        _make_row(
+            ra_error_random=500.0,
+            dec_error_random=500.0,
+            ra_error_systematic=0.0,
+            dec_error_systematic=0.0,
+            ra_dec_correlation_random=0.99999,
+        )
+    )
+    obs = orbit_fitting.fetch_gaia_observations("433")
+    assert obs[0].sigma_corr == pytest.approx(0.99999, abs=1e-9)
+
+
+def test_remove_star_deflection():
+    """At 90 degrees elongation the direction moves 2 GM / c^2 toward the Sun."""
+    import numpy as np
+
+    from kete.constants import SPEED_OF_LIGHT_AUDAY, SUN_GM
+
+    k = 2.0 * SUN_GM / SPEED_OF_LIGHT_AUDAY**2
+    # Observer 1 AU along +x; the Sun is toward -x, the source toward +y.
+    ra, dec = gaia_mod._remove_star_deflection(90.0, 0.0, np.array([1.0, 0.0, 0.0]))
+    assert ra == pytest.approx(90.0 + np.degrees(k), abs=1e-12)
+    assert dec == pytest.approx(0.0, abs=1e-12)
