@@ -183,7 +183,7 @@ impl HorizonsProperties {
             "This object does not have a covariance matrix, cannot sample from it.".into(),
         ))?;
         let raw_samples = us.sample(n_samples, seed)?;
-        // Reconstruct a NonGravFit per sample by overlaying the
+        // Reconstruct a NonGravMask per sample by overlaying the
         // perturbed free-parameter values on the stored template.
         let template = self.non_grav.as_ref();
         raw_samples
@@ -635,7 +635,7 @@ fn build_uncertain_state(
     Ok(uncertain)
 }
 
-/// Build a [`NonGravFit`] from leftover (non-orbital) sampled parameters.
+/// Build a [`NonGravMask`] from leftover (non-orbital) sampled parameters.
 ///
 /// Returns `Some(model)` only when the parameter names match a supported
 /// non-gravitational model:
@@ -674,7 +674,7 @@ fn build_nongrav_from_hash(hash: &std::collections::HashMap<&str, f64>) -> Optio
     }
 }
 
-/// Build a [`NonGravFit`] from the `model_pars` section of a Horizons response.
+/// Build a [`NonGravMask`] from the `model_pars` section of a Horizons response.
 #[cfg(feature = "fetch")]
 fn build_nongrav_from_model_pars(pars: &[NameValue]) -> Option<NonGravMask> {
     let mut a1 = 0.0;

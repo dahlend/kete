@@ -30,7 +30,7 @@ pub struct GravParams {
     /// Gravitational parameter `GM` of the object, in AU^3 / Day^2.
     ///
     /// Parsed from the mass table as a fraction of the Sun's mass and scaled by
-    /// [`GMS`](crate::constants::GMS), so this is an absolute `GM` rather than a ratio.
+    /// [`GMS`], so this is an absolute `GM` rather than a ratio.
     pub mass: f64,
 
     /// Radius of the object in AU.

@@ -6,13 +6,10 @@ use super::*;
 use kete_core::errors::Error;
 use kete_core::forces::NonGravMask;
 use kete_core::fov::{FOV, check_ephemeris, check_statics, check_visible};
-use kete_core::state::SimultaneousStates;
 use kete_spice::ephemeris::SpiceEphemeris;
 use pyo3::exceptions::PyDeprecationWarning;
 use pyo3::prelude::*;
 use rayon::prelude::*;
-use std::collections::BTreeMap;
-use std::collections::btree_map::Entry;
 
 use crate::{nongrav::PyNonGravModel, state::PySimultaneousStates, vector::VectorLike};
 
@@ -22,6 +19,9 @@ use crate::{nongrav::PyNonGravModel, state::PySimultaneousStates, vector::Vector
 /// Each object is propagated once with n-body physics across the time span of the
 /// FOVs, including its non-gravitational model if one is given, and checked against
 /// every FOV.
+///
+/// The check runs to completion once started, it is not stopped by a keyboard
+/// interrupt.
 ///
 /// Parameters
 /// ----------
@@ -74,31 +74,13 @@ pub fn fov_checks_py(
     fovs.sort_by(|a, b| a.jd().jd().total_cmp(&b.jd().jd()));
     let fovs: Vec<FOV> = fovs.into_iter().map(AllowedFOV::unwrap).collect();
 
-    // Objects are checked in batches, so that Python can handle signals in between.
-    const BATCH: usize = 1000;
-    let mut visible: BTreeMap<(usize, usize), SimultaneousStates> = BTreeMap::new();
-    for (batch_idx, batch) in states.chunks(BATCH).enumerate() {
-        // An empty `non_gravs` means no state has a model, and has no batch slice.
-        let batch_non_gravs = non_gravs
-            .get(batch_idx * BATCH..batch_idx * BATCH + batch.len())
-            .unwrap_or_default();
-        let seen = py.detach(|| {
-            let eph = SpiceEphemeris::loaded()?;
-            check_visible(&eph, &fovs, batch, batch_non_gravs, include_asteroids)
-        })?;
-        for (fov_idx, patch_idx, patch) in seen {
-            match visible.entry((fov_idx, patch_idx)) {
-                Entry::Vacant(entry) => {
-                    let _ = entry.insert(patch);
-                }
-                Entry::Occupied(mut entry) => entry.get_mut().states.extend(patch.states),
-            }
-        }
-        py.check_signals()?;
-    }
+    let visible = py.detach(|| {
+        let eph = SpiceEphemeris::loaded()?;
+        check_visible(&eph, &fovs, &states, &non_gravs, include_asteroids)
+    })?;
     Ok(visible
-        .into_values()
-        .map(|patch| PySimultaneousStates(Box::new(patch)))
+        .into_iter()
+        .map(|(_, _, patch)| PySimultaneousStates(Box::new(patch)))
         .collect())
 }
 

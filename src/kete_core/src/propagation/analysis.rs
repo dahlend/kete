@@ -4,7 +4,7 @@
 //! Trajectory analysis that needs body states or N-body propagation.
 //!
 //! Complements [`analysis`](crate::analysis) (B-plane, orbital elements) with
-//! functions that query an [`Ephemeris`](crate::ephemeris::Ephemeris).
+//! functions that query an [`Ephemeris`].
 
 use super::n_body::NBody;
 use crate::elements::CometElements;

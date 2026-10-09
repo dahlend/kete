@@ -29,7 +29,7 @@ impl WiseCmos {
     /// Create a Wise fov
     ///
     /// # Errors
-    /// Returns [`Error::ValueError`](crate::errors::Error::ValueError) if
+    /// Returns [`Error::ValueError`] if
     /// `pointing` is not finite or points at a celestial pole, where the rotation
     /// is undefined. See [`SphericalPolygon::new`](crate::geometry::SphericalPolygon::new).
     pub fn new(

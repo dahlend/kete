@@ -11,7 +11,7 @@
 //! into `ParameterMask` and `NBody` interchangeably.
 //!
 //! This is a convenience aggregate for kete's bundled physics, not a
-//! gate -- the public [`ParameterizedForce`](crate::forces::ParameterizedForce)
+//! gate -- the public [`ParameterizedForce`]
 //! trait stays open, and external users can wrap their own concrete types in
 //! [`ParameterMask`](crate::forces::ParameterMask) directly.
 

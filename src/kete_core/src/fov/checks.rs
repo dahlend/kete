@@ -16,9 +16,9 @@ use crate::propagation::NBody;
 use crate::state::{SimultaneousStates, State, propagate_state};
 use crate::time::{TDB, Time};
 
-use itertools::Itertools;
 use nalgebra::Vector3;
 use rayon::prelude::*;
+use std::collections::BTreeMap;
 use std::f64::consts::FRAC_PI_2;
 
 /// Look up objects by NAIF ID in `ephem` and check which are in the FOV.
@@ -198,160 +198,181 @@ pub fn check_visible<E: Ephemeris, F: FovLike>(
         })
         .collect();
 
+    // States seen in each patch of each FOV. Blocks are checked in state order, and
+    // the hits of a block are in state order for each FOV, so the states of a patch
+    // stay in state order.
+    let mut hits: BTreeMap<(usize, usize), Vec<State<Equatorial>>> = BTreeMap::new();
+    let add_hits = |hits: &mut BTreeMap<_, Vec<_>>, found: Vec<_>| {
+        for (fov_idx, patch_idx, state) in found {
+            hits.entry((fov_idx, patch_idx)).or_default().push(state);
+        }
+    };
     // States are checked a block at a time: the block is integrated first, then each
-    // FOV is checked against every state of the block while it is in cache.
-    let mut hits: Vec<(usize, usize, usize, State<Equatorial>)> = Vec::new();
+    // FOV is checked against every state of the block while it is in cache. The hits
+    // of the previous block are added to `hits` at the same time, on one thread.
+    let mut found = Vec::new();
     for (block_idx, block) in states.chunks(STATE_BLOCK).enumerate() {
-        let trajectories: Vec<Option<RadauDense>> = block
-            .par_iter()
-            .enumerate()
-            .map(|(idx, state)| {
-                let non_grav = non_gravs
-                    .get(block_idx * STATE_BLOCK + idx)
-                    .and_then(Option::as_ref);
-                let force = NBody::with_non_grav(ephem, include_asteroids, non_grav.cloned());
-                let at_first = ephem
-                    .try_to_ssb(state.clone())
-                    .ok()?
-                    .propagate_with(&force, first_epoch)
-                    .ok()?;
-                // Light from the object reaches any observer within this many days, so
-                // the trajectory starts early enough for the earliest emission time.
-                let max_light_time = (at_first.pos.norm() + max_obs_dist) * C_AU_PER_DAY_INV;
-                let start = at_first
-                    .propagate_with(&force, first_epoch - max_light_time)
-                    .ok()?;
-                // A failure part way keeps the trajectory up to the failure.
-                let mut trajectory = RadauDense::new();
-                let _ = propagate_state(
-                    &force,
-                    start.pos.into(),
-                    start.vel.into(),
-                    &[],
-                    start.epoch,
-                    last_epoch,
-                    Some(&mut trajectory),
-                );
-                Some(trajectory)
-            })
-            .collect();
-
-        let block_hits: Vec<_> = groups
-            .par_iter()
-            .flat_map_iter(|([first, center, last], group)| {
-                // Each state at the center of the group, with the largest of its speeds
-                // at the first, center and last epochs of the group. A trajectory ends
-                // early if its integration fails, so the times stay inside it to check
-                // the FOVs before the failure.
-                let at_center: Vec<_> = trajectories
-                    .iter()
-                    .map(|trajectory| {
-                        let trajectory = trajectory.as_ref()?;
-                        let end = trajectory.end()?;
-                        let clamp = |time: Time<TDB>| if time > end { end } else { time };
-                        let center = clamp(*center);
-                        let (pos, vel) = trajectory.evaluate(center).ok()?;
-                        let speed = [*first, *last]
-                            .into_iter()
-                            .filter_map(|time| trajectory.evaluate(clamp(time)).ok())
-                            .map(|(_, vel)| Vector3::from_column_slice(&vel).norm())
-                            .fold(Vector3::from_column_slice(&vel).norm(), f64::max);
-                        let pos: Vector<Equatorial> = Vector3::from_column_slice(&pos).into();
-                        Some((center, pos, speed))
+        let ((), block_found) = rayon::join(
+            || add_hits(&mut hits, std::mem::take(&mut found)),
+            || {
+                let trajectories: Vec<Option<RadauDense>> = block
+                    .par_iter()
+                    .enumerate()
+                    .map(|(idx, state)| {
+                        let non_grav = non_gravs
+                            .get(block_idx * STATE_BLOCK + idx)
+                            .and_then(Option::as_ref);
+                        let force =
+                            NBody::with_non_grav(ephem, include_asteroids, non_grav.cloned());
+                        let at_first = ephem
+                            .try_to_ssb(state.clone())
+                            .ok()?
+                            .propagate_with(&force, first_epoch)
+                            .ok()?;
+                        // Light from the object reaches any observer within this many days, so
+                        // the trajectory starts early enough for the earliest emission time.
+                        let max_light_time =
+                            (at_first.pos.norm() + max_obs_dist) * C_AU_PER_DAY_INV;
+                        let start = at_first
+                            .propagate_with(&force, first_epoch - max_light_time)
+                            .ok()?;
+                        // A failure part way keeps the trajectory up to the failure.
+                        let mut trajectory = RadauDense::new();
+                        let _ = propagate_state(
+                            &force,
+                            start.pos.into(),
+                            start.vel.into(),
+                            &[],
+                            start.epoch,
+                            last_epoch,
+                            Some(&mut trajectory),
+                        );
+                        Some(trajectory)
                     })
                     .collect();
 
-                let mut found = Vec::new();
-                for (fov_idx, obs_epoch, obs_pos, cone) in *group {
-                    let fov = &fovs[*fov_idx];
-                    for (idx, (trajectory, at_center)) in
-                        trajectories.iter().zip(&at_center).enumerate()
-                    {
-                        let (Some(trajectory), Some((center, pos, speed))) =
-                            (trajectory, at_center)
-                        else {
-                            continue;
-                        };
+                groups
+                    .par_iter()
+                    .flat_map_iter(|([first, center, last], group)| {
+                        // Each state at the center of the group, with the largest of its speeds
+                        // at the first, center and last epochs of the group. A trajectory ends
+                        // early if its integration fails, so the times stay inside it to check
+                        // the FOVs before the failure.
+                        let at_center: Vec<_> = trajectories
+                            .iter()
+                            .map(|trajectory| {
+                                let trajectory = trajectory.as_ref()?;
+                                let end = trajectory.end()?;
+                                let clamp = |time: Time<TDB>| if time > end { end } else { time };
+                                let center = clamp(*center);
+                                let (pos, vel) = trajectory.evaluate(center).ok()?;
+                                let speed = [*first, *last]
+                                    .into_iter()
+                                    .filter_map(|time| trajectory.evaluate(clamp(time)).ok())
+                                    .map(|(_, vel)| Vector3::from_column_slice(&vel).norm())
+                                    .fold(Vector3::from_column_slice(&vel).norm(), f64::max);
+                                let pos: Vector<Equatorial> =
+                                    Vector3::from_column_slice(&pos).into();
+                                Some((center, pos, speed))
+                            })
+                            .collect();
 
-                        // Light reaching the observer left the object at the observer epoch
-                        // less the light time. Between the center and then, the object
-                        // moves at most its speed times the time between them; twice the
-                        // largest sampled speed allows for a change of speed.
-                        let obs_to_obj = *pos - *obs_pos;
-                        let light_time = obs_to_obj.norm() * C_AU_PER_DAY_INV;
-                        let max_dist =
-                            2.0 * speed * ((*obs_epoch - *center).elapsed.abs() + light_time);
-                        // The cone holds every patch, so its distance is also a lower
-                        // bound, and rejecting on it skips checking each patch.
-                        if let Some(Contains::Outside(dist)) =
-                            cone.as_ref().map(|c| c.contains(&obs_to_obj))
-                            && dist > max_dist
-                        {
-                            continue;
-                        }
-                        if let (_, Contains::Outside(dist)) = fov.contains(&obs_to_obj)
-                            && dist > max_dist
-                        {
-                            continue;
-                        }
+                        let mut found = Vec::new();
+                        for (fov_idx, obs_epoch, obs_pos, cone) in *group {
+                            let fov = &fovs[*fov_idx];
+                            for (idx, (trajectory, at_center)) in
+                                trajectories.iter().zip(&at_center).enumerate()
+                            {
+                                let (Some(trajectory), Some((center, pos, speed))) =
+                                    (trajectory, at_center)
+                                else {
+                                    continue;
+                                };
 
-                        let mut light_time = obs_to_obj.norm() * C_AU_PER_DAY_INV;
-                        let mut emission = None;
-                        for _ in 0..5 {
-                            let Ok((pos, vel)) = trajectory.evaluate(*obs_epoch - light_time)
-                            else {
-                                break;
-                            };
-                            let pos: Vector<Equatorial> = Vector3::from_column_slice(&pos).into();
-                            let vel: Vector<Equatorial> = Vector3::from_column_slice(&vel).into();
-                            let new_light_time = (pos - *obs_pos).norm() * C_AU_PER_DAY_INV;
-                            let converged = (new_light_time - light_time).abs() < 1e-12;
-                            emission = Some((*obs_epoch - light_time, pos, vel));
-                            if converged {
-                                break;
+                                // Light reaching the observer left the object at the observer epoch
+                                // less the light time. Between the center and then, the object
+                                // moves at most its speed times the time between them; twice the
+                                // largest sampled speed allows for a change of speed.
+                                let obs_to_obj = *pos - *obs_pos;
+                                let light_time = obs_to_obj.norm() * C_AU_PER_DAY_INV;
+                                let max_dist = 2.0
+                                    * speed
+                                    * ((*obs_epoch - *center).elapsed.abs() + light_time);
+                                // The cone holds every patch, so its distance is also a lower
+                                // bound, and rejecting on it skips checking each patch.
+                                if let Some(Contains::Outside(dist)) =
+                                    cone.as_ref().map(|c| c.contains(&obs_to_obj))
+                                    && dist > max_dist
+                                {
+                                    continue;
+                                }
+                                if let (_, Contains::Outside(dist)) = fov.contains(&obs_to_obj)
+                                    && dist > max_dist
+                                {
+                                    continue;
+                                }
+
+                                let mut light_time = obs_to_obj.norm() * C_AU_PER_DAY_INV;
+                                let mut emission = None;
+                                for _ in 0..5 {
+                                    let Ok((pos, vel)) =
+                                        trajectory.evaluate(*obs_epoch - light_time)
+                                    else {
+                                        break;
+                                    };
+                                    let pos: Vector<Equatorial> =
+                                        Vector3::from_column_slice(&pos).into();
+                                    let vel: Vector<Equatorial> =
+                                        Vector3::from_column_slice(&vel).into();
+                                    let new_light_time = (pos - *obs_pos).norm() * C_AU_PER_DAY_INV;
+                                    let converged = (new_light_time - light_time).abs() < 1e-12;
+                                    emission = Some((*obs_epoch - light_time, pos, vel));
+                                    if converged {
+                                        break;
+                                    }
+                                    light_time = new_light_time;
+                                }
+                                let Some((epoch, pos, vel)) = emission else {
+                                    continue;
+                                };
+                                let (patch_idx, Contains::Inside) = fov.contains(&(pos - *obs_pos))
+                                else {
+                                    continue;
+                                };
+                                let state_idx = block_idx * STATE_BLOCK + idx;
+                                let emitted = State::<Equatorial>::new(
+                                    states[state_idx].desig.clone(),
+                                    epoch,
+                                    pos,
+                                    vel,
+                                    0,
+                                );
+                                if let Ok(emitted) = ephem.try_to_sun(emitted) {
+                                    found.push((*fov_idx, patch_idx, emitted.into()));
+                                }
                             }
-                            light_time = new_light_time;
                         }
-                        let Some((epoch, pos, vel)) = emission else {
-                            continue;
-                        };
-                        let (patch_idx, Contains::Inside) = fov.contains(&(pos - *obs_pos)) else {
-                            continue;
-                        };
-                        let state_idx = block_idx * STATE_BLOCK + idx;
-                        let emitted = State::<Equatorial>::new(
-                            states[state_idx].desig.clone(),
-                            epoch,
-                            pos,
-                            vel,
-                            0,
-                        );
-                        if let Ok(emitted) = ephem.try_to_sun(emitted) {
-                            found.push((*fov_idx, patch_idx, state_idx, emitted.into()));
-                        }
-                    }
-                }
-                found
-            })
-            .collect();
-        hits.extend(block_hits);
+                        found
+                    })
+                    .collect::<Vec<_>>()
+            },
+        );
+        found = block_found;
     }
+    add_hits(&mut hits, found);
 
-    hits.sort_by_key(|(fov_idx, patch_idx, state_idx, _)| (*fov_idx, *patch_idx, *state_idx));
-    let mut visible = Vec::new();
-    for ((fov_idx, patch_idx), patch) in &hits
-        .into_iter()
-        .chunk_by(|(fov_idx, patch_idx, _, _)| (*fov_idx, *patch_idx))
-    {
-        let states = patch.map(|(_, _, _, state)| state).collect();
-        let child = fovs[fov_idx].get_child(patch_idx).into_fov();
-        visible.push((
-            fov_idx,
-            patch_idx,
-            SimultaneousStates::new_exact(states, Some(child))?,
-        ));
-    }
-    Ok(visible)
+    hits.into_iter()
+        .collect::<Vec<_>>()
+        .into_par_iter()
+        .map(|((fov_idx, patch_idx), states)| {
+            let child = fovs[fov_idx].get_child(patch_idx).into_fov();
+            Ok((
+                fov_idx,
+                patch_idx,
+                SimultaneousStates::new_exact(states, Some(child))?,
+            ))
+        })
+        .collect()
 }
 
 /// Number of states integrated together in [`check_visible`], which bounds the memory
