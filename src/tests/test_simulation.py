@@ -83,9 +83,7 @@ def test_test_particle_reversibility(jd0):
 
     mass_by_id = {naif: mass for (_, naif, mass, _) in known_masses()}
     masses = [mass_by_id[naif] for naif in [10, 1, 2, 3, 4, 5, 6, 7, 8]]
-    back = SymplecticSim(
-        sim.massive_states, masses, test_particles=[mid], dt=-4.0
-    )
+    back = SymplecticSim(sim.massive_states, masses, test_particles=[mid], dt=-4.0)
     back.integrate_n_steps(3650)
     final = back.test_particle_states[0]
     diff = np.linalg.norm(np.array(final.pos) - np.array(tp.pos))
@@ -121,9 +119,7 @@ def test_constructor_validation(jd0):
     with pytest.raises(ValueError):
         SymplecticSim([sun], [0.5])
     # non-empty non_gravs must have one entry per test particle
-    grain = State(
-        "g", jd0, Vector([2, 0, 0]), Vector([0, 0.011, 0]), center_id=10
-    )
+    grain = State("g", jd0, Vector([2, 0, 0]), Vector([0, 0.011, 0]), center_id=10)
     with pytest.raises(ValueError):
         SymplecticSim(
             [sun],
@@ -150,9 +146,7 @@ def test_constructor_validation(jd0):
     assert ok.n_test_particles == 1
     lagged = NonGravModel.new_comet(1e-9, 0.0, 0.0, dt=30.0)
     with pytest.raises(ValueError):
-        SymplecticSim(
-            [sun], [1.0], test_particles=[grain], non_gravs=[lagged]
-        )
+        SymplecticSim([sun], [1.0], test_particles=[grain], non_gravs=[lagged])
     # NaN (fit-free) parameters follow the documented propagation convention
     # and are treated as 0.0, so this constructs as a force-free particle.
     free = NonGravModel.new_farnocchia(
@@ -225,8 +219,13 @@ def test_dust_pr_inspiral(jd0):
         center_id=0,
     )
     plain = SymplecticSim(
-        [sun], [1.0], test_particles=[grain0], dt=period / 40,
-        include_gr=False, include_j2=False, use_correctors=False,
+        [sun],
+        [1.0],
+        test_particles=[grain0],
+        dt=period / 40,
+        include_gr=False,
+        include_j2=False,
+        use_correctors=False,
         non_gravs=[NonGravModel.new_dust(0.0)],
     )
     a_start = plain.test_particle_states[0]

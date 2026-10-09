@@ -10,9 +10,7 @@ from kete.vector import CometElements
 
 class TestEquinoctialElements:
     def test_from_state_round_trips_to_state(self):
-        st = State(
-            "t", 2460000.5, pos=(2.0, 0.3, 0.1), vel=(-0.002, 0.011, 0.001)
-        )
+        st = State("t", 2460000.5, pos=(2.0, 0.3, 0.1), vel=(-0.002, 0.011, 0.001))
         el = EquinoctialElements.from_state(st)
         back = el.state
         assert np.allclose(np.array(back.pos), np.array(st.pos))
@@ -78,8 +76,14 @@ class TestEquinoctialElements:
             State("t", 2460000.5, pos=(1.6, -0.4, 0.2), vel=(0.004, 0.013, 0.001))
         )
         wrapped = EquinoctialElements(
-            "t", 2460000.5, el.semi_latus, el.ecc_f, el.ecc_g,
-            el.pole_h, el.pole_k, el.true_lon + 360.0,
+            "t",
+            2460000.5,
+            el.semi_latus,
+            el.ecc_f,
+            el.ecc_g,
+            el.pole_h,
+            el.pole_k,
+            el.true_lon + 360.0,
         )
         delta = el.offset_to(wrapped)
         assert abs(delta[5]) < 1e-9

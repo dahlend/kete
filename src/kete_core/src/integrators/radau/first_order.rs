@@ -357,7 +357,13 @@ where
             self.g_scratch.mul_to(&C_MAT, &mut self.cur_b);
 
             let b_diff = (self.cur_b.column(6) - &self.b_scratch).abs();
-            if self.scaled_max(&b_diff) < SWEEP_TOL {
+            let sweep_ratio = self.scaled_max(&b_diff);
+            if !sweep_ratio.is_finite() {
+                return Err(Error::ValueError(
+                    "Radau integration produced a non-finite state or derivative.".into(),
+                ));
+            }
+            if sweep_ratio < SWEEP_TOL {
                 return self.accept(step_size);
             }
         }
@@ -366,7 +372,8 @@ where
         ))?
     }
 
-    /// Largest `|v_i| / scale_i` over the controlled components.
+    /// Largest `|v_i| / scale_i` over the controlled components, or NaN if any of
+    /// those ratios is NaN.
     ///
     /// Components whose right-hand side vanished at every node of this step are skipped:
     /// their divided differences, and therefore `b_i`, are exactly zero, so they carry
@@ -376,8 +383,15 @@ where
             vals.iter().take(self.control_dim),
             self.scale_scratch.iter().take(self.control_dim),
         )
-        .filter(|(_, scale)| **scale > 0.0)
-        .fold(0.0_f64, |acc, (val, scale)| acc.max(val / scale))
+        .filter(|(_, scale)| **scale > 0.0 || scale.is_nan())
+        .fold(0.0_f64, |acc, (val, scale)| {
+            let ratio = val / scale;
+            if ratio.is_nan() || ratio > acc {
+                ratio
+            } else {
+                acc
+            }
+        })
     }
 
     /// Commit a converged step and return the recommended next step size.

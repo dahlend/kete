@@ -651,6 +651,7 @@ where
             // no per-sweep temporaries are allocated.
             let mut sweep_ratio = 0.0_f64;
             let mut error_ratio = 0.0_f64;
+            let mut finite = true;
             {
                 let b6 = self.cur_b.column(6);
                 for idx in 0..cd {
@@ -658,9 +659,19 @@ where
                         .abs()
                         .max(self.cur_state_der_der[idx].abs())
                         .max(f64::MIN_POSITIVE);
-                    sweep_ratio = sweep_ratio.max((b6[idx] - self.b_scratch[idx]).abs() / scale);
-                    error_ratio = error_ratio.max(b6[idx].abs() / scale);
+                    let sweep = (b6[idx] - self.b_scratch[idx]).abs() / scale;
+                    let error = b6[idx].abs() / scale;
+                    // `f64::max` discards a NaN argument, so a non-finite component is
+                    // tracked separately rather than through the two maxima.
+                    finite &= sweep.is_finite() && error.is_finite();
+                    sweep_ratio = sweep_ratio.max(sweep);
+                    error_ratio = error_ratio.max(error);
                 }
+            }
+            if !finite {
+                return Err(Error::ValueError(
+                    "Radau integration produced a non-finite state or acceleration.".into(),
+                ));
             }
 
             // This is using the convergence criterion as defined in
@@ -824,6 +835,34 @@ mod tests {
             "position {} differs from {exact}",
             pos[0]
         );
+    }
+
+    #[test]
+    fn non_finite_acceleration_is_an_error() {
+        // Gravity that turns into NaN partway through the span.
+        fn breaks(
+            time: Time<TDB>,
+            pos: &Vector3<f64>,
+            vel: &Vector3<f64>,
+            meta: &mut CentralAccelMeta,
+            exact: bool,
+        ) -> KeteResult<Vector3<f64>> {
+            if time.jd() > 50.0 {
+                return Ok(Vector3::repeat(f64::NAN));
+            }
+            central_accel(time, pos, vel, meta, exact)
+        }
+        let result = RadauIntegrator::integrate(
+            &breaks,
+            Vector3::new(0.46937657, -0.8829981, 0.),
+            Vector3::new(0.01518942, 0.00807426, 0.),
+            0.0.into(),
+            100.0.into(),
+            CentralAccelMeta::default(),
+            None,
+            None,
+        );
+        assert!(result.is_err(), "a NaN acceleration returned {result:?}");
     }
 
     #[test]

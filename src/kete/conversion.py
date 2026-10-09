@@ -270,11 +270,11 @@ def compute_eccentric_anomaly(
 
     Parameters
     ----------
-    eccentricity : float or array of float
+    eccentricity : float or numpy.ndarray
         The eccentricity of the orbit, greater than or equal to 0.
-    mean_anomaly : float or array of float
+    mean_anomaly : float or numpy.ndarray
         The mean anomaly of the orbit in degrees.
-    peri_dist : float or array of float, optional
+    peri_dist : float or numpy.ndarray, optional
         Not used by the calculation. It is accepted for compatibility. Defaults
         to None.
 

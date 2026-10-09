@@ -65,6 +65,14 @@ const N_SEQ: [usize; K_MAX] = [2, 4, 6, 8, 12, 16, 24, 32];
 /// Compensated (Kahan) summation is used for the state update to reduce
 /// roundoff accumulation from O(N) to approximately O(sqrt(N)).
 ///
+/// The Stoermer form is exact for forces that do not depend on velocity. The
+/// force at each sub-step receives a central-difference velocity centered half
+/// a sub-step earlier, so a velocity-dependent force adds an error that the
+/// extrapolation does not remove. The error stays small when the velocity
+/// terms are small compared with gravity, as for relativistic and
+/// non-gravitational forces. A force dominated by its velocity terms can fail
+/// to converge.
+///
 /// References:
 /// - Hairer, Noersett, Wanner: "Solving Ordinary Differential Equations I",
 ///   Chapter II.9 (Extrapolation Methods).
@@ -284,9 +292,9 @@ where
             let d_next = &d_cur + &delta;
 
             // Central-difference velocity at y_k for the next sub-step's force
-            // evaluation. Algebraically (y_{k+1} - y_{k-1})/(2h), assembled
-            // from increments to keep cancellation contained.
-            vel_est = &self.cur_state_der + (&d_next - &d_prev) / (2.0 * h);
+            // evaluation, (y_{k+1} - y_{k-1})/(2h). Both increments are offsets
+            // from the same start state, so their difference is the full change.
+            vel_est = (&d_next - &d_prev) / (2.0 * h);
 
             d_prev = d_cur;
             d_cur = d_next;
@@ -479,6 +487,61 @@ mod tests {
     use super::*;
     use crate::integrators::stress_tests::{CentralAccelMeta, central_accel};
     use crate::kepler::analytic_2_body;
+
+    /// Damping coefficient of [`damped`]. It is weak, as the velocity terms of the
+    /// force models are, since the scheme lags the velocity it passes to the force.
+    const DAMPING: f64 = 1e-4;
+
+    /// Damped oscillator `x'' = -x - DAMPING x'`, a velocity-dependent force.
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "The integrator calls the force through a signature that returns a Result."
+    )]
+    fn damped(
+        _time: Time<TDB>,
+        pos: &Vector3<f64>,
+        vel: &Vector3<f64>,
+        _meta: &mut CentralAccelMeta,
+        _exact: bool,
+    ) -> KeteResult<Vector3<f64>> {
+        Ok(-pos - vel * DAMPING)
+    }
+
+    /// A velocity-dependent force against its closed-form solution. The force sees the
+    /// sub-step velocity estimate, so an error in that estimate shows here and not in
+    /// the two-body tests.
+    #[test]
+    fn damped_oscillator_vs_analytic() {
+        let t = 20.0;
+        let (pos, vel, _) = BulirschStoerIntegrator::integrate(
+            &damped,
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::zeros(),
+            0.0.into(),
+            t.into(),
+            CentralAccelMeta::default(),
+            None,
+        )
+        .unwrap();
+        // x(0) = 1, x'(0) = 0, with w^2 = 1 - (DAMPING / 2)^2. A velocity estimate off by
+        // the start velocity doubles the effective damping, a position error of about
+        // DAMPING * t / 2 = 1e-3.
+        let half = 0.5 * DAMPING;
+        let w = (1.0_f64 - half * half).sqrt();
+        let decay = (-half * t).exp();
+        let exact_pos = decay * ((w * t).cos() + half / w * (w * t).sin());
+        let exact_vel = -decay / w * (w * t).sin();
+        assert!(
+            (pos[0] - exact_pos).abs() < 1e-6,
+            "pos error {:.2e}",
+            pos[0] - exact_pos
+        );
+        assert!(
+            (vel[0] - exact_vel).abs() < 1e-6,
+            "vel error {:.2e}",
+            vel[0] - exact_vel
+        );
+    }
 
     /// Two-body orbit validated against the analytic Kepler solution.
     #[test]
