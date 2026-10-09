@@ -7,7 +7,6 @@
 //! initial orbit determination, and observation modeling for Kete.
 
 mod debias;
-mod filter;
 pub mod horizons;
 mod iod;
 mod lambert;
@@ -18,7 +17,6 @@ mod orbit_fitting;
 mod ranging;
 
 pub use debias::{DEBIAS_EPOCH_JD, DEBIAS_N_TILES, DEBIAS_NSIDE, DebiasTable, DebiasVersion};
-pub use filter::fit_orbit_filter;
 pub use horizons::HorizonsProperties;
 pub use iod::initial_orbit_determination;
 pub use lambert::lambert;

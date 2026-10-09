@@ -493,7 +493,9 @@ fn diagonal_heuristic_whiten_cart(seed: &State<Equatorial, SSB>, np: usize) -> D
 ///
 /// `num_draws` is the **total** number of orbit samples returned across
 /// all seeds.  Each seed receives `num_draws / n_seeds` samples (remainder
-/// goes to the first seeds).
+/// goes to the first seeds). A chain that diverges through most of its warmup
+/// is dropped, and a new chain draws its samples. When every chain of a seed
+/// is dropped, the seeds with a working chain draw its samples instead.
 ///
 /// # Arguments
 /// * `seeds` -- Candidate orbital states (e.g. from IOD), one per mode.
@@ -516,6 +518,8 @@ fn diagonal_heuristic_whiten_cart(seed: &State<Equatorial, SSB>, np: usize) -> D
 /// # Errors
 /// Returns an error if `seeds` is empty, if two-body propagation fails, or if
 /// `non_grav_start` is given without `non_grav` or with the wrong length.
+/// Returns [`Error::Convergence`] if every chain is dropped, or if a round of
+/// replacement chains is dropped entirely.
 pub fn fit_orbit_mcmc(
     seeds: &[State<Equatorial, SSB>],
     obs: &[AstrometricObservation],
@@ -585,22 +589,6 @@ pub fn fit_orbit_mcmc(
     let draws_base_per_seed = num_draws / n_seeds;
     let draws_extra_seeds = num_draws % n_seeds;
 
-    // Build a flat task list: (seed_index, draws_for_chain, rng_seed).
-    let mut tasks: Vec<(usize, usize, u64)> = Vec::new();
-    for seed_idx in 0..n_seeds {
-        let seed_draws = draws_base_per_seed + usize::from(seed_idx < draws_extra_seeds);
-        let base = seed_draws / chains_per_seed;
-        let extra = seed_draws % chains_per_seed;
-        for sub in 0..chains_per_seed {
-            let draws = base + usize::from(sub < extra);
-            if draws == 0 {
-                continue;
-            }
-            let rng_seed = (seed_idx * chains_per_seed + sub) as u64;
-            tasks.push((seed_idx, draws, rng_seed));
-        }
-    }
-
     // Pre-compute Cholesky factors for each seed (serial, fast).
     let chol_factors: Vec<DMatrix<f64>> = seeds
         .iter()
@@ -617,41 +605,106 @@ pub fn fit_orbit_mcmc(
         num_tune
     };
 
-    // Run all chains in parallel.
-    let chain_results: Vec<(usize, KeteResult<(Vec<Vec<f64>>, Vec<bool>, Vec<f64>)>)> = tasks
-        .par_iter()
-        .map(|&(seed_idx, draws, rng_seed)| {
-            let result = run_single_chain(
-                &seeds[seed_idx],
-                &chol_factors[seed_idx],
-                &sorted_obs,
-                include_asteroids,
-                non_grav,
-                &ng_start,
-                draws,
-                tune_per_chain,
-                maxdepth,
-                target_accept,
-                rng_seed,
-                sun,
-            );
-            (seed_idx, result)
-        })
+    // Draws still owed to each seed. A chain that diverges through most of its
+    // warmup is dropped (see `run_single_chain`). Its draws are owed again and
+    // the next round runs new chains for them, so the total reaches `num_draws`.
+    // A seed none of whose chains has worked hands its draws to the seeds that
+    // have a working chain. A round that produces no draws ends the fit with an
+    // error. Rounds after the first take new RNG seeds, so the result depends
+    // only on the inputs and the core count.
+    let mut owed: Vec<usize> = (0..n_seeds)
+        .map(|i| draws_base_per_seed + usize::from(i < draws_extra_seeds))
         .collect();
+    let mut working = vec![false; n_seeds];
+    let mut next_rng_seed = (n_seeds * chains_per_seed) as u64;
 
-    // Collect results.
     let mut all_draws = Vec::new();
     let mut all_seed_id = Vec::new();
     let mut all_divergent = Vec::new();
     let mut all_log_posterior = Vec::new();
 
-    for (seed_idx, result) in chain_results {
-        let (draws, divergent, log_posterior) = result?;
-        let n = draws.len();
-        all_draws.extend(draws);
-        all_seed_id.extend(std::iter::repeat_n(seed_idx, n));
-        all_divergent.extend(divergent);
-        all_log_posterior.extend(log_posterior);
+    for round in 0.. {
+        if round > 0 {
+            if !working.iter().any(|w| *w) {
+                return Err(Error::Convergence(
+                    "Every MCMC chain diverged through most of its warmup.".into(),
+                ));
+            }
+            let orphaned: usize = (0..n_seeds)
+                .filter(|&i| !working[i])
+                .map(|i| std::mem::take(&mut owed[i]))
+                .sum();
+            let targets: Vec<usize> = (0..n_seeds).filter(|&i| working[i]).collect();
+            for (k, &i) in targets.iter().enumerate() {
+                owed[i] += orphaned / targets.len() + usize::from(k < orphaned % targets.len());
+            }
+        }
+        if owed.iter().all(|&n| n == 0) {
+            break;
+        }
+
+        // A flat task list: (seed_index, draws_for_chain, rng_seed).
+        let mut tasks: Vec<(usize, usize, u64)> = Vec::new();
+        for (seed_idx, &seed_draws) in owed.iter().enumerate() {
+            let base = seed_draws / chains_per_seed;
+            let extra = seed_draws % chains_per_seed;
+            for sub in 0..chains_per_seed {
+                let draws = base + usize::from(sub < extra);
+                let rng_seed = if round == 0 {
+                    (seed_idx * chains_per_seed + sub) as u64
+                } else {
+                    next_rng_seed += 1;
+                    next_rng_seed
+                };
+                if draws > 0 {
+                    tasks.push((seed_idx, draws, rng_seed));
+                }
+            }
+        }
+
+        // Run all chains in parallel.
+        let chain_results: Vec<(usize, KeteResult<(Vec<Vec<f64>>, Vec<bool>, Vec<f64>)>)> = tasks
+            .par_iter()
+            .map(|&(seed_idx, draws, rng_seed)| {
+                let result = run_single_chain(
+                    &seeds[seed_idx],
+                    &chol_factors[seed_idx],
+                    &sorted_obs,
+                    include_asteroids,
+                    non_grav,
+                    &ng_start,
+                    draws,
+                    tune_per_chain,
+                    maxdepth,
+                    target_accept,
+                    rng_seed,
+                    sun,
+                );
+                (seed_idx, result)
+            })
+            .collect();
+
+        let mut progress = false;
+        for (seed_idx, result) in chain_results {
+            let (draws, divergent, log_posterior) = result?;
+            let n = draws.len();
+            if n > 0 {
+                progress = true;
+                working[seed_idx] = true;
+                owed[seed_idx] -= n;
+            }
+            all_draws.extend(draws);
+            all_seed_id.extend(std::iter::repeat_n(seed_idx, n));
+            all_divergent.extend(divergent);
+            all_log_posterior.extend(log_posterior);
+        }
+        if round > 0 && !progress {
+            return Err(Error::Convergence(
+                "MCMC chains kept diverging through most of their warmup; could not \
+                 collect the requested draws."
+                    .into(),
+            ));
+        }
     }
 
     Ok(OrbitSamples {
@@ -794,7 +847,8 @@ fn run_single_chain(
             }
             tune_steps += 1;
             // If >90% of warmup steps have diverged by the halfway point,
-            // this chain cannot find the posterior -- drop it silently.
+            // this chain cannot find the posterior. It returns no draws, and
+            // `fit_orbit_mcmc` runs a new chain for them.
             if tune_steps == bail_at && tune_divergent * 10 > bail_at * 9 {
                 return Ok((vec![], vec![], vec![]));
             }

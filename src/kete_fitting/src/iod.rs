@@ -37,7 +37,8 @@ use crate::lambert::lambert;
 ///
 /// # Algorithm
 ///
-/// 1. Group observations into apparitions; select up to 2 recent ones.
+/// 1. Group observations into apparitions; select up to 2 recent ones. When
+///    each is a single tracklet, the recent tracklets form one set.
 /// 2. Select observation pairs with deterministic baseline targets
 ///    (3, 10, 30, 90 days) plus a first-last fallback.
 /// 3. Coarse 2-D scan over (`log rho_a`, `log rho_b`), the topocentric
@@ -305,12 +306,22 @@ fn select_helio_gauss_triplets(
 /// cap are down-sampled to a hybrid of the recent tail plus a few early
 /// anchors so long-baseline curvature is retained without overloading the
 /// grid scan.
+///
+/// A single tracklet, an apparition spanning less than a day, does not
+/// constrain an orbit. When every chosen apparition is a tracklet, the
+/// observations within 4 years of the last one form a single set instead, so
+/// the observation pairs can span the gaps.
 fn select_iod_apparitions(
     sorted_obs: &[AstrometricObservation],
 ) -> Vec<Vec<AstrometricObservation>> {
     const GAP_THRESHOLD: f64 = 60.0;
     const MAX_IOD_OBS: usize = 200;
     const MAX_APPARITIONS: usize = 2;
+    // An apparition shorter than this is a single tracklet.
+    const TRACKLET_DAYS: f64 = 1.0;
+    // Tracklets within this span of the last observation are merged, matching
+    // the rescore window of `initial_orbit_determination`.
+    const MERGE_WINDOW_DAYS: f64 = 1_460.0;
 
     let n = sorted_obs.len();
     if n == 0 {
@@ -367,6 +378,14 @@ fn select_iod_apparitions(
     chosen.sort_by_key(|&(s, e)| std::cmp::Reverse(e - s));
     chosen.truncate(MAX_APPARITIONS);
     chosen.sort_by_key(|&(s, _)| s);
+
+    if chosen.iter().all(|a| arc_days(a) < TRACKLET_DAYS) {
+        let last = sorted_obs[n - 1].epoch();
+        let start = sorted_obs.partition_point(|o| (last - o.epoch()).elapsed > MERGE_WINDOW_DAYS);
+        if arc_days(&(start, n)) >= TRACKLET_DAYS {
+            return vec![cap_apparition(&sorted_obs[start..], MAX_IOD_OBS)];
+        }
+    }
 
     chosen
         .into_iter()
@@ -720,9 +739,11 @@ fn gauss_iod(
     let d32 = o3.pos.dot(&p2);
     let d33 = o3.pos.dot(&p3);
 
-    // Gauss ratios (Curtis eqn 5.98-5.99, adapted for non-uniform spacing).
-    let a_coeff = (-d12 * tau / tau3 + d22 + d32 * tau / tau1) / d0;
-    let b_coeff = (d12 * (tau * tau - tau3 * tau3) * tau3 + d32 * (tau * tau - tau1 * tau1) * tau1)
+    // Gauss coefficients (Curtis 2014, Algorithm 5.5, eqns 5.112-5.113). The
+    // times are scaled by sqrt(mu), so mu is 1 in these expressions.
+    let a_coeff = (-d12 * tau3 / tau + d22 + d32 * tau1 / tau) / d0;
+    let b_coeff = (d12 * (tau3 * tau3 - tau * tau) * tau3 / tau
+        + d32 * (tau * tau - tau1 * tau1) * tau1 / tau)
         / (6.0 * d0);
 
     // Scalar equation for r2 = |R2 + rho2 * L2|.
@@ -740,7 +761,6 @@ fn gauss_iod(
 
     // Find real positive roots by scanning and bisection.
     // The polynomial p(r) = r^8 + c6*r^6 + c3*r^3 + c0.
-    // For physical orbits, r2 is in (0.001, 1000) AU.
     let poly = |r: f64| -> f64 {
         let r3 = r * r * r;
         let r6 = r3 * r3;
@@ -786,14 +806,15 @@ fn gauss_iod(
         // Position at middle observation.
         let pos2 = o2.pos + l2 * rho2;
 
-        // Slant ranges at observations 1 and 3 (Curtis eqn 5.112-5.113).
+        // Slant ranges at observations 1 and 3 (Curtis 2014, eqns 5.131 and
+        // 5.133).
         let rho1 = ((6.0 * (d31 * tau1 / tau3 + d21 * tau / tau3) * r2_cubed
-            + d31 * (tau * tau - tau1 * tau1) * tau1)
+            + d31 * (tau * tau - tau1 * tau1) * tau1 / tau3)
             / (6.0 * r2_cubed + tau * tau - tau3 * tau3)
             - d11)
             / d0;
         let rho3 = ((6.0 * (d13 * tau3 / tau1 - d23 * tau / tau1) * r2_cubed
-            + d13 * (tau * tau - tau3 * tau3) * tau3)
+            + d13 * (tau * tau - tau3 * tau3) * tau3 / tau1)
             / (6.0 * r2_cubed + tau * tau - tau1 * tau1)
             - d33)
             / d0;
@@ -1232,7 +1253,74 @@ mod tests {
             .unwrap()
     }
 
+    /// Gauss IOD on noise-free observations over 17 days recovers the state at
+    /// the middle observation.
+    #[test]
+    fn gauss_iod_recovers_state() {
+        ensure_test_spk();
+        let r = 2.3_f64;
+        let v = (GMS / r).sqrt();
+        let inc = 0.2_f64;
+        let obj = make_state([0.0, r, 0.0], [-v, 0.0, 0.3 * v * inc.sin()], 2_460_000.5);
+        let epochs = [2_460_000.5 - 8.0, 2_460_000.5, 2_460_000.5 + 9.0];
+        let obs = synth_optical_ecliptic(&obj, &epochs, 0.0, 1);
+        let candidates = gauss_iod(&obs, 0, 1, 2);
+        assert!(!candidates.is_empty(), "Gauss produced no candidate");
+
+        let best = candidates
+            .iter()
+            .map(|cand| {
+                let truth = propagate_two_body(&obj, cand.epoch).unwrap();
+                let pos_err = (cand.pos - truth.pos).norm() / truth.pos.norm();
+                let vel_err = (cand.vel - truth.vel).norm() / truth.vel.norm();
+                (pos_err, vel_err)
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .unwrap();
+        println!(
+            "gauss_iod: position error {:e}, velocity error {:e}",
+            best.0, best.1
+        );
+        assert!(best.0 < 1e-3, "position error {:e}", best.0);
+        assert!(best.1 < 1e-3, "velocity error {:e}", best.1);
+    }
+
     // -- Scanning IOD tests ---------------------------------------------------
+
+    /// Three single tracklets 100 days apart are separate apparitions, and none
+    /// constrains an orbit alone. IOD links across the gaps.
+    #[test]
+    fn iod_links_separate_tracklets() {
+        ensure_test_spk();
+        let r = 2.5_f64;
+        let v = (GMS / r).sqrt();
+        let obl = 23.44_f64.to_radians();
+        let i = 8.0_f64.to_radians();
+        let obj = make_state(
+            [r, 0.0, 0.0],
+            [0.0, v * (obl + i).cos(), v * (obl + i).sin()],
+            2460000.5,
+        );
+        let t0 = 2460000.5;
+        let epochs = [
+            t0,
+            t0 + 0.02,
+            t0 + 100.0,
+            t0 + 100.02,
+            t0 + 200.0,
+            t0 + 200.02,
+        ];
+        let obs = synth_optical_ecliptic(&obj, &epochs, 0.0, 1);
+        assert_eq!(select_iod_apparitions(&obs).len(), 1);
+        let results = initial_orbit_determination(&obs).expect("IOD");
+        let best = results
+            .iter()
+            .map(|(_, c)| (c.pos - propagate_two_body(&obj, c.epoch).unwrap().pos).norm())
+            .fold(f64::INFINITY, f64::min);
+        // The synthetic observer is heliocentric but labeled barycentric, which
+        // limits the agreement to about 1e-2 AU.
+        assert!(best < 0.05, "best candidate is {best:e} AU from the truth");
+    }
 
     #[test]
     fn test_scanning_30min_cadence() {

@@ -4,13 +4,15 @@
 //! Batch least-squares orbit fitting using differential correction.
 
 use crate::obs::{AstrometricObservation, differential_light_deflect};
+use kete_core::elements::EquinoctialElements;
 #[cfg(test)]
 use kete_core::forces::NonGravKind;
 use kete_core::forces::{NonGravMask, ParameterizedForce};
-use kete_core::frames::{Equatorial, SSB};
+use kete_core::frames::{Ecliptic, Equatorial, SSB};
 use kete_core::kepler::light_time_correct;
 use kete_core::prelude::{Error, KeteResult, State, UncertainState};
 use kete_core::propagation::{NBody, compute_state_transition};
+use kete_core::state::equinoctial_covariance_domain;
 use kete_core::time::{TDB, Time};
 use kete_spice::prelude::{LOADED_SPK, SpiceEphemeris};
 use nalgebra::{DMatrix, DVector};
@@ -76,6 +78,13 @@ const LM_LAMBDA_RESET_THRESHOLD: f64 = 1e-6;
 /// has converged when the undamped Gauss-Newton step would reduce chi-squared by
 /// less than this. `1e-4` is a step of about 0.01 sigma in the joint metric.
 const NEWTON_DECREMENT_TOL: f64 = 1e-4;
+
+/// Newton decrement below which a trial step that does not reduce the loss
+/// ends the fit as converged. The numerical noise of the loss grows with the
+/// number of observations. On fits of thousands of observations it exceeds
+/// [`NEWTON_DECREMENT_TOL`], and then no step can be shown to improve the fit.
+/// `0.1` is a step of about 0.3 sigma in the joint metric.
+const NOISE_LIMITED_DECREMENT_TOL: f64 = 0.1;
 
 /// Singular values of the diagonally scaled information matrix at or below this
 /// are directions the observations do not constrain.
@@ -849,6 +858,45 @@ fn light_time_corrected_state(
     spk.try_to_ssb(obj_lt_deflected)
 }
 
+/// The modified equinoctial elements of the heliocentric orbit of a fitted
+/// state, and the Jacobian that carries the cartesian information matrix into
+/// them.
+struct ElementPoint {
+    /// Elements of the state about the Sun, in their Ecliptic storage frame.
+    elements: EquinoctialElements,
+
+    /// `d(cartesian, params) / d(elements, params)`, `(6 + Np) x (6 + Np)`.
+    /// It holds the state Jacobian of the elements with Equatorial rows, and
+    /// the identity for the free non-grav parameters. The offset from the Sun
+    /// to the barycenter is a function of time only, so the same Jacobian
+    /// holds for the barycentric state.
+    jac: DMatrix<f64>,
+}
+
+impl ElementPoint {
+    /// The elements and Jacobian at a barycentric state, with `np` free
+    /// non-grav parameters.
+    ///
+    /// # Errors
+    /// Returns [`Error::ValueError`] if the state cannot be referred to the
+    /// Sun, or if it has no equinoctial representation.
+    fn at(state: &State<Equatorial, SSB>, np: usize) -> KeteResult<Self> {
+        let helio = LOADED_SPK
+            .try_read()?
+            .try_to_sun(State::<Equatorial>::from(state.clone()))?;
+        let elements = EquinoctialElements::from_state(&helio.into_frame::<Ecliptic>())?;
+        let mut jac = DMatrix::identity(6 + np, 6 + np);
+        jac.view_mut((0, 0), (6, 6))
+            .copy_from(&elements.state_jacobian::<Equatorial>()?);
+        Ok(Self { elements, jac })
+    }
+
+    /// The information matrix in element coordinates, `J^T N J`.
+    fn information(&self, info: &DMatrix<f64>) -> DMatrix<f64> {
+        self.jac.tr_mul(info) * &self.jac
+    }
+}
+
 /// Run the iterative convergence loop with adaptive Levenberg-Marquardt
 /// damping and step-size limiting.
 ///
@@ -874,6 +922,14 @@ fn light_time_corrected_state(
 /// On rejection the solver increases lambda and re-solves from the same
 /// linearization point (no repropagation).  This guarantees that
 /// `state_epoch` is always the best state seen.
+///
+/// Steps are taken in cartesian position and velocity, plus any free non-grav
+/// parameters. The covariance of the result is the inverse of the information
+/// matrix carried into the equinoctial elements, see [`converged_fit`].
+///
+/// The fit has converged when the Newton decrement is below
+/// [`NEWTON_DECREMENT_TOL`] and a step is accepted, or when it is below
+/// [`NOISE_LIMITED_DECREMENT_TOL`] and a trial step does not reduce the loss.
 fn iterate_to_convergence(
     initial_state: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
@@ -919,7 +975,8 @@ fn iterate_to_convergence(
         // correlations, and damping cannot shrink it. At a minimum where numerical
         // noise rejects every trial step it is still small.
         let dx_newton = solve_damped_within_ng_bounds(&info_mat, &rhs_vec, 0.0, mask, &ng_values)?;
-        let converged = dx_newton.dot(&(&info_mat * &dx_newton)) < NEWTON_DECREMENT_TOL;
+        let decrement = dx_newton.dot(&(&info_mat * &dx_newton));
+        let converged = decrement < NEWTON_DECREMENT_TOL;
 
         let dx = if lambda > 0.0 {
             solve_damped_within_ng_bounds(&info_mat, &rhs_vec, lambda, mask, &ng_values)?
@@ -971,72 +1028,37 @@ fn iterate_to_convergence(
                 lambda *= LM_LAMBDA_DECREASE;
 
                 if converged {
-                    let (raw_cov, unconstrained) = scaled_pseudo_inverse(&info_mat)?;
-                    if !unconstrained.is_empty() {
-                        let mut names = vec!["x", "y", "z", "vx", "vy", "vz"];
-                        names.extend(
-                            mask.map_or_else(Vec::new, ParameterizedForce::free_param_names),
-                        );
-                        let names: Vec<&str> = unconstrained.iter().map(|&i| names[i]).collect();
-                        return Err(Error::ValueError(format!(
-                            "The observations do not constrain the fit parameters {names:?}; \
-                             fix them or add observations."
-                        )));
-                    }
-
-                    // Build per-obs residuals from the sweep (included
-                    // observations only have meaningful values; excluded
-                    // get NaN since they are never used downstream).
-                    let mut residuals = Vec::with_capacity(obs.len());
-                    let mut sweep_idx = 0;
-                    for (i, observation) in obs.iter().enumerate() {
-                        if included[i] {
-                            residuals.push(sweep_residuals[sweep_idx].clone());
-                            sweep_idx += 1;
-                        } else {
-                            residuals.push(DVector::from_element(
-                                observation.measurement_dim(),
-                                f64::NAN,
-                            ));
-                        }
-                    }
-
-                    let n_params = 6 + np;
-                    let rms = weighted_rms(&residuals, obs, included, n_params);
-                    // Internal covariance stays as the raw Fisher inverse
-                    // (H^T W H)^{-1}.  `solve_with_rejection` requires the
-                    // raw inverse for the CMC leverage-correction formula:
-                    //   leverage = tr(H C H^T W)
-                    // which is only consistent when `C` is the unscaled
-                    // information inverse.  The Danby unit-weight rescaling
-                    // (covariance *= rms^2) is applied once at the
-                    // `fit_orbit` boundary; see `rescale_covariance_danby`.
-                    let covariance = raw_cov;
-                    let free_params = ng_values.clone();
-                    // The fit solves in cartesian parameters about the barycenter; the
-                    // state is re-centered on the Sun and the covariance crosses into the
-                    // element coordinates at this boundary. The covariance needs no
-                    // adjustment
-                    // for the re-centering: that offset is a function of time, not of the
-                    // state, so it drops out of the Jacobian.
-                    let mut helio = State::<Equatorial>::from(state_epoch);
-                    LOADED_SPK.try_read()?.try_change_center(&mut helio, 10)?;
-                    let mut uncertain_state =
-                        UncertainState::from_state(&helio, &covariance, free_params)?;
-                    // The mask names the free parameters the covariance and
-                    // `free_params` cover, and carries the frozen values.
-                    uncertain_state.non_grav = mask.cloned();
-                    let non_grav = mask.map(|m| m.fixed_at(&ng_values)).transpose()?;
-                    return Ok(OrbitFit {
-                        uncertain_state,
-                        non_grav,
-                        residuals,
-                        observations: obs.to_vec(),
-                        included: included.to_vec(),
-                        rms,
-                        converged: true,
-                    });
+                    return converged_fit(
+                        &state_epoch,
+                        obs,
+                        included,
+                        mask,
+                        &ng_values,
+                        &info_mat,
+                        &sweep_residuals,
+                    );
                 }
+            } else if decrement < NOISE_LIMITED_DECREMENT_TOL {
+                // The current state is the minimum to within the numerical
+                // noise of the loss; no step can improve it measurably.
+                let sweep = stm_sweep(
+                    &state_epoch,
+                    obs,
+                    included,
+                    include_asteroids,
+                    mask,
+                    &ng_values,
+                )?;
+                let (_, _, _, residuals) = accumulate_from_sweep(&sweep, np);
+                return converged_fit(
+                    &state_epoch,
+                    obs,
+                    included,
+                    mask,
+                    &ng_values,
+                    &info_mat,
+                    &residuals,
+                );
             } else {
                 // Reject step: increase damping and re-solve from
                 // the same linearization point.
@@ -1073,6 +1095,82 @@ fn iterate_to_convergence(
     )
 }
 
+/// Build the converged `OrbitFit` at `state_epoch` from its cartesian
+/// information matrix and the residuals of its included observations, in
+/// time-sorted order.
+///
+/// The covariance is the inverse of the information matrix carried into the
+/// equinoctial elements of `state_epoch`. `UncertainState` stores the
+/// covariance in these coordinates. The fit itself steps in cartesian
+/// coordinates.
+///
+/// # Errors
+/// Returns [`Error::ValueError`] if the observations do not constrain every
+/// fit parameter, if the state cannot be referred to the Sun, or if it is too
+/// close to the equinoctial seam to carry a covariance.
+fn converged_fit(
+    state_epoch: &State<Equatorial, SSB>,
+    obs: &[AstrometricObservation],
+    included: &[bool],
+    mask: Option<&NonGravMask>,
+    ng_values: &[f64],
+    info_mat: &DMatrix<f64>,
+    sweep_residuals: &[DVector<f64>],
+) -> KeteResult<OrbitFit> {
+    let point = ElementPoint::at(state_epoch, ng_values.len())?;
+    equinoctial_covariance_domain(&point.elements)?;
+    let (raw_cov, unconstrained) = scaled_pseudo_inverse(&point.information(info_mat))?;
+    if !unconstrained.is_empty() {
+        let mut names = vec!["p", "f", "g", "h", "k", "L"];
+        names.extend(mask.map_or_else(Vec::new, ParameterizedForce::free_param_names));
+        let names: Vec<&str> = unconstrained.iter().map(|&i| names[i]).collect();
+        return Err(Error::ValueError(format!(
+            "The observations do not constrain the fit parameters {names:?}; \
+             fix them or add observations."
+        )));
+    }
+
+    // Per-observation residuals: included observations take the sweep values,
+    // excluded ones get NaN since they are never used downstream.
+    let mut residuals = Vec::with_capacity(obs.len());
+    let mut sweep_idx = 0;
+    for (i, observation) in obs.iter().enumerate() {
+        if included[i] {
+            residuals.push(sweep_residuals[sweep_idx].clone());
+            sweep_idx += 1;
+        } else {
+            residuals.push(DVector::from_element(
+                observation.measurement_dim(),
+                f64::NAN,
+            ));
+        }
+    }
+
+    let n_params = 6 + ng_values.len();
+    let rms = weighted_rms(&residuals, obs, included, n_params);
+    // Internal covariance stays as the raw Fisher inverse (H^T W H)^{-1}.
+    // `solve_with_rejection` requires the raw inverse for the CMC
+    // leverage-correction formula:
+    //   leverage = tr(H C H^T W)
+    // which is only consistent when `C` is the unscaled information inverse.
+    // The Danby unit-weight rescaling (covariance *= rms^2) is applied once at
+    // the `fit_orbit` boundary; see `rescale_covariance_danby`.
+    let mut uncertain_state = UncertainState::new(point.elements, raw_cov, ng_values.to_vec())?;
+    // The mask names the free parameters the covariance and `free_params`
+    // cover, and carries the frozen values.
+    uncertain_state.non_grav = mask.cloned();
+    let non_grav = mask.map(|m| m.fixed_at(ng_values)).transpose()?;
+    Ok(OrbitFit {
+        uncertain_state,
+        non_grav,
+        residuals,
+        observations: obs.to_vec(),
+        included: included.to_vec(),
+        rms,
+        converged: true,
+    })
+}
+
 /// Build an `OrbitFit` with `converged: false` for the given state.
 ///
 /// Propagation may fail for the current state (e.g. the initial guess
@@ -1093,15 +1191,17 @@ fn make_non_converged_result(
     ng_values: &[f64],
 ) -> KeteResult<OrbitFit> {
     let n_params = 6 + ng_values.len();
+    let point = ElementPoint::at(state, ng_values.len())?;
+    equinoctial_covariance_domain(&point.elements)?;
 
     // Try to compute covariance and residuals together; fall back to
     // placeholders if any propagation step fails.  Covariance here is the
-    // raw Fisher inverse; the Danby rescaling is applied once at the
-    // `fit_orbit` boundary (see `rescale_covariance_danby`).
+    // raw Fisher inverse in element coordinates; the Danby rescaling is applied
+    // once at the `fit_orbit` boundary (see `rescale_covariance_danby`).
     let (covariance, residuals, rms) =
         accumulate_normal_equations(state, obs, included, include_asteroids, mask, ng_values)
             .and_then(|(info_mat, _, _)| {
-                let cov = match scaled_pseudo_inverse(&info_mat) {
+                let cov = match scaled_pseudo_inverse(&point.information(&info_mat)) {
                     Ok((cov, unconstrained)) if unconstrained.is_empty() => cov,
                     _ => DMatrix::from_element(n_params, n_params, f64::NAN),
                 };
@@ -1121,10 +1221,7 @@ fn make_non_converged_result(
                 )
             });
 
-    let free_params = ng_values.to_vec();
-    let mut helio = State::<Equatorial>::from(state.clone());
-    LOADED_SPK.try_read()?.try_change_center(&mut helio, 10)?;
-    let mut uncertain_state = UncertainState::from_state(&helio, &covariance, free_params)?;
+    let mut uncertain_state = UncertainState::new(point.elements, covariance, ng_values.to_vec())?;
     uncertain_state.non_grav = mask.cloned();
     let non_grav = mask.map(|m| m.fixed_at(ng_values)).transpose()?;
 
@@ -2365,6 +2462,24 @@ mod tests {
     }
 
     #[test]
+    fn test_noise_limited_convergence() {
+        ensure_test_spk();
+        // Many observations with sigmas near the integration precision. The
+        // numerical noise of the loss is then larger than NEWTON_DECREMENT_TOL,
+        // so the fit can only stop through the noise-limited exit. With that
+        // exit disabled this fit does not converge.
+        let r = 2.5;
+        let v = (GMS / r).sqrt();
+        let true_state = make_state([r, 0.0, 0.0], [0.0, v * 0.98, v * 0.1], 2460000.5);
+        let epochs: Vec<f64> = (0..1500).map(|i| 2460000.5 + f64::from(i) * 2.0).collect();
+        let observations = synth_observations(&true_state, &epochs, earth_observer, 1e-11, None);
+        let fit = fit_orbit(&true_state, &observations, false, None, 50, 9.0, 0, None).unwrap();
+        assert!(fit.converged, "fit did not converge, rms={:.6e}", fit.rms);
+        let pos_err = (ssb_state(&fit.uncertain_state).unwrap().pos - true_state.pos).norm();
+        assert!(pos_err < 1e-9, "pos error {pos_err:.3e} AU");
+    }
+
+    #[test]
     fn test_gradual_fit_rejection_reinclusion() {
         ensure_test_spk();
         // Verify that observations rejected in early windows are
@@ -2467,6 +2582,41 @@ mod tests {
                 "residual mismatch at obs {k}: {res_diff:.3e}"
             );
         }
+    }
+
+    /// `differential_light_deflect` against reference values at 43 degrees
+    /// solar elongation. The expected displacement is the ERFA `eraLd`
+    /// deflection of the object less that of a star in the same direction,
+    /// computed with pyerfa 2.0.1.5.
+    #[test]
+    fn test_differential_light_deflect_matches_erfa() {
+        use kete_core::frames::Vector;
+
+        let observer: Vector<Equatorial> = [0.98, 0.17, 0.0].into();
+        let obj: Vector<Equatorial> = [0.3, 0.6, 0.1].into();
+        let expected = [
+            -1.795_767_187_168_101e-8,
+            -2.736_883_278_657_368e-8,
+            -4.426_192_169_168_625e-9,
+        ];
+        let shift: [f64; 3] = (differential_light_deflect(&observer, obj) - obj).into();
+        for (got, want) in shift.iter().zip(expected) {
+            assert!(
+                (got - want).abs() < 1e-6 * want.abs().max(1e-8),
+                "shift {shift:?} vs ERFA {expected:?}"
+            );
+        }
+
+        // The net shift is toward the Sun, as seen from the observer.
+        let to_obj = obj - observer;
+        let p = to_obj / to_obj.norm();
+        let to_sun = -observer / observer.norm();
+        let sun_on_sky = to_sun - p * to_sun.dot(&p);
+        let shift_vec = differential_light_deflect(&observer, obj) - obj;
+        assert!(
+            shift_vec.dot(&sun_on_sky) > 0.0,
+            "shift is not toward the Sun"
+        );
     }
 
     /// Verify properties of `differential_light_deflect`.
@@ -3092,7 +3242,7 @@ mod tests {
         let sigma = 1e-6;
         let obs_uncorr = synth_observations(&true_state, &epochs, earth_observer, sigma, None);
 
-        // Build a correlated copy with sigma_corr = 0.6.
+        // Build a correlated copy with sigma_corr = 0.95.
         let obs_corr: Vec<_> = obs_uncorr
             .iter()
             .map(|ob| {
@@ -3114,7 +3264,7 @@ mod tests {
                         dec: *dec,
                         sigma_ra: *sigma_ra,
                         sigma_dec: *sigma_dec,
-                        sigma_corr: 0.6,
+                        sigma_corr: 0.95,
                         time_sigma: *time_sigma,
                         is_occultation: false,
                         band: *band,
@@ -3139,15 +3289,21 @@ mod tests {
             "State should barely change with correlation, got pos_diff = {pos_diff:.3e}"
         );
 
-        // The covariance should differ: with correlation 0.6, the
-        // position covariance diagonals shrink by a factor of ~1/(1-0.36)
-        // = ~1.56 in the information matrix, i.e., the reported
-        // covariance diagonals grow by that factor.  At least one
-        // position diagonal must differ by more than 10%.
+        // The correlation changes the weight of each observation, so at least
+        // one position variance must change by more than 5%. `fit_orbit` scales
+        // the covariance by rms^2. With noise-free observations the rms is
+        // numerical noise, so that scale is removed before the comparison.
+        let raw = |fit: &OrbitFit| {
+            fit.uncertain_state
+                .cartesian_covariance::<Equatorial>()
+                .unwrap()
+                / fit.rms.powi(2)
+        };
+        let (cov_uncorr, cov_corr) = (raw(&fit_uncorr), raw(&fit_corr));
         let mut max_rel_diff: f64 = 0.0;
         for i in 0..3 {
-            let a = fit_uncorr.uncertain_state.cov_matrix[(i, i)];
-            let b = fit_corr.uncertain_state.cov_matrix[(i, i)];
+            let a = cov_uncorr[(i, i)];
+            let b = cov_corr[(i, i)];
             let rel = (b - a).abs() / a.abs().max(1e-30);
             max_rel_diff = max_rel_diff.max(rel);
         }

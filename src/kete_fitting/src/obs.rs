@@ -42,50 +42,43 @@ fn shapiro_range_au(r1: f64, r2: f64, leg: f64) -> f64 {
 
 /// Differential gravitational light deflection due to the Sun.
 ///
-/// Adjusts the apparent heliocentric position of a Solar System object to
-/// account for the difference between the solar gravitational bending of the
-/// photon path from the object and the bending from background stars at
-/// infinity.  On a plate-solved CCD frame the common-mode bending (same for
-/// all reference stars and the object) cancels in the plate solution.  Only
-/// the differential term, arising from the object being at finite heliocentric
-/// distance rather than at infinity, survives.
+/// Returns the object's position at its light-time corrected distance from the
+/// observer, displaced to the direction that a plate reduction against
+/// background stars measures. The Sun bends light from the object and from the
+/// reference stars away from itself. The plate solution maps the stars back to
+/// their catalog positions, which have no deflection. This removes the
+/// deflection of a star from the object too. Light from the object starts at a
+/// finite distance and bends less, so the net shift is toward the Sun:
+///
+/// ```text
+/// direction = p + d(q_obj) - d(p)
+/// d(q) = (2 GM / c^2) / |e| * p x (e_hat x q) / (1 + q . e_hat)
+/// ```
+///
+/// `p` is the unit vector from the observer to the object. `q` is the unit
+/// vector from the Sun to the source, and `p` itself for a star at infinity.
+/// `e` is the vector from the Sun to the observer.
 ///
 /// Both `observer_helio` and `obj_lt_pos` are Sun-centered positions in AU.
-/// Returns the corrected apparent heliocentric position.
 pub(crate) fn differential_light_deflect(
     observer_helio: &Vector<Equatorial>,
     obj_lt_pos: Vector<Equatorial>,
 ) -> Vector<Equatorial> {
-    let bend_factor = 2.0 * GMS / (C_AU_PER_DAY * C_AU_PER_DAY);
-
-    let p = obj_lt_pos - observer_helio;
-    let plen = p.norm();
-    if plen < 1e-10 {
-        return obj_lt_pos;
-    }
-    let olen = observer_helio.norm();
+    let topo = obj_lt_pos - observer_helio;
+    let plen = topo.norm();
+    let em = observer_helio.norm();
     let rlen = obj_lt_pos.norm();
-    if olen < 1e-10 || rlen < 1e-10 {
+    if plen < 1e-10 || em < 1e-10 || rlen < 1e-10 {
         return obj_lt_pos;
     }
-
-    let xprod = observer_helio.cross(&obj_lt_pos);
-    let dir_unnorm = p.cross(&xprod);
-    let dlen = dir_unnorm.norm();
-    if dlen < 1e-30 {
-        return obj_lt_pos;
-    }
-    let dir = dir_unnorm / dlen;
-
-    let psi1 = (obj_lt_pos.dot(observer_helio) / (rlen * olen))
-        .clamp(-1.0, 1.0)
-        .acos();
-    let psi2 = (p.dot(observer_helio) / (plen * olen))
-        .clamp(-1.0, 1.0)
-        .acos();
-
-    let bending = bend_factor * ((psi2 / 2.0).tan() - (psi1 / 2.0).tan()) * plen;
-    obj_lt_pos + dir * bending
+    let p = topo / plen;
+    let e_hat = *observer_helio / em;
+    let deflection = |q: Vector<Equatorial>| {
+        let denom = (1.0 + q.dot(&e_hat)).max(1e-9);
+        p.cross(&e_hat.cross(&q)) * (SHAPIRO_RS_AU / em / denom)
+    };
+    let shifted = p + deflection(obj_lt_pos / rlen) - deflection(p);
+    *observer_helio + shifted * (plen / shifted.norm())
 }
 
 /// Compute the SSB-centered Equatorial state of an Earth ground station at

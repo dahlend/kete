@@ -1005,7 +1005,9 @@ impl PyOrbitSamples {
 ///
 /// ``num_draws`` is the **total** number of orbit samples returned
 /// across all seeds.  Each seed receives roughly
-/// ``num_draws / len(seeds)`` draws.
+/// ``num_draws / len(seeds)`` draws. A chain that diverges through most of
+/// its warmup is dropped, and a new chain draws its samples. When every chain
+/// of a seed is dropped, the other seeds draw its samples.
 ///
 /// Parameters
 /// ----------
@@ -1047,7 +1049,8 @@ impl PyOrbitSamples {
 /// Raises
 /// ------
 /// ValueError
-///     If ``seeds`` is empty or two-body epoch propagation fails.
+///     If ``seeds`` is empty or two-body epoch propagation fails, or if the
+///     chains keep diverging so the requested draws cannot be collected.
 #[pyfunction]
 #[pyo3(
     name = "fit_orbit_mcmc",
@@ -1210,8 +1213,8 @@ impl PyRangingSamples {
 /// temperature : float
 ///     Likelihood temperature. 1.0 gives the true Bayesian posterior.
 ///     Higher values produce a softer distribution that is easier to sample but
-///     less statistically rigorous. Default is 10.0, producing results similar to
-///     JPL Scout.
+///     less statistically rigorous. Must be finite and positive. Default is 10.0,
+///     producing results similar to JPL Scout.
 /// seed : int
 ///     RNG seed. The same observations and seed give the same draws for a given
 ///     build of kete. Default 0.

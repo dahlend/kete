@@ -418,12 +418,10 @@ impl ObsTable {
     }
 
     /// Lower Cholesky factor of the covariance of the attributable correction at
-    /// `temperature`, `(N / T + R)^-1`, with `R` the weak regularizer [`ATTR_REG_INV`].
-    /// `None` if the covariance cannot be factored, in which case draws carry no
-    /// attributable noise.
+    /// `temperature`, `(N / T)^-1`. `None` if the covariance cannot be factored, in
+    /// which case draws carry no attributable noise.
     fn attr_noise(&self, temperature: f64) -> Option<Matrix4<f64>> {
-        let info = self.normal / temperature + Matrix4::identity() * ATTR_REG_INV;
-        let cov = info.try_inverse()?;
+        let cov = (self.normal / temperature).try_inverse()?;
         Some(Cholesky::new(cov)?.l())
     }
 }
@@ -1194,11 +1192,6 @@ fn refine(
 // Sampling
 // ---------------------------------------------------------------------------
 
-/// Weak diagonal regularizer for the 4x4 attributable information matrix, added in
-/// [`ObsTable::attr_noise`].
-/// sigma = 1e-4 rad (~20 arc-seconds) for both position and rate parameters.
-const ATTR_REG_INV: f64 = 1.0 / (1e-4 * 1e-4);
-
 /// Generate equally weighted orbital samples from the grid, in parallel.
 ///
 /// Selects cells proportional to their posterior mass ([`Cell::log_mass`]),
@@ -1209,15 +1202,18 @@ const ATTR_REG_INV: f64 = 1.0 / (1e-4 * 1e-4);
 /// perturbation).  Each state is built at its emission epoch `t_ref - rho/c` and
 /// propagated two-body to `t_ref`, so all draws share one epoch.
 ///
-/// The jitter and the perturbation are unbounded, so a draw from a cell at the edge of
-/// the scored region can land outside it.  A draw that is not physically valid is
-/// redrawn from the same cell, up to `MAX_ATTEMPTS` times.
+/// The jitter and the perturbation are unbounded, so a draw can land on an orbit
+/// that is not physically valid.  Such a draw is rejected, and the next attempt
+/// selects a cell again.  The accepted draws are then samples of the posterior
+/// restricted to valid orbits: each cell contributes in proportion to its mass times
+/// the fraction of its draws that are valid.  Each draw gets up to `MAX_ATTEMPTS`
+/// attempts.
 ///
 /// Fully parallelized via rayon; no `scout_score` calls at draw time.
 ///
 /// # Errors
 /// Returns an error if a draw cannot be referred to the Sun or propagated to the
-/// reference epoch, or no valid draw is found for a cell in `MAX_ATTEMPTS` attempts.
+/// reference epoch, or no valid draw is found in `MAX_ATTEMPTS` attempts.
 fn draw_samples(
     spk: &SpkCollection,
     cells: &[Cell],
@@ -1226,7 +1222,7 @@ fn draw_samples(
     attr: &Attributable,
     attr_noise: Option<&Matrix4<f64>>,
 ) -> KeteResult<(Vec<Vec<f64>>, Vec<f64>)> {
-    const MAX_ATTEMPTS: usize = 64;
+    const MAX_ATTEMPTS: usize = 4096;
 
     if cells.is_empty() || num_draws == 0 {
         return Ok((vec![], vec![]));
@@ -1270,12 +1266,12 @@ fn draw_samples(
         .map(|seed| -> KeteResult<(Vec<f64>, f64)> {
             let mut local_rng = rand::rngs::SmallRng::seed_from_u64(seed);
 
-            // Select a cell proportional to its posterior mass.
-            let u = uniform.sample(&mut local_rng);
-            let idx = cdf.partition_point(|&c| c < u).min(cells.len() - 1);
-            let cell = &cells[idx];
-
             for _ in 0..MAX_ATTEMPTS {
+                // Select a cell proportional to its posterior mass.
+                let u = uniform.sample(&mut local_rng);
+                let idx = cdf.partition_point(|&c| c < u).min(cells.len() - 1);
+                let cell = &cells[idx];
+
                 // Jitter within the cell with a Gaussian (sigma = half cell width).
                 // Adjacent cells' Gaussian densities overlap and blend across their
                 // shared boundaries, eliminating the polygonal staircase that uniform
@@ -1310,9 +1306,8 @@ fn draw_samples(
                 ));
             }
             Err(Error::ValueError(format!(
-                "fit_orbit_ranging: no physically valid draw in {MAX_ATTEMPTS} attempts \
-                 from the cell at rho = {:e} AU, rho_dot = {:e} AU/day",
-                cell.rho, cell.rho_dot
+                "fit_orbit_ranging: no physically valid draw in {MAX_ATTEMPTS} attempts; \
+                 almost all of the posterior lies on orbits that are not physically valid."
             )))
         })
         .collect::<KeteResult<_>>()?;
@@ -1356,7 +1351,8 @@ fn draw_samples(
 /// # Arguments
 /// * `obs` -- At least 3 optical observations (any order, sorted internally).
 /// * `num_draws` -- Number of orbit samples to return.
-/// * `temperature` -- Likelihood temperature (1.0 = nominal). Higher values broaden coverage.
+/// * `temperature` -- Likelihood temperature (1.0 = nominal), finite and positive.
+///   Higher values broaden coverage.
 /// * `seed` -- RNG seed; identical inputs + seed -> identical draws for a given build
 ///   of kete.  The generator is not guaranteed to be the same across versions of its
 ///   dependencies or across platforms.
@@ -1365,9 +1361,9 @@ fn draw_samples(
 /// timing uncertainty of an observation is not used.
 ///
 /// # Errors
-/// Returns an error if fewer than 3 optical observations are provided, the SPK
-/// kernels cannot be read, no valid cells survive scoring, or a draw cannot be
-/// propagated to the reference epoch.
+/// Returns an error if `temperature` is not finite and positive, fewer than 3
+/// optical observations are provided, the SPK kernels cannot be read, no valid
+/// cells survive scoring, or a draw cannot be propagated to the reference epoch.
 pub fn fit_orbit_ranging(
     obs: &[AstrometricObservation],
     num_draws: usize,
@@ -1380,6 +1376,11 @@ pub fn fit_orbit_ranging(
     /// Screened windows that are then scored against every observation.
     const FINALISTS: usize = 4;
 
+    if !(temperature.is_finite() && temperature > 0.0) {
+        return Err(Error::ValueError(format!(
+            "fit_orbit_ranging requires a finite, positive temperature, got {temperature}"
+        )));
+    }
     let n_optical = obs.iter().filter(|o| o.as_optical().is_ok()).count();
     if n_optical < 3 {
         return Err(Error::ValueError(format!(
@@ -1410,6 +1411,18 @@ pub fn fit_orbit_ranging(
             Some((_, members)) => members.push(o.clone()),
             None => groups.push((observer.desig.clone(), vec![o.clone()])),
         }
+    }
+    // When no observer has two observations there is no single-observer window.
+    // The windows then span all observers, which approximates the observer
+    // velocity by the secant between sites, and a warning reports it.
+    let mixed_observers = groups.iter().all(|(_, members)| members.len() < 2);
+    if mixed_observers {
+        let all: Vec<AstrometricObservation> = sorted
+            .iter()
+            .filter(|o| o.as_optical().is_ok())
+            .cloned()
+            .collect();
+        groups = vec![(kete_core::desigs::Desig::Empty, all)];
     }
 
     // Windows are screened first: each is scored against only the `SCREEN_OBS`
@@ -1583,6 +1596,13 @@ pub fn fit_orbit_ranging(
     let (cells, final_ess, resolution) = refine(spk, cells, &table, &attr, temperature)?;
 
     let mut warnings = Vec::new();
+    if mixed_observers {
+        warnings.push(
+            "No observer has two observations, so the attributable spans observers \
+             and its observer velocity is the secant between sites. Draws may be biased."
+                .to_string(),
+        );
+    }
     if final_ess < TARGET_ESS {
         warnings.push(format!(
             "ESS = {final_ess:.1} < {TARGET_ESS}; orbit space may be under-sampled. \
@@ -2265,14 +2285,13 @@ mod tests {
         assert!((lw1 - 4.0 * lw4).abs() <= 1e-9 * lw1.abs().max(1.0));
         assert_eq!(d1, d4, "the LS correction does not depend on temperature");
 
-        // The attributable noise is the square root of a covariance `(N / T + R)^-1`,
-        // so it grows as `sqrt(T)` up to the weak regularizer `R`.
+        // The attributable noise is the square root of the covariance `(N / T)^-1`,
+        // so it grows as `sqrt(T)`.
         let table = table(&obs, &attr);
         let l1 = table.attr_noise(1.0).expect("noise");
         let l4 = table.attr_noise(4.0).expect("noise");
         let rel = (l4 - l1 * 2.0).norm() / l4.norm();
-        println!("attributable noise at T = 4 against twice T = 1: relative difference {rel:e}");
-        assert!(rel < 1e-2, "relative difference {rel:e}");
+        assert!(rel < 1e-12, "relative difference {rel:e}");
     }
 
     /// Nine NEOCP observations of `P12pZsW` (F51 and H21, 2026-09-13 to 09-16).
@@ -2620,6 +2639,37 @@ mod tests {
         synth_obs(&obj, &epochs, 1.0_f64.to_radians() / 3600.0)
     }
 
+    /// A 20-minute tracklet of a distant object, where most draws of the rates land
+    /// on unbound orbits. The draws must still be collected.
+    #[test]
+    fn ranging_short_tno_tracklet() {
+        ensure_test_spk();
+        let r = 40.0_f64;
+        let v = (GMS / r).sqrt();
+        let obl = 23.44_f64.to_radians();
+        let obj = make_ssb_state(
+            [0.0, r, 0.0],
+            [-v * obl.cos(), 0.0, v * obl.sin()],
+            2_460_000.5,
+        );
+        let epochs: Vec<f64> = (0..3)
+            .map(|i| 2_460_000.5 + f64::from(i) * 10.0 / 1440.0)
+            .collect();
+        let obs = synth_obs(&obj, &epochs, 1.0_f64.to_radians() / 3600.0);
+        let samples = fit_orbit_ranging(&obs, 200, 10.0, 3).expect("ranging");
+        assert_eq!(samples.draws.len(), 200);
+    }
+
+    /// A temperature that is not finite and positive is an error.
+    #[test]
+    fn ranging_rejects_invalid_temperature() {
+        ensure_test_spk();
+        for t in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let err = fit_orbit_ranging(&arc_obs(6, 2.0), 100, t, 1).unwrap_err();
+            assert!(err.to_string().contains("temperature"), "T={t}: {err}");
+        }
+    }
+
     /// A multi-night arc the linear attributable model describes raises no warning.
     #[test]
     fn ranging_no_warning_for_short_multi_night_arc() {
@@ -2638,6 +2688,40 @@ mod tests {
         assert!(
             warning.contains("linear attributable model"),
             "expected a linear model warning, got {warning:?}"
+        );
+    }
+
+    /// One observation from each of three observers has no single-observer
+    /// window. Ranging falls back to windows across observers and warns.
+    #[test]
+    fn ranging_one_observation_per_observer() {
+        ensure_test_spk();
+        let r = 2.0_f64;
+        let v = (GMS / r).sqrt();
+        let obl = 23.44_f64.to_radians();
+        let obj = make_ssb_state(
+            [0.0, r, 0.0],
+            [-v * obl.cos(), 0.0, v * obl.sin()],
+            2_460_000.5,
+        );
+        let sigma = 1.0_f64.to_radians() / 3600.0;
+        let mut obs = Vec::new();
+        for (k, name) in ["A", "B", "C"].iter().enumerate() {
+            #[allow(clippy::cast_precision_loss, reason = "small index")]
+            let jd = 2_460_000.5 + 0.5 * k as f64;
+            obs.extend(synth_obs_offset(
+                &obj,
+                &[jd],
+                sigma,
+                [1e-5 * k as f64, 0.0, 0.0],
+                &Desig::Name((*name).to_string()),
+            ));
+        }
+        let samples = fit_orbit_ranging(&obs, 100, 1.0, 1).expect("ranging");
+        let warning = samples.convergence_warning.unwrap_or_default();
+        assert!(
+            warning.contains("No observer has two observations"),
+            "expected a mixed observer warning, got {warning:?}"
         );
     }
 
