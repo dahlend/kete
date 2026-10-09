@@ -213,7 +213,8 @@ them as :class:`~kete.flux.FluxObs` objects:
 We call :func:`~kete.flux.fit_model` with ``model="neatm"``.
 Passing ``h_mag`` as a convenience argument centers the H-magnitude
 prior on our approximate value (in a real scenario this would come
-from optical-survey photometry).
+from optical-survey photometry). Here the width of the H prior is also
+set to 0.01 mag, as for an object with well measured optical photometry.
 
 The fitter explores 6 parameters:
 ``[D, beaming, H, G, f_sigma, R_IR]``
@@ -221,12 +222,16 @@ and returns posterior draws in physical units.
 
 .. code-block:: python
 
+    h_priors = kete.flux.FluxPriors(
+        h_mag=kete.flux.ParamPrior(bounds=(-5.0, 35.0), gaussian=(true_h_mag, 0.01)),
+    )
     result = kete.flux.fit_model(
         model="neatm",
         obs=observations,
         h_mag=true_h_mag,
         g_param=true_g_param,
         emissivity=true_emissivity,
+        priors=h_priors,
         num_chains=4,
         num_tune=200,
         num_draws=500,

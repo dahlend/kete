@@ -49,7 +49,7 @@ use crate::daf::DAFType;
 use crate::daf::DafFile;
 use crate::prepend_by_precedence;
 use kete_core::cache::cache_path;
-use kete_core::desigs::{NaifId, naif_ids_from_name};
+use kete_core::desigs::{NaifId, naif_ids_from_name, try_name_from_id};
 use kete_core::errors::Error;
 use kete_core::frames::{DynCenter, InertialFrame, SSB, SunCenter};
 use kete_core::prelude::KeteResult;
@@ -546,6 +546,11 @@ impl SpkCollection {
 
     /// Try to get the unique loaded NAIF ID for the given name.
     ///
+    /// The name is matched in part against the names of the loaded objects. A name
+    /// of only digits is also matched in part against the loaded NAIF IDs, so `42`
+    /// finds the asteroid `20000042` when it is the only loaded ID with those
+    /// digits.
+    ///
     /// If there are multiple ids which match, but one of them is an exact match,
     /// that one is returned.
     ///
@@ -569,8 +574,22 @@ impl SpkCollection {
         loaded_ids.extend(self.segments.keys().copied());
 
         let mut ids = naif_ids_from_name(name);
+        let digits = name.trim();
+        if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+            ids.extend(
+                loaded_ids
+                    .iter()
+                    .filter(|id| id.to_string().contains(digits))
+                    .map(|&id| NaifId {
+                        id,
+                        name: try_name_from_id(id).unwrap_or_else(|| id.to_string()),
+                    }),
+            );
+        }
         // remove any IDs which are not loaded in the SPK files.
         ids.retain(|id| loaded_ids.contains(&id.id) || id.id == 0);
+        ids.sort_by_key(|id| id.id);
+        ids.dedup_by_key(|id| id.id);
 
         if ids.is_empty() {
             return Err(Error::ValueError(format!(
@@ -702,6 +721,28 @@ mod tests {
             spk.load_from_reader(Cursor::new(&file)).unwrap();
             assert_eq!(x_km(&spk, id), 2.0, "id {id}");
         }
+    }
+
+    /// A name of only digits matches the loaded NAIF IDs which hold those digits,
+    /// and fails when more than one does.
+    #[test]
+    fn digits_match_loaded_ids() {
+        let file = file_of(vec![
+            fixed_segment(399, 1.0, "earth"),
+            fixed_segment(20_000_042, 1.0, "isis"),
+        ]);
+        let mut spk = SpkCollection::default();
+        spk.load_from_reader(Cursor::new(&file)).unwrap();
+        assert_eq!(spk.try_id_from_name("42").unwrap().id, 20_000_042);
+        assert_eq!(spk.try_id_from_name("isis").unwrap().id, 20_000_042);
+
+        let file = file_of(vec![
+            fixed_segment(20_000_042, 1.0, "isis"),
+            fixed_segment(20_000_420, 1.0, "other"),
+        ]);
+        let mut spk = SpkCollection::default();
+        spk.load_from_reader(Cursor::new(&file)).unwrap();
+        assert!(spk.try_id_from_name("42").is_err());
     }
 
     /// Change the center from an object that orbits a spacecraft to the SSB.
