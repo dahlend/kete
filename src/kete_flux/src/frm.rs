@@ -1,41 +1,18 @@
-// BSD 3-Clause License
-//
-// Copyright (c) 2026, Dar Dahlen
-// Copyright (c) 2025, California Institute of Technology
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice, this
-//    list of conditions and the following disclaimer.
-//
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-//
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from
-//    this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
 
-use crate::{
-    BandInfo, DEFAULT_SHAPE, ModelResults, black_body_flux, flux_to_mag, hg_apparent_flux,
-    hg_apparent_mag, lambertian_vis_scale_factor, mag_to_flux, sub_solar_temperature,
-};
-use kete_core::constants::V_MAG_ZERO;
+use crate::common::ThermalGeometry;
+use crate::{BandInfo, ModelResults, assemble_total};
+use kete_core::geometry::ConvexShape;
+use std::sync::LazyLock;
 
 use nalgebra::{UnitVector3, Vector3};
 use std::f64::consts::PI;
+
+/// Surface facets of the FRM quadrature.
+static FRM_SHAPE: LazyLock<ConvexShape> =
+    LazyLock::new(|| ConvexShape::new_fibonacci_lattice(2048));
 
 /// Using the FRM thermal model, calculate the temperature of each facet given the
 /// direction of the sun, the subsolar temperature and the facet normal vectors.
@@ -83,37 +60,31 @@ pub fn frm_thermal_flux(
     sun2obj: &Vector3<f64>,
     sun2obs: &Vector3<f64>,
 ) -> Vec<f64> {
-    let obj2sun = -sun2obj;
-    let obs2obj = sun2obj - sun2obs;
-    let obs2obj_r = obs2obj.norm();
-    let geom = &DEFAULT_SHAPE;
+    let geometry = ThermalGeometry::frm(sun2obj, sun2obs);
+    // FRM ignores the beaming argument; pi is its fixed beaming.
+    obs_bands
+        .iter()
+        .map(|band| geometry.flux(band, diameter, vis_albedo, g_param, PI, emissivity))
+        .collect()
+}
 
-    let ss_temp = sub_solar_temperature(obj2sun.norm(), vis_albedo, g_param, PI, emissivity);
-
-    let bands: Vec<_> = obs_bands.iter().map(|x| x.wavelength).collect();
-    let color_correction: Vec<_> = obs_bands.iter().map(|x| x.color_correction).collect();
-    let obj2sun = UnitVector3::new_normalize(obj2sun);
-    let obs2obj = UnitVector3::new_normalize(obs2obj);
-
-    let mut fluxes = vec![0.0; obs_bands.len()];
-    for facet in &geom.facets {
-        let temp = frm_facet_temperature(&facet.normal, ss_temp, &obj2sun);
-        let obs_flux_scaling =
-            lambertian_vis_scale_factor(&facet.normal, &obs2obj, obs2obj_r, diameter, emissivity);
-        if temp == 0.0 || obs_flux_scaling == 0.0 {
-            continue;
-        }
-        for (idx, (wavelength, flux)) in bands.iter().zip(&mut fluxes).enumerate() {
-            let mut facet_flux = black_body_flux(temp, *wavelength);
-            if let Some(func) = color_correction[idx] {
-                facet_flux *= func(temp);
-            }
-            facet_flux *= facet.area;
-
-            *flux += obs_flux_scaling * facet_flux;
-        }
-    }
-    fluxes
+/// FRM surface nodes `(weight, temp_fraction)` of an object at `sun2obj` seen
+/// from `sun2obs`, both in AU from the Sun.
+///
+/// The nodes are the facets of [`FRM_SHAPE`] that are both heated and visible to
+/// the observer, with the rotation pole along z. See [`ThermalGeometry`].
+pub(crate) fn frm_nodes(sun2obj: &Vector3<f64>, sun2obs: &Vector3<f64>) -> Vec<(f64, f64)> {
+    let obj2sun = UnitVector3::new_normalize(-sun2obj);
+    let obs2obj_hat = UnitVector3::new_normalize(sun2obj - sun2obs);
+    FRM_SHAPE
+        .facets
+        .iter()
+        .filter_map(|facet| {
+            let frac = frm_facet_temperature(&facet.normal, 1.0, &obj2sun);
+            let observed = -facet.normal.dot(&obs2obj_hat);
+            (frac > 0.0 && observed > 0.0).then_some((observed * PI * facet.area, frac))
+        })
+        .collect()
 }
 
 /// Compute FRM thermal + reflected flux and magnitudes for each band.
@@ -144,39 +115,16 @@ pub fn frm_total_flux(
     let thermal_fluxes = frm_thermal_flux(
         obs_bands, diameter, vis_albedo, g_param, emissivity, sun2obj, sun2obs,
     );
-
-    let mut hg_fluxes = Vec::with_capacity(thermal_fluxes.len());
-    let mut fluxes = Vec::with_capacity(thermal_fluxes.len());
-    for ((band, t_flux), albedo) in obs_bands.iter().zip(&thermal_fluxes).zip(band_albedos) {
-        let refl = hg_apparent_flux(
-            g_param,
-            diameter,
-            sun2obj,
-            sun2obs,
-            band.wavelength,
-            *albedo,
-        ) * band.solar_correction;
-        hg_fluxes.push(refl);
-        fluxes.push(*t_flux + refl);
-    }
-
-    let v_band_magnitude = hg_apparent_mag(g_param, h_mag, sun2obj, sun2obs);
-    let v_band_flux = mag_to_flux(v_band_magnitude, V_MAG_ZERO);
-
-    let magnitudes: Vec<_> = obs_bands
-        .iter()
-        .zip(&fluxes)
-        .map(|(band_info, flux)| flux_to_mag(*flux, band_info.zero_mag))
-        .collect();
-
-    ModelResults {
-        fluxes,
-        magnitudes,
+    assemble_total(
+        obs_bands,
+        band_albedos,
         thermal_fluxes,
-        hg_fluxes,
-        v_band_magnitude,
-        v_band_flux,
-    }
+        diameter,
+        g_param,
+        h_mag,
+        sun2obj,
+        sun2obs,
+    )
 }
 
 #[cfg(test)]
@@ -185,7 +133,6 @@ mod tests {
     use nalgebra::UnitVector3;
 
     use super::*;
-    use crate::*;
     use std::f64::consts::PI;
 
     #[test]

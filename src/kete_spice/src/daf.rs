@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Support for arbitrary DAF files
 //! DAF is a superset which includes SPK and PCK files.
 //!
@@ -8,36 +12,6 @@
 //!
 //! These summary records contain the location information for all the contents
 //! of the DAF file.
-//!
-// BSD 3-Clause License
-//
-// Copyright (c) 2026, Dar Dahlen
-// Copyright (c) 2025, California Institute of Technology
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice, this
-//    list of conditions and the following disclaimer.
-//
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-//
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from
-//    this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use kete_core::io::bytes::{
     bytes_to_f64, bytes_to_f64_vec, bytes_to_i32, bytes_to_i32_vec, bytes_to_string,
@@ -50,6 +24,46 @@ use std::fmt::Debug;
 use std::io::{Cursor, Read, Seek, Write};
 use std::ops::Index;
 use std::slice::SliceIndex;
+
+/// FTP validation string in the file record of a DAF file.
+///
+/// A text mode file transfer alters the line-ending bytes in this string.
+const FTPSTR: [u8; 28] = [
+    0x46, 0x54, 0x50, 0x53, 0x54, 0x52, // FTPSTR
+    0x3A, 0x0D, 0x3A, // :CR:
+    0x0A, 0x3A, // LF:
+    0x0D, 0x0A, 0x3A, // CRLF:
+    0x0D, 0x00, 0x3A, // CR NUL:
+    0x81, 0x3A, // 0x81:
+    0x10, 0xCE, 0x3A, // 0x10 0xCE:
+    0x45, 0x4E, 0x44, 0x46, 0x54, 0x50, // ENDFTP
+];
+
+/// Check the file record values that define the layout of a DAF file.
+///
+/// `n_doubles` is ND, `n_ints` is NI, and `first_summary` is the record number
+/// of the first summary record (FWARD).
+///
+/// # Errors
+/// Returns [`Error::IOError`] if ND is outside `[0, 124]`, if NI is outside
+/// `[2, 250]`, or if a summary is longer than 125 words. Also returns
+/// [`Error::IOError`] if the first summary record is before record 2.
+fn check_layout(n_doubles: i32, n_ints: i32, first_summary: i32) -> KeteResult<()> {
+    if !(0..=124).contains(&n_doubles)
+        || !(2..=250).contains(&n_ints)
+        || n_doubles + (n_ints + 1) / 2 > 125
+    {
+        return Err(Error::IOError(format!(
+            "DAF header has invalid ND ({n_doubles}) or NI ({n_ints})."
+        )));
+    }
+    if first_summary < 2 {
+        return Err(Error::IOError(format!(
+            "DAF header has an invalid first summary record ({first_summary})."
+        )));
+    }
+    Ok(())
+}
 
 /// DAF Files can contain multiple different types of data.
 /// This list contains the supported formats.
@@ -101,8 +115,7 @@ impl TryFrom<&str> for DAFType {
     }
 }
 
-/// DAF files header information.
-/// This contains
+/// A DAF file: the file record, the comments, and the arrays.
 #[derive(Debug)]
 pub struct DafFile {
     /// Magic number within the DAF file corresponds to this DAF type.
@@ -130,9 +143,7 @@ pub struct DafFile {
     /// not file byte index.
     pub final_summary_record_index: i32,
 
-    /// First free address of the file.
-    /// Index of initial summary record
-    /// Note that this is 1 indexed.
+    /// First free address of the file, a 1 indexed word address.
     pub first_free: i32,
 
     /// FTP Validation string
@@ -198,13 +209,23 @@ impl DafFile {
 
         let n_doubles = bytes_to_i32(&bytes[8..12])?;
         let n_ints = bytes_to_i32(&bytes[12..16])?;
-        let n_chars = 8 * (n_doubles + (n_ints + 1) / 2);
 
         // record index of the first summary record in the file
         // records are 1024 long, and 1 indexed because fortran.
-        let init_summary_record_index = bytes_to_i32(&bytes[76..80])?.abs();
+        let init_summary_record_index = bytes_to_i32(&bytes[76..80])?;
+        check_layout(n_doubles, n_ints, init_summary_record_index)?;
+        let n_chars = 8 * (n_doubles + (n_ints + 1) / 2);
 
-        // the following values are not used, so are not stored.
+        // A text mode transfer alters the line-ending bytes of the FTP string.
+        // Older files do not have the string. Thus the check applies only when
+        // the file record holds "FTPSTR:" at byte 699.
+        if bytes[699..706] == FTPSTR[..7] && bytes[699..727] != FTPSTR {
+            return Err(Error::IOError(
+                "DAF file is damaged: it was likely transferred in text mode.".into(),
+            ));
+        }
+
+        // Values from the file record that are kept as read.
         let internal_desc = bytes_to_string(&bytes[16..76]);
         let final_summary_record_index = bytes_to_i32(&bytes[80..84])?;
         let first_free = bytes_to_i32(&bytes[84..88])?;
@@ -347,7 +368,8 @@ impl DafFile {
     /// Returns an error if writing to the underlying writer fails.
     ///
     /// # Panics
-    /// Panics if arrays is non-empty and the last batch has no addresses.
+    /// Panics when an array's summary size differs from the size given by the
+    /// file's `n_doubles` and `n_ints`, such as a PCK array in an SPK file.
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_possible_wrap,
@@ -355,18 +377,6 @@ impl DafFile {
         reason = "DAF format uses i32 record indices that are always non-negative in valid files"
     )]
     pub fn write_to<W: Write + Seek>(&self, w: &mut W) -> KeteResult<()> {
-        // FTP validation string -- identical in every DAF file.
-        const FTPSTR: [u8; 28] = [
-            0x46, 0x54, 0x50, 0x53, 0x54, 0x52, // FTPSTR
-            0x3A, 0x0D, 0x3A, // :CR:
-            0x0A, 0x3A, // LF:
-            0x0D, 0x0A, 0x3A, // CRLF:
-            0x0D, 0x00, 0x3A, // CR NUL:
-            0x81, 0x3A, // 0x81:
-            0x10, 0xCE, 0x3A, // 0x10 0xCE:
-            0x45, 0x4E, 0x44, 0x46, 0x54, 0x50, // ENDFTP
-        ];
-
         // --- Comment area ---
         // Convert comment text: newlines -> \x00 separators, append \x04 EOT.
         let comment_bytes: Vec<u8> = self
@@ -596,19 +606,33 @@ impl DafFile {
         reason = "cast should work except when file is incorrectly formatted"
     )]
     pub fn try_load_arrays<T: Read + Seek>(&mut self, file: &mut T) -> KeteResult<()> {
+        check_layout(self.n_doubles, self.n_ints, self.init_summary_record_index)?;
         let summary_size = self.n_doubles + (self.n_ints + 1) / 2;
+        // Summaries follow the three control words of the 128 word record.
+        let max_summaries = (128 - 3) / summary_size;
 
+        let mut visited = std::collections::HashSet::new();
         let mut next_idx = self.init_summary_record_index;
         loop {
             if next_idx == 0 {
                 break;
             }
             let current_idx = next_idx;
+            if current_idx < 0 || !visited.insert(current_idx) {
+                return Err(Error::IOError(
+                    "DAF summary records do not form a list.".into(),
+                ));
+            }
             let bytes = Self::try_load_record(file, current_idx as u64)?;
 
             next_idx = bytes_to_f64(&bytes[0..8])? as i32;
-            // let prev_idx = bytes_to_f64(&bytes[8..16])? as i32;
-            let n_summaries = bytes_to_f64(&bytes[16..24])? as i32;
+            let n_summaries = bytes_to_f64(&bytes[16..24])?;
+            if !(0.0..=f64::from(max_summaries)).contains(&n_summaries) {
+                return Err(Error::IOError(format!(
+                    "DAF summary record holds an invalid number of summaries ({n_summaries})."
+                )));
+            }
+            let n_summaries = n_summaries as i32;
 
             // Name record immediately follows each summary record.
             let name_bytes = Self::try_load_record(file, (current_idx + 1) as u64)?;
@@ -692,12 +716,16 @@ impl DafArray {
         // From DAF documentation:
         // "The initial and final addresses of an array are always the values of the
         //  final two integer components of the summary for the array. "
-        let array_start = summary_ints[n_ints - 2] as u64;
-        let array_end = summary_ints[n_ints - 1] as u64;
+        let array_start = summary_ints[n_ints - 2];
+        let array_end = summary_ints[n_ints - 1];
+        let file_words = buffer.seek(std::io::SeekFrom::End(0))? / 8;
 
-        if array_end < array_start {
-            Err(Error::IOError("DAF File incorrectly Formatted.".into()))?;
+        if array_start < 1 || array_end < array_start || array_end as u64 > file_words {
+            Err(Error::IOError(format!(
+                "DAF array addresses {array_start} to {array_end} are outside the file."
+            )))?;
         }
+        let (array_start, array_end) = (array_start as u64, array_end as u64);
 
         let _ = buffer.seek(std::io::SeekFrom::Start(8 * (array_start - 1)))?;
 
@@ -782,20 +810,23 @@ where
 
 /// Convert a big-endian DAF file to a little-endian copy.
 ///
-/// Reads `input_filename`, byte-swaps every numeric field (all f64 and i32
-/// values in the file-record header, summary records, and data arrays), updates
-/// the endianness marker from `"BIG-IEEE"` to `"LTL-IEEE"`, and writes the
-/// result to `output_filename`.
+/// This function reads `input_filename` and byte-swaps every numeric field. The
+/// numeric fields are the f64 and i32 values in the file record, the summary
+/// records, and the data arrays. It changes the endianness marker from
+/// `"BIG-IEEE"` to `"LTL-IEEE"`. It writes the result to `output_filename`.
 ///
-/// Many older SPK files distributed by NAIF (e.g. Spitzer) are big-endian.
-/// kete can only read little-endian DAF files, so this function is provided
-/// as a one-time conversion step.
+/// Many older SPK files from NAIF (for example Spitzer) are big-endian.
+/// [`DafFile::from_buffer`] reads these files and converts them in memory on
+/// each load. This function writes the converted file once.
 ///
 /// # Errors
 /// Returns [`Error::IOError`] if:
 /// - `input_filename` cannot be read.
-/// - The input is not a valid big-endian DAF (wrong endian marker, too small,
-///   or invalid header values).
+/// - The input is smaller than one record, or has no `"BIG-IEEE"` marker.
+/// - The file record has invalid ND, NI, or first summary record values.
+/// - The summary records do not form a list, or a summary record is past the
+///   end of the file or has invalid control words.
+/// - The addresses of an array are outside the file.
 /// - `output_filename` cannot be written.
 pub fn convert_daf_big_to_little_endian(
     input_filename: &str,
@@ -818,10 +849,6 @@ pub fn convert_daf_big_to_little_endian(
     clippy::cast_sign_loss,
     reason = "header values are validated to be non-negative before casting to usize"
 )]
-#[allow(
-    clippy::missing_panics_doc,
-    reason = "slice lengths are validated before .try_into().unwrap() calls"
-)]
 fn swap_daf_be_to_le(input: &[u8]) -> KeteResult<Vec<u8>> {
     if input.len() < 1024 {
         return Err(Error::IOError("DAF file is too small to be valid.".into()));
@@ -834,20 +861,23 @@ fn swap_daf_be_to_le(input: &[u8]) -> KeteResult<Vec<u8>> {
     }
 
     // Read header values in big-endian before any in-place swapping.
-    let n_doubles = i32::from_be_bytes(input[8..12].try_into().unwrap());
-    let n_ints = i32::from_be_bytes(input[12..16].try_into().unwrap());
-    let init_summary_idx = i32::from_be_bytes(input[76..80].try_into().unwrap()).abs();
-
-    if n_doubles < 0 || n_ints < 2 {
-        return Err(Error::IOError(
-            "DAF header has invalid ND or NI values.".into(),
-        ));
-    }
-    if init_summary_idx < 2 {
-        return Err(Error::IOError(
-            "DAF header has invalid FWARD (first summary record index).".into(),
-        ));
-    }
+    let be_i32 = |offset: usize| {
+        i32::from_be_bytes([
+            input[offset],
+            input[offset + 1],
+            input[offset + 2],
+            input[offset + 3],
+        ])
+    };
+    let be_f64 = |offset: usize| {
+        let mut word = [0; 8];
+        word.copy_from_slice(&input[offset..offset + 8]);
+        f64::from_be_bytes(word)
+    };
+    let n_doubles = be_i32(8);
+    let n_ints = be_i32(12);
+    let init_summary_idx = be_i32(76);
+    check_layout(n_doubles, n_ints, init_summary_idx)?;
 
     let mut buf = input.to_vec();
 
@@ -866,18 +896,33 @@ fn swap_daf_be_to_le(input: &[u8]) -> KeteResult<Vec<u8>> {
     // Each summary occupies (ND + ceil(NI/2)) 8-byte words, word-aligned.
     let summary_stride = (nd + ni.div_ceil(2)) * 8;
 
+    let max_summaries = (1024 - 24) / summary_stride;
+
     // Walk the linked list of summary records.
+    let mut visited = std::collections::HashSet::new();
     let mut current_idx = init_summary_idx as usize;
     while current_idx != 0 {
-        let rec_off = 1024 * (current_idx - 1);
-        if rec_off + 24 > buf.len() {
-            break;
+        if !visited.insert(current_idx) {
+            return Err(Error::IOError(
+                "DAF summary records do not form a list.".into(),
+            ));
         }
+        let rec_off = (current_idx - 1)
+            .checked_mul(1024)
+            .filter(|off| off.checked_add(1024).is_some_and(|end| end <= buf.len()))
+            .ok_or_else(|| {
+                Error::IOError("DAF summary record is past the end of the file.".into())
+            })?;
 
         // Read next-record index and n_summaries from the original BE bytes.
-        let next_f = f64::from_be_bytes(input[rec_off..rec_off + 8].try_into().unwrap());
-        let n_summ =
-            f64::from_be_bytes(input[rec_off + 16..rec_off + 24].try_into().unwrap()) as usize;
+        let next_f = be_f64(rec_off);
+        let n_summ = be_f64(rec_off + 16);
+        if !(0.0..=max_summaries as f64).contains(&n_summ) || next_f.is_nan() || next_f < 0.0 {
+            return Err(Error::IOError(
+                "DAF summary record has invalid control words.".into(),
+            ));
+        }
+        let n_summ = n_summ as usize;
 
         // Swap the three summary-record header f64s.
         swap8(&mut buf, rec_off); // next summary record
@@ -887,9 +932,6 @@ fn swap_daf_be_to_le(input: &[u8]) -> KeteResult<Vec<u8>> {
         for j in 0..n_summ {
             let s_off = rec_off + 24 + j * summary_stride;
             let ints_off = s_off + nd * 8;
-            if ints_off + ni * 4 > buf.len() {
-                break;
-            }
 
             // Swap n_doubles f64s.
             for k in 0..nd {
@@ -903,21 +945,24 @@ fn swap_daf_be_to_le(input: &[u8]) -> KeteResult<Vec<u8>> {
             // Array start/end are the last two ints.  They have already been
             // byte-swapped above, so read them back as little-endian.
             let last_two = ints_off + (ni - 2) * 4;
-            let array_start =
-                i32::from_le_bytes(buf[last_two..last_two + 4].try_into().unwrap()) as usize;
-            let array_end =
-                i32::from_le_bytes(buf[last_two + 4..last_two + 8].try_into().unwrap()) as usize;
-
-            if array_start == 0 || array_end < array_start {
-                continue;
+            let le_i32 = |offset: usize| {
+                i32::from_le_bytes([
+                    buf[offset],
+                    buf[offset + 1],
+                    buf[offset + 2],
+                    buf[offset + 3],
+                ])
+            };
+            let (array_start, array_end) = (le_i32(last_two), le_i32(last_two + 4));
+            if array_start < 1 || array_end < array_start || array_end as usize * 8 > buf.len() {
+                return Err(Error::IOError(format!(
+                    "DAF array addresses {array_start} to {array_end} are outside the file."
+                )));
             }
 
             // Byte-swap every f64 word in the data segment.
-            for word in array_start..=array_end {
-                let byte_off = 8 * (word - 1);
-                if byte_off + 8 <= buf.len() {
-                    swap8(&mut buf, byte_off);
-                }
+            for word in array_start as usize..=array_end as usize {
+                swap8(&mut buf, 8 * (word - 1));
             }
         }
 
@@ -1148,5 +1193,47 @@ mod tests {
             assert_eq!(arr.name, format!("segment {i}"));
             assert_eq!(&*arr.data, &vec![f64::from(expected_id - 100); 10][..]);
         }
+    }
+
+    /// Corrupt headers and summary records return an error, and do not panic or
+    /// loop.
+    #[test]
+    fn corrupt_files_are_errors() {
+        let mut daf = DafFile::new_spk("corrupt test", "");
+        daf.arrays.push(DafArray::new(
+            vec![0.0, 1.0].into(),
+            vec![1, 10, 1, 2, 0, 0].into(),
+            vec![1.0; 20].into(),
+            DAFType::Spk,
+            "seg".into(),
+        ));
+        let mut buf = Cursor::new(Vec::new());
+        daf.write_to(&mut buf).unwrap();
+        let good = buf.into_inner();
+        assert!(DafFile::from_buffer(Cursor::new(&good)).is_ok());
+
+        let fward = usize::try_from(i32::from_le_bytes(good[76..80].try_into().unwrap())).unwrap();
+        let summary = 1024 * (fward - 1);
+        let patch = |offset: usize, bytes: &[u8]| {
+            let mut bad = good.clone();
+            bad[offset..offset + bytes.len()].copy_from_slice(bytes);
+            DafFile::from_buffer(Cursor::new(bad))
+        };
+        // First summary record before record 2, and at i32::MIN.
+        assert!(patch(76, &1_i32.to_le_bytes()).is_err());
+        assert!(patch(76, &i32::MIN.to_le_bytes()).is_err());
+        // ND and NI out of range.
+        assert!(patch(8, &(-1_i32).to_le_bytes()).is_err());
+        assert!(patch(8, &200_i32.to_le_bytes()).is_err());
+        assert!(patch(12, &1_i32.to_le_bytes()).is_err());
+        // A summary record whose next record is itself.
+        assert!(patch(summary, &(fward as f64).to_le_bytes()).is_err());
+        // More summaries than a record holds.
+        assert!(patch(summary + 16, &100.0_f64.to_le_bytes()).is_err());
+        // Array addresses outside the file.
+        assert!(patch(summary + 24 + 16 + 20, &i32::MAX.to_le_bytes()).is_err());
+        assert!(patch(summary + 24 + 16 + 16, &0_i32.to_le_bytes()).is_err());
+        // A text mode transfer altering the FTP string.
+        assert!(patch(706, b"\n").is_err());
     }
 }

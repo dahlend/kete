@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025 California Institute of Technology
+# SPDX-License-Identifier: BSD-3-Clause
+
 import numpy as np
 
 __all__ = ["sunshield_rotation", "FOV_WIDTH", "FOV_HEIGHT"]

@@ -1,35 +1,56 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Python support for n body propagation
 use itertools::Itertools;
-use kete_core::kepler::moid;
+use kete_core::moid::moid;
+use kete_core::propagation::NBody;
 use kete_core::{
     desigs::try_name_from_id,
     errors::Error,
-    forces::NonGravModel,
     frames::{Ecliptic, Equatorial, SunCenter},
     state::State,
 };
 use pyo3::{IntoPyObjectExt, Py, PyAny, PyResult, Python, pyfunction};
 use rayon::prelude::*;
 
-use crate::simult_states::PySimultaneousStates;
+use crate::state::PySimultaneousStates;
 use crate::{
     maybe_vec::{MaybeVec, maybe_vec_to_pyobj},
     nongrav::PyNonGravModel,
     state::PyState,
     time::PyTime,
 };
+use kete_core::forces::NonGravMask;
 
-/// Compute the MOID between the input state and an optional second state.
-/// If the second state is not provided, default to Earth.
+/// Compute the Minimum Orbital Intersection Distance (MOID).
 ///
-/// Returns the MOID in units of au.
+/// The MOID is the smallest distance between a point on the orbit of
+/// ``state_a`` and a point on the orbit of ``state_b``. Each state defines a
+/// two-body orbit about the Sun. A state with a center other than the Sun is
+/// converted to a Sun centered state with the loaded SPICE kernels.
 ///
 /// Parameters
 /// ----------
-/// state_a:
-///     State of the first object.
-/// state_b:
-///     Optional state of the second object, defaults to Earth.
+/// state_a : :class:`~kete.State` or list of :class:`~kete.State`
+///   State of the first object, or a list of states.
+/// state_b : :class:`~kete.State`, optional
+///   State of the second object. The default is the Earth, at the epoch of the
+///   first state in ``state_a``.
+///
+/// Returns
+/// -------
+/// float or list of float
+///   MOID in au, one value for each state in ``state_a``. The value is NaN for
+///   a state whose MOID cannot be computed, such as a state with purely radial
+///   motion.
+///
+/// Raises
+/// ------
+/// ValueError
+///   If ``state_a`` is empty, or if the Earth state or ``state_b`` cannot be
+///   converted to a Sun centered state.
 #[pyfunction]
 #[pyo3(name = "moid", signature = (state_a, state_b=None))]
 pub fn moid_py(
@@ -66,7 +87,7 @@ pub fn moid_py(
             .with_min_len(30)
             .map(|state_sun| {
                 state_sun
-                    .and_then(|s| moid(s, state_b_sun.clone()).ok())
+                    .and_then(|s| moid(&s, &state_b_sun).ok())
                     .unwrap_or(f64::NAN)
             })
             .collect::<Vec<_>>()
@@ -88,8 +109,9 @@ pub fn moid_py(
 /// jd:
 ///     A JD to propagate the initial states to.
 /// include_asteroids:
-///     If this is true, the computation will include the largest 5 asteroids.
-///     The asteroids are: Ceres, Pallas, Interamnia, Hygiea, and Vesta.
+///     If this is true, the computation will include the largest 5 asteroids,
+///     Ceres, Pallas, Interamnia, Hygiea, and Vesta, along with any masses
+///     registered in addition.
 /// non_gravs:
 ///     A list of non-gravitational terms for each object. If provided, then every
 ///     object must have an associated :class:`~NonGravModel` or `None`.
@@ -97,8 +119,9 @@ pub fn moid_py(
 ///     If True, errors during propagation will return NaN for the relevant state
 ///     vectors, but propagation will continue.
 /// suppress_impact_errors:
-///     If True, impacts will be printed to stderr, but states will still return
-///     filled with `NaN`. If False, impacts are not printed.
+///     If True, impacts are not printed to stderr. With ``suppress_errors`` the
+///     state of an object that impacted a massive body is returned filled with
+///     `NaN` either way.
 ///
 /// Returns
 /// -------
@@ -143,11 +166,15 @@ pub fn propagation_n_body_spk_py(
         // Errors are collected as KeteResult (Rust) rather than PyResult to avoid
         // creating PyErr objects inside rayon threads (which would require the GIL).
         let proc_chunk: PyResult<Vec<_>> = py.detach(|| {
+            // Acquire the SPK read guard once per chunk; the force borrows it.
+            let eph = kete_spice::prelude::SpiceEphemeris::loaded()?;
+            let spk = eph.spk();
+
             chunk_owned
                 .into_par_iter()
                 .with_min_len(5)
                 .map(|(state, model)| {
-                    let model = model.map(|x| x.0);
+                    let model: Option<NonGravMask> = model.map(|x| x.to_fixed());
                     let center = state.center_id();
                     let frame = state.frame;
                     let state = state.raw;
@@ -164,27 +191,13 @@ pub fn propagation_n_body_spk_py(
                         ))
                         .change_frame(frame));
                     }
-                    let ssb_state = {
-                        let spk = kete_spice::prelude::LOADED_SPK
-                            .try_read()
-                            .map_err(|_| Error::ValueError("SPK lock unavailable".into()))?;
-                        spk.try_to_ssb(state)?
-                    };
-                    match kete_spice::prelude::propagate_n_body_spk(
-                        ssb_state,
-                        jd,
-                        include_asteroids,
-                        model,
-                    ) {
+                    let ssb_state = spk.try_to_ssb(state)?;
+                    let force = NBody::with_non_grav(&eph, include_asteroids, model);
+                    let result = ssb_state.propagate_with(&force, jd);
+                    match result {
                         Ok(ssb_result) => {
                             let mut dyn_result = State::<Equatorial>::from(ssb_result);
-                            {
-                                let spk =
-                                    kete_spice::prelude::LOADED_SPK.try_read().map_err(|_| {
-                                        Error::ValueError("SPK lock unavailable".into())
-                                    })?;
-                                spk.try_change_center(&mut dyn_result, center)?;
-                            }
+                            spk.try_change_center(&mut dyn_result, center)?;
                             Ok(Into::<PyState>::into(dyn_result).change_frame(frame))
                         }
                         Err(er) => {
@@ -196,7 +209,7 @@ pub fn propagation_n_body_spk_py(
                                         "Impact detected between ({}) <-> {} at time {} ({})",
                                         desig,
                                         try_name_from_id(id).unwrap_or(id.to_string()),
-                                        time.jd,
+                                        time.jd(),
                                         time.utc().to_iso().unwrap_or_default()
                                     );
                                 }
@@ -292,8 +305,13 @@ pub fn propagation_n_body_py(
         planet_states.map(|s| s.into_iter().map(|x| x.raw).collect());
 
     let non_gravs = non_gravs.unwrap_or(vec![None; states.len()]);
-    let non_gravs: Vec<Option<NonGravModel>> =
-        non_gravs.into_iter().map(|y| y.map(|z| z.0)).collect();
+    let non_gravs: Vec<Option<NonGravMask>> = non_gravs
+        .into_iter()
+        .map(|y| y.map(|z| z.to_fixed()))
+        .collect();
+
+    let eph = kete_spice::prelude::SpiceEphemeris::loaded()?;
+    let spk = eph.spk();
 
     let jd = jd_final.into();
     let res: Result<Vec<_>, _> = py.detach(|| {
@@ -303,17 +321,15 @@ pub fn propagation_n_body_py(
             .collect_vec()
             .par_chunks(batch_size)
             .map(|chunk| {
-                let (chunk_state, chunk_nongrav): (Vec<_>, Vec<Option<NonGravModel>>) =
+                let (chunk_state, chunk_nongrav): (Vec<_>, Vec<Option<NonGravMask>>) =
                     chunk.iter().cloned().unzip();
 
-                let spk = kete_spice::prelude::LOADED_SPK
-                    .try_read()
-                    .map_err(Error::from)?;
                 let chunk_state: Vec<_> = chunk_state
                     .into_iter()
                     .map(|s| spk.try_to_sun(s))
                     .collect::<kete_core::errors::KeteResult<Vec<_>>>()?;
-                kete_spice::propagation::propagate_n_body_vec(
+                kete_core::propagation::propagate_n_body_vec(
+                    &eph,
                     chunk_state,
                     jd,
                     planet_states.clone(),
@@ -374,7 +390,9 @@ pub fn closest_approach_py(
 ) -> PyResult<(PyTime, f64)> {
     let raw_a = state_a.raw.into_frame();
     let raw_b = state_b.raw.into_frame();
-    let (epoch, dist) = kete_spice::propagation::closest_approach(
+    let eph = kete_spice::prelude::SpiceEphemeris::loaded()?;
+    let (epoch, dist) = kete_core::propagation::closest_approach(
+        &eph,
         &raw_a,
         &raw_b,
         jd_start.into(),

@@ -85,10 +85,21 @@ print(f"  Closest approach: {bp.closest_approach * kete.constants.AU_KM:12.1f} k
 #
 # This type of analysis is commonly used in planetary defense to visualize
 # how orbital uncertainty translates into encounter geometry.
+#
+# Earth's gravity bends the incoming path toward it, so a B-vector shorter than
+# Earth's radius is not the impact condition. A trajectory impacts when its
+# B-vector is shorter than the capture radius, R * sqrt(1 + v_esc^2 / v_inf^2),
+# where v_esc is the escape speed at Earth's surface.
 
 n_samples = 200
 states, non_gravs = obj.sample(n_samples)
-earth_radius_km = 6371
+earth_radius_km = kete.constants.EARTH_RADIUS_M / 1000
+earth_gm_km3_s2 = 398600.435
+v_inf_km_s = bp.v_inf * kete.constants.AU_KM / 86400
+capture_radius_km = earth_radius_km * np.sqrt(
+    1 + 2 * earth_gm_km3_s2 / (earth_radius_km * v_inf_km_s**2)
+)
+print(f"Capture radius: {capture_radius_km:.0f} km")
 
 # Propagate all samples to the close approach epoch
 propagated = kete.propagate_n_body(states, ca_time.jd, non_gravs=non_gravs)
@@ -100,23 +111,20 @@ for st in propagated:
     geo = st.change_center(399)
     try:
         bp_sample = kete.compute_b_plane(geo)
-        bt = bp_sample.b_t * kete.constants.AU_KM
-        br = bp_sample.b_r * kete.constants.AU_KM
-        if not (np.isfinite(bt) and np.isfinite(br)):
-            # NaN B-plane likely means a grazing/impact trajectory
-            n_impacts += 1
-        elif bp_sample.b_mag * kete.constants.AU_KM < earth_radius_km:
-            n_impacts += 1
-        else:
-            b_t_vals.append(bt)
-            b_r_vals.append(br)
     except ValueError:
-        # Non-hyperbolic w.r.t. Earth -- count as an impact
+        # Not hyperbolic with respect to Earth, so captured.
         n_impacts += 1
+        continue
+    if bp_sample.b_mag * kete.constants.AU_KM < capture_radius_km:
+        n_impacts += 1
+    else:
+        b_t_vals.append(bp_sample.b_t * kete.constants.AU_KM)
+        b_r_vals.append(bp_sample.b_r * kete.constants.AU_KM)
 
 if n_impacts > 0:
     print(
-        f"Impact trajectories: {n_impacts} / {n_samples} samples ({100 * n_impacts / n_samples:.1f}%)"
+        f"Impact trajectories: {n_impacts} / {n_samples} samples "
+        f"({100 * n_impacts / n_samples:.1f}%)"
     )
 
 # %%
@@ -124,7 +132,8 @@ if n_impacts > 0:
 # ---------------------
 #
 # The nominal encounter point and the cloud of sampled encounters. The spread
-# shows how the current orbital uncertainty maps onto the B-plane.
+# shows how the current orbital uncertainty maps onto the B-plane. The inner
+# disk is Earth, and the outer circle is the capture radius.
 
 b_t_arr = np.array(b_t_vals)
 b_r_arr = np.array(b_r_vals)
@@ -145,7 +154,11 @@ for ax in (ax1, ax2):
     ax.grid(True, alpha=0.3)
 
 earth_circle = plt.Circle((0, 0), earth_radius_km, color="green", alpha=0.3)
+capture_circle = plt.Circle(
+    (0, 0), capture_radius_km, color="green", fill=False, linestyle="--"
+)
 ax1.add_patch(earth_circle)
+ax1.add_patch(capture_circle)
 ax1.annotate("Earth", (0, 0), ha="center", va="center", fontsize=9, color="darkgreen")
 ax1.set_title("Apophis 2029 B-Plane")
 

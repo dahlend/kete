@@ -1,36 +1,14 @@
-//! # Spherex Fov definitions.
-// BSD 3-Clause License
-//
-// Copyright (c) 2026, Dar Dahlen
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice, this
-//    list of conditions and the following disclaimer.
-//
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-//
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from
-//    this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
 
-use super::{Contains, FovLike, OnSkyRectangle, SkyPatch};
-use crate::fov::{FOV, patches::closest_inside};
+//! # Spherex Fov definitions.
+
+use super::FovLike;
+use super::fov_like::{patches_corners, patches_pointing};
+use crate::fov::FOV;
 use crate::frames::Vector;
+use crate::geometry::closest_inside;
+use crate::geometry::{Contains, SkyPatch, SphericalPolygon};
 use crate::prelude::*;
 /// Spherex frame data, both optical assemblies
 #[derive(Debug, Clone)]
@@ -39,7 +17,7 @@ pub struct SpherexCmos {
     pub(crate) observer: State<Equatorial>,
 
     /// Patch of sky
-    pub(crate) patch: OnSkyRectangle,
+    pub(crate) patch: SphericalPolygon,
 
     /// uri indicating where the frame is stored in IRSA
     pub uri: Box<str>,
@@ -57,7 +35,7 @@ impl SpherexCmos {
         uri: Box<str>,
         plane_id: Box<str>,
     ) -> Self {
-        let patch = OnSkyRectangle::from_corners(corners, 0.0);
+        let patch = SphericalPolygon::from_corners(corners, 0.0);
         Self {
             observer,
             patch,
@@ -103,7 +81,7 @@ impl FovLike for SpherexCmos {
 
     #[inline]
     fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
-        Ok(self.patch.corners().into())
+        Ok(self.patch.corners())
     }
 }
 
@@ -148,7 +126,7 @@ impl SpherexField {
         let observer = first.observer().clone();
 
         for ccd in &cmos_frames {
-            if ccd.observer().epoch != observer.epoch {
+            if !ccd.observer().epoch.same_instant(&observer.epoch) {
                 Err(Error::ValueError(
                     "All SpherexCMOS must have matching values times".into(),
                 ))?;
@@ -180,43 +158,18 @@ impl FovLike for SpherexField {
     }
 
     fn contains(&self, obs_to_obj: &Vector<Equatorial>) -> (usize, Contains) {
-        closest_inside(
-            &self
-                .cmos_frames
-                .iter()
-                .map(|x| x.contains(obs_to_obj).1)
-                .collect::<Vec<_>>(),
-        )
+        closest_inside(self.cmos_frames.iter().map(|x| x.contains(obs_to_obj).1))
     }
 
     fn n_patches(&self) -> usize {
         self.cmos_frames.len()
     }
 
-    #[inline]
     fn pointing(&self) -> KeteResult<Vector<Equatorial>> {
-        if self.cmos_frames.is_empty() {
-            Err(Error::ValueError("SphereField has no cmos frames".into()))
-        } else {
-            // return the average pointing of all cmos frames
-            Ok(self
-                .cmos_frames
-                .iter()
-                .fold(Vector::new([0.0; 3]), |acc, x| acc + x.pointing().unwrap()))
-        }
+        patches_pointing(&self.cmos_frames)
     }
 
-    #[inline]
     fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
-        if self.cmos_frames.is_empty() {
-            Err(Error::ValueError("SphereField has no cmos frames".into()))
-        } else {
-            // return all the corners of all cmos frames
-            Ok(self
-                .cmos_frames
-                .iter()
-                .flat_map(|x| x.corners().unwrap())
-                .collect())
-        }
+        patches_corners(&self.cmos_frames)
     }
 }

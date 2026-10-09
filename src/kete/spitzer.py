@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Dar Dahlen
+# SPDX-License-Identifier: BSD-3-Clause
+
 """
 Spitzer Space Telescope functions.
 
@@ -316,7 +319,7 @@ def resolve_artifact_url(uri: str, file_type: str = "bcd") -> str:
         url = uri
     else:
         raise ValueError(
-            f"Unrecognised artifact URI scheme in {uri!r}. "
+            f"Unrecognized artifact URI scheme in {uri!r}. "
             "Expected CAOM HTTPS, 'ibe://data/', or 'https://'."
         )
 

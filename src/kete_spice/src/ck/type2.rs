@@ -1,45 +1,19 @@
-// BSD 3-Clause License
-//
-// Copyright (c) 2026, Dar Dahlen
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice, this
-//    list of conditions and the following disclaimer.
-//
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-//
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from
-//    this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
 
-use super::CkArray;
-use crate::sclk::LOADED_SCLK;
+use super::{CkArray, instrument_frame};
 use kete_core::errors::{Error, KeteResult};
 use kete_core::frames::NonInertialFrame;
 use kete_core::time::{TDB, Time};
-use nalgebra::{Quaternion, Rotation3, Unit};
+use nalgebra::{Quaternion, Rotation3, Unit, Vector3};
 
 /// Discrete pointing data.
 ///
-/// This segment type is broken up into intervals, during each interval the
-/// rotation rate is constant. Each interval has a defined orientation saved
-/// as a quaternion, and then a vector defining the axis of rotation, then
-/// the last value is the angular rate of rotation in SCLK ticks per second.
+/// The segment holds a set of intervals. The angular velocity is constant
+/// inside each interval. Each interval has one record of 8 values. The first 4
+/// values are the quaternion at the interval start. The next 3 values are the
+/// angular velocity in radians per second, expressed in the reference frame.
+/// The last value is the number of seconds per SCLK tick.
 ///
 /// <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/ck.html#Data%20Type%202>
 #[derive(Debug)]
@@ -56,10 +30,29 @@ impl CkSegmentType2 {
         unsafe {
             let rec = self.array.daf.data.get_unchecked(idx * 8..(idx + 1) * 8);
             let quaternion = Quaternion::new(rec[0], rec[1], rec[2], rec[3]);
-            let accel: [f64; 3] = rec[4..7].try_into().unwrap();
-            let angular_rate = rec[7];
-            (quaternion, accel, angular_rate)
+            let angular_velocity = [rec[4], rec[5], rec[6]];
+            let seconds_per_tick = rec[7];
+            (quaternion, angular_velocity, seconds_per_tick)
         }
+    }
+
+    fn time_stops(&self) -> &[f64] {
+        let start = self.time_start_idx + self.n_records;
+        unsafe {
+            self.array
+                .daf
+                .data
+                .get_unchecked(start..start + self.n_records)
+        }
+    }
+
+    /// Return whether `tick` falls inside one of the pointing intervals.
+    ///
+    /// Type 2 intervals are disjoint and can leave gaps. The segment holds no
+    /// pointing in a gap.
+    pub(in crate::ck) fn has_data_at(&self, tick: f64) -> bool {
+        let idx = self.time_starts().partition_point(|&x| x <= tick);
+        idx > 0 && tick <= self.time_stops()[idx - 1]
     }
 
     fn time_starts(&self) -> &[f64] {
@@ -74,71 +67,62 @@ impl CkSegmentType2 {
     pub(crate) fn try_get_orientation(
         &self,
         time: Time<TDB>,
+        tick: f64,
     ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
-        let sclk = LOADED_SCLK
-            .try_read()
-            .map_err(|_| Error::Bounds("Failed to read SCLK data.".into()))?;
-        let tick = sclk.try_time_to_tick(self.array.naif_id, time)?;
-
         // get the time of the last record and its index
         let time_starts = self.time_starts();
         let (record_time, record_idx) = if self.n_records == 1 {
             // If there is only one interval, return its times
             (self.time_starts()[0], 0)
         } else {
+            // The interval to use is the last one that starts at or before the
+            // tick.
             let interval_idx = time_starts.partition_point(|&x| x <= tick);
-            if interval_idx >= self.n_records - 1 {
-                // If the index is the last one, return the last record
-                (time_starts[self.n_records - 1], self.n_records - 1)
-            } else if interval_idx == 0 {
-                // If the index is before the beginning of the interval, return the first record
+            if interval_idx == 0 {
+                // The tick is before the first interval. The dt check below
+                // rejects it.
                 (time_starts[0], 0)
             } else {
-                // Otherwise, we have a valid index
                 let idx = interval_idx - 1;
                 (time_starts[idx], idx)
             }
         };
-        let (quaternion, mut accel_vec, rate) = self.get_record(record_idx);
+        let (quaternion, angular_velocity, seconds_per_tick) = self.get_record(record_idx);
 
         let dt = tick - record_time;
 
         if dt < 0.0 {
             return Err(Error::Bounds(format!(
-                "Requested time {record_idx} is before the start of the segment."
+                "Requested clock tick {tick} is before the start of the segment."
             )));
         }
-        let mut rotation = Unit::from_quaternion(quaternion).to_rotation_matrix();
+        // The instrument turns about the angular velocity vector through the
+        // angle |w| times the elapsed seconds. The vector is in the reference
+        // frame, so the turn multiplies the C-matrix on the right.
+        let elapsed = Vector3::from(angular_velocity) * (dt * seconds_per_tick);
+        let c_matrix = Unit::from_quaternion(quaternion).to_rotation_matrix()
+            * Rotation3::from_scaled_axis(-elapsed);
 
-        for x in &mut accel_vec {
-            *x *= 86400.0 * dt * rate;
-        }
-        let rates = Rotation3::from_scaled_axis(accel_vec.into());
-        rotation *= rates;
-
-        let frame = NonInertialFrame::from_rotations(
+        let frame = instrument_frame(
             time,
-            rotation.inverse(),
-            None,
+            c_matrix,
+            Some(angular_velocity),
             self.array.reference_frame_id,
-            self.array.instrument_id,
         );
         Ok((time, frame))
     }
 
-    /// Build a CK Type 2 data array (discrete pointing, no interpolation).
+    /// Build the data of a CK type 2 array.
     ///
-    /// Each pointing record contains 8 values:
-    /// `[q0, q1, q2, q3, av1, av2, av3, angular_rate]`
-    ///
-    /// # Arguments
-    /// * `records`     - Flat slice of `n * 8` pointing record values.
-    /// * `start_times` - n SCLK start times for each interval.
-    /// * `stop_times`  - n SCLK stop times for each interval.
+    /// Type 2 is discrete pointing with no interpolation. `records` is a flat
+    /// slice of `n * 8` values, one record of 8 values per interval. Each
+    /// record is `[q0, q1, q2, q3, av1, av2, av3, seconds_per_tick]`.
+    /// `start_times` and `stop_times` hold the `n` SCLK start and stop times of
+    /// the intervals.
     ///
     /// # Errors
-    /// Returns an error if there are no records, the records length is not `n * 8`,
-    /// or start and stop times lengths differ.
+    /// [`Error::ValueError`] if `start_times` is empty, if the length of
+    /// `records` is not `n * 8`, or if the length of `stop_times` is not `n`.
     fn build_data(
         records: &[f64],
         start_times: &[f64],
@@ -222,30 +206,15 @@ impl TryFrom<CkArray> for CkSegmentType2 {
     type Error = Error;
 
     fn try_from(array: CkArray) -> Result<Self, Self::Error> {
-        // each pointing record is 8 numbers long, along with a start and stop time
-        // and a directory of every 100th time.
+        // Each interval has a record of 8 values, a start time and a stop time.
+        // A directory holds every 100th start time. The array therefore holds
+        // 10 n + (n - 1) / 100 values for n records.
         let array_len = array.daf.len();
-        let mut n_records = array.daf.len() / 10;
-        let mut dir_size = if n_records > 0 {
-            (n_records - 1) / 100
-        } else {
-            0
-        };
-
-        // n_records will be an over estimate, as it is also counting the directory
-        n_records -= ((n_records * 10 + dir_size) - array_len) / 10;
-        dir_size = if n_records > 0 {
-            (n_records - 1) / 100
-        } else {
-            0
-        };
-        // probably dont need the second time, but better safe than sorry
-        n_records -= ((n_records * 10 + dir_size) - array_len) / 10;
-        dir_size = if n_records > 0 {
-            (n_records - 1) / 100
-        } else {
-            0
-        };
+        let layout = |n: usize| 10 * n + n.saturating_sub(1) / 100;
+        let n_records = (array_len.saturating_sub(array_len / 1000 + 1) / 10..=array_len / 10)
+            .find(|&n| layout(n) == array_len)
+            .unwrap_or(0);
+        let dir_size = n_records.saturating_sub(1) / 100;
 
         if array_len != (n_records * 10 + dir_size) {
             return Err(Error::Bounds(

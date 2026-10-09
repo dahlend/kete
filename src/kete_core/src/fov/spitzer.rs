@@ -1,36 +1,12 @@
-//! # Spitzer Space Telescope FOV definitions.
-// BSD 3-Clause License
-//
-// Copyright (c) 2026, Dar Dahlen
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice, this
-//    list of conditions and the following disclaimer.
-//
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-//
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from
-//    this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
 
-use super::{Contains, FovLike, OnSkyRectangle, SkyPatch};
+//! # Spitzer Space Telescope FOV definitions.
+
+use super::FovLike;
 use crate::fov::FOV;
 use crate::frames::Vector;
+use crate::geometry::{Contains, SkyPatch, SphericalPolygon};
 use crate::prelude::*;
 use std::{fmt::Display, str::FromStr};
 
@@ -100,7 +76,7 @@ pub struct SpitzerFrame {
     pub(crate) observer: State<Equatorial>,
 
     /// Patch of sky.
-    pub(crate) patch: OnSkyRectangle,
+    pub(crate) patch: SphericalPolygon,
 
     /// IRSA ``obs_publisher_did`` identifying this BCD plane.
     pub obs_id: Box<str>,
@@ -117,7 +93,11 @@ pub struct SpitzerFrame {
 
 impl SpitzerFrame {
     /// Create a Spitzer frame from a pointing vector, rotation and explicit FOV size.
-    #[must_use]
+    ///
+    /// # Errors
+    /// Returns [`Error::ValueError`] if
+    /// `pointing` is not finite or points at a celestial pole, where the rotation
+    /// is undefined. See [`SphericalPolygon::new`](crate::geometry::SphericalPolygon::new).
     pub fn new(
         pointing: Vector<Equatorial>,
         rotation: f64,
@@ -128,16 +108,16 @@ impl SpitzerFrame {
         width: f64,
         height: f64,
         duration: f64,
-    ) -> Self {
-        let patch = OnSkyRectangle::new(pointing, rotation, width, height);
-        Self {
+    ) -> KeteResult<Self> {
+        let patch = SphericalPolygon::new(pointing, rotation, width, height)?;
+        Ok(Self {
             observer,
             patch,
             obs_id,
             band,
             artifact_uri,
             duration,
-        }
+        })
     }
 
     /// Create a Spitzer frame from the 4 corners of the FOV.
@@ -151,7 +131,7 @@ impl SpitzerFrame {
         duration: f64,
     ) -> Self {
         // 1 arcminute tolerance for the CAOM polygon not forming a perfect rectangle.
-        let patch = OnSkyRectangle::from_corners(corners, 60_f64.recip().to_radians());
+        let patch = SphericalPolygon::from_corners(corners, 60_f64.recip().to_radians());
         Self {
             observer,
             patch,
@@ -199,7 +179,7 @@ impl FovLike for SpitzerFrame {
 
     #[inline]
     fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
-        Ok(self.patch.corners().into())
+        Ok(self.patch.corners())
     }
 }
 
@@ -254,7 +234,8 @@ mod tests {
             IRAC_WIDTH,
             IRAC_WIDTH,
             12.0,
-        );
+        )
+        .unwrap();
         assert_eq!(fov.band, SpitzerBand::Irac1);
         assert_eq!(&*fov.obs_id, "ivo://test/obs_id");
         assert_eq!(fov.n_patches(), 1);
@@ -271,7 +252,7 @@ mod tests {
     #[test]
     fn test_spitzer_from_corners() {
         let observer = make_observer();
-        // Build a small square centred near [1,0,0]
+        // Build a small square centered near [1,0,0]
         let d = 0.0005_f64; // half-width ~0.03 deg, well within IRAC FOV
         let corners: [Vector<Equatorial>; 4] = [
             [1.0, -d, -d].into(),
@@ -312,7 +293,8 @@ mod tests {
             IRAC_WIDTH,
             IRAC_WIDTH,
             12.0,
-        );
+        )
+        .unwrap();
         let fov = frame.into_fov();
         assert!(matches!(fov, FOV::Spitzer(_)));
     }

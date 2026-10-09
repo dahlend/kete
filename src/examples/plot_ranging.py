@@ -8,8 +8,8 @@ the systematic ranging algorithm (Farnocchia, Chesley & Micheli 2015).
 With only a few minutes of observations the orbit is highly degenerate: almost
 any distance from Earth is consistent with the data.  Ranging scans a 2-D grid
 over topocentric range and range-rate, scores each cell by how well the implied
-orbit fits the observed curvature, and returns a weighted sample of plausible
-orbits.  The resulting cloud shows the full family of solutions.
+orbit fits the observed curvature, and draws plausible orbits in proportion to
+the resulting posterior.  The resulting cloud shows the full family of solutions.
 """
 
 import matplotlib.pyplot as plt
@@ -40,7 +40,7 @@ print(
 # %%
 # Ranging
 # -------
-# Scan the (rho, rho_dot) grid and draw weighted orbit samples.
+# Scan the (rho, rho_dot) grid and draw orbit samples from the posterior.
 
 samples = kete.orbit_fitting.fit_orbit_ranging(observations, num_draws=10000)
 print(samples)
@@ -51,7 +51,8 @@ if samples.convergence_warning:
 # Extract Orbital Elements
 # ------------------------
 # ``draws`` returns Sun-centered Ecliptic states; each state carries orbital
-# element accessors.  We also grab the log-posterior weights for coloring.
+# element accessors.  We also grab the log-posterior density for coloring;
+# draws are equally weighted, so it is not used as a weight.
 
 states = samples.draws
 log_w = np.array(samples.log_posterior)
@@ -67,7 +68,7 @@ print(f"Inclination:         {inclination.min():.1f} -- {inclination.max():.1f} 
 # %%
 # Plot the Orbital Uncertainty Cloud
 # ------------------------------------
-# Each point is one sampled orbit, colored by log-posterior weight.
+# Each point is one sampled orbit, colored by log-posterior density.
 # The spread shows the full range of solutions consistent with the short arc.
 
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 3), dpi=200)
@@ -87,6 +88,6 @@ ax2.set_xlabel("Perihelion Distance (AU)")
 ax2.set_ylabel("Inclination (deg)")
 ax2.set_title("Perihelion vs Inclination")
 
-fig.colorbar(sc, ax=ax2, label="Log-posterior weight")
+fig.colorbar(sc, ax=ax2, label="Log-posterior density")
 plt.tight_layout()
 plt.show()

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! MCMC orbit uncertainty estimation from observations.
 //!
 //! Provides [`fit_orbit_mcmc`], which estimates the range of orbits
@@ -7,43 +10,17 @@
 //!
 //! Sampling uses whitened Cartesian coordinates centered on the fit state,
 //! with the DC covariance as the whitening factor.
-//!
-// BSD 3-Clause License
-//
-// Copyright (c) 2026, Dar Dahlen
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice, this
-//    list of conditions and the following disclaimer.
-//
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-//
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from
-//    this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use crate::obs::AstrometricObservation;
+
 use crate::orbit_fitting::{StmObs, accumulate_normal_equations, stm_sweep};
 use kete_core::constants::GMS;
-use kete_core::forces::NonGravModel;
+use kete_core::forces::{NonGravMask, ParameterizedForce};
+
 use kete_core::frames::{Equatorial, SSB};
 use kete_core::kepler::propagate_two_body;
 use kete_core::prelude::{Error, KeteResult, State};
+use kete_core::time::{TDB, Time};
 use nalgebra::{DMatrix, DVector};
 use nuts_rs::rand::SeedableRng;
 use nuts_rs::{
@@ -75,8 +52,8 @@ const STUDENT_NU: f64 = 5.0;
 pub struct OrbitSamples {
     /// Designator of the object being fitted.
     pub desig: String,
-    /// Common reference epoch (JD, TDB).
-    pub epoch: f64,
+    /// Common reference epoch.
+    pub epoch: Time<TDB>,
     /// Draws: `[total_draws][6 + Np]`.
     ///
     /// Each inner vector is `[x, y, z, vx, vy, vz, ng_params...]` in the
@@ -86,7 +63,7 @@ pub struct OrbitSamples {
     pub seed_id: Vec<usize>,
     /// True if the draw was a divergent transition.
     pub divergent: Vec<bool>,
-    /// Log-posterior density at each draw (nats, relative only).
+    /// Log-posterior density at each draw (natural log, relative only).
     pub log_posterior: Vec<f64>,
 }
 
@@ -111,9 +88,9 @@ impl LogpError for PropagationError {
     }
 }
 
-/// Minimum barycentric distance (AU) before penalty ramps up.
+/// Minimum heliocentric distance (AU) before penalty ramps up.
 const PRIOR_R_MIN: f64 = 0.01;
-/// Maximum barycentric distance (AU) before penalty ramps up.
+/// Maximum heliocentric distance (AU) before penalty ramps up.
 const PRIOR_R_MAX: f64 = 1000.0;
 /// Steepness of the logistic barrier.
 const PRIOR_K: f64 = 100.0;
@@ -121,8 +98,8 @@ const PRIOR_K: f64 = 100.0;
 /// Smooth physical prior: penalizes unphysical orbits with differentiable
 /// logistic barriers so the gradient is always well-defined.
 ///
-/// Penalties:
-///   - barycentric distance below `PRIOR_R_MIN` or above `PRIOR_R_MAX`
+/// Penalties, on the heliocentric state:
+///   - distance below `PRIOR_R_MIN` or above `PRIOR_R_MAX`
 ///   - orbital eccentricity `e >= 1` (unbound / hyperbolic orbits)
 ///
 /// The eccentricity barrier uses `e^2` (via the eccentricity vector) rather
@@ -265,8 +242,13 @@ struct OrbitalPosterior {
     included: Vec<bool>,
     /// Whether to include extended (asteroid) perturbers.
     include_asteroids: bool,
-    /// Non-gravitational model (if any).
-    non_grav: Option<NonGravModel>,
+    /// Non-gravitational force template (if any).
+    ng_mask: Option<NonGravMask>,
+    /// Seed non-grav parameter values (empty when `ng_mask` is `None`).
+    ng_seed_values: Vec<f64>,
+    /// SSB position and velocity of the Sun at the reference epoch; the unbound
+    /// wall and the physical prior apply to the heliocentric state.
+    sun: ([f64; 3], [f64; 3]),
 }
 
 impl OrbitalPosterior {
@@ -276,17 +258,12 @@ impl OrbitalPosterior {
         &self.seed_vec + &self.whiten_l * &xi_vec
     }
 
-    /// Build a `State` (and optional `NonGravModel`) from the full
+    /// Extract a `State` and current non-grav values from the full
     /// Cartesian parameter vector.
     fn vec_to_state(
         &self,
         cart_full: &DVector<f64>,
-    ) -> (
-        State<Equatorial, SSB>,
-        Option<NonGravModel>,
-        [f64; 3],
-        [f64; 3],
-    ) {
+    ) -> (State<Equatorial, SSB>, Vec<f64>, [f64; 3], [f64; 3]) {
         let pos: [f64; 3] = cart_full.as_slice()[..3].try_into().unwrap();
         let vel: [f64; 3] = cart_full.as_slice()[3..6].try_into().unwrap();
 
@@ -294,18 +271,10 @@ impl OrbitalPosterior {
         state.pos = pos.into();
         state.vel = vel.into();
 
-        let ng = self.non_grav.as_ref().map(|model| {
-            let mut m = model.clone();
-            let np = m.n_free_params();
-            let mut params = vec![0.0; np];
-            for k in 0..np {
-                params[k] = cart_full[6 + k];
-            }
-            m.set_free_params(&params);
-            m
-        });
+        let np = self.ng_seed_values.len();
+        let ng_values: Vec<f64> = (0..np).map(|k| cart_full[6 + k]).collect();
 
-        (state, ng, pos, vel)
+        (state, ng_values, pos, vel)
     }
 
     /// Compute logp and gradient from an STM sweep result.
@@ -386,9 +355,12 @@ impl CpuLogpFunc for OrbitalPosterior {
 
     fn logp(&mut self, position: &[f64], gradient: &mut [f64]) -> Result<f64, Self::LogpError> {
         let cart_full = self.xi_to_cart(position);
-        let (trial_state, trial_ng, pos, vel) = self.vec_to_state(&cart_full);
+        let (trial_state, trial_ng_values, pos, vel) = self.vec_to_state(&cart_full);
+        let (sun_pos, sun_vel) = self.sun;
+        let pos: [f64; 3] = std::array::from_fn(|i| pos[i] - sun_pos[i]);
+        let vel: [f64; 3] = std::array::from_fn(|i| vel[i] - sun_vel[i]);
 
-        // Hard wall: reject unbound (hyperbolic) proposals.
+        // Hard wall: reject unbound (hyperbolic) proposals about the Sun.
         // Two-body energy: E = v^2/2 - mu/r.  Bound <=> E < 0 <=> v^2 < 2*mu/r.
         let r2 = pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2];
         let v2 = vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2];
@@ -405,7 +377,8 @@ impl CpuLogpFunc for OrbitalPosterior {
             &self.obs,
             &self.included,
             self.include_asteroids,
-            trial_ng.as_ref(),
+            self.ng_mask.as_ref(),
+            &trial_ng_values,
         )
         .map_err(|e| PropagationError {
             msg: format!("STM sweep failed: {e}"),
@@ -433,13 +406,14 @@ fn build_cholesky(
     seed: &State<Equatorial, SSB>,
     obs: &[AstrometricObservation],
     include_asteroids: bool,
-    non_grav: Option<&NonGravModel>,
+    mask: Option<&NonGravMask>,
+    ng_values: &[f64],
 ) -> DMatrix<f64> {
-    let np = non_grav.map_or(0, NonGravModel::n_free_params);
+    let np = mask.map_or(0, ParameterizedForce::n_free_params);
     let included = vec![true; obs.len()];
 
     if let Ok((info_mat, _, _)) =
-        accumulate_normal_equations(seed, obs, &included, include_asteroids, non_grav)
+        accumulate_normal_equations(seed, obs, &included, include_asteroids, mask, ng_values)
         && let Some(chol) = sqrt_cov_from_info(&info_mat)
     {
         return chol;
@@ -519,7 +493,9 @@ fn diagonal_heuristic_whiten_cart(seed: &State<Equatorial, SSB>, np: usize) -> D
 ///
 /// `num_draws` is the **total** number of orbit samples returned across
 /// all seeds.  Each seed receives `num_draws / n_seeds` samples (remainder
-/// goes to the first seeds).
+/// goes to the first seeds). A chain that diverges through most of its warmup
+/// is dropped, and a new chain draws its samples. When every chain of a seed
+/// is dropped, the seeds with a working chain draw its samples instead.
 ///
 /// # Arguments
 /// * `seeds` -- Candidate orbital states (e.g. from IOD), one per mode.
@@ -531,6 +507,8 @@ fn diagonal_heuristic_whiten_cart(seed: &State<Equatorial, SSB>, np: usize) -> D
 /// * `num_tune` -- Warmup steps per sub-chain (default 500).  These are
 ///   discarded after adaptation.
 /// * `non_grav` -- Optional shared non-gravitational model.
+/// * `non_grav_start` -- Starting values of the free parameters of `non_grav`, one
+///   per free parameter. `None` starts them at 0.
 /// * `maxdepth` -- Maximum sampler tree depth (default 10).  Higher values
 ///   allow more thorough exploration at greater cost.
 /// * `target_accept` -- Target acceptance probability for step-size
@@ -538,20 +516,34 @@ fn diagonal_heuristic_whiten_cart(seed: &State<Equatorial, SSB>, np: usize) -> D
 ///   take larger steps, which helps in poorly constrained situations.
 ///
 /// # Errors
-/// Returns an error if `seeds` is empty or two-body propagation fails.
+/// Returns an error if `seeds` is empty, if two-body propagation fails, or if
+/// `non_grav_start` is given without `non_grav` or with the wrong length.
+/// Returns [`Error::Convergence`] if every chain is dropped, or if a round of
+/// replacement chains is dropped entirely.
 pub fn fit_orbit_mcmc(
     seeds: &[State<Equatorial, SSB>],
     obs: &[AstrometricObservation],
     include_asteroids: bool,
     num_draws: usize,
     num_tune: usize,
-    non_grav: Option<&NonGravModel>,
+    non_grav: Option<&NonGravMask>,
+    non_grav_start: Option<&[f64]>,
     maxdepth: u64,
     target_accept: f64,
 ) -> KeteResult<OrbitSamples> {
     if seeds.is_empty() {
         return Err(Error::ValueError("No seeds provided".into()));
     }
+    let ng_start: Vec<f64> = match (non_grav, non_grav_start) {
+        (Some(m), Some(start)) if start.len() == m.n_free_params() => start.to_vec(),
+        (Some(m), None) => vec![0.0; m.n_free_params()],
+        (None, None) => Vec::new(),
+        _ => {
+            return Err(Error::ValueError(
+                "non_grav_start needs a non-grav model with one free parameter per value".into(),
+            ));
+        }
+    };
 
     // Propagate all seeds to the first seed's epoch if needed.
     let epoch = seeds[0].epoch;
@@ -562,7 +554,7 @@ pub fn fit_orbit_mcmc(
         .iter()
         .map(|s| -> KeteResult<State<Equatorial, SSB>> {
             let sun_s = spk.try_to_sun(s.clone())?;
-            let propagated = if (sun_s.epoch.jd - epoch.jd).abs() > 1e-12 {
+            let propagated = if (sun_s.epoch - epoch).elapsed.abs() > 1e-12 {
                 propagate_two_body(&sun_s, epoch)?
             } else {
                 sun_s
@@ -570,14 +562,21 @@ pub fn fit_orbit_mcmc(
             spk.try_to_ssb(propagated)
         })
         .collect::<KeteResult<Vec<_>>>()?;
+    let sun = {
+        let helio = spk.try_to_sun(seeds[0].clone())?;
+        (
+            (seeds[0].pos - helio.pos).into(),
+            (seeds[0].vel - helio.vel).into(),
+        )
+    };
     drop(spk);
 
     // Sort observations once and share across chains.
     let mut sorted_obs = obs.to_vec();
     sorted_obs.sort_by(|a, b| {
         a.epoch()
-            .jd
-            .partial_cmp(&b.epoch().jd)
+            .jd()
+            .partial_cmp(&b.epoch().jd())
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     let sorted_obs: Arc<[AstrometricObservation]> = sorted_obs.into();
@@ -590,26 +589,10 @@ pub fn fit_orbit_mcmc(
     let draws_base_per_seed = num_draws / n_seeds;
     let draws_extra_seeds = num_draws % n_seeds;
 
-    // Build a flat task list: (seed_index, draws_for_chain, rng_seed).
-    let mut tasks: Vec<(usize, usize, u64)> = Vec::new();
-    for seed_idx in 0..n_seeds {
-        let seed_draws = draws_base_per_seed + usize::from(seed_idx < draws_extra_seeds);
-        let base = seed_draws / chains_per_seed;
-        let extra = seed_draws % chains_per_seed;
-        for sub in 0..chains_per_seed {
-            let draws = base + usize::from(sub < extra);
-            if draws == 0 {
-                continue;
-            }
-            let rng_seed = (seed_idx * chains_per_seed + sub) as u64;
-            tasks.push((seed_idx, draws, rng_seed));
-        }
-    }
-
     // Pre-compute Cholesky factors for each seed (serial, fast).
     let chol_factors: Vec<DMatrix<f64>> = seeds
         .iter()
-        .map(|seed| build_cholesky(seed, &sorted_obs, include_asteroids, non_grav))
+        .map(|seed| build_cholesky(seed, &sorted_obs, include_asteroids, non_grav, &ng_start))
         .collect();
 
     // Scale warmup across sub-chains: each sub-chain adapts independently,
@@ -622,44 +605,111 @@ pub fn fit_orbit_mcmc(
         num_tune
     };
 
-    // Run all chains in parallel.
-    let chain_results: Vec<(usize, KeteResult<(Vec<Vec<f64>>, Vec<bool>, Vec<f64>)>)> = tasks
-        .par_iter()
-        .map(|&(seed_idx, draws, rng_seed)| {
-            let result = run_single_chain(
-                &seeds[seed_idx],
-                &chol_factors[seed_idx],
-                &sorted_obs,
-                include_asteroids,
-                non_grav,
-                draws,
-                tune_per_chain,
-                maxdepth,
-                target_accept,
-                rng_seed,
-            );
-            (seed_idx, result)
-        })
+    // Draws still owed to each seed. A chain that diverges through most of its
+    // warmup is dropped (see `run_single_chain`). Its draws are owed again and
+    // the next round runs new chains for them, so the total reaches `num_draws`.
+    // A seed none of whose chains has worked hands its draws to the seeds that
+    // have a working chain. A round that produces no draws ends the fit with an
+    // error. Rounds after the first take new RNG seeds, so the result depends
+    // only on the inputs and the core count.
+    let mut owed: Vec<usize> = (0..n_seeds)
+        .map(|i| draws_base_per_seed + usize::from(i < draws_extra_seeds))
         .collect();
+    let mut working = vec![false; n_seeds];
+    let mut next_rng_seed = (n_seeds * chains_per_seed) as u64;
 
-    // Collect results.
     let mut all_draws = Vec::new();
     let mut all_seed_id = Vec::new();
     let mut all_divergent = Vec::new();
     let mut all_log_posterior = Vec::new();
 
-    for (seed_idx, result) in chain_results {
-        let (draws, divergent, log_posterior) = result?;
-        let n = draws.len();
-        all_draws.extend(draws);
-        all_seed_id.extend(std::iter::repeat_n(seed_idx, n));
-        all_divergent.extend(divergent);
-        all_log_posterior.extend(log_posterior);
+    for round in 0.. {
+        if round > 0 {
+            if !working.iter().any(|w| *w) {
+                return Err(Error::Convergence(
+                    "Every MCMC chain diverged through most of its warmup.".into(),
+                ));
+            }
+            let orphaned: usize = (0..n_seeds)
+                .filter(|&i| !working[i])
+                .map(|i| std::mem::take(&mut owed[i]))
+                .sum();
+            let targets: Vec<usize> = (0..n_seeds).filter(|&i| working[i]).collect();
+            for (k, &i) in targets.iter().enumerate() {
+                owed[i] += orphaned / targets.len() + usize::from(k < orphaned % targets.len());
+            }
+        }
+        if owed.iter().all(|&n| n == 0) {
+            break;
+        }
+
+        // A flat task list: (seed_index, draws_for_chain, rng_seed).
+        let mut tasks: Vec<(usize, usize, u64)> = Vec::new();
+        for (seed_idx, &seed_draws) in owed.iter().enumerate() {
+            let base = seed_draws / chains_per_seed;
+            let extra = seed_draws % chains_per_seed;
+            for sub in 0..chains_per_seed {
+                let draws = base + usize::from(sub < extra);
+                let rng_seed = if round == 0 {
+                    (seed_idx * chains_per_seed + sub) as u64
+                } else {
+                    next_rng_seed += 1;
+                    next_rng_seed
+                };
+                if draws > 0 {
+                    tasks.push((seed_idx, draws, rng_seed));
+                }
+            }
+        }
+
+        // Run all chains in parallel.
+        let chain_results: Vec<(usize, KeteResult<(Vec<Vec<f64>>, Vec<bool>, Vec<f64>)>)> = tasks
+            .par_iter()
+            .map(|&(seed_idx, draws, rng_seed)| {
+                let result = run_single_chain(
+                    &seeds[seed_idx],
+                    &chol_factors[seed_idx],
+                    &sorted_obs,
+                    include_asteroids,
+                    non_grav,
+                    &ng_start,
+                    draws,
+                    tune_per_chain,
+                    maxdepth,
+                    target_accept,
+                    rng_seed,
+                    sun,
+                );
+                (seed_idx, result)
+            })
+            .collect();
+
+        let mut progress = false;
+        for (seed_idx, result) in chain_results {
+            let (draws, divergent, log_posterior) = result?;
+            let n = draws.len();
+            if n > 0 {
+                progress = true;
+                working[seed_idx] = true;
+                owed[seed_idx] -= n;
+            }
+            all_draws.extend(draws);
+            all_seed_id.extend(std::iter::repeat_n(seed_idx, n));
+            all_divergent.extend(divergent);
+            all_log_posterior.extend(log_posterior);
+        }
+        if round > 0 && !progress {
+            return Err(Error::Convergence(
+                "MCMC chains kept diverging through most of their warmup; could not \
+                 collect the requested draws."
+                    .into(),
+            ));
+        }
     }
 
     Ok(OrbitSamples {
         desig: seeds[0].desig.to_string(),
-        epoch: epoch.jd,
+        epoch,
         draws: all_draws,
         seed_id: all_seed_id,
         divergent: all_divergent,
@@ -673,14 +723,16 @@ fn run_single_chain(
     whiten_l: &DMatrix<f64>,
     sorted_obs: &Arc<[AstrometricObservation]>,
     include_asteroids: bool,
-    non_grav: Option<&NonGravModel>,
+    mask: Option<&NonGravMask>,
+    ng_values: &[f64],
     num_draws: usize,
     num_tune: usize,
     maxdepth: u64,
     target_accept: f64,
     chain_idx: u64,
+    sun: ([f64; 3], [f64; 3]),
 ) -> KeteResult<(Vec<Vec<f64>>, Vec<bool>, Vec<f64>)> {
-    let np = non_grav.map_or(0, NonGravModel::n_free_params);
+    let np = ng_values.len();
     let d = 6 + np;
 
     // Seed vector in Cartesian coordinates.
@@ -693,23 +745,28 @@ fn run_single_chain(
     seed_vec[3] = vel[0];
     seed_vec[4] = vel[1];
     seed_vec[5] = vel[2];
-    if let Some(ng) = non_grav {
-        let params = ng.get_free_params();
-        for k in 0..np {
-            seed_vec[6 + k] = params[k];
-        }
+    for k in 0..np {
+        seed_vec[6 + k] = ng_values[k];
     }
 
-    // If the seed orbit is hyperbolic, project velocity to make it
-    // marginally bound and fall back to the diagonal heuristic.
-    let r = (pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]).sqrt();
-    let v = (vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2]).sqrt();
+    // If the seed orbit is hyperbolic about the Sun, scale its heliocentric
+    // velocity to make it marginally bound and fall back to the diagonal
+    // heuristic.
+    let (sun_pos, sun_vel) = sun;
+    let r = (0..3)
+        .map(|i| (pos[i] - sun_pos[i]).powi(2))
+        .sum::<f64>()
+        .sqrt();
+    let v = (0..3)
+        .map(|i| (vel[i] - sun_vel[i]).powi(2))
+        .sum::<f64>()
+        .sqrt();
     let v_esc = (2.0 * GMS / r.max(1e-15)).sqrt();
     let whiten_l = if v >= v_esc {
         let scale = 0.95 * v_esc / v;
-        seed_vec[3] *= scale;
-        seed_vec[4] *= scale;
-        seed_vec[5] *= scale;
+        for i in 0..3 {
+            seed_vec[3 + i] = sun_vel[i] + (vel[i] - sun_vel[i]) * scale;
+        }
         diagonal_heuristic_whiten_cart(seed, np)
     } else {
         whiten_l.clone()
@@ -722,7 +779,9 @@ fn run_single_chain(
         obs: Arc::clone(sorted_obs),
         included: vec![true; sorted_obs.len()],
         include_asteroids,
-        non_grav: non_grav.cloned(),
+        ng_mask: mask.cloned(),
+        ng_seed_values: ng_values.to_vec(),
+        sun,
     };
 
     let mut settings = LowRankNutsSettings {
@@ -788,7 +847,8 @@ fn run_single_chain(
             }
             tune_steps += 1;
             // If >90% of warmup steps have diverged by the halfway point,
-            // this chain cannot find the posterior -- drop it silently.
+            // this chain cannot find the posterior. It returns no draws, and
+            // `fit_orbit_mcmc` runs a new chain for them.
             if tune_steps == bail_at && tune_divergent * 10 > bail_at * 9 {
                 return Ok((vec![], vec![], vec![]));
             }
@@ -955,7 +1015,9 @@ mod tests {
             obs: Arc::clone(&obs),
             included: vec![],
             include_asteroids: false,
-            non_grav: None,
+            ng_mask: None,
+            ng_seed_values: vec![],
+            sun: ([0.0; 3], [0.0; 3]),
         };
 
         // Evaluate at a small offset from the seed.
@@ -989,6 +1051,43 @@ mod tests {
                 (grad[i] - fd).abs()
             );
         }
+    }
+
+    /// The unbound wall and the prior apply to the heliocentric state: an orbit
+    /// bound about the Sun is accepted even where its barycentric velocity is not.
+    #[test]
+    fn logp_is_heliocentric() {
+        use kete_core::desigs::Desig;
+
+        // Bound about the Sun at 1.5 AU (escape speed ~0.0199 AU/day); the Sun's
+        // velocity is exaggerated so the barycentric speed is past escape.
+        let sun = ([0.005, -0.003, 0.0], [0.0, 0.03, 0.0]);
+        let seed_pos = [1.505, -0.003, 0.0];
+        let seed_vel = [0.0, 0.044, 0.0];
+        let seed_state: State<Equatorial, SSB> = State {
+            desig: Desig::Empty,
+            epoch: 2460000.5.into(),
+            pos: seed_pos.into(),
+            vel: seed_vel.into(),
+            center: SSB,
+        };
+        let seed_vec = DVector::from_iterator(6, seed_pos.into_iter().chain(seed_vel));
+        let mut posterior = OrbitalPosterior {
+            seed_state,
+            whiten_l: DMatrix::<f64>::identity(6, 6),
+            seed_vec,
+            obs: Vec::new().into(),
+            included: vec![],
+            include_asteroids: false,
+            ng_mask: None,
+            ng_seed_values: vec![],
+            sun,
+        };
+        let mut grad = [0.0_f64; 6];
+        let lp = posterior.logp(&[0.0; 6], &mut grad).unwrap();
+        assert!(lp.is_finite() && lp > -1.0, "logp = {lp}");
+        posterior.sun = ([0.0; 3], [0.0; 3]);
+        assert!(posterior.logp(&[0.0; 6], &mut grad).is_err());
     }
 
     #[test]
@@ -1040,7 +1139,9 @@ mod tests {
             obs: Arc::clone(&obs),
             included: vec![],
             include_asteroids: false,
-            non_grav: None,
+            ng_mask: None,
+            ng_seed_values: vec![],
+            sun: ([0.0; 3], [0.0; 3]),
         };
 
         // Evaluate at a moderate offset in whitened space.

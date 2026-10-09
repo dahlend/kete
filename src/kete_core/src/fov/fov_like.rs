@@ -1,42 +1,15 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! # Field of View like trait
 //! This trait defines field of view checks for portions of the sky.
-// BSD 3-Clause License
-//
-// Copyright (c) 2026, Dar Dahlen
-// Copyright (c) 2025, California Institute of Technology
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice, this
-//    list of conditions and the following disclaimer.
-//
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-//
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from
-//    this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use super::Contains;
-
-use crate::constants::C_AU_PER_DAY_INV;
+use crate::errors::{Error, KeteResult};
 use crate::fov::FOV;
-use crate::frames::{Equatorial, SunCenter, Vector};
-use crate::kepler::light_time_correct;
-use crate::prelude::*;
+use crate::frames::{Equatorial, Vector};
+use crate::geometry::Contains;
+use crate::state::State;
 
 /// Field of View like objects.
 /// These may contain multiple unique sky patches, so as a result the expected
@@ -107,53 +80,32 @@ pub fn check_statics<F: FovLike>(
         .collect()
 }
 
-/// Assuming the object undergoes linear motion, check to see if it is within the
-/// field of view.
-#[inline]
-pub fn check_linear<F: FovLike>(
-    fov: &F,
-    state: &State<Equatorial>,
-) -> (usize, Contains, State<Equatorial>) {
-    let pos = state.pos;
-    let vel = state.vel;
-    let obs = fov.observer();
-
-    let obs_pos = obs.pos;
-
-    let rel_pos = pos - obs_pos;
-
-    // This also accounts for first order light delay.
-    let dt = obs.epoch.jd - state.epoch.jd - rel_pos.norm() * C_AU_PER_DAY_INV;
-    let new_pos = pos + vel * dt;
-    let new_rel_pos = new_pos - obs_pos;
-    let (idx, contains) = fov.contains(&new_rel_pos);
-    let new_state = State::new(
-        state.desig.clone(),
-        obs.epoch + dt,
-        new_pos,
-        vel,
-        obs.center_id(),
-    );
-    (idx, contains, new_state)
-}
-
-/// Assuming the object undergoes two-body motion, check to see if it is within the
-/// field of view.
-///
-/// Both the state and the FOV observer must be Sun-centered.
+/// Unit vector along the sum of the pointings of `patches`.
 ///
 /// # Errors
-/// Returns an error if the Kepler solver fails.
-pub fn check_two_body<F: FovLike>(
-    fov: &F,
-    state: &State<Equatorial, SunCenter>,
-) -> KeteResult<(usize, Contains, State<Equatorial, SunCenter>)> {
-    let obs = fov.observer();
+/// Fails if `patches` is empty, or if the pointing of a patch fails.
+pub(crate) fn patches_pointing<F: FovLike>(patches: &[F]) -> KeteResult<Vector<Equatorial>> {
+    if patches.is_empty() {
+        Err(Error::ValueError("FOV has no patches.".into()))?;
+    }
+    let mut pointing = Vector::new([0.0; 3]);
+    for patch in patches {
+        pointing += &patch.pointing()?;
+    }
+    Ok(pointing.normalize())
+}
 
-    let final_state = propagate_two_body(state, obs.epoch)?;
-    let final_state = light_time_correct(&final_state, &obs.pos)?;
-    let rel_pos = final_state.pos - obs.pos;
-
-    let (idx, contains) = fov.contains(&rel_pos);
-    Ok((idx, contains, final_state))
+/// All corners of all `patches`.
+///
+/// # Errors
+/// Fails if `patches` is empty, or if the corners of a patch fail.
+pub(crate) fn patches_corners<F: FovLike>(patches: &[F]) -> KeteResult<Vec<Vector<Equatorial>>> {
+    if patches.is_empty() {
+        Err(Error::ValueError("FOV has no patches.".into()))?;
+    }
+    let mut corners = Vec::with_capacity(4 * patches.len());
+    for patch in patches {
+        corners.extend(patch.corners()?);
+    }
+    Ok(corners)
 }

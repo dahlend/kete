@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Dar Dahlen
+# SPDX-FileCopyrightText: 2025 California Institute of Technology
+# SPDX-License-Identifier: BSD-3-Clause
+
 import importlib
 import logging
 
@@ -45,6 +49,7 @@ from .fov import (
     NeosCmos,
     NeosVisit,
     OmniDirectionalFOV,
+    PolygonFOV,
     PtfCcd,
     PtfField,
     RectangleFOV,
@@ -60,17 +65,23 @@ from .fov import (
 )
 from .horizons import HorizonsProperties
 from .propagation import (
+    NonGravModel,
+    SymplecticSim,
     closest_approach,
     moid,
     propagate_n_body,
     propagate_two_body,
+    register_custom_mass,
+    register_mass,
 )
 from .time import Time
 from .vector import (
     CometElements,
+    EquinoctialElements,
     Frames,
     SimultaneousStates,
     State,
+    UncertainState,
     Vector,
 )
 
@@ -90,6 +101,7 @@ __all__ = [
     "constants",
     "covariance",
     "Data",
+    "EquinoctialElements",
     "flux",
     "flux_to_mag",
     "fov",
@@ -114,6 +126,7 @@ __all__ = [
     "ptf",
     "PtfCcd",
     "PtfField",
+    "PolygonFOV",
     "RectangleFOV",
     "set_logging",
     "shape",
@@ -124,12 +137,17 @@ __all__ = [
     "SpherexCmos",
     "SpherexField",
     "spice",
+    "SymplecticSim",
+    "NonGravModel",
+    "register_custom_mass",
+    "register_mass",
     "spitzer",
     "SpitzerFrame",
     "State",
     "state_transition",
     "tap",
     "Time",
+    "UncertainState",
     "Vector",
     "wise",
     "WiseCmos",

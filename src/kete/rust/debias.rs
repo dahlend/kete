@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Python bindings for the FCCT14 / EFCC18 star catalog debiasing tables.
 
 use kete_fitting::{DebiasTable, DebiasVersion};

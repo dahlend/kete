@@ -1,41 +1,17 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Observation types, predicted measurements, and geometric partial derivatives.
-//!
-// BSD 3-Clause License
-//
-// Copyright (c) 2026, Dar Dahlen
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice, this
-//    list of conditions and the following disclaimer.
-//
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-//
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from
-//    this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use kete_core::Band;
 use kete_core::constants::{AU_KM, C_AU_PER_DAY, C_AU_PER_DAY_INV, GMS};
 use kete_core::desigs::Desig;
+use kete_core::ephemeris::Ephemeris;
 use kete_core::frames::{Equatorial, SSB, Vector, geodetic_lat_lon_to_ecef};
 use kete_core::prelude::{Error, KeteResult, State};
 use kete_core::time::{TDB, Time};
-use kete_spice::prelude::{LOADED_PCK, LOADED_SPK};
+use kete_spice::frames::ITRF93;
+use kete_spice::prelude::{LOADED_SPK, SpiceEphemeris};
 use nalgebra::{DVector, Matrix2x3, Matrix3x1, RowVector6, Vector3};
 
 /// Solar Schwarzschild radius in AU: ``2 GM_sun / c^2``.
@@ -66,59 +42,52 @@ fn shapiro_range_au(r1: f64, r2: f64, leg: f64) -> f64 {
 
 /// Differential gravitational light deflection due to the Sun.
 ///
-/// Adjusts the apparent heliocentric position of a Solar System object to
-/// account for the difference between the solar gravitational bending of the
-/// photon path from the object and the bending from background stars at
-/// infinity.  On a plate-solved CCD frame the common-mode bending (same for
-/// all reference stars and the object) cancels in the plate solution.  Only
-/// the differential term, arising from the object being at finite heliocentric
-/// distance rather than at infinity, survives.
+/// Returns the object's position at its light-time corrected distance from the
+/// observer, displaced to the direction that a plate reduction against
+/// background stars measures. The Sun bends light from the object and from the
+/// reference stars away from itself. The plate solution maps the stars back to
+/// their catalog positions, which have no deflection. This removes the
+/// deflection of a star from the object too. Light from the object starts at a
+/// finite distance and bends less, so the net shift is toward the Sun:
+///
+/// ```text
+/// direction = p + d(q_obj) - d(p)
+/// d(q) = (2 GM / c^2) / |e| * p x (e_hat x q) / (1 + q . e_hat)
+/// ```
+///
+/// `p` is the unit vector from the observer to the object. `q` is the unit
+/// vector from the Sun to the source, and `p` itself for a star at infinity.
+/// `e` is the vector from the Sun to the observer.
 ///
 /// Both `observer_helio` and `obj_lt_pos` are Sun-centered positions in AU.
-/// Returns the corrected apparent heliocentric position.
 pub(crate) fn differential_light_deflect(
     observer_helio: &Vector<Equatorial>,
     obj_lt_pos: Vector<Equatorial>,
 ) -> Vector<Equatorial> {
-    let bend_factor = 2.0 * GMS / (C_AU_PER_DAY * C_AU_PER_DAY);
-
-    let p = obj_lt_pos - observer_helio;
-    let plen = p.norm();
-    if plen < 1e-10 {
-        return obj_lt_pos;
-    }
-    let olen = observer_helio.norm();
+    let topo = obj_lt_pos - observer_helio;
+    let plen = topo.norm();
+    let em = observer_helio.norm();
     let rlen = obj_lt_pos.norm();
-    if olen < 1e-10 || rlen < 1e-10 {
+    if plen < 1e-10 || em < 1e-10 || rlen < 1e-10 {
         return obj_lt_pos;
     }
-
-    let xprod = observer_helio.cross(&obj_lt_pos);
-    let dir_unnorm = p.cross(&xprod);
-    let dlen = dir_unnorm.norm();
-    if dlen < 1e-30 {
-        return obj_lt_pos;
-    }
-    let dir = dir_unnorm / dlen;
-
-    let psi1 = (obj_lt_pos.dot(observer_helio) / (rlen * olen))
-        .clamp(-1.0, 1.0)
-        .acos();
-    let psi2 = (p.dot(observer_helio) / (plen * olen))
-        .clamp(-1.0, 1.0)
-        .acos();
-
-    let bending = bend_factor * ((psi2 / 2.0).tan() - (psi1 / 2.0).tan()) * plen;
-    obj_lt_pos + dir * bending
+    let p = topo / plen;
+    let e_hat = *observer_helio / em;
+    let deflection = |q: Vector<Equatorial>| {
+        let denom = (1.0 + q.dot(&e_hat)).max(1e-9);
+        p.cross(&e_hat.cross(&q)) * (SHAPIRO_RS_AU / em / denom)
+    };
+    let shifted = p + deflection(obj_lt_pos / rlen) - deflection(p);
+    *observer_helio + shifted * (plen / shifted.norm())
 }
 
 /// Compute the SSB-centered Equatorial state of an Earth ground station at
 /// the given epoch.
 ///
-/// Uses the loaded PCK kernels for Earth orientation (delivers position +
-/// inertial velocity, including Earth surface rotation) and the loaded SPK
-/// kernels to recenter from geocentric to SSB.  This is the same conversion
-/// used by `spice.earth_pos_to_ecliptic` on the Python side.
+/// Uses the Earth frame (ITRF93, 3000) of the loaded kernels for Earth
+/// orientation (delivers position + inertial velocity, including Earth surface
+/// rotation) and their states to recenter from geocentric to SSB.  This is the
+/// same conversion used by `spice.earth_pos_to_ecliptic` on the Python side.
 fn station_state_at(
     lat_rad: f64,
     lon_rad: f64,
@@ -129,13 +98,12 @@ fn station_state_at(
     let pos_ecef_au: Vector3<f64> =
         Vector3::new(pos_ecef_km[0], pos_ecef_km[1], pos_ecef_km[2]) / AU_KM;
 
-    let pcks = LOADED_PCK.try_read()?;
-    let frame = pcks.try_get_orientation(3000, epoch)?;
+    let eph = SpiceEphemeris::loaded()?;
+    let frame = eph.try_frame(ITRF93, epoch)?;
     let (pos_eq, vel_eq) = frame.to_equatorial(pos_ecef_au, Vector3::zeros())?;
 
     let geocentric = State::<Equatorial>::new(Desig::Empty, epoch, pos_eq, vel_eq, 399);
-    let spks = LOADED_SPK.try_read()?;
-    spks.try_to_ssb(geocentric)
+    eph.try_to_ssb(geocentric)
 }
 
 /// A single astrometric or radar observation.
@@ -918,8 +886,8 @@ mod tests {
             vel_m[idx - 3] -= eps;
         }
 
-        let obj_p = make_state(pos_p, vel_p, obj.epoch.jd);
-        let obj_m = make_state(pos_m, vel_m, obj.epoch.jd);
+        let obj_p = make_state(pos_p, vel_p, obj.epoch.jd());
+        let obj_m = make_state(pos_m, vel_m, obj.epoch.jd());
 
         (predictor(&obj_p) - predictor(&obj_m)) * (1.0 / (2.0 * eps))
     }
@@ -1070,7 +1038,7 @@ mod tests {
 
         // Corrected epoch should be earlier
         let tau = 2.0 * C_AU_PER_DAY_INV;
-        assert!((corrected.epoch.jd - (2460000.5 - tau)).abs() < 1e-12);
+        assert!((corrected.epoch.jd() - (2460000.5 - tau)).abs() < 1e-12);
 
         // Position should be slightly different due to back-propagation
         assert!((corrected.pos[0] - obj.pos[0]).abs() < 1e-4);
@@ -1080,6 +1048,8 @@ mod tests {
 
     #[test]
     fn test_residual_optical() {
+        // `residual` reads the loaded SPK, which other tests may be loading.
+        kete_spice::test_data::ensure_test_spk();
         // Observer at ~1 AU (Earth-like), object at ~2 AU along +x.
         let observer = make_state([1.0, 0.0, 0.0], [0.0, 0.017, 0.0], 2460000.5);
         let obj = make_state([2.0, 0.0, 0.0], [0.0, 0.012, 0.0], 2460000.5);

@@ -89,7 +89,7 @@ for ls, albedo in zip(["--", "-"], [0.17, 0.03]):
         fluxes[:, 0],
         label=f"Albedo={albedo * 100:0.0f}% - Thermal",
         ls=ls,
-        color="grey",
+        color="gray",
     )
     plt.plot(
         wavelength / 1000,

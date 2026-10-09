@@ -1,39 +1,16 @@
-//! # NEOS field of views
-// BSD 3-Clause License
-//
-// Copyright (c) 2026, Dar Dahlen
-// Copyright (c) 2025, California Institute of Technology
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice, this
-//    list of conditions and the following disclaimer.
-//
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-//
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from
-//    this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
 
-use super::patches::closest_inside;
-use super::{Contains, FovLike, OnSkyRectangle, SkyPatch};
+//! # NEOS field of views
+
+use super::FovLike;
+use super::fov_like::{patches_corners, patches_pointing};
 use crate::constants::{NEOS_HEIGHT, NEOS_WIDTH};
 use crate::fov::FOV;
 use crate::frames::Vector;
+use crate::geometry::closest_inside;
+use crate::geometry::{Contains, SkyPatch, SphericalPolygon};
 use crate::prelude::*;
 /// NEOS frame data, a single detector on a single band
 #[derive(Debug, Clone)]
@@ -42,7 +19,7 @@ pub struct NeosCmos {
     pub(crate) observer: State<Equatorial>,
 
     /// Patch of sky
-    pub(crate) patch: OnSkyRectangle,
+    pub(crate) patch: SphericalPolygon,
 
     /// Rotation of the FOV.
     pub rotation: f64,
@@ -75,7 +52,11 @@ pub struct NeosCmos {
 
 impl NeosCmos {
     /// Create a NEOS FOV
-    #[must_use]
+    ///
+    /// # Errors
+    /// Returns [`Error::ValueError`] if
+    /// `pointing` is not finite or points at a celestial pole, where the rotation
+    /// is undefined. See [`SphericalPolygon::new`](crate::geometry::SphericalPolygon::new).
     pub fn new(
         pointing: Vector<Equatorial>,
         rotation: f64,
@@ -88,9 +69,9 @@ impl NeosCmos {
         exposure_id: u8,
         cmos_id: u8,
         band: u8,
-    ) -> Self {
-        let patch = OnSkyRectangle::new(pointing, rotation, NEOS_WIDTH, NEOS_HEIGHT);
-        Self {
+    ) -> KeteResult<Self> {
+        let patch = SphericalPolygon::new(pointing, rotation, NEOS_WIDTH, NEOS_HEIGHT)?;
+        Ok(Self {
             observer,
             patch,
             rotation,
@@ -102,7 +83,7 @@ impl NeosCmos {
             exposure_id,
             band,
             cmos_id,
-        }
+        })
     }
 }
 
@@ -140,7 +121,7 @@ impl FovLike for NeosCmos {
 
     #[inline]
     fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
-        Ok(self.patch.corners().into())
+        Ok(self.patch.corners())
     }
 }
 
@@ -206,7 +187,7 @@ impl NeosVisit {
                 || ccd.subloop_id != subloop_id
                 || ccd.exposure_id != exposure_id
                 || ccd.rotation != rotation
-                || ccd.observer().epoch != observer.epoch
+                || !ccd.observer().epoch.same_instant(&observer.epoch)
                 || ccd.band != band
             {
                 Err(Error::ValueError(
@@ -289,10 +270,10 @@ impl NeosVisit {
         let chip_4_b = -left_vec.rotate_around(up_vec, x_width / 2.0);
 
         // make the patches for each chip
-        let chip_1_patch = OnSkyRectangle::from_normals([chip_1_a, y_top, chip_1_b, y_bottom]);
-        let chip_2_patch = OnSkyRectangle::from_normals([chip_2_a, y_top, chip_2_b, y_bottom]);
-        let chip_3_patch = OnSkyRectangle::from_normals([chip_3_a, y_top, chip_3_b, y_bottom]);
-        let chip_4_patch = OnSkyRectangle::from_normals([chip_4_a, y_top, chip_4_b, y_bottom]);
+        let chip_1_patch = SphericalPolygon::from_normals(&[chip_1_a, y_top, chip_1_b, y_bottom]);
+        let chip_2_patch = SphericalPolygon::from_normals(&[chip_2_a, y_top, chip_2_b, y_bottom]);
+        let chip_3_patch = SphericalPolygon::from_normals(&[chip_3_a, y_top, chip_3_b, y_bottom]);
+        let chip_4_patch = SphericalPolygon::from_normals(&[chip_4_a, y_top, chip_4_b, y_bottom]);
 
         // make the chips
         let chip_1 = NeosCmos {
@@ -382,13 +363,7 @@ impl FovLike for NeosVisit {
     }
 
     fn contains(&self, obs_to_obj: &Vector<Equatorial>) -> (usize, Contains) {
-        closest_inside(
-            &self
-                .chips
-                .iter()
-                .map(|x| x.contains(obs_to_obj).1)
-                .collect::<Vec<_>>(),
-        )
+        closest_inside(self.chips.iter().map(|x| x.contains(obs_to_obj).1))
     }
 
     fn n_patches(&self) -> usize {
@@ -397,19 +372,10 @@ impl FovLike for NeosVisit {
 
     #[inline]
     fn pointing(&self) -> KeteResult<Vector<Equatorial>> {
-        let mut pointing = Vector::new([0.0; 3]);
-        self.chips
-            .iter()
-            .for_each(|chip| pointing += &chip.patch.pointing());
-        Ok(pointing.normalize())
+        patches_pointing(self.chips.as_slice())
     }
 
-    #[inline]
     fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
-        let mut corners = Vec::with_capacity(4 * 4);
-        for chip in self.chips.iter() {
-            corners.extend(chip.patch.corners());
-        }
-        Ok(corners)
+        patches_corners(self.chips.as_slice())
     }
 }

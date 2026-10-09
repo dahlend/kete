@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 use crate::fitting::{ConvergenceError, FittingResult};
 
 /// Find a root of `f` in the bracket `[a, b]` using the bisection method.

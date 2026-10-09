@@ -10,17 +10,19 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+publish.workspace = true
 
 [workspace]
 members = [".", "src/kete_core", "src/kete_stats", "src/kete_fitting", "src/kete_flux", "src/kete_spice"]
 default-members = [".", "src/kete_core", "src/kete_stats", "src/kete_fitting", "src/kete_flux", "src/kete_spice"]
 
 [workspace.package]
-version = "3.2.3"
+version = "3.3.0"
 edition = "2024"
 rust-version = "1.95"
 license = "BSD-3-Clause"
 repository = "https://github.com/dahlend/kete"
+publish = false
 
 [dependencies]
 kete_core = { version = "*", path = "src/kete_core", features=["pyo3", "polars"]}
@@ -61,7 +63,6 @@ rust.while_true = "deny"
 rust.patterns_in_fns_without_body = "deny"
 rust.path_statements = "deny"
 rust.overflowing_literals = "deny"
-rust.no_mangle_generic_items = "deny"
 rust.non_shorthand_field_patterns = "deny"
 rust.unused_extern_crates = "deny"
 rust.unused_import_braces = "deny"
@@ -85,11 +86,14 @@ clippy.pedantic = { level = "deny", priority = 1 }
 # Pedantic overrides
 clippy.float_cmp = {level = "allow", priority = 2 }
 clippy.inline_always = {level = "allow", priority = 2 }
-clippy.unreadable-literal = {level = "allow", priority = 2}
+clippy.unreadable_literal = {level = "allow", priority = 2}
 clippy.similar_names = {level = "allow", priority = 2}
 clippy.too_many_lines = {level = "allow", priority = 2}
 clippy.cast_precision_loss = {level = "allow", priority = 2}
 clippy.cast_possible_truncation = {level = "allow", priority = 2}
+# The suggested `assert_eq!(x, [] as [T; 0])` form is harder to read than
+# `assert!(x.is_empty())` in tests.
+clippy.assert_is_empty = {level = "allow", priority = 2}
 
 # General list
 clippy.too_many_arguments = "allow"

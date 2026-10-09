@@ -89,6 +89,9 @@ nitpick_ignore = [
     ("py:class", "numpy.ndarray"),
     ("py:class", "ArrayLike"),
     ("py:class", "datetime.datetime"),
+    ("py:class", "os.PathLike"),
+    # Napoleon passes the "optional" of "type, optional" through as a type
+    ("py:class", "optional"),
     ("py:class", "astropy.time.core.Time"),
     ("py:class", "numpy._typing._generic_alias.ScalarType"),
     ("py:class", "numpy.ma.core.MaskedArray"),

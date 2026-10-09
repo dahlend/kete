@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Python bindings for orbital analysis functions.
 use kete_core::analysis;
 use pyo3::{PyResult, pyfunction};
@@ -51,7 +54,10 @@ pub fn specific_energy_py(state: PyState) -> PyResult<f64> {
 /// Compute B-plane parameters from a planetocentric hyperbolic state.
 ///
 /// The state must be centered on the target body and on a hyperbolic orbit
-/// (positive specific energy).
+/// (positive specific energy). The B-plane axes are T = S x K / |S x K| and
+/// R = S x T, where S is the incoming asymptote direction and K is the
+/// ecliptic north pole. The axes are ecliptic-referenced regardless of the
+/// frame of the input state.
 ///
 /// Parameters
 /// ----------
@@ -66,7 +72,8 @@ pub fn specific_energy_py(state: PyState) -> PyResult<f64> {
 /// Raises
 /// ------
 /// ValueError
-///     If the orbit is bound (negative energy).
+///     If the orbit is not hyperbolic (energy <= 0 or non-finite, or eccentricity
+///     <= 1).
 #[pyfunction]
 #[pyo3(name = "compute_b_plane")]
 pub fn compute_b_plane_py(state: PyState) -> PyResult<analysis::BPlane> {

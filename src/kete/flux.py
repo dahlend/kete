@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Dar Dahlen
+# SPDX-FileCopyrightText: 2025 California Institute of Technology
+# SPDX-License-Identifier: BSD-3-Clause
+
 """
 Thermal and Reflected light modeling tools.
 
@@ -8,9 +12,8 @@ calculations, through to telescope specific models. Picking the appropriate mode
 save significant development time, but removes some of the control for the user.
 
 For multi-band thermal + reflected light modeling, use :py:func:`neatm_model_flux` or
-:py:func:`frm_model_flux`. These evaluate the model in parallel across multiple
-geometries and return :py:class:`ModelResults` objects containing total, thermal,
-and reflected fluxes.
+:py:func:`frm_model_flux`. These return :py:class:`ModelResults` objects containing
+total, thermal, and reflected fluxes.
 
 Use :py:func:`resolve_hg_params` to compute any missing value from the
 (H-mag, diameter, visible albedo) triad before calling the model functions.

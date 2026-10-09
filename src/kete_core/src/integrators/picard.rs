@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! # Picard-Chebyshev Numerical Integrator
 //!
 //! Integrator for first- and second-order ODEs.
@@ -22,35 +25,6 @@
 //! These are stored in [`PicardStep`] (first-order) or [`PicardStepSecondOrder`]
 //! (second-order), which expose functions allowing the user to query the state of the
 //! system at any point between the start and end of the integration.
-//!
-// BSD 3-Clause License
-//
-// Copyright (c) 2026, Dar Dahlen
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice, this
-//    list of conditions and the following disclaimer.
-//
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-//
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from
-//    this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //
 use std::f64::consts::PI;
 
@@ -243,17 +217,15 @@ impl<'a, const N: usize, const NM1: usize> PicardIntegrator<N, NM1> {
         step_size: f64,
         metadata: &mut MType,
     ) -> KeteResult<SVector<f64, DIM>> {
-        let t0 = t0.jd;
-        let t1 = t1.jd;
         let mut cur_t0 = t0;
-        if (t0 - t1).abs() < 10.0 * f64::EPSILON {
+        if (t0 - t1).elapsed.abs() < 10.0 * f64::EPSILON {
             return Ok(initial_pos);
         }
 
         let mut cur_stepsize = step_size;
         let mut cur_t1 = t0 + cur_stepsize;
-        if (t0 - t1).abs() < step_size.abs() {
-            cur_stepsize = t1 - t0;
+        if (t0 - t1).elapsed.abs() < step_size.abs() {
+            cur_stepsize = (t1 - t0).elapsed;
             cur_t1 = t1;
         }
 
@@ -262,10 +234,10 @@ impl<'a, const N: usize, const NM1: usize> PicardIntegrator<N, NM1> {
 
         loop {
             // Compute init guess with correct times for the current segment
-            let times = self.evaluation_times(cur_t0.into(), cur_t1.into());
+            let times = self.evaluation_times(cur_t0, cur_t1);
             let cur_init = init_func(&times, &seg_state);
 
-            let step = self.step(func, cur_t0.into(), cur_t1.into(), cur_init, metadata);
+            let step = self.step(func, cur_t0, cur_t1, cur_init, metadata);
             match step {
                 Ok(res) => {
                     // Estimate truncation error from tail Chebyshev coefficients
@@ -420,13 +392,14 @@ impl<'a, const N: usize, const NM1: usize> PicardIntegrator<N, NM1> {
     /// Given the start and stop times of a desired integration, return the actual
     /// times where the function will be evaluated starting at t0 and ending at t1.
     fn evaluation_times(&self, t0: Time<TDB>, t1: Time<TDB>) -> [Time<TDB>; N] {
+        // The node at `tau` sits at `midpoint + w2 tau`, taken from `t0` so that the
+        // split time keeps its precision.
         let w2 = (t1 - t0).elapsed / 2.0;
-        let w1 = f64::midpoint(t1.jd, t0.jd);
-        let mut times: [Time<TDB>; N] = [0.0.into(); N];
+        let mut times: [Time<TDB>; N] = [t0; N];
         times
             .iter_mut()
             .zip(self.tau)
-            .for_each(|(x, tau_v)| x.jd = w2 * tau_v + w1);
+            .for_each(|(x, tau_v)| *x = t0 + w2 * (tau_v + 1.0));
         times
     }
 
@@ -462,17 +435,15 @@ impl<'a, const N: usize, const NM1: usize> PicardIntegrator<N, NM1> {
         step_size: f64,
         metadata: &mut MType,
     ) -> KeteResult<(SVector<f64, DIM>, SVector<f64, DIM>)> {
-        let t0 = t0.jd;
-        let t1 = t1.jd;
         let mut cur_t0 = t0;
-        if (t0 - t1).abs() < 10.0 * f64::EPSILON {
+        if (t0 - t1).elapsed.abs() < 10.0 * f64::EPSILON {
             return Ok((initial_pos, initial_vel));
         }
 
         let mut cur_stepsize = step_size;
         let mut cur_t1 = t0 + cur_stepsize;
-        if (t0 - t1).abs() < step_size.abs() {
-            cur_stepsize = t1 - t0;
+        if (t0 - t1).elapsed.abs() < step_size.abs() {
+            cur_stepsize = (t1 - t0).elapsed;
             cur_t1 = t1;
         }
 
@@ -482,17 +453,11 @@ impl<'a, const N: usize, const NM1: usize> PicardIntegrator<N, NM1> {
 
         loop {
             // Compute init guess with correct times for the current segment
-            let times = self.evaluation_times(cur_t0.into(), cur_t1.into());
+            let times = self.evaluation_times(cur_t0, cur_t1);
             let (cur_pos_init, cur_vel_init) = init_func(&times, &seg_pos, &seg_vel);
 
-            let step = self.step_second_order(
-                func,
-                cur_t0.into(),
-                cur_t1.into(),
-                cur_pos_init,
-                cur_vel_init,
-                metadata,
-            );
+            let step =
+                self.step_second_order(func, cur_t0, cur_t1, cur_pos_init, cur_vel_init, metadata);
             match step {
                 Ok(res) => {
                     // Estimate truncation error from tail Chebyshev coefficients.
@@ -679,10 +644,9 @@ impl<const N: usize, const DIM: usize> PicardStep<N, DIM> {
     ///
     /// # Errors
     /// Evaluation may fail if ``t`` is outside of bounds.
-    pub fn evaluate(&self, t: f64) -> KeteResult<[f64; DIM]> {
-        let w1 = f64::midpoint(self.t0.jd, self.t1.jd);
+    pub fn evaluate(&self, t: Time<TDB>) -> KeteResult<[f64; DIM]> {
         let w2 = (self.t1 - self.t0).elapsed * 0.5;
-        let tau_time = ((t - w1) * w2).acos();
+        let tau_time = ((t - self.t0).elapsed / w2 - 1.0).acos();
         if tau_time.is_nan() {
             return Err(Error::Bounds(
                 "Queried time it outside of the fitted time span".into(),
@@ -698,10 +662,9 @@ impl<const N: usize, const DIM: usize> PicardStepSecondOrder<N, DIM> {
     ///
     /// # Errors
     /// Evaluation may fail if ``t`` is outside of bounds.
-    pub fn evaluate(&self, t: f64) -> KeteResult<([f64; DIM], [f64; DIM])> {
-        let w1 = f64::midpoint(self.t0.jd, self.t1.jd);
+    pub fn evaluate(&self, t: Time<TDB>) -> KeteResult<([f64; DIM], [f64; DIM])> {
         let w2 = (self.t1 - self.t0).elapsed * 0.5;
-        let tau_time = ((t - w1) * w2).acos();
+        let tau_time = ((t - self.t0).elapsed / w2 - 1.0).acos();
         if tau_time.is_nan() {
             return Err(Error::Bounds(
                 "Queried time is outside of the fitted time span".into(),
@@ -855,12 +818,12 @@ mod tests {
             .unwrap();
 
         // test against the analytic solution
-        assert!((res[0] - (1.0 * (-t1.jd).exp())).abs() < 1e-15);
-        assert!((res[1] - (2.0 * (-0.5 * t1.jd).exp())).abs() < 1e-15);
+        assert!((res[0] - (1.0 * (-t1.jd()).exp())).abs() < 1e-15);
+        assert!((res[1] - (2.0 * (-0.5 * t1.jd()).exp())).abs() < 1e-15);
         assert!(
-            (res[2] - (5.0 * (-0.1 * t1.jd).exp())).abs() < 1e-14,
+            (res[2] - (5.0 * (-0.1 * t1.jd()).exp())).abs() < 1e-14,
             "{}",
-            (res[2] - (5.0 * (-0.1 * t1.jd).exp())).abs()
+            (res[2] - (5.0 * (-0.1 * t1.jd()).exp())).abs()
         );
     }
 

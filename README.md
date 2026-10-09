@@ -34,10 +34,9 @@ https://github.com/user-attachments/assets/a48491d8-9c15-4659-9022-1767a3aa1e94
 Here is a simulation of what the ZTF survey would observe during the entirety of 2023.
 This is every position of every numbered asteroid, along with a calculation of the
 expected V-band magnitudes. If the expected magnitude is less than ZTF's reported
-magnitude limit for the specific frame, then the object will flash light grey.
+magnitude limit for the specific frame, then the object will flash light gray.
 
-This took about 50 minutes on a desktop computer to compute, and about 40 minutes
-to generate the movie.
+This took about 3 minutes on a laptop computer to compute.
 
 Kete can be used to answer many questions, for example, identifying all known asteroids
 inside of a [given image](https://dahlend.github.io/kete/tutorials/kona.html).

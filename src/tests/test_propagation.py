@@ -1,9 +1,14 @@
+# SPDX-FileCopyrightText: 2026 Dar Dahlen
+# SPDX-FileCopyrightText: 2025 California Institute of Technology
+# SPDX-License-Identifier: BSD-3-Clause
+
 import numpy as np
 import pytest
 
 from kete import (
     State,
     Time,
+    UncertainState,
     Vector,
     constants,
     moid,
@@ -106,6 +111,73 @@ class TestTwoBodyPropagation:
             assert np.allclose(calculated.pos, should_be.pos)
 
 
+class TestFreeParameters:
+    """Force parameters left free (NaN) occupy a covariance row of their own."""
+
+    @pytest.fixture
+    def state(self):
+        return State(
+            jd=2460000.5,
+            desig="dust",
+            pos=(2.0, 0.3, 0.1),
+            vel=(-0.002, 0.011, 0.001),
+        )
+
+    def test_free_beta_extends_the_covariance(self, state):
+        free = NonGravModel.new_dust(beta=float("nan"))
+        us = UncertainState.from_state(state, 1e-8, 1e-7, non_grav=free)
+        assert us.param_names == ["p", "f", "g", "h", "k", "L", "beta"]
+        assert np.array(us.cov_matrix).shape == (7, 7)
+        assert np.array(us.cartesian_cov_matrix).shape == (7, 7)
+
+    def test_free_params_default_to_zero(self, state):
+        free = NonGravModel.new_dust(beta=float("nan"))
+        us = UncertainState.from_state(state, 1e-8, 1e-7, non_grav=free)
+        assert us.non_grav.beta == 0.0
+
+    def test_frozen_parameters_take_no_row(self, state):
+        """A concrete beta is frozen, not fitted, so the covariance stays 6x6."""
+        fixed = NonGravModel.new_dust(beta=0.01)
+        us = UncertainState.from_state(state, 1e-8, 1e-7, non_grav=fixed)
+        assert us.param_names == ["p", "f", "g", "h", "k", "L"]
+        assert np.array(us.cov_matrix).shape == (6, 6)
+        assert np.isclose(us.non_grav.beta, 0.01)
+
+    def test_sampling_carries_the_model(self, state):
+        free = NonGravModel.new_dust(beta=float("nan"))
+        us = UncertainState.from_state(state, 1e-8, 1e-7, non_grav=free)
+        states, non_gravs = us.sample(10, seed=11)
+        assert len(states) == len(non_gravs) == 10
+        assert all(n is not None for n in non_gravs)
+
+
+class TestDustBeta:
+    """The beta <-> diameter conversion pair."""
+
+    @pytest.mark.parametrize("diameter", [1e-7, 1.19e-6, 1e-5, 1e-3, 0.1])
+    def test_diameter_round_trips_through_beta(self, diameter):
+        """``diameter`` inverts ``new_dust(diameter=...)``, so the two must
+        share their defaults - they disagreed by a factor of 1000 once."""
+        model = NonGravModel.new_dust(diameter=diameter)
+        assert np.isclose(model.diameter(), diameter, rtol=1e-12)
+
+    @pytest.mark.parametrize("density", [500.0, 1000.0, 3000.0])
+    @pytest.mark.parametrize("q_pr", [0.5, 1.0, 2.0])
+    def test_round_trip_with_explicit_coefficients(self, density, q_pr):
+        """The same holds for any coefficients, as long as both calls agree -
+        beta alone is stored, so the conversion inputs are not recovered."""
+        model = NonGravModel.new_dust(diameter=2e-6, density=density, q_pr=q_pr)
+        assert np.isclose(model.diameter(density=density, q_pr=q_pr), 2e-6, rtol=1e-12)
+
+    def test_beta_one_is_near_micron_scale(self):
+        """The Burns, Lamy & Soter scaling puts beta = 1 at ~1.2 um for a
+        1000 kg/m^3 grain - the anchor the default c_pr encodes."""
+        assert np.isclose(NonGravModel.new_dust(beta=1.0).diameter(), 1.19e-6)
+
+    def test_diameter_is_nan_for_non_dust_models(self):
+        assert np.isnan(NonGravModel.new_comet(1e-8, 1e-9, 0.0).diameter())
+
+
 @pytest.mark.parametrize("planet", [(None, 1.58), ("Earth", 1.58), ("Mercury", 2.18)])
 def test_moid(planet, ceres_traj):
     planet, ceres_moid = planet
@@ -120,3 +192,26 @@ def test_moid(planet, ceres_traj):
 
     ceres = ceres_traj[0]
     assert np.isclose(moid(ceres, state), ceres_moid, atol=1e-2)
+
+
+def test_closest_approach_barycentric_states():
+    """States about the barycenter work, as they did before."""
+    from kete import closest_approach
+
+    a = spice.get_state("Ceres", 2460000.5, center=0)
+    b = spice.get_state("Vesta", 2460000.5, center=0)
+    _jd, dist = closest_approach(a, b, 2460000.5, 2460100.5)
+    assert np.isfinite(dist) and dist > 0
+
+
+@pytest.mark.parametrize(
+    "a_over_m, lambda_0, flattening",
+    [(1e-6, -0.1, 1.0), (-1e-6, 0.1, 1.0), (np.inf, 0.1, 1.0), (1e-6, 0.1, 0.0)],
+)
+def test_farnocchia_rejects_invalid_values(a_over_m, lambda_0, flattening):
+    with pytest.raises(ValueError):
+        NonGravModel.new_farnocchia(a_over_m, lambda_0, 0.1, 0.9, flattening, [0, 0, 1])
+
+
+def test_farnocchia_accepts_free_values():
+    NonGravModel.new_farnocchia(np.nan, np.nan, 0.1, 0.9, 1.0, [0, 0, 1])

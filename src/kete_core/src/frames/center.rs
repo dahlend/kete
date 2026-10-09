@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Center body types for [`State`](crate::state::State).
 //!
 //! These types encode the gravitational center of a `State` at compile time,
@@ -11,13 +14,31 @@ use std::fmt::Debug;
 
 /// Trait for center-body types used in [`State`](crate::state::State).
 ///
-/// Implementors provide the NAIF id of the center body at runtime.
-pub trait CenterBody: Sized + Sync + Send + Clone + Copy + Debug + PartialEq
-where
-    DynCenter: From<Self>,
+/// Implementors expose a NAIF id, either as a compile-time const
+/// ([`NAIF_ID`](Self::NAIF_ID)) for the typed centers ([`SSB`],
+/// [`SunCenter`], [`EarthCenter`]) or via a runtime instance method
+/// ([`center_id`](Self::center_id)) for [`DynCenter`].
+///
+/// `Into<DynCenter>` is a supertrait so any [`CenterBody`] can be
+/// type-erased to [`DynCenter`] without callers repeating the bound.
+pub trait CenterBody:
+    Sized + Sync + Send + Clone + Copy + Debug + PartialEq + Into<DynCenter>
 {
-    /// NAIF id of the center body.
-    fn center_id(&self) -> i32;
+    /// NAIF id of this center body, known at compile time.
+    ///
+    /// Typed centers report their actual id. [`DynCenter`] reports `i32::MIN`
+    /// as a sentinel since its id is per-instance; consult
+    /// [`center_id`](Self::center_id) for the runtime value instead.
+    const NAIF_ID: i32;
+
+    /// Runtime NAIF id of this center body.
+    ///
+    /// Defaults to [`Self::NAIF_ID`]; [`DynCenter`] overrides to return
+    /// its stored runtime value.
+    #[inline(always)]
+    fn center_id(&self) -> i32 {
+        Self::NAIF_ID
+    }
 }
 
 /// Runtime-determined center body -- the default.
@@ -46,6 +67,8 @@ pub struct SunCenter;
 pub struct EarthCenter;
 
 impl CenterBody for DynCenter {
+    const NAIF_ID: i32 = i32::MIN;
+
     #[inline(always)]
     fn center_id(&self) -> i32 {
         self.0
@@ -77,22 +100,13 @@ impl From<EarthCenter> for DynCenter {
 }
 
 impl CenterBody for SSB {
-    #[inline(always)]
-    fn center_id(&self) -> i32 {
-        0
-    }
+    const NAIF_ID: i32 = 0;
 }
 
 impl CenterBody for SunCenter {
-    #[inline(always)]
-    fn center_id(&self) -> i32 {
-        10
-    }
+    const NAIF_ID: i32 = 10;
 }
 
 impl CenterBody for EarthCenter {
-    #[inline(always)]
-    fn center_id(&self) -> i32 {
-        399
-    }
+    const NAIF_ID: i32 = 399;
 }

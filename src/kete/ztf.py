@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Dar Dahlen
+# SPDX-FileCopyrightText: 2025 California Institute of Technology
+# SPDX-License-Identifier: BSD-3-Clause
+
 """
 ZTF Related Functions and Data.
 ZTF data is available from 2018 to present.
@@ -92,34 +96,52 @@ def fetch_fovs(year: int):
         irsa_query.to_parquet(filename, index=False)
 
     offset = 15 / 24 / 60 / 60
-    jds = [Time.from_iso(x + ":00").jd + offset for x in irsa_query["obsdate"]]
+    irsa_query["jd"] = [
+        Time.from_iso(x + ":00").jd + offset for x in irsa_query["obsdate"]
+    ]
     obs_info = find_obs_code("ZTF")
+
+    # Sorting the table is much faster than sorting the constructed FOVs, and
+    # leaves the final sort below with almost nothing to do.
+    irsa_query = irsa_query.sort_values("jd", kind="stable")
+
+    # Plain lists avoid per-row attribute lookups in the loop below.
+    columns = [
+        irsa_query[col].tolist()
+        for col in [
+            "jd",
+            "ra1",
+            "dec1",
+            "ra2",
+            "dec2",
+            "ra3",
+            "dec3",
+            "ra4",
+            "dec4",
+            "field",
+            "filefracday",
+            "ccdid",
+            "filtercode",
+            "imgtypecode",
+            "qid",
+            "maglimit",
+            "fid",
+        ]
+    ]
 
     # ZTF fields are made up of up to 64 individual CCD quads, here we first construct
     # the individual CCD quad information.
     fovs = []
-    for jd, row in zip(jds, irsa_query.itertuples()):
-        corners = []
-        for i in range(4):
-            ra = getattr(row, f"ra{i + 1}")
-            dec = getattr(row, f"dec{i + 1}")
-            corners.append(Vector.from_ra_dec(ra, dec))
+    for jd, ra1, dec1, ra2, dec2, ra3, dec3, ra4, dec4, *meta in zip(*columns):
+        corners = [
+            Vector.from_ra_dec(ra1, dec1),
+            Vector.from_ra_dec(ra2, dec2),
+            Vector.from_ra_dec(ra3, dec3),
+            Vector.from_ra_dec(ra4, dec4),
+        ]
         observer = spice.earth_pos_to_ecliptic(jd, *obs_info[:-1])
         observer = State("ZTF", observer.jd, observer.pos, observer.vel)
-
-        fov = ZtfCcdQuad(
-            corners,
-            observer,
-            row.field,
-            row.filefracday,
-            row.ccdid,
-            row.filtercode,
-            row.imgtypecode,
-            row.qid,
-            row.maglimit,
-            row.fid,
-        )
-        fovs.append(fov)
+        fovs.append(ZtfCcdQuad(corners, observer, *meta))
 
     # Now group the quad information into full 64 size Fields
     grouped = defaultdict(list)

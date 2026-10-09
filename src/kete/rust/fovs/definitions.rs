@@ -1,6 +1,11 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
+use kete_core::fov::FovLike;
 use kete_core::fov::{self};
-use kete_core::fov::{FovLike, SkyPatch};
 use kete_core::frames::Vector;
+use kete_core::geometry::SkyPatch;
 use kete_core::time::{TDB, Time};
 use pyo3::{exceptions, prelude::*};
 
@@ -13,7 +18,6 @@ use crate::{state::PyState, vector::PyVector};
 /// of the individual wavelength bands.
 #[pyclass(module = "kete", frozen, name = "WiseCmos", from_py_object)]
 #[derive(Clone, Debug)]
-#[allow(clippy::upper_case_acronyms)]
 pub struct PyWiseCmos(pub fov::WiseCmos);
 
 /// Field of view of a NEOS CMOS chip.
@@ -42,9 +46,14 @@ pub struct PyWiseCmos(pub fov::WiseCmos);
 ///     Which chip of the target band this represents.
 /// band :
 ///     Band, can be either 1 or 2 to represent NC1/NC2.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If ``pointing`` is at a celestial pole, where the rotation from celestial
+///     north is undefined. Construct such a field from its corners instead.
 #[pyclass(module = "kete", frozen, name = "NeosCmos", from_py_object)]
 #[derive(Clone, Debug)]
-#[allow(clippy::upper_case_acronyms)]
 pub struct PyNeosCmos(pub fov::NeosCmos);
 
 /// Field of view of a NEOS Visit.
@@ -146,33 +155,28 @@ pub struct PyNeosCmos(pub fov::NeosCmos);
 ///     Band, can be either 1 or 2 to represent NC1/NC2.
 #[pyclass(module = "kete", frozen, name = "NeosVisit", from_py_object)]
 #[derive(Clone, Debug)]
-#[allow(clippy::upper_case_acronyms)]
 pub struct PyNeosVisit(pub fov::NeosVisit);
 
 /// Field of view of a Single ZTF chips/quad combination.
 #[pyclass(module = "kete", frozen, name = "ZtfCcdQuad", from_py_object)]
 #[derive(Clone, Debug)]
-#[allow(clippy::upper_case_acronyms)]
 pub struct PyZtfCcdQuad(pub fov::ZtfCcdQuad);
 
 /// Field of view of all 64 ZTF chips/quad combinations.
 /// This is a meta collection of individual ZTF CCD Quad FOVs.
 #[pyclass(module = "kete", frozen, name = "ZtfField", sequence, from_py_object)]
 #[derive(Clone, Debug)]
-#[allow(clippy::upper_case_acronyms)]
 pub struct PyZtfField(pub fov::ZtfField);
 
 /// Field of view of all PTF ccds.
 /// This is a meta collection of individual PTF CCD Quad FOVs.
 #[pyclass(module = "kete", frozen, name = "PtfField", sequence, from_py_object)]
 #[derive(Clone, Debug)]
-#[allow(clippy::upper_case_acronyms)]
 pub struct PyPtfField(pub fov::PtfField);
 
 /// Field of view of a Single PTF ccd.
 #[pyclass(module = "kete", frozen, name = "PtfCcd", from_py_object)]
 #[derive(Clone, Debug)]
-#[allow(clippy::upper_case_acronyms)]
 pub struct PyPtfCcd(pub fov::PtfCcd);
 
 /// Field of view of multiple Spherex CMOS at one time.
@@ -185,19 +189,16 @@ pub struct PyPtfCcd(pub fov::PtfCcd);
     from_py_object
 )]
 #[derive(Clone, Debug)]
-#[allow(clippy::upper_case_acronyms)]
 pub struct PySpherexField(pub fov::SpherexField);
 
 /// Field of view of a Single Spherex cmos.
 #[pyclass(module = "kete", frozen, name = "SpherexCmos", from_py_object)]
 #[derive(Clone, Debug)]
-#[allow(clippy::upper_case_acronyms)]
 pub struct PySpherexCmos(pub fov::SpherexCmos);
 
 /// Field of view of a Spitzer BCD frame (IRAC or MIPS).
 #[pyclass(module = "kete", frozen, name = "SpitzerFrame", from_py_object)]
 #[derive(Clone, Debug)]
-#[allow(clippy::upper_case_acronyms)]
 pub struct PySpitzerFrame(pub fov::SpitzerFrame);
 
 /// Generic Rectangular Field of view.
@@ -218,9 +219,38 @@ pub struct PySpitzerFrame(pub fov::SpitzerFrame);
 ///     The longitudinal width of the rectangle in degrees.
 /// lat_width:
 ///     The latitudinal width of the rectangle in degrees.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If ``pointing`` is at a celestial pole, where the rotation from celestial
+///     north is undefined. Construct such a field from its corners instead.
 #[pyclass(module = "kete", frozen, name = "RectangleFOV", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyGenericRectangle(pub fov::GenericRectangle);
+
+/// Polygon field of view, convex or not.
+///
+/// The edges are great circles. The corners go around the polygon in order,
+/// clockwise or counterclockwise, and lie within 89.9 degrees of their center.
+/// Edges that cross are an error.
+///
+/// Parameters
+/// ----------
+/// corners : list of :class:`~kete.Vector`
+///   Three or more corners of the FOV, in order. A list is taken to be in the
+///   equatorial frame.
+/// observer : :class:`~kete.State`
+///   The state of the observer.
+///
+/// Raises
+/// ------
+/// ValueError
+///   If there are fewer than 3 corners, a corner is too far from the center,
+///   or two edges cross.
+#[pyclass(module = "kete", frozen, name = "PolygonFOV", from_py_object)]
+#[derive(Clone, Debug)]
+pub struct PyGenericPolygon(pub fov::GenericPolygon);
 
 /// Generic Cone field of view.
 ///
@@ -252,7 +282,7 @@ pub struct PyOmniDirectional(pub fov::OmniDirectional);
 
 /// Field of views supported by the python interface
 #[derive(Debug, Clone, FromPyObject, IntoPyObject)]
-#[allow(clippy::upper_case_acronyms, missing_docs)]
+#[allow(missing_docs)]
 pub enum AllowedFOV {
     WISE(PyWiseCmos),
     NEOS(PyNeosCmos),
@@ -260,6 +290,7 @@ pub enum AllowedFOV {
     ZTFField(PyZtfField),
     NEOSVisit(PyNeosVisit),
     Rectangle(PyGenericRectangle),
+    Polygon(PyGenericPolygon),
     Cone(PyGenericCone),
     OmniDirectional(PyOmniDirectional),
     PTF(PyPtfCcd),
@@ -276,6 +307,7 @@ impl AllowedFOV {
             AllowedFOV::NEOS(fov) => fov.0.observer().epoch,
             AllowedFOV::WISE(fov) => fov.0.observer().epoch,
             AllowedFOV::Rectangle(fov) => fov.0.observer().epoch,
+            AllowedFOV::Polygon(fov) => fov.0.observer().epoch,
             AllowedFOV::ZTF(fov) => fov.0.observer().epoch,
             AllowedFOV::ZTFField(fov) => fov.0.observer().epoch,
             AllowedFOV::NEOSVisit(fov) => fov.0.observer().epoch,
@@ -295,6 +327,7 @@ impl AllowedFOV {
         match self {
             AllowedFOV::WISE(fov) => fov.0.get_child(idx).into_fov(),
             AllowedFOV::Rectangle(fov) => fov.0.get_child(idx).into_fov(),
+            AllowedFOV::Polygon(fov) => fov.0.get_child(idx).into_fov(),
             AllowedFOV::NEOS(fov) => fov.0.get_child(idx).into_fov(),
             AllowedFOV::ZTF(fov) => fov.0.get_child(idx).into_fov(),
             AllowedFOV::ZTFField(fov) => fov.0.get_child(idx).into_fov(),
@@ -314,6 +347,7 @@ impl AllowedFOV {
         match self {
             AllowedFOV::WISE(fov) => fov::FOV::Wise(fov.0),
             AllowedFOV::Rectangle(fov) => fov::FOV::GenericRectangle(fov.0),
+            AllowedFOV::Polygon(fov) => fov::FOV::GenericPolygon(fov.0),
             AllowedFOV::NEOS(fov) => fov::FOV::NeosCmos(fov.0),
             AllowedFOV::ZTF(fov) => fov::FOV::ZtfCcdQuad(fov.0),
             AllowedFOV::ZTFField(fov) => fov::FOV::ZtfField(fov.0),
@@ -333,6 +367,7 @@ impl AllowedFOV {
         match self {
             AllowedFOV::WISE(fov) => fov.__repr__(),
             AllowedFOV::Rectangle(fov) => fov.__repr__(),
+            AllowedFOV::Polygon(fov) => fov.__repr__(),
             AllowedFOV::NEOS(fov) => fov.__repr__(),
             AllowedFOV::ZTF(fov) => fov.__repr__(),
             AllowedFOV::ZTFField(fov) => fov.__repr__(),
@@ -355,6 +390,7 @@ impl From<fov::FOV> for AllowedFOV {
             fov::FOV::ZtfCcdQuad(fov) => AllowedFOV::ZTF(PyZtfCcdQuad(fov)),
             fov::FOV::NeosCmos(fov) => AllowedFOV::NEOS(PyNeosCmos(fov)),
             fov::FOV::GenericRectangle(fov) => AllowedFOV::Rectangle(PyGenericRectangle(fov)),
+            fov::FOV::GenericPolygon(fov) => AllowedFOV::Polygon(PyGenericPolygon(fov)),
             fov::FOV::ZtfField(fov) => AllowedFOV::ZTFField(PyZtfField(fov)),
             fov::FOV::NeosVisit(fov) => AllowedFOV::NEOSVisit(PyNeosVisit(fov)),
             fov::FOV::GenericCone(fov) => AllowedFOV::Cone(PyGenericCone(fov)),
@@ -372,6 +408,9 @@ impl From<fov::FOV> for AllowedFOV {
 #[pymethods]
 impl PyWiseCmos {
     /// Construct a WISE CMOS fov from a pointing vector, rotation and observer state.
+    ///
+    /// Raises ``ValueError`` if ``pointing`` is at a celestial pole, where the
+    /// rotation from celestial north is undefined.
     #[staticmethod]
     pub fn from_pointing(
         pointing: VectorLike,
@@ -379,16 +418,16 @@ impl PyWiseCmos {
         observer: PyState,
         frame_num: u64,
         scan_id: String,
-    ) -> Self {
+    ) -> PyResult<Self> {
         let pointing = pointing.into_vector(observer.frame());
         let scan_id = scan_id.into();
-        PyWiseCmos(fov::WiseCmos::new(
+        Ok(PyWiseCmos(fov::WiseCmos::new(
             pointing,
             rotation.to_radians(),
             observer.raw,
             frame_num,
             scan_id,
-        ))
+        )?))
     }
 
     /// Construct a WISE CMOS fov the corners of the FOV and observer state.
@@ -471,15 +510,15 @@ impl PyGenericRectangle {
         observer: PyState,
         lon_width: f64,
         lat_width: f64,
-    ) -> Self {
+    ) -> PyResult<Self> {
         let pointing = pointing.into_vector(observer.frame());
-        PyGenericRectangle(fov::GenericRectangle::new(
+        Ok(PyGenericRectangle(fov::GenericRectangle::new(
             pointing,
             rotation.to_radians(),
             lon_width.to_radians(),
             lat_width.to_radians(),
             observer.raw,
-        ))
+        )?))
     }
 
     /// Construct a new Rectangle FOV from the corners.
@@ -561,6 +600,55 @@ impl PyGenericRectangle {
 }
 
 #[pymethods]
+impl PyGenericPolygon {
+    /// Construct a polygon FOV from its corners and the observer state.
+    #[new]
+    pub fn new(corners: Vec<VectorLike>, observer: PyState) -> PyResult<Self> {
+        let corners: Vec<Vector<_>> = corners
+            .into_iter()
+            .map(|x| x.into_vector(crate::frame::PyFrames::Equatorial))
+            .collect();
+        Ok(PyGenericPolygon(fov::GenericPolygon::new(
+            &corners,
+            observer.raw,
+        )?))
+    }
+
+    /// The observer State.
+    #[getter]
+    pub fn observer(&self) -> PyState {
+        self.0.observer().clone().into()
+    }
+
+    /// JD of the observer location.
+    #[getter]
+    pub fn jd(&self) -> PyTime {
+        self.0.observer().epoch.into()
+    }
+
+    /// Unit vector of the center of the corners.
+    #[getter]
+    pub fn pointing(&self) -> PyVector {
+        self.0.patch.pointing().into()
+    }
+
+    /// Corners of this FOV as unit vectors, in the order given.
+    #[getter]
+    pub fn corners(&self) -> Vec<PyVector> {
+        self.0.patch.corners().iter().map(|x| (*x).into()).collect()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PolygonFOV(pointing={}, observer={}, n_corners={})",
+            self.pointing().__repr__(),
+            self.observer().__repr__(),
+            self.0.patch.corners().len(),
+        )
+    }
+}
+
+#[pymethods]
 impl PyGenericCone {
     /// Construct a Generic Cone FOV from a central vector, angle, and observer state.
     #[new]
@@ -591,7 +679,7 @@ impl PyGenericCone {
         self.0.patch.pointing().into()
     }
 
-    /// The longitudinal width of the FOV.
+    /// Angle of the cone from the central pointing vector in degrees.
     #[getter]
     pub fn angle(&self) -> f64 {
         self.0.angle().to_degrees()
@@ -649,9 +737,9 @@ impl PyNeosCmos {
         exposure_id: u8,
         cmos_id: u8,
         band: u8,
-    ) -> Self {
+    ) -> PyResult<Self> {
         let pointing = pointing.into_vector(observer.frame());
-        PyNeosCmos(fov::NeosCmos::new(
+        Ok(PyNeosCmos(fov::NeosCmos::new(
             pointing,
             rotation.to_radians(),
             observer.raw,
@@ -663,7 +751,7 @@ impl PyNeosCmos {
             exposure_id,
             cmos_id,
             band,
-        ))
+        )?))
     }
 
     /// The observer State.
@@ -1049,7 +1137,6 @@ impl PyZtfCcdQuad {
 }
 
 #[pymethods]
-#[allow(clippy::too_many_arguments)]
 impl PyZtfField {
     /// Representation of an entire ZTF Field, made up of up to 64 ZTF CCD FOVs.
     ///
@@ -1269,7 +1356,6 @@ impl PyPtfCcd {
 }
 
 #[pymethods]
-#[allow(clippy::too_many_arguments)]
 impl PyPtfField {
     /// Representation of an entire PTF Field, made up of multiple CCDs.
     ///
@@ -1343,7 +1429,6 @@ impl PyPtfField {
 }
 
 #[pymethods]
-#[allow(clippy::too_many_arguments)]
 impl PySpherexCmos {
     /// Construct a new PTF CCD FOV from the corners.
     /// The corners must be provided in clockwise order.
@@ -1426,7 +1511,6 @@ impl PySpherexCmos {
 }
 
 #[pymethods]
-#[allow(clippy::too_many_arguments)]
 impl PySpherexField {
     /// Representation of an entire PTF Field, made up of multiple CCDs.
     ///
@@ -1513,6 +1597,9 @@ impl PySpherexField {
 impl PySpitzerFrame {
     /// Construct a Spitzer FOV from a pointing vector, rotation, observer, and explicit
     /// FOV dimensions.
+    ///
+    /// Raises ``ValueError`` if ``pointing`` is at a celestial pole, where the
+    /// rotation from celestial north is undefined.
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
     pub fn from_pointing(
@@ -1540,7 +1627,7 @@ impl PySpitzerFrame {
             width.to_radians(),
             height.to_radians(),
             duration,
-        )))
+        )?))
     }
 
     /// Construct a Spitzer FOV from the 4 corners and observer state.

@@ -1,34 +1,8 @@
-// BSD 3-Clause License
-//
-// Copyright (c) 2026, Dar Dahlen
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice, this
-//    list of conditions and the following disclaimer.
-//
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-//
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from
-//    this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
 
 use super::*;
-use crate::fitting::types::logistic_barrier;
+use crate::fitting::types::{FitProblem, Penalty, Tail, logistic_barrier};
 use crate::{BandInfo, frm_total_flux, neatm_total_flux, resolve_hg_params};
 use kete_core::constants::C_V;
 use nalgebra::Vector3;
@@ -66,10 +40,9 @@ fn make_neg_log_likelihood(
     c_hg: f64,
     emissivity: f64,
 ) -> impl Fn(&[f64]) -> f64 {
-    let obs = obs.to_vec();
+    let problem = FitProblem::new(model, obs, c_hg, emissivity, &FluxPriors::default());
     move |x: &[f64]| -> f64 {
-        let params = model.unpack(x, emissivity, c_hg);
-        let ll = model.log_likelihood(&params, &obs);
+        let ll = problem.log_likelihood(&problem.unpack(x));
         if ll.is_finite() { -ll } else { f64::MAX }
     }
 }
@@ -106,15 +79,8 @@ fn synthetic_neatm_obs() -> (Vec<FluxObs>, TestHg) {
     let obs: Vec<FluxObs> = bands
         .into_iter()
         .zip(&result.fluxes)
-        .map(|(band, &flux)| FluxObs {
-            flux,
-            // 5% uncertainty
-            sigma: flux * 0.05,
-            band,
-            is_upper_limit: false,
-            sun2obj,
-            sun2obs,
-        })
+        // 5% uncertainty
+        .map(|(band, &flux)| FluxObs::detection(flux, flux * 0.05, band, sun2obj, sun2obs))
         .collect();
 
     (obs, hg)
@@ -133,6 +99,30 @@ fn test_logistic_barrier_boundary() {
     let val = logistic_barrier(4.99, -5.0, 5.0, 30.0);
     let val_edge = logistic_barrier(5.5, -5.0, 5.0, 30.0);
     assert!(val_edge < val, "Past boundary should be more negative");
+}
+
+#[test]
+fn test_asymmetric_gaussian_prior() {
+    // Tight below the mean, loose above: a value the same distance below the
+    // mean should be penalized far more than one above it.
+    let prior = ParamPrior::with_gaussian_asym(-10.0, 10.0, 0.0, 0.1, 1.0);
+    let below = prior.log_prob(-0.5);
+    let above = prior.log_prob(0.5);
+    assert!(
+        below < above,
+        "Below-mean deviation should cost more with a tight lower side: \
+         below={below}, above={above}"
+    );
+
+    // The symmetric constructor is exactly sign-symmetric.
+    let sym = ParamPrior::with_gaussian(-10.0, 10.0, 0.0, 0.5);
+    assert!(
+        (sym.log_prob(-0.5) - sym.log_prob(0.5)).abs() < 1e-12,
+        "Symmetric Gaussian prior must be sign-symmetric"
+    );
+
+    // center() still reports the mean.
+    assert!((prior.center() - 0.0).abs() < 1e-12);
 }
 
 #[test]
@@ -160,8 +150,11 @@ fn test_neatm_nll_at_truth() {
 #[test]
 fn test_neatm_fit_recovery() {
     let (obs, hg) = synthetic_neatm_obs();
+    // The synthetic object (D = 10 km, H = 18) has a geometric albedo of about
+    // 0.001, below the default lower bound of 0.01, so the bound is widened.
     let priors = FluxPriors {
         h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
+        vis_albedo: ParamPrior::bounds_only(1e-4, 1.0),
         ..FluxPriors::default()
     };
 
@@ -218,14 +211,7 @@ fn test_frm_nll_at_truth() {
     let obs: Vec<FluxObs> = bands
         .into_iter()
         .zip(&result.fluxes)
-        .map(|(band, &flux)| FluxObs {
-            flux,
-            sigma: flux * 0.05,
-            band,
-            is_upper_limit: false,
-            sun2obj,
-            sun2obs,
-        })
+        .map(|(band, &flux)| FluxObs::detection(flux, flux * 0.05, band, sun2obj, sun2obs))
         .collect();
 
     let neg_log_lik = make_neg_log_likelihood(Model::Frm, &obs, C_V, 0.9);
@@ -250,12 +236,13 @@ fn test_frm_nll_at_truth() {
 fn test_upper_limit_penalty() {
     let (obs, _hg) = synthetic_neatm_obs();
 
-    // Turn all observations into upper limits with threshold = actual flux
+    // Turn all observations into upper limits with threshold = actual flux.
     let ul_obs: Vec<FluxObs> = obs
         .into_iter()
-        .map(|mut o| {
-            o.is_upper_limit = true;
-            o
+        .map(|o| {
+            let threshold = o.point_estimate().unwrap();
+            let sigma = o.sigma_lo().unwrap();
+            FluxObs::upper_limit(threshold, sigma, o.band, o.sun2obj, o.sun2obs)
         })
         .collect();
 
@@ -276,6 +263,305 @@ fn test_upper_limit_penalty() {
     assert!(
         neg_log_lik_bigger > neg_log_lik_at_truth,
         "Larger D should incur upper-limit penalty"
+    );
+}
+
+#[test]
+fn test_split_normal_calibration() {
+    // Split (two-piece) kernel: each side's quoted sigma applies strictly, so a
+    // 1-sigma deviation on either side scores exactly z = 1 -- calibrated in
+    // the 1-2 sigma region where inference lives, not just the far tails.
+    let center = Penalty::Center {
+        mean: 0.0,
+        scale_lo: Some(0.02),
+        scale_hi: Some(0.20),
+        tail: Tail::Gaussian,
+        normalize: false,
+    };
+    // x below mean (r > 0) uses scale_lo; x above mean (r < 0) uses scale_hi.
+    assert!(
+        (center.cost(-0.02, 1.0) - (-0.5)).abs() < 1e-12,
+        "1-sigma tight-side deviation must cost exactly -0.5"
+    );
+    assert!(
+        (center.cost(0.20, 1.0) - (-0.5)).abs() < 1e-12,
+        "1-sigma wide-side deviation must cost exactly -0.5"
+    );
+    // 2-sigma on the tight side.
+    assert!((center.cost(-0.04, 1.0) - (-2.0)).abs() < 1e-12);
+
+    // Continuous through r = 0: the kernel and its gradient vanish from both
+    // sides, so the sampler's finite differences see no jump at the mean.
+    let eps = 1e-9;
+    assert!(center.cost(eps, 1.0).abs() < 1e-12);
+    assert!(center.cost(-eps, 1.0).abs() < 1e-12);
+    assert!(center.cost(0.0, 1.0).abs() < 1e-12);
+}
+
+#[test]
+fn test_penalty() {
+    // A centering term at 0 with the given per-side scales, tail, normalize.
+    let center = |scale_lo, scale_hi, tail, normalize| Penalty::Center {
+        mean: 0.0,
+        scale_lo,
+        scale_hi,
+        tail,
+        normalize,
+    };
+
+    // Two-sided Gaussian, no scaling, no anchor (prior-like).
+    // z = (mean - x)/sigma = -x; at x = 1, sigma = 1 -> -0.5.
+    let g = center(Some(1.0), Some(1.0), Tail::Gaussian, false);
+    assert!((g.cost(1.0, 1.0) - (-0.5)).abs() < 1e-12);
+    assert!((g.cost(1.0, 1.0) - g.cost(-1.0, 1.0)).abs() < 1e-12);
+
+    // Asymmetric: tighter below center -> a value below center costs more.
+    let a = center(Some(0.5), Some(2.0), Tail::Gaussian, false);
+    assert!(a.cost(-1.0, 1.0) < a.cost(1.0, 1.0));
+
+    // Upper limit (scale_lo = None): free below center, penalized above.
+    let ul = center(None, Some(1.0), Tail::StudentT, true);
+    assert!(ul.cost(-5.0, 1.0).abs() < 1e-12, "below center is free");
+    assert!(ul.cost(5.0, 1.0) < 0.0, "above center is penalized");
+    assert!(
+        ul.cost(0.0, 1.0).abs() < 1e-12,
+        "one-sided => no anchor at center"
+    );
+
+    // Lower limit (scale_hi = None): mirror image.
+    let ll = center(Some(1.0), None, Tail::StudentT, true);
+    assert!(ll.cost(5.0, 1.0).abs() < 1e-12, "above center is free");
+    assert!(ll.cost(-5.0, 1.0) < 0.0, "below center is penalized");
+
+    // Normalization anchor: two-sided + normalize adds -ln(scale_factor*sigma_bar).
+    // At r = 0 the kernel is 0, so the whole value is the anchor.
+    let n_on = center(Some(2.0), Some(2.0), Tail::StudentT, true);
+    let n_off = center(Some(2.0), Some(2.0), Tail::StudentT, false);
+    assert!(
+        n_off.cost(0.0, 1.0).abs() < 1e-12,
+        "no anchor when normalize=false"
+    );
+    assert!((n_on.cost(0.0, 1.0) - (-(2.0_f64).ln())).abs() < 1e-12);
+    assert!(
+        (n_on.cost(0.0, 3.0) - (-(6.0_f64).ln())).abs() < 1e-12,
+        "anchor scales"
+    );
+
+    // Top-hat: flat (~0) inside, strongly negative outside, never scaled.
+    let b = Penalty::TopHat {
+        lo: 1.0,
+        hi: 2.0,
+        k_lo: 50.0,
+        k_hi: 50.0,
+    };
+    assert!(b.cost(1.5, 1.0) > -1e-3, "interior is flat");
+    assert!(b.cost(0.0, 1.0) < -1.0, "outside is walled off");
+    assert!(
+        (b.cost(0.0, 1.0) - b.cost(0.0, 5.0)).abs() < 1e-12,
+        "hard bounds are not scaled by scale_factor"
+    );
+
+    // Composition: a constraint is the sum of its terms.
+    let total: f64 = [&b, &g].iter().map(|p| p.cost(1.5, 1.0)).sum();
+    assert!((total - (b.cost(1.5, 1.0) + g.cost(1.5, 1.0))).abs() < 1e-12);
+}
+
+#[test]
+fn test_top_hat_steepness() {
+    // Narrow intervals get width-relative steepness: the documented
+    // tight-bounds parameter-fixing idiom must actually confine.
+    let tight = Penalty::top_hat(9.999, 10.001);
+    assert!(
+        tight.cost(10.0, 1.0) > -1e-6,
+        "interior of a tight interval is flat"
+    );
+    assert!(
+        tight.cost(10.021, 1.0) < -100.0,
+        "10 interval-widths outside a tight interval must be walled off, got {}",
+        tight.cost(10.021, 1.0)
+    );
+
+    // Intervals wider than 1 unit, with bounds of magnitude 1 or more, keep the
+    // fixed steepness `BARRIER_K` exactly.
+    let wide = Penalty::top_hat(-5.0, 35.0);
+    let fixed = Penalty::TopHat {
+        lo: -5.0,
+        hi: 35.0,
+        k_lo: 50.0,
+        k_hi: 50.0,
+    };
+    for x in [-6.0, -5.1, 0.0, 20.0, 34.9, 36.0] {
+        assert!(
+            (wide.cost(x, 1.0) - fixed.cost(x, 1.0)).abs() < 1e-12,
+            "wide bounds must keep the fixed steepness at x={x}"
+        );
+    }
+}
+
+/// A bound near zero gets a wall narrow compared with the bound, so the prior
+/// is flat a short distance inside it. The default albedo and diameter lower
+/// bounds are the cases this matters for.
+#[test]
+fn test_top_hat_flat_near_small_bounds() {
+    let albedo = Penalty::top_hat(0.01, 1.0);
+    for x in [0.012, 0.02, 0.03, 0.05, 0.3] {
+        assert!(
+            albedo.cost(x, 1.0) > -1e-3,
+            "albedo prior at {x} is {}",
+            albedo.cost(x, 1.0)
+        );
+    }
+    assert!(
+        albedo.cost(0.009, 1.0) < -4.0,
+        "below the albedo bound is walled off"
+    );
+
+    let diameter = Penalty::top_hat(0.001, 1000.0);
+    for x in [0.0012, 0.01, 0.02, 1.0] {
+        assert!(
+            diameter.cost(x, 1.0) > -1e-3,
+            "diameter prior at {x} is {}",
+            diameter.cost(x, 1.0)
+        );
+    }
+}
+
+#[test]
+#[should_panic(expected = "lo < hi")]
+fn test_top_hat_rejects_inverted_bounds() {
+    let _ = Penalty::top_hat(2.0, 1.0);
+}
+
+#[test]
+#[should_panic(expected = "lo < hi")]
+fn test_bounded_rejects_degenerate_interval() {
+    let base = synthetic_neatm_obs().0;
+    let _ = FluxObs::bounded(1.0, 1.0, base[0].band, base[0].sun2obj, base[0].sun2obs);
+}
+
+#[test]
+fn test_student_t_split_calibration() {
+    // The Student-t tail must select sides exactly like the Gaussian: the
+    // asymmetric term at a 1-sigma deviation on each side matches a symmetric
+    // term whose sigma is that side's scale.
+    let center = |scale_lo: f64, scale_hi: f64| Penalty::Center {
+        mean: 0.0,
+        scale_lo: Some(scale_lo),
+        scale_hi: Some(scale_hi),
+        tail: Tail::StudentT,
+        normalize: false,
+    };
+    let asym = center(0.02, 0.20);
+    // x below mean (r > 0) uses scale_lo; x above mean (r < 0) uses scale_hi.
+    assert!(
+        (asym.cost(-0.02, 1.0) - center(0.02, 0.02).cost(-0.02, 1.0)).abs() < 1e-12,
+        "tight side must use sigma_lo strictly"
+    );
+    assert!(
+        (asym.cost(0.20, 1.0) - center(0.20, 0.20).cost(0.20, 1.0)).abs() < 1e-12,
+        "wide side must use sigma_hi strictly"
+    );
+}
+
+#[test]
+fn test_standardized_residual_sides() {
+    let base = synthetic_neatm_obs().0;
+    let (band, s2o, s2obs) = (base[0].band, base[0].sun2obj, base[0].sun2obs);
+
+    // Upper limit: no residual below the threshold (unconstrained side),
+    // signed residual with the f_sigma-inflated scale above it.
+    let ul = FluxObs::upper_limit(1.0, 0.1, band, s2o, s2obs);
+    assert!(
+        ul.standardized_residual(0.5, 1.0).is_none(),
+        "below threshold is unconstrained"
+    );
+    let r = ul.standardized_residual(1.5, 2.0).unwrap();
+    assert!(
+        ((-0.5 / (2.0 * 0.1)) - r).abs() < 1e-12,
+        "expected -2.5, got {r}"
+    );
+
+    // Asymmetric detection: each side standardizes by its own sigma.
+    let det = FluxObs::detection_asym(1.0, 0.1, 0.4, band, s2o, s2obs);
+    let below = det.standardized_residual(0.9, 1.0).unwrap();
+    assert!(
+        (below - 1.0).abs() < 1e-12,
+        "model below mean uses sigma_lo, got {below}"
+    );
+    let above = det.standardized_residual(1.2, 1.0).unwrap();
+    assert!(
+        (above - (-0.5)).abs() < 1e-12,
+        "model above mean uses sigma_hi, got {above}"
+    );
+}
+
+#[test]
+fn test_flux_bounds_constraint() {
+    let base = synthetic_neatm_obs().0;
+    let ob = FluxObs::bounded(1.0, 2.0, base[0].band, base[0].sun2obj, base[0].sun2obs);
+
+    // Inside the interval: ~flat (penalty ~0). Outside: strong negative penalty.
+    let inside = ob.log_likelihood_term(1.5, 1.0);
+    let below = ob.log_likelihood_term(0.5, 1.0);
+    let above = ob.log_likelihood_term(2.5, 1.0);
+    assert!(
+        inside > below && inside > above,
+        "model inside bounds should be preferred"
+    );
+    assert!(
+        inside > -1e-3,
+        "interior should be ~flat (penalty ~0), got {inside}"
+    );
+
+    // Hard bounds are immune to f_sigma inflation.
+    assert!((ob.log_likelihood_term(0.5, 1.0) - ob.log_likelihood_term(0.5, 3.0)).abs() < 1e-12);
+    // Bounds-only constraints have no standardized residual.
+    assert!(ob.standardized_residual(1.5, 1.0).is_none());
+}
+
+#[test]
+fn test_asymmetric_likelihood_penalizes_tight_side() {
+    // Observations are generated from the forward model at `truth`, so evaluating
+    // the model at `truth` reproduces each base flux exactly. Shifting the
+    // Gaussian mean by +/-delta therefore produces a residual of exactly
+    // +/-delta at `truth`.
+    let (base, _hg) = synthetic_neatm_obs();
+    let truth = [10.0, 1.2, 18.0, 0.15, 1.0, 1.0];
+
+    // Tight lower side, wide upper side. `sign` shifts the estimate vs the model:
+    //   sign = +1 -> mean above model -> r > 0 -> tight sigma_lo -> big penalty
+    //   sign = -1 -> mean below model -> r < 0 -> wide  sigma_hi -> small penalty
+    let make = |sign: f64, frac_lo: f64, frac_hi: f64| -> Vec<FluxObs> {
+        base.iter()
+            .map(|o| {
+                let mean0 = o.point_estimate().unwrap();
+                let delta = 0.10 * mean0;
+                FluxObs::detection_asym(
+                    mean0 + sign * delta,
+                    frac_lo * mean0,
+                    frac_hi * mean0,
+                    o.band,
+                    o.sun2obj,
+                    o.sun2obs,
+                )
+            })
+            .collect()
+    };
+
+    let nll_tight = make_neg_log_likelihood(Model::Neatm, &make(1.0, 0.02, 0.20), C_V, 0.9)(&truth);
+    let nll_wide = make_neg_log_likelihood(Model::Neatm, &make(-1.0, 0.02, 0.20), C_V, 0.9)(&truth);
+    assert!(
+        nll_tight > nll_wide,
+        "Equal-magnitude deviation on the tight side should cost more: \
+         tight={nll_tight}, wide={nll_wide}"
+    );
+
+    // With symmetric errors the two signs must cost the same.
+    let nll_pos = make_neg_log_likelihood(Model::Neatm, &make(1.0, 0.11, 0.11), C_V, 0.9)(&truth);
+    let nll_neg = make_neg_log_likelihood(Model::Neatm, &make(-1.0, 0.11, 0.11), C_V, 0.9)(&truth);
+    assert!(
+        (nll_pos - nll_neg).abs() < 1e-9,
+        "Symmetric errors must be sign-symmetric: {nll_pos} vs {nll_neg}"
     );
 }
 
@@ -304,18 +590,14 @@ fn test_frm_fit_recovery() {
     let obs: Vec<FluxObs> = bands
         .into_iter()
         .zip(&result.fluxes)
-        .map(|(band, &flux)| FluxObs {
-            flux,
-            sigma: flux * 0.05,
-            band,
-            is_upper_limit: false,
-            sun2obj,
-            sun2obs,
-        })
+        .map(|(band, &flux)| FluxObs::detection(flux, flux * 0.05, band, sun2obj, sun2obs))
         .collect();
 
+    // The synthetic object (D = 10 km, H = 18) has a geometric albedo of about
+    // 0.001, below the default lower bound of 0.01, so the bound is widened.
     let priors = FluxPriors {
         h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
+        vis_albedo: ParamPrior::bounds_only(1e-4, 1.0),
         ..FluxPriors::default()
     };
     let res = fit_mcmc(Model::Frm, &obs, C_V, 0.9, &priors, 1, 50, 50)
@@ -404,14 +686,7 @@ fn test_frm_batch() {
     let obs: Vec<FluxObs> = bands
         .into_iter()
         .zip(&result.fluxes)
-        .map(|(band, &flux)| FluxObs {
-            flux,
-            sigma: flux * 0.05,
-            band,
-            is_upper_limit: false,
-            sun2obj,
-            sun2obs,
-        })
+        .map(|(band, &flux)| FluxObs::detection(flux, flux * 0.05, band, sun2obj, sun2obs))
         .collect();
     let priors = FluxPriors {
         h_mag: ParamPrior::with_gaussian(-5.0, 35.0, hg.h_mag, 1.0),
@@ -479,14 +754,7 @@ fn test_coupling_consistency_frm() {
     let obs: Vec<FluxObs> = bands
         .into_iter()
         .zip(&result.fluxes)
-        .map(|(band, &flux)| FluxObs {
-            flux,
-            sigma: flux * 0.05,
-            band,
-            is_upper_limit: false,
-            sun2obj,
-            sun2obs,
-        })
+        .map(|(band, &flux)| FluxObs::detection(flux, flux * 0.05, band, sun2obj, sun2obs))
         .collect();
 
     let priors = FluxPriors {
@@ -537,14 +805,7 @@ fn test_neatm_w3_w4_only() {
     let obs: Vec<FluxObs> = w3w4
         .into_iter()
         .zip(&result.fluxes)
-        .map(|(band, &flux)| FluxObs {
-            flux,
-            sigma: flux * 0.05,
-            band,
-            is_upper_limit: false,
-            sun2obj,
-            sun2obs,
-        })
+        .map(|(band, &flux)| FluxObs::detection(flux, flux * 0.05, band, sun2obj, sun2obs))
         .collect();
 
     let priors = FluxPriors {
@@ -569,12 +830,13 @@ fn test_neatm_w3_w4_only() {
 #[test]
 fn test_all_upper_limits_no_panic() {
     let (obs, hg) = synthetic_neatm_obs();
+    // Turn each detection into a high-threshold upper limit.
     let ul_obs: Vec<FluxObs> = obs
         .into_iter()
-        .map(|mut o| {
-            o.flux *= 10.0;
-            o.is_upper_limit = true;
-            o
+        .map(|o| {
+            let mean = o.point_estimate().unwrap();
+            let sigma = o.sigma_lo().unwrap();
+            FluxObs::upper_limit(mean * 10.0, sigma, o.band, o.sun2obj, o.sun2obs)
         })
         .collect();
 
@@ -687,14 +949,7 @@ fn synthetic_hg_obs() -> (Vec<FluxObs>, TestHg) {
             v_band.wavelength,
             vis_albedo,
         ) * v_band.solar_correction;
-        obs.push(FluxObs {
-            flux,
-            sigma: flux * 0.05,
-            band: v_band,
-            is_upper_limit: false,
-            sun2obj: s2o,
-            sun2obs: s2obs,
-        });
+        obs.push(FluxObs::detection(flux, flux * 0.05, v_band, s2o, s2obs));
     }
 
     (obs, hg)
@@ -848,14 +1103,13 @@ fn test_multi_geometry_neatm() {
             sun2obs,
         );
         for (band, &flux) in bands.into_iter().zip(&result.fluxes) {
-            obs.push(FluxObs {
+            obs.push(FluxObs::detection(
                 flux,
-                sigma: flux * 0.05,
+                flux * 0.05,
                 band,
-                is_upper_limit: false,
-                sun2obj: *sun2obj,
-                sun2obs: *sun2obs,
-            });
+                *sun2obj,
+                *sun2obs,
+            ));
         }
     }
 
@@ -881,4 +1135,87 @@ fn test_multi_geometry_neatm() {
     );
     assert_eq!(res.nobs, 8, "Should count all 8 observations");
     assert_eq!(res.best_fit_fluxes.len(), 8);
+}
+
+/// Observations at a non-zero phase angle covering every penalty shape, in bands
+/// with and without a color correction.
+fn mixed_obs() -> Vec<FluxObs> {
+    let hg = TestHg::new(0.15, Some(18.0), None, Some(10.0));
+    let sun2obj = Vector3::new(2.0, 0.4, 0.1);
+    let sun2obs = Vector3::new(0.3, 0.95, 0.0);
+    let mut bands = BandInfo::WISE.to_vec();
+    bands.push(BandInfo::new(4600.0, 1.0, f64::NAN, None));
+    bands.push(BandInfo::new(550.0, 1.0, f64::NAN, None));
+    let albedos = vec![1.2 * hg.vis_albedo; bands.len()];
+    let fluxes = neatm_total_flux(
+        &bands,
+        &albedos,
+        hg.diameter,
+        hg.vis_albedo,
+        hg.g_param,
+        hg.h_mag,
+        1.2,
+        0.9,
+        &sun2obj,
+        &sun2obs,
+    )
+    .fluxes;
+    let f = |i: usize| fluxes[i];
+    vec![
+        FluxObs::detection(f(0) * 1.05, f(0) * 0.05, bands[0], sun2obj, sun2obs),
+        FluxObs::detection_asym(
+            f(1) * 0.9,
+            f(1) * 0.03,
+            f(1) * 0.1,
+            bands[1],
+            sun2obj,
+            sun2obs,
+        ),
+        FluxObs::detection(f(2) * 1.1, f(2) * 0.05, bands[2], sun2obj, sun2obs),
+        FluxObs::upper_limit(f(3) * 0.8, f(3) * 0.1, bands[3], sun2obj, sun2obs),
+        FluxObs::from_parts(
+            Some((f(4) * 0.5, f(4) * 1.02)),
+            Some((f(4) * 0.97, Some(f(4) * 0.04), Some(f(4) * 0.04))),
+            bands[4],
+            sun2obj,
+            sun2obs,
+        ),
+        FluxObs::bounded(f(5) * 0.99, f(5) * 1.2, bands[5], sun2obj, sun2obs),
+        FluxObs::detection(f(5) * 1.02, f(5) * 0.05, bands[5], sun2obj, sun2obs),
+    ]
+}
+
+#[test]
+fn test_gradient_matches_finite_difference() {
+    let obs = mixed_obs();
+    let priors = FluxPriors {
+        h_mag: ParamPrior::with_gaussian_asym(-5.0, 35.0, 17.9, 0.2, 0.4),
+        diameter: ParamPrior::with_gaussian(0.001, 1000.0, 9.0, 2.0),
+        ..Default::default()
+    };
+    // A point away from the optimum, with G and f_sigma near a barrier wall.
+    let points: [(Model, Vec<f64>); 3] = [
+        (Model::Neatm, vec![11.0, 1.3, 18.1, -0.28, 0.52, 1.1]),
+        (Model::Frm, vec![11.0, 18.1, 0.1, 1.5, 1.1]),
+        (Model::Hg, vec![18.1, 0.1, 1.5]),
+    ];
+    for (model, x) in points {
+        let problem = FitProblem::new(model, &obs, C_V, 0.9, &priors);
+        let mut grad = vec![0.0; x.len()];
+        let lp = problem.log_posterior_and_gradient(&x, &mut grad);
+        assert_eq!(lp, problem.log_posterior(&x), "{model:?} value differs");
+        for j in 0..x.len() {
+            let step = 1e-6 * x[j].abs().max(1.0);
+            let mut xp = x.clone();
+            xp[j] += step;
+            let mut xm = x.clone();
+            xm[j] -= step;
+            let fd = (problem.log_posterior(&xp) - problem.log_posterior(&xm)) / (2.0 * step);
+            assert!(
+                (grad[j] - fd).abs() <= 1e-6 * fd.abs().max(1.0),
+                "{model:?} parameter {j}: analytic {} vs finite difference {fd}",
+                grad[j]
+            );
+        }
+    }
 }

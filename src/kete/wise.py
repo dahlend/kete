@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Dar Dahlen
+# SPDX-FileCopyrightText: 2025 California Institute of Technology
+# SPDX-License-Identifier: BSD-3-Clause
+
 from __future__ import annotations
 
 import logging
@@ -130,12 +134,20 @@ Approximate width of a WISE chip FOV, this slightly over-estimates the true FOV.
 This is 47 arc-minutes.
 """
 
-DN_TO_JY = [1.9350e-06, 2.7048e-06, 2.9045e-06, 5.2269e-05]
+DN_TO_JY = [1.9350e-06, 2.7048e-06, 1.8326e-06, 5.2269e-05]
 """
 Convert directly from DN to Jy using this Jy/DN conversion factor.
 
-These values came from:
-https://wise2.ipac.caltech.edu/docs/release/prelim/expsup/sec2_3f.html
+NOTE: In practice if you are wanting to use these values you probably actually
+should be using the per-frame MAGZP that is contained within the header of each image.
+The conversion values drifted over time, and the ones above were just the
+values computed for the stacked Atlas images, and are not globally accurate.
+
+See this for more detail:
+https://irsa.ipac.caltech.edu/data/WISE/docs/release/NEOWISE/expsup/sec3_3.html#conv
+
+These values came from the AllWISE Explanatory Supplement, section IV.3.a:
+https://irsa.ipac.caltech.edu/data/WISE/docs/release/AllWISE/expsup/sec4_3a.html
 """
 
 
@@ -606,34 +618,46 @@ def fetch_fovs(phase):
     jd = [Time.from_mjd(mjd, scaling="utc").jd for mjd in list(res.mjd)]
     res["jd"] = jd
 
+    # Sorting the table is much faster than sorting the constructed FOVs.
+    res = res.sort_values("jd", kind="stable")
+
+    # Plain lists avoid per-row attribute lookups in the loop below.
+    columns = [
+        res[col].tolist()
+        for col in [
+            "jd",
+            "frame_num",
+            "scan_id",
+            "w1ra1",
+            "w1dec1",
+            "w1ra2",
+            "w1dec2",
+            "w1ra3",
+            "w1dec3",
+            "w1ra4",
+            "w1dec4",
+        ]
+    ]
+
     fovs = []
-    for row in res.itertuples():
-        state = spice.get_state("WISE", row.jd)
+    for jd, frame_num, scan_id, ra1, dec1, ra2, dec2, ra3, dec3, ra4, dec4 in zip(
+        *columns
+    ):
+        state = spice.get_state("WISE", jd)
 
         # Each band has a slightly different size on sky.
         # Kete represents all bands simultaneously, so this information is not kept
         # track of. In order to deal with this, here we load the W1 ra/dec, and then
         # push the corners out by 1 arc-minute to act as a bit of a buffer region.
         # this 1 arc-minute offset is in the rust constructor for WISECmos objects.
+        corners = [
+            Vector.from_ra_dec(ra4, dec4),
+            Vector.from_ra_dec(ra3, dec3),
+            Vector.from_ra_dec(ra2, dec2),
+            Vector.from_ra_dec(ra1, dec1),
+        ]
 
-        corners = []
-        for i in range(4):
-            corners.append(
-                Vector.from_ra_dec(
-                    getattr(row, f"w1ra{i + 1}"),
-                    getattr(row, f"w1dec{i + 1}"),
-                )
-            )
-
-        fov = WiseCmos(
-            corners[::-1],
-            state,
-            row.frame_num,
-            row.scan_id,
-        )
-
-        fovs.append(fov)
-    fovs = sorted(fovs, key=lambda x: x.jd)
+        fovs.append(WiseCmos(corners, state, frame_num, scan_id))
     return fovs
 
 

@@ -1,38 +1,12 @@
-// BSD 3-Clause License
-//
-// Copyright (c) 2026, Dar Dahlen
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice, this
-//    list of conditions and the following disclaimer.
-//
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-//
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from
-//    this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
 
 use super::PckArray;
-use crate::interpolation::chebyshev_evaluate_both;
-use crate::spice_jd_to_jd;
+use crate::interpolation::{ChebyshevLayout, chebyshev_evaluate_both};
 use crate::spk::type2::build_type2_data;
 use kete_core::errors::Error;
-use kete_core::frames::NonInertialFrame;
+use kete_core::frames::{FrameId, NonInertialFrame};
 use kete_core::prelude::KeteResult;
 use kete_core::time::{TDB, Time};
 
@@ -43,23 +17,28 @@ use kete_core::time::{TDB, Time};
 #[derive(Debug)]
 pub struct PckSegmentType2 {
     pub(in crate::pck) array: PckArray,
-    jd_step: f64,
-    n_coef: usize,
-    record_len: usize,
+    layout: ChebyshevLayout,
 }
 
 impl PckSegmentType2 {
     fn get_record(&self, idx: usize) -> &[f64] {
+        let record_len = self.layout.record_len;
+        // SAFETY: `ChebyshevLayout::from_array` checked that the array holds
+        // `n_records` records of `record_len` values. The only caller takes
+        // `idx` from `record_index`, which returns at most `n_records - 1`.
         unsafe {
             self.array
                 .daf
                 .data
-                .get_unchecked(idx * self.record_len..(idx + 1) * self.record_len)
+                .get_unchecked(idx * record_len..(idx + 1) * record_len)
         }
     }
 
     /// Return the stored orientation, along with the rate of change of the orientation.
-    pub(in crate::pck) fn try_get_orientation(&self, jds: f64) -> KeteResult<NonInertialFrame> {
+    pub(in crate::pck) fn try_get_orientation(
+        &self,
+        time: Time<TDB>,
+    ) -> KeteResult<NonInertialFrame> {
         // Records in the segment contain information about the central position of the
         // north pole, as well as the position of the prime meridian. These values for
         // type 2 segments are stored as chebyshev polynomials of the first kind, in
@@ -73,20 +52,15 @@ impl PckSegmentType2 {
         //
         // Rate of change for each of these values can be calculated by using the
         // derivative of chebyshev of the first kind, which is done below.
-        let jds_start = self.array.jds_start;
-        #[allow(
-            clippy::cast_sign_loss,
-            reason = "safe as long as file is correctly formatted."
-        )]
-        let record_index = ((jds - jds_start) / self.jd_step).floor() as usize;
-        let record = self.get_record(record_index);
+        let record = self.get_record(self.layout.record_index(time.j2000_seconds()));
         let t_mid = record[0];
         let t_step = record[1];
-        let t = (jds - t_mid) / t_step;
+        let t = time.j2000_seconds_minus(t_mid) / t_step;
 
-        let ra_coef = &record[2..(self.n_coef + 2)];
-        let dec_coef = &record[(self.n_coef + 2)..(2 * self.n_coef + 2)];
-        let w_coef = &record[(2 * self.n_coef + 2)..(3 * self.n_coef + 2)];
+        let n_coef = self.layout.n_coef;
+        let ra_coef = &record[2..(n_coef + 2)];
+        let dec_coef = &record[(n_coef + 2)..(2 * n_coef + 2)];
+        let w_coef = &record[(2 * n_coef + 2)..(3 * n_coef + 2)];
 
         let ([ra, dec, w], [ra_der, dec_der, w_der]) =
             chebyshev_evaluate_both(t, ra_coef, dec_coef, w_coef)?;
@@ -94,7 +68,6 @@ impl PckSegmentType2 {
         // rem_euclid is equivalent to the modulo operator, so this maps w to [0, 2pi]
         let w = w.rem_euclid(std::f64::consts::TAU);
 
-        let time = spice_jd_to_jd(jds);
         let frame = NonInertialFrame::from_euler::<'Z', 'X', 'Z'>(
             time,
             [ra, dec, w],
@@ -104,8 +77,7 @@ impl PckSegmentType2 {
                 dec_der / t_step * 86400.0,
                 w_der / t_step * 86400.0,
             ],
-            self.array.reference_frame_id,
-            1,
+            FrameId(self.array.reference_frame_id),
         );
 
         Ok(frame)
@@ -113,21 +85,22 @@ impl PckSegmentType2 {
 
     /// Create a Type 2 (Chebyshev Euler angles, fixed intervals) PCK array.
     ///
-    /// # Arguments
-    /// * `frame_id`          - Body-fixed frame ID (e.g., 3000 for Earth).
-    /// * `reference_frame_id`- Reference inertial frame (e.g., 17 for Ecliptic).
-    /// * `cdata`             - Flat Chebyshev coefficients, `(polydg+1)*3` values per record
-    ///   arranged as `[RA_0..RA_d, DEC_0..DEC_d, W_0..W_d]`.
-    /// * `n_records`         - Number of records.
-    /// * `btime`             - Begin time of first interval (SPICE seconds from J2000).
-    /// * `intlen`            - Length of each interval (seconds). Must be > 0.
-    /// * `polydg`            - Polynomial degree, in `[0, 27]`.
-    /// * `jd_start`          - Segment start epoch.
-    /// * `jd_end`            - Segment end epoch.
-    /// * `segment_name`      - Name stored in the DAF name record (max 40 chars).
+    /// `frame_id` is the body-fixed frame ID, such as 3000 for Earth.
+    /// `reference_frame_id` is the inertial reference frame ID, such as 17 for
+    /// Ecliptic. `cdata` holds the flat Chebyshev coefficients,
+    /// `3 * (polydg + 1)` values per record, in the order
+    /// `[RA_0..RA_d, DEC_0..DEC_d, W_0..W_d]`. `n_records` is the number of
+    /// records. `btime` is the start of the first interval, in TDB seconds from
+    /// J2000. `intlen` is the length of each interval, in seconds. `polydg` is
+    /// the polynomial degree. `jds_start` and `jds_end` are the segment start
+    /// and end, in TDB seconds from J2000. `segment_name` is the name stored in
+    /// the DAF name record.
     ///
     /// # Errors
-    /// Returns an error if the data builder rejects the inputs.
+    /// Returns [`Error::ValueError`] in these cases:
+    /// - `polydg` is greater than 27.
+    /// - `intlen` is zero or negative.
+    /// - The length of `cdata` is not `3 * (polydg + 1) * n_records`.
     pub fn new_array(
         frame_id: i32,
         reference_frame_id: i32,
@@ -136,8 +109,8 @@ impl PckSegmentType2 {
         btime: f64,
         intlen: f64,
         polydg: usize,
-        jd_start: Time<TDB>,
-        jd_end: Time<TDB>,
+        jds_start: f64,
+        jds_end: f64,
         segment_name: &str,
     ) -> KeteResult<PckArray> {
         let data = build_type2_data(cdata, n_records, btime, intlen, polydg)?;
@@ -145,8 +118,8 @@ impl PckSegmentType2 {
             frame_id,
             reference_frame_id,
             2,
-            jd_start,
-            jd_end,
+            jds_start,
+            jds_end,
             data,
             segment_name.to_string(),
         ))
@@ -156,33 +129,9 @@ impl PckSegmentType2 {
 impl TryFrom<PckArray> for PckSegmentType2 {
     type Error = Error;
 
-    #[allow(
-        clippy::cast_sign_loss,
-        reason = "cast should work except when file is incorrectly formatted"
-    )]
     fn try_from(array: PckArray) -> Result<Self, Self::Error> {
-        let n_records = array.daf[array.daf.len() - 1] as usize;
-        let record_len = array.daf[array.daf.len() - 2] as usize;
-        let jd_step = array.daf[array.daf.len() - 3];
-
-        let n_coef = (record_len - 2) / 3;
-
-        // Type 2 layout: [n_records * record_len] [btime, intlen, rsize, n]
-        let expected_len = record_len * n_records + 4;
-
-        if expected_len != array.daf.len() {
-            Err(Error::IOError(format!(
-                "PCK type 2 format error: expected data length {expected_len}, found {}.",
-                array.daf.len()
-            )))?;
-        }
-
-        Ok(Self {
-            array,
-            jd_step,
-            n_coef,
-            record_len,
-        })
+        let layout = ChebyshevLayout::from_array(&array.daf, 3)?;
+        Ok(Self { array, layout })
     }
 }
 
@@ -201,8 +150,8 @@ mod tests {
         let btime = 0.0;
         let intlen = 86400.0;
         let cdata: Vec<f64> = (0..ninrec * n).map(|i| i as f64 * 0.01).collect();
-        let jd_start: Time<TDB> = 2451545.0.into();
-        let jd_end: Time<TDB> = (2451545.0 + 3.0).into();
+        let jds_start = 0.0;
+        let jds_end = 3.0 * 86400.0;
 
         let mut daf = DafFile::new_pck("test pck", "pck round trip test");
         let pck_arr = PckSegmentType2::new_array(
@@ -213,8 +162,8 @@ mod tests {
             btime,
             intlen,
             polydg,
-            jd_start,
-            jd_end,
+            jds_start,
+            jds_end,
             "Earth orientation",
         )
         .unwrap();
@@ -232,5 +181,97 @@ mod tests {
 
         let pck: PckArray = daf.arrays.into_iter().next().unwrap().try_into().unwrap();
         assert_eq!(pck.frame_id, 3000);
+
+        let seg = PckSegmentType2::try_from(pck).unwrap();
+        assert!(
+            seg.try_get_orientation(Time::from_j2000_seconds(1.5 * intlen))
+                .is_ok()
+        );
+    }
+
+    /// Check that the final instant of the segment uses the last record.
+    ///
+    /// Each record holds constant angles. The angles of the third record are
+    /// 0.2, 0.25, and 0.3 rad.
+    #[test]
+    fn pck_type2_final_instant_uses_the_last_record() {
+        let polydg = 1;
+        let n = 3;
+        let intlen = 86400.0;
+        let mut cdata = Vec::new();
+        for k in 0..n {
+            let k = f64::from(k);
+            for angle in [0.1 * k, 0.05 + 0.1 * k, 0.1 + 0.1 * k] {
+                cdata.extend_from_slice(&[angle, 0.0]);
+            }
+        }
+        let array = PckSegmentType2::new_array(
+            3000,
+            17,
+            &cdata,
+            3,
+            0.0,
+            intlen,
+            polydg,
+            0.0,
+            3.0 * intlen,
+            "constant records",
+        )
+        .unwrap();
+        let seg = PckSegmentType2::try_from(array).unwrap();
+        let frame = seg
+            .try_get_orientation(Time::from_j2000_seconds(3.0 * intlen))
+            .unwrap();
+        let expected = NonInertialFrame::from_euler::<'Z', 'X', 'Z'>(
+            0.0,
+            [0.2, 0.25, 0.3],
+            [0.0; 3],
+            FrameId::ECLIPJ2000,
+        );
+        assert!((frame.rotation.matrix() - expected.rotation.matrix()).norm() < 1e-14);
+    }
+
+    /// A segment relative to J2000 (1) evaluates like one relative to ECLIPJ2000 (17);
+    /// the stored reference frame decides the rotation to equatorial.
+    #[test]
+    fn pck_type2_reference_frame_is_kept() {
+        use crate::pck::segments::PckSegment;
+        use kete_core::frames::{Ecliptic, InertialFrame};
+
+        let angles = [0.2, 0.25, 0.3];
+        let cdata: Vec<f64> = angles.iter().flat_map(|&a| [a, 0.0]).collect();
+        let time = Time::from_j2000_seconds(0.5 * 86400.0);
+        let frame_with_reference = |reference_frame_id| {
+            let array = PckSegmentType2::new_array(
+                3000,
+                reference_frame_id,
+                &cdata,
+                1,
+                0.0,
+                86400.0,
+                1,
+                0.0,
+                86400.0,
+                "constant record",
+            )
+            .unwrap();
+            PckSegment::try_from(array)
+                .unwrap()
+                .try_get_orientation(3000, time)
+                .unwrap()
+        };
+        let stored =
+            NonInertialFrame::from_euler::<'Z', 'X', 'Z'>(0.0, angles, [0.0; 3], FrameId::J2000);
+
+        let j2000 = frame_with_reference(1);
+        assert_eq!(j2000.reference_frame_id, FrameId::J2000);
+        let (rot, _) = j2000.rotations_to_equatorial().unwrap();
+        assert!((rot.matrix() - stored.rotation.matrix()).norm() < 1e-14);
+
+        let ecliptic = frame_with_reference(17);
+        assert_eq!(ecliptic.reference_frame_id, FrameId::ECLIPJ2000);
+        let (rot, _) = ecliptic.rotations_to_equatorial().unwrap();
+        let expected = Ecliptic::rotation_to_equatorial() * stored.rotation;
+        assert!((rot.matrix() - expected.matrix()).norm() < 1e-14);
     }
 }

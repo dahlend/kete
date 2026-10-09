@@ -1,7 +1,11 @@
+# SPDX-FileCopyrightText: 2026 Dar Dahlen
+# SPDX-FileCopyrightText: 2025 California Institute of Technology
+# SPDX-License-Identifier: BSD-3-Clause
+
 import numpy as np
 import pytest
 
-from kete import spice, State, Time
+from kete import constants, spice, State, Time
 from kete.mpc import find_obs_code
 from kete.spice import SpkInfo
 
@@ -55,6 +59,17 @@ class TestSpice:
             -state.vel,
             [2.642169198371849e-04, 4.433586059319487e-05, -1.948260054980404e-05],
         )
+
+    @pytest.mark.parametrize("jd", [2438000.5, 2441000.5, 2444240.5, 2451545.0])
+    def test_approx_earth_to_ecliptic(self, jd):
+        # Before 1972 the approximation uses Delta T, afterwards UTC for UT1,
+        # which differ by up to 0.9 s, about 0.4 km of Earth rotation.
+        au_km = constants.AU_KM
+        ref = spice.earth_pos_to_ecliptic(jd, 30, 10, 0, center="399")
+        approx = spice.approx_earth_pos_to_ecliptic(jd, 30, 10, 0).change_center(399)
+        assert (approx.pos - ref.pos).r * au_km < 0.45
+        # km / day, 0.1 m/s is 8.64 km / day.
+        assert (approx.vel - ref.vel).r * au_km < 8.64
 
     def test_name_lookup(self):
         assert spice.name_lookup("jupiter b") == ("jupiter barycenter", 5)

@@ -1,48 +1,23 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Binary codec for kete file format.
 //!
 //! Defines [`KeteWrite`] / [`KeteRead`] traits and implementations for all types
 //! that participate in the kete binary file format. Also provides file-level
 //! [`write_single_kete_file`], [`write_vec_kete_file`], and [`read_kete_file`]
 //! functions that handle the header (magic bytes, version, content type, entry count).
-// BSD 3-Clause License
-//
-// Copyright (c) 2026, Dar Dahlen
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice, this
-//    list of conditions and the following disclaimer.
-//
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-//
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from
-//    this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use crate::desigs::Desig;
 use crate::errors::{Error, KeteResult};
 use crate::fov::{
-    FOV, GenericCone, GenericRectangle, NeosCmos, NeosVisit, OmniDirectional, OnSkyRectangle,
-    PTFFilter, PtfCcd, PtfField, SpherexCmos, SpherexField, SphericalCone, SpitzerBand,
-    SpitzerFrame, WiseCmos, ZtfCcdQuad, ZtfField,
+    FOV, GenericCone, GenericPolygon, GenericRectangle, NeosCmos, NeosVisit, OmniDirectional,
+    PTFFilter, PtfCcd, PtfField, SpherexCmos, SpherexField, SpitzerBand, SpitzerFrame, WiseCmos,
+    ZtfCcdQuad, ZtfField,
 };
 use crate::frames::{Equatorial, Vector};
-use crate::simult_states::SimultaneousStates;
-use crate::state::State;
+use crate::geometry::{SphericalCone, SphericalPolygon};
+use crate::state::{SimultaneousStates, State};
 use crate::time::{TDB, Time};
 use std::io::{self, Cursor, Read, Write};
 
@@ -58,6 +33,8 @@ const CONTENT_TYPE_VEC: u8 = 1;
 /// The payload read from a kete binary file.
 ///
 /// The content type in the file header determines which variant is returned.
+/// New content types are added rather than changing the version, so a reader
+/// keeps accepting every file an older writer produced.
 #[derive(Debug, Clone)]
 pub enum KeteFileType {
     /// A single [`SimultaneousStates`] (content type 0).
@@ -241,7 +218,7 @@ impl KeteRead for Vector<Equatorial> {
 
 impl KeteWrite for Time<TDB> {
     fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        self.jd.write_to(w)
+        self.jd().write_to(w)
     }
 }
 
@@ -363,44 +340,56 @@ impl KeteRead for State<Equatorial> {
 }
 
 // ---------------------------------------------------------------------------
-// SphericalCone, OnSkyRectangle, PTFFilter
+// SphericalCone, rectangle patches, PTFFilter
 // ---------------------------------------------------------------------------
 
 impl KeteWrite for SphericalCone {
     fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
         self.pointing.write_to(w)?;
-        self.angle.write_to(w)
+        self.angle().write_to(w)
     }
 }
 
 impl KeteRead for SphericalCone {
     fn read_from<R: Read>(r: &mut R) -> KeteResult<Self> {
-        Ok(Self {
-            pointing: Vector::read_from(r)?,
-            angle: f64::read_from(r)?,
-        })
+        let pointing = Vector::read_from(r)?;
+        Ok(Self::from_parts(pointing, f64::read_from(r)?))
     }
 }
 
-impl KeteWrite for OnSkyRectangle {
-    fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        for normal in &self.edge_normals {
-            normal.write_to(w)?;
-        }
-        Ok(())
+/// Write the rectangle patch of a rectangle based FOV: its four edge normals.
+///
+/// This is the encoding every rectangle based FOV uses for its patch.
+///
+/// # Errors
+/// An [`io::ErrorKind::InvalidInput`] error if `patch` is not a convex polygon
+/// with four edges, which the encoding cannot hold, or the error of `w`.
+fn write_rectangle<W: Write>(patch: &SphericalPolygon, w: &mut W) -> io::Result<()> {
+    let (normals, _) = patch.parts();
+    if normals.len() != 4 || !patch.is_convex() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Only a convex polygon with 4 edges is stored as a rectangle.",
+        ));
     }
+    for normal in normals {
+        normal.write_to(w)?;
+    }
+    Ok(())
 }
 
-impl KeteRead for OnSkyRectangle {
-    fn read_from<R: Read>(r: &mut R) -> KeteResult<Self> {
-        let normals = [
-            Vector::read_from(r)?,
-            Vector::read_from(r)?,
-            Vector::read_from(r)?,
-            Vector::read_from(r)?,
-        ];
-        Ok(Self::from_normals(normals))
-    }
+/// Read the rectangle patch that [`write_rectangle`] writes.
+///
+/// # Errors
+/// The error of reading four vectors from `r`.
+fn read_rectangle<R: Read>(r: &mut R) -> KeteResult<SphericalPolygon> {
+    let normals = [
+        Vector::read_from(r)?,
+        Vector::read_from(r)?,
+        Vector::read_from(r)?,
+        Vector::read_from(r)?,
+    ];
+    Ok(SphericalPolygon::from_normals(&normals))
 }
 
 impl KeteWrite for PTFFilter {
@@ -464,7 +453,7 @@ impl KeteRead for GenericCone {
 impl KeteWrite for GenericRectangle {
     fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
         self.observer.write_to(w)?;
-        self.patch.write_to(w)?;
+        write_rectangle(&self.patch, w)?;
         self.rotation.write_to(w)
     }
 }
@@ -473,8 +462,34 @@ impl KeteRead for GenericRectangle {
     fn read_from<R: Read>(r: &mut R) -> KeteResult<Self> {
         Ok(Self {
             observer: State::read_from(r)?,
-            patch: OnSkyRectangle::read_from(r)?,
+            patch: read_rectangle(r)?,
             rotation: f64::read_from(r)?,
+        })
+    }
+}
+
+/// A polygon is stored as its edge normals and, for a non-convex polygon, its
+/// center, so a read gives back the same polygon.
+impl KeteWrite for GenericPolygon {
+    fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        self.observer.write_to(w)?;
+        let (normals, center) = self.patch.parts();
+        normals.to_vec().write_to(w)?;
+        center.into_iter().collect::<Vec<_>>().write_to(w)
+    }
+}
+
+impl KeteRead for GenericPolygon {
+    fn read_from<R: Read>(r: &mut R) -> KeteResult<Self> {
+        let observer = State::read_from(r)?;
+        let normals = Vec::<Vector<Equatorial>>::read_from(r)?;
+        let center = Vec::<Vector<Equatorial>>::read_from(r)?;
+        if normals.len() < 3 || center.len() > 1 {
+            return Err(Error::IOError("Malformed polygon FOV.".into()));
+        }
+        Ok(Self {
+            observer,
+            patch: SphericalPolygon::from_parts(normals, center.first().copied()),
         })
     }
 }
@@ -482,7 +497,7 @@ impl KeteRead for GenericRectangle {
 impl KeteWrite for WiseCmos {
     fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
         self.observer.write_to(w)?;
-        self.patch.write_to(w)?;
+        write_rectangle(&self.patch, w)?;
         self.frame_num.write_to(w)?;
         self.scan_id.as_ref().write_to(w)
     }
@@ -492,7 +507,7 @@ impl KeteRead for WiseCmos {
     fn read_from<R: Read>(r: &mut R) -> KeteResult<Self> {
         Ok(Self {
             observer: State::read_from(r)?,
-            patch: OnSkyRectangle::read_from(r)?,
+            patch: read_rectangle(r)?,
             frame_num: u64::read_from(r)?,
             scan_id: Box::<str>::read_from(r)?,
         })
@@ -502,7 +517,7 @@ impl KeteRead for WiseCmos {
 impl KeteWrite for NeosCmos {
     fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
         self.observer.write_to(w)?;
-        self.patch.write_to(w)?;
+        write_rectangle(&self.patch, w)?;
         self.rotation.write_to(w)?;
         self.side_id.write_to(w)?;
         self.stack_id.write_to(w)?;
@@ -519,7 +534,7 @@ impl KeteRead for NeosCmos {
     fn read_from<R: Read>(r: &mut R) -> KeteResult<Self> {
         Ok(Self {
             observer: State::read_from(r)?,
-            patch: OnSkyRectangle::read_from(r)?,
+            patch: read_rectangle(r)?,
             rotation: f64::read_from(r)?,
             side_id: u16::read_from(r)?,
             stack_id: u8::read_from(r)?,
@@ -576,7 +591,7 @@ impl KeteRead for NeosVisit {
 impl KeteWrite for ZtfCcdQuad {
     fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
         self.observer.write_to(w)?;
-        self.patch.write_to(w)?;
+        write_rectangle(&self.patch, w)?;
         self.field.write_to(w)?;
         self.filefracday.write_to(w)?;
         self.maglimit.write_to(w)?;
@@ -592,7 +607,7 @@ impl KeteRead for ZtfCcdQuad {
     fn read_from<R: Read>(r: &mut R) -> KeteResult<Self> {
         Ok(Self {
             observer: State::read_from(r)?,
-            patch: OnSkyRectangle::read_from(r)?,
+            patch: read_rectangle(r)?,
             field: u32::read_from(r)?,
             filefracday: u64::read_from(r)?,
             maglimit: f64::read_from(r)?,
@@ -632,7 +647,7 @@ impl KeteRead for ZtfField {
 impl KeteWrite for PtfCcd {
     fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
         self.observer.write_to(w)?;
-        self.patch.write_to(w)?;
+        write_rectangle(&self.patch, w)?;
         self.field.write_to(w)?;
         self.ccdid.write_to(w)?;
         self.filter.write_to(w)?;
@@ -646,7 +661,7 @@ impl KeteRead for PtfCcd {
     fn read_from<R: Read>(r: &mut R) -> KeteResult<Self> {
         Ok(Self {
             observer: State::read_from(r)?,
-            patch: OnSkyRectangle::read_from(r)?,
+            patch: read_rectangle(r)?,
             field: u32::read_from(r)?,
             ccdid: u8::read_from(r)?,
             filter: PTFFilter::read_from(r)?,
@@ -680,7 +695,7 @@ impl KeteRead for PtfField {
 impl KeteWrite for SpherexCmos {
     fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
         self.observer.write_to(w)?;
-        self.patch.write_to(w)?;
+        write_rectangle(&self.patch, w)?;
         self.uri.as_ref().write_to(w)?;
         self.plane_id.as_ref().write_to(w)
     }
@@ -690,7 +705,7 @@ impl KeteRead for SpherexCmos {
     fn read_from<R: Read>(r: &mut R) -> KeteResult<Self> {
         Ok(Self {
             observer: State::read_from(r)?,
-            patch: OnSkyRectangle::read_from(r)?,
+            patch: read_rectangle(r)?,
             uri: Box::<str>::read_from(r)?,
             plane_id: Box::<str>::read_from(r)?,
         })
@@ -754,7 +769,7 @@ impl KeteRead for SpitzerBand {
 impl KeteWrite for SpitzerFrame {
     fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
         self.observer.write_to(w)?;
-        self.patch.write_to(w)?;
+        write_rectangle(&self.patch, w)?;
         self.obs_id.as_ref().write_to(w)?;
         self.band.write_to(w)?;
         self.artifact_uri.as_ref().write_to(w)?;
@@ -766,7 +781,7 @@ impl KeteRead for SpitzerFrame {
     fn read_from<R: Read>(r: &mut R) -> KeteResult<Self> {
         Ok(Self {
             observer: State::read_from(r)?,
-            patch: OnSkyRectangle::read_from(r)?,
+            patch: read_rectangle(r)?,
             obs_id: Box::<str>::read_from(r)?,
             band: SpitzerBand::read_from(r)?,
             artifact_uri: Box::<str>::read_from(r)?,
@@ -802,6 +817,7 @@ impl KeteWrite for FOV {
             Self::SpherexCmos(v) => (10_u8, write_to_vec(v)?),
             Self::SpherexField(v) => (11_u8, write_to_vec(v)?),
             Self::Spitzer(v) => (12_u8, write_to_vec(v)?),
+            Self::GenericPolygon(v) => (13_u8, write_to_vec(v)?),
         };
         tag.write_to(w)?;
         (payload.len() as u32).write_to(w)?;
@@ -839,6 +855,7 @@ pub fn read_fov<R: Read>(r: &mut R) -> KeteResult<Option<FOV>> {
         10 => Some(FOV::SpherexCmos(SpherexCmos::read_from(&mut cursor)?)),
         11 => Some(FOV::SpherexField(SpherexField::read_from(&mut cursor)?)),
         12 => Some(FOV::Spitzer(SpitzerFrame::read_from(&mut cursor)?)),
+        13 => Some(FOV::GenericPolygon(GenericPolygon::read_from(&mut cursor)?)),
         _ => None,
     };
     Ok(fov)
@@ -857,8 +874,8 @@ impl KeteRead for FOV {
 impl KeteWrite for SimultaneousStates {
     fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let mut payload = Vec::new();
-        self.epoch.write_to(&mut payload)?;
-        self.center_id.write_to(&mut payload)?;
+        self.epoch().write_to(&mut payload)?;
+        self.center_id().write_to(&mut payload)?;
         self.fov.write_to(&mut payload)?;
         self.states.write_to(&mut payload)?;
         (payload.len() as u32).write_to(w)?;
@@ -873,16 +890,20 @@ impl KeteRead for SimultaneousStates {
         r.read_exact(&mut payload)?;
         let mut cursor = Cursor::new(&payload);
 
-        let epoch = Time::read_from(&mut cursor)?;
-        let center_id = i32::read_from(&mut cursor)?;
+        // Read header fields first (format compatibility: these bytes must
+        // stay in this position). Then validate them against what new_exact
+        // derives from the state data, catching corrupt files.
+        let epoch_file = Time::read_from(&mut cursor)?;
+        let center_id_file = i32::read_from(&mut cursor)?;
         let fov = Option::<FOV>::read_from(&mut cursor)?;
         let states = Vec::read_from(&mut cursor)?;
-        Ok(Self {
-            states,
-            epoch,
-            center_id,
-            fov,
-        })
+        let result = Self::new_exact(states, fov)?;
+        if result.epoch() != epoch_file || result.center_id() != center_id_file {
+            return Err(Error::IOError(
+                "SimultaneousStates header fields do not match state data".into(),
+            ));
+        }
+        Ok(result)
     }
 }
 
@@ -940,10 +961,10 @@ pub fn write_vec_kete_file<W: Write>(entries: &[SimultaneousStates], w: &mut W) 
     Ok(())
 }
 
-/// Read [`SimultaneousStates`] from a kete binary file.
+/// Read the contents of a kete binary file.
 ///
 /// Returns a [`KeteFileType`] enum whose variant reflects what the file
-/// header declares: a single entry or a collection.
+/// header declares: which type it holds, and whether it holds one or many.
 ///
 /// # Errors
 /// Returns an error if the stream cannot be read, has invalid magic bytes,
@@ -1110,9 +1131,9 @@ mod tests {
 
     // -- FOV variants --
 
-    fn sample_rectangle() -> OnSkyRectangle {
+    fn sample_rectangle() -> SphericalPolygon {
         let n = |x: f64, y: f64, z: f64| Vector::new([x, y, z]);
-        OnSkyRectangle::from_normals([
+        SphericalPolygon::from_normals(&[
             n(0.0, 0.0, 1.0),
             n(0.0, 1.0, 0.0),
             n(0.0, 0.0, -1.0),
@@ -1121,10 +1142,7 @@ mod tests {
     }
 
     fn sample_cone() -> SphericalCone {
-        SphericalCone {
-            pointing: Vector::new([1.0, 0.0, 0.0]),
-            angle: 0.1,
-        }
+        SphericalCone::new(&Vector::new([1.0, 0.0, 0.0]), 0.1)
     }
 
     #[test]
@@ -1132,9 +1150,25 @@ mod tests {
         round_trip_debug(&sample_cone());
     }
 
+    /// A rectangle patch is stored as its four edge normals, in order, and
+    /// nothing else. Files written before polygons held any number of edges use
+    /// this encoding.
     #[test]
-    fn test_on_sky_rectangle() {
-        round_trip_debug(&sample_rectangle());
+    fn test_rectangle_patch() {
+        let rect = sample_rectangle();
+        let mut buf = Vec::new();
+        write_rectangle(&rect, &mut buf).unwrap();
+        let mut expected = Vec::new();
+        for normal in rect.parts().0 {
+            normal.write_to(&mut expected).unwrap();
+        }
+        assert_eq!(buf, expected);
+        assert_eq!(buf.len(), 4 * 3 * 8);
+        let recovered = read_rectangle(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(format!("{rect:?}"), format!("{recovered:?}"));
+
+        let triangle = SphericalPolygon::from_normals(&rect.parts().0[..3]);
+        assert!(write_rectangle(&triangle, &mut Vec::new()).is_err());
     }
 
     #[test]
@@ -1363,6 +1397,19 @@ mod tests {
                 patch: sample_rectangle(),
                 rotation: 0.5,
             }),
+            FOV::GenericPolygon(
+                GenericPolygon::new(
+                    &[
+                        [1.0, 0.0, 0.0].into(),
+                        [1.0, 0.1, 0.0].into(),
+                        [1.0, 0.05, 0.02].into(),
+                        [1.0, 0.1, 0.1].into(),
+                        [1.0, 0.0, 0.1].into(),
+                    ],
+                    sample_state(),
+                )
+                .unwrap(),
+            ),
             FOV::Wise(WiseCmos {
                 observer: sample_state(),
                 patch: sample_rectangle(),
@@ -1403,66 +1450,47 @@ mod tests {
 
     #[test]
     fn test_simult_states_no_fov() {
-        let ss = SimultaneousStates {
-            states: vec![sample_state()],
-            epoch: sample_time(),
-            center_id: 10,
-            fov: None,
-        };
+        let ss = SimultaneousStates::new_exact(vec![sample_state()], None).unwrap();
         round_trip_debug(&ss);
     }
 
     #[test]
     fn test_simult_states_with_fov() {
-        let ss = SimultaneousStates {
-            states: vec![sample_state()],
-            epoch: sample_time(),
-            center_id: 10,
-            fov: Some(FOV::OmniDirectional(OmniDirectional {
-                observer: sample_state(),
-            })),
-        };
+        let fov = Some(FOV::OmniDirectional(OmniDirectional {
+            observer: sample_state(),
+        }));
+        let ss = SimultaneousStates::new_exact(vec![sample_state()], fov).unwrap();
         let mut buf = Vec::new();
         ss.write_to(&mut buf).unwrap();
         let mut cursor = Cursor::new(&buf);
         let recovered = SimultaneousStates::read_from(&mut cursor).unwrap();
-        assert_eq!(ss.epoch.jd, recovered.epoch.jd);
-        assert_eq!(ss.center_id, recovered.center_id);
+        assert_eq!(ss.epoch().jd(), recovered.epoch().jd());
+        assert_eq!(ss.center_id(), recovered.center_id());
         assert_eq!(ss.states.len(), recovered.states.len());
         assert!(recovered.fov.is_some());
     }
 
     #[test]
     fn test_simult_states_empty() {
-        let ss = SimultaneousStates {
-            states: vec![],
-            epoch: sample_time(),
-            center_id: 0,
-            fov: None,
-        };
-        round_trip_debug(&ss);
+        assert!(SimultaneousStates::new_exact(vec![], None).is_err());
     }
 
     // -- File-level round-trip (single) --
 
     #[test]
     fn test_single_file_round_trip() {
-        let entry = SimultaneousStates {
-            states: vec![sample_state()],
-            epoch: sample_time(),
-            center_id: 10,
-            fov: Some(FOV::OmniDirectional(OmniDirectional {
-                observer: sample_state(),
-            })),
-        };
+        let fov = Some(FOV::OmniDirectional(OmniDirectional {
+            observer: sample_state(),
+        }));
+        let entry = SimultaneousStates::new_exact(vec![sample_state()], fov).unwrap();
         let mut buf = Vec::new();
         write_single_kete_file(&entry, &mut buf).unwrap();
         let mut cursor = Cursor::new(&buf);
         let data = read_kete_file(&mut cursor).unwrap();
         match data {
             KeteFileType::Single(recovered) => {
-                assert_eq!(entry.epoch.jd, recovered.epoch.jd);
-                assert_eq!(entry.center_id, recovered.center_id);
+                assert_eq!(entry.epoch().jd(), recovered.epoch().jd());
+                assert_eq!(entry.center_id(), recovered.center_id());
                 assert_eq!(entry.states.len(), recovered.states.len());
                 assert!(recovered.fov.is_some());
             }
@@ -1474,22 +1502,30 @@ mod tests {
 
     #[test]
     fn test_vec_file_round_trip() {
+        let state2 = State::new(
+            Desig::Naif(399),
+            Time::new(2460000.0),
+            Vector::new([2.0, 0.0, 0.0]),
+            Vector::new([0.0, 1.0, 0.0]),
+            10,
+        );
+        let obs2 = State::new(
+            Desig::Naif(399),
+            Time::new(2460000.0),
+            Vector::new([1.0, 0.0, 0.0]),
+            Vector::new([0.0, 0.5, 0.0]),
+            10,
+        );
         let entries = vec![
-            SimultaneousStates {
-                states: vec![sample_state()],
-                epoch: sample_time(),
-                center_id: 10,
-                fov: None,
-            },
-            SimultaneousStates {
-                states: vec![],
-                epoch: Time::new(2460000.0),
-                center_id: 0,
-                fov: Some(FOV::GenericCone(GenericCone {
-                    observer: sample_state(),
+            SimultaneousStates::new_exact(vec![sample_state()], None).unwrap(),
+            SimultaneousStates::new_exact(
+                vec![state2],
+                Some(FOV::GenericCone(GenericCone {
+                    observer: obs2,
                     patch: sample_cone(),
                 })),
-            },
+            )
+            .unwrap(),
         ];
         let mut buf = Vec::new();
         write_vec_kete_file(&entries, &mut buf).unwrap();
@@ -1499,8 +1535,8 @@ mod tests {
             KeteFileType::Vec(recovered) => {
                 assert_eq!(entries.len(), recovered.len());
                 for (orig, rec) in entries.iter().zip(recovered.iter()) {
-                    assert_eq!(orig.epoch.jd, rec.epoch.jd);
-                    assert_eq!(orig.center_id, rec.center_id);
+                    assert_eq!(orig.epoch().jd(), rec.epoch().jd());
+                    assert_eq!(orig.center_id(), rec.center_id());
                     assert_eq!(orig.states.len(), rec.states.len());
                 }
             }

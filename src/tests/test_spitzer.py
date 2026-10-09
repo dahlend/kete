@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Dar Dahlen
+# SPDX-License-Identifier: BSD-3-Clause
+
 import os
 import tempfile
 
@@ -29,7 +32,7 @@ def test_parse_poly_roundtrip():
         assert -90 <= eq.dec <= 90
 
 
-def test_parse_poly_normalises_negative_ra():
+def test_parse_poly_normalizes_negative_ra():
     # Longitude in [-180, 0) must be normalized to [180, 360)
     import struct
 
@@ -111,7 +114,7 @@ def test_spitzer_frame_jd():
         Vector.from_ra_dec(10.0, 20.1),
     ]
     fov = kete.SpitzerFrame(corners, observer, "ivo://test/obs3", "IRAC3", "", 0.0)
-    assert abs(fov.jd - jd) < 1e-6
+    assert abs(fov.jd.jd - jd) < 1e-6
 
 
 def test_spitzer_frame_repr():
@@ -199,7 +202,7 @@ def test_resolve_passthrough_https():
 
 
 def test_resolve_unknown_scheme():
-    with pytest.raises(ValueError, match="Unrecognised"):
+    with pytest.raises(ValueError, match="Unrecognized"):
         resolve_artifact_url("ftp://example.com/file.fits")
 
 

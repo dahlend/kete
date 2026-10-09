@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Dar Dahlen
+# SPDX-FileCopyrightText: 2025 California Institute of Technology
+# SPDX-License-Identifier: BSD-3-Clause
+
 from __future__ import annotations
 
 import contextlib
@@ -15,7 +19,9 @@ from ._core import (
     daf_convert_big_to_little_endian,
     get_state,
     instrument_equatorial_to_frame,
+    instrument_fov,
     instrument_frame_to_equatorial,
+    kernel_variable,
     loaded_objects,
     name_lookup,
     repack_spk,
@@ -31,6 +37,7 @@ __all__ = [
     "daf_convert_big_to_little_endian",
     "SpkBuilder",
     "SpkInfo",
+    "FovDefinition",
     "get_state",
     "name_lookup",
     "loaded_objects",
@@ -45,6 +52,9 @@ __all__ = [
     "moon_illumination_frac",
     "instrument_frame_to_equatorial",
     "instrument_equatorial_to_frame",
+    "instrument_fov",
+    "instrument_fov_definition",
+    "kernel_variable",
     "repack_spk",
 ]
 
@@ -57,6 +67,47 @@ SpkInfo.jd_end.__doc__ = "JD date of the end of the spice segment."
 SpkInfo.center.__doc__ = "Reference Center NAIF ID."
 SpkInfo.frame.__doc__ = "Frame of reference."
 SpkInfo.spk_type.__doc__ = "SPK Segment Type ID."
+
+
+FovDefinition = namedtuple("FovDefinition", "shape, frame, boresight, bounds")
+"""The field of view definition of an instrument, in its own frame."""
+FovDefinition.shape.__doc__ = (
+    'The shape, "CIRCLE", "ELLIPSE", "RECTANGLE" or "POLYGON".'
+)
+FovDefinition.frame.__doc__ = "Name of the frame of the vectors."
+FovDefinition.boresight.__doc__ = "Boresight vector, as the kernel gives it."
+FovDefinition.bounds.__doc__ = (
+    "The boundary vectors. There is one for a circle, two for an ellipse, and the "
+    "corners, in order, for a rectangle or a polygon."
+)
+
+
+def instrument_fov_definition(instrument: int | str) -> FovDefinition:
+    """
+    The field of view definition of an instrument, in its own frame.
+
+    The definition comes from the loaded instrument kernels. An ``ANGLES``
+    definition gives the boundary vectors from its reference vector and its
+    angles.
+
+    Parameters
+    ----------
+    instrument :
+        NAIF ID or name of the instrument, such as ``-226111`` or
+        ``"ROS_OSIRIS_NAC"``.
+
+    Returns
+    -------
+    FovDefinition
+        The shape, frame name, boresight, and boundary vectors.
+
+    Raises
+    ------
+    ValueError
+        If the instrument or its field of view is not defined, or the
+        definition is malformed.
+    """
+    return FovDefinition(*_core._instrument_fov_definition(instrument))
 
 
 def loaded_object_info(desig: int | str) -> list[SpkInfo]:
@@ -90,38 +141,69 @@ def kernel_reload(
     filenames: list[str] | None = None, include_cache=False, include_planets=True
 ):
     """
-    Load the specified spice kernels into memory, this resets the currently loaded
-    kernels.
+    Reset all loaded kernels, then load the specified kernels into memory.
 
-    If `include_cache` is true, this will reload the kernels contained within the
-    kete cache folder as well.
+    The reset clears the SPK, PCK, CK, and all text kernels. The
+    function identifies the type of each file from its header, not its extension.
+    It supports binary SPK, PCK, and CK files, and text SCLK, frames (FK), PCK,
+    instrument (IK), and meta-kernels. Other kernel types raise a ValueError,
+    and then none of ``filenames`` load. A file of a supported type that fails
+    to load prints a message and is skipped.
+
+    A meta-kernel lists files in ``KERNELS_TO_LOAD``, which load right after it.
+    In a listed name, a ``$`` and a symbol from ``PATH_SYMBOLS`` is replaced by
+    the matching entry of ``PATH_VALUES``. An entry that ends in ``+`` continues
+    into the next entry. Relative paths are relative to the working directory,
+    not to the meta-kernel. A listed file of an unsupported type, such as a leap
+    seconds kernel or a DSK, prints a message and is skipped.
+
+    Where kernels overlap in time for the same object, the kernel loaded last is
+    used. The load order is the cache, then the default planetary kernels, then
+    ``filenames`` in the order given. Thus the files in ``filenames`` take
+    precedence over all other kernels. The default planetary kernels take
+    precedence over the cache. For an object in both, the cache supplies data
+    only outside the time range of the default planetary kernels.
 
     Parameters
     ----------
-    filenames :
-        Paths to the specified files to load, this must be a list of filenames.
-    include_cache:
-        This decides if all of the files contained within the kete cache should
-        be loaded in addition to the specified files.
-    include_planets:
-        This decides if the default planetary kernels should be loaded in
-        addition. This includes the de440s, the WISE kernel, and 5 largest main
-        belt asteroids. If these files are not present, they will be downloaded.
+    filenames : list of str, optional
+      Paths of the files to load. The list can mix SPK, PCK, CK, SCLK, frames,
+      text PCK, instrument, and meta-kernel files. Default is ``None``, which
+      loads no additional files.
+    include_cache : bool, optional
+      If ``True``, also load the SPK kernels in the kete cache folder. Default
+      is ``False``.
+    include_planets : bool, optional
+      If ``True`` (default), also load the default planetary kernels. These
+      are the de440s planetary ephemeris, the WISE, Spitzer, and SPHEREx
+      spacecraft kernels, the 5 largest main-belt asteroids, and the core PCK
+      files. The function tries to download any missing file.
+
+    Raises
+    ------
+    ValueError
+      If a file in ``filenames``, or a file a meta-kernel lists, cannot be
+      read; if a file in ``filenames`` does not have the header of a supported
+      kernel type; or if a meta-kernel lists another meta-kernel.
     """
     _core.spk_reset()
     _core.pck_reset()
     _core.ck_reset()
+    _core.text_kernels_reset()
 
     if include_planets:
         _download_core_files()
-        _core.spk_load_core()
-        _core.pck_load_core()
 
+    # The load order sets precedence. Where kernels overlap, the kernel loaded
+    # last is used.
     if include_cache:
         _core.spk_load_cache()
 
-    if filenames:
-        _core.spk_load(filenames)
+    if include_planets:
+        _core.spk_load_core()
+        _core.pck_load_core()
+
+    _core.kernel_load(filenames or [])
 
 
 def _download_core_files():
@@ -310,7 +392,7 @@ def moon_illumination_frac(jd: float | Time, observer: str = "399"):
     having the observer located at the geocenter of the Earth.
 
     >>> float(kete.spice.moon_illumination_frac(Time.from_ymd(2024, 2, 24)))
-    0.9964936478732302
+    0.9964936480162188
 
     Parameters
     ----------

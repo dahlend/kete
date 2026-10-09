@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Dar Dahlen
+# SPDX-FileCopyrightText: 2025 California Institute of Technology
+# SPDX-License-Identifier: BSD-3-Clause
+
 import numpy as np
 import pytest
 
@@ -30,7 +34,7 @@ class TestlState:
         assert np.isclose(elem.inclination, 10)
         assert np.isclose(elem.peri_arg, 30)
         assert np.isclose(elem.lon_of_ascending, 45)
-        assert np.isclose(elem.peri_time, 123456)
+        assert np.isclose(elem.peri_time.jd, 123456)
         assert np.isclose(elem.peri_dist, 0.45)
         assert np.isclose(elem.semi_major, 0.5)
 
@@ -38,7 +42,7 @@ class TestlState:
         assert np.isclose(vs.inclination, 10)
         assert np.isclose(vs.peri_arg, 30)
         assert np.isclose(vs.lon_of_ascending, 45)
-        assert np.isclose(vs.peri_time, 123456)
+        assert np.isclose(vs.peri_time.jd, 123456)
         assert np.isclose(vs.peri_dist, 0.45)
         assert np.isclose(vs.semi_major, 0.5)
 
@@ -66,3 +70,12 @@ class TestlState:
         assert np.isclose(elements.peri_arg, peri_arg)
         assert np.isclose(elements.lon_of_ascending, lon)
         assert np.isclose(elements.peri_dist, peri_dist)
+
+
+def test_elements_of_barycentric_state_raise():
+    """A state about the barycenter has no two-body elements, so the element
+    properties raise ValueError rather than crash."""
+    state = State("x", 2460000.5, [1.2, 0.0, 0.0], [0.0, 0.015, 0.0], center_id=0)
+    for name in ["elements", "eccentricity", "peri_dist", "mean_anomaly"]:
+        with pytest.raises(ValueError):
+            getattr(state, name)

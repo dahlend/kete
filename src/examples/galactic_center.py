@@ -69,7 +69,7 @@ ra_decs = [
 plt.figure(dpi=200, figsize=(8, 4))
 plt.scatter(*np.transpose(ra_decs), s=1, label="NEOS")
 plt.scatter(*np.transpose(galactic_plane), s=0.5, c="black")
-plt.plot(*np.transpose(ecliptic_plane), c="Grey", label="Ecliptic")
+plt.plot(*np.transpose(ecliptic_plane), c="Gray", label="Ecliptic")
 plt.scatter(
     (galactic_center.ra + 180) % 360 - 180,
     galactic_center.dec,

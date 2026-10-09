@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 /// Stress tests for numerical integrators.
 ///
 /// Each scenario defines a second-order IVP y'' = f(t, y, y') with a known
@@ -11,9 +14,39 @@ use nalgebra::{SMatrix, Vector3};
 
 use super::{BulirschStoerIntegrator, GaussJacksonIntegrator, PC15, RadauIntegrator};
 use crate::constants::GMS;
-use crate::forces::{CentralAccelMeta, central_accel};
 use crate::kepler::analytic_2_body;
 use crate::time::{TDB, Time};
+
+/// Records exact-evaluation timestamps and positions during integration.
+/// Used as the metadata type for [`central_accel`].
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CentralAccelMeta {
+    pub times: Vec<Time<TDB>>,
+    pub pos: Vec<Vector3<f64>>,
+    pub vel: Vec<Vector3<f64>>,
+    pub eval_count: usize,
+}
+
+/// Sun-only two-body acceleration; used by integrator unit tests.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "must match SecondOrderODE signature"
+)]
+pub(crate) fn central_accel(
+    time: Time<TDB>,
+    pos: &Vector3<f64>,
+    vel: &Vector3<f64>,
+    meta: &mut CentralAccelMeta,
+    exact_eval: bool,
+) -> crate::errors::KeteResult<Vector3<f64>> {
+    meta.eval_count += 1;
+    if exact_eval {
+        meta.times.push(time);
+        meta.pos.push(*pos);
+        meta.vel.push(*vel);
+    }
+    Ok(-pos * pos.norm().powi(-3) * GMS)
+}
 
 /// Two-body analytic init for the second-order Picard integrator.
 fn picard_2body_init<const N: usize>(
@@ -28,7 +61,7 @@ fn picard_2body_init<const N: usize>(
     vel_mat.set_column(0, init_vel);
     for (idx, t) in times.iter().enumerate().skip(1) {
         let dt = *t - t0;
-        let (p, v) = analytic_2_body(dt, init_pos, init_vel, None).unwrap();
+        let (p, v) = analytic_2_body(dt, init_pos, init_vel).unwrap();
         pos_mat.set_column(idx, &p);
         vel_mat.set_column(idx, &v);
     }
@@ -58,7 +91,7 @@ struct Scenario {
 impl Scenario {
     /// Compute the analytic two-body solution at `t_days`.
     fn exact(&self) -> (Vector3<f64>, Vector3<f64>) {
-        analytic_2_body(self.t_days.into(), &self.pos, &self.vel, None).unwrap()
+        analytic_2_body(self.t_days.into(), &self.pos, &self.vel).unwrap()
     }
 
     /// Orbital energy (specific).
@@ -83,6 +116,7 @@ impl Scenario {
                 0.0.into(),
                 self.t_days.into(),
                 meta.clone(),
+                None,
                 None,
             );
             let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -437,6 +471,7 @@ fn integrator_reversibility() {
             (*t).into(),
             CentralAccelMeta::default(),
             None,
+            None,
         ) {
             if let Ok((pf, vf, _)) = RadauIntegrator::integrate(
                 &central_accel,
@@ -445,6 +480,7 @@ fn integrator_reversibility() {
                 (*t).into(),
                 0.0.into(),
                 CentralAccelMeta::default(),
+                None,
                 None,
             ) {
                 eprintln!(

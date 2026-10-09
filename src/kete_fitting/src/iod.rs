@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Initial Orbit Determination (IOD).
 //!
 //! Given optical observations, compute an approximate heliocentric state that
@@ -7,37 +10,8 @@
 //! Lambert's solver and Gauss angles-only IOD.  It works on any arc length
 //! from single-night tracklets (minutes) to multi-year arcs, and from
 //! close-approach NEOs/bolides to distant TNOs.
-//!
-// BSD 3-Clause License
-//
-// Copyright (c) 2026, Dar Dahlen
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice, this
-//    list of conditions and the following disclaimer.
-//
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-//
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from
-//    this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use kete_core::constants::{GMS, GMS_SQRT};
+use kete_core::constants::{C_AU_PER_DAY_INV, GMS, GMS_SQRT};
 use kete_core::frames::{Equatorial, Vector};
 use kete_core::kepler::{light_time_correct, propagate_two_body};
 use kete_core::prelude::{Error, KeteResult, State};
@@ -63,7 +37,8 @@ use crate::lambert::lambert;
 ///
 /// # Algorithm
 ///
-/// 1. Group observations into apparitions; select up to 2 recent ones.
+/// 1. Group observations into apparitions; select up to 2 recent ones. When
+///    each is a single tracklet, the recent tracklets form one set.
 /// 2. Select observation pairs with deterministic baseline targets
 ///    (3, 10, 30, 90 days) plus a first-last fallback.
 /// 3. Coarse 2-D scan over (`log rho_a`, `log rho_b`), the topocentric
@@ -100,8 +75,8 @@ pub fn initial_orbit_determination(
     let mut sorted = obs.to_vec();
     sorted.sort_by(|a, b| {
         a.epoch()
-            .jd
-            .partial_cmp(&b.epoch().jd)
+            .jd()
+            .partial_cmp(&b.epoch().jd())
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     let sorted = sorted;
@@ -161,9 +136,8 @@ pub fn initial_orbit_determination(
     // does not dominate the residual.  Observation density varies widely
     // across objects, so a count cap is also enforced to keep dense modern
     // datasets from swamping the scoring with short-arc recent data.
-    let last_jd = sorted[sorted.len() - 1].epoch().jd;
-    let window_start_jd = last_jd - RESCORE_WINDOW_DAYS;
-    let time_idx = sorted.partition_point(|o| o.epoch().jd < window_start_jd);
+    let window_start = sorted[sorted.len() - 1].epoch() - RESCORE_WINDOW_DAYS;
+    let time_idx = sorted.partition_point(|o| o.epoch() < window_start);
     let count_idx = sorted.len().saturating_sub(RESCORE_MAX_OBS);
     // Take the more recent start so both caps are enforced.
     let window_idx = time_idx.max(count_idx);
@@ -219,7 +193,7 @@ pub fn initial_orbit_determination(
     let mut propagated: Vec<(f64, State<Equatorial>)> = Vec::with_capacity(results.len());
     let spk = kete_spice::prelude::LOADED_SPK.try_read().ok();
     for (score, state) in results {
-        if (state.epoch.jd - ref_epoch.jd).abs() < 1e-12 {
+        if (state.epoch - ref_epoch).elapsed.abs() < 1e-12 {
             propagated.push((score, state));
         } else if let Some(ref spk) = spk
             && let Ok(sun_state) = spk.try_to_sun(state.clone())
@@ -332,12 +306,22 @@ fn select_helio_gauss_triplets(
 /// cap are down-sampled to a hybrid of the recent tail plus a few early
 /// anchors so long-baseline curvature is retained without overloading the
 /// grid scan.
+///
+/// A single tracklet, an apparition spanning less than a day, does not
+/// constrain an orbit. When every chosen apparition is a tracklet, the
+/// observations within 4 years of the last one form a single set instead, so
+/// the observation pairs can span the gaps.
 fn select_iod_apparitions(
     sorted_obs: &[AstrometricObservation],
 ) -> Vec<Vec<AstrometricObservation>> {
     const GAP_THRESHOLD: f64 = 60.0;
     const MAX_IOD_OBS: usize = 200;
     const MAX_APPARITIONS: usize = 2;
+    // An apparition shorter than this is a single tracklet.
+    const TRACKLET_DAYS: f64 = 1.0;
+    // Tracklets within this span of the last observation are merged, matching
+    // the rescore window of `initial_orbit_determination`.
+    const MERGE_WINDOW_DAYS: f64 = 1_460.0;
 
     let n = sorted_obs.len();
     if n == 0 {
@@ -348,7 +332,7 @@ fn select_iod_apparitions(
     let mut apparitions: Vec<(usize, usize)> = Vec::new();
     let mut start = 0;
     for i in 1..n {
-        if sorted_obs[i].epoch().jd - sorted_obs[i - 1].epoch().jd > GAP_THRESHOLD {
+        if (sorted_obs[i].epoch() - sorted_obs[i - 1].epoch()).elapsed > GAP_THRESHOLD {
             apparitions.push((start, i));
             start = i;
         }
@@ -356,7 +340,7 @@ fn select_iod_apparitions(
     apparitions.push((start, n));
 
     let arc_days =
-        |&(s, e): &(usize, usize)| sorted_obs[e - 1].epoch().jd - sorted_obs[s].epoch().jd;
+        |&(s, e): &(usize, usize)| (sorted_obs[e - 1].epoch() - sorted_obs[s].epoch()).elapsed;
 
     // Single apparition: just cap-and-go.
     if apparitions.len() == 1 {
@@ -394,6 +378,14 @@ fn select_iod_apparitions(
     chosen.sort_by_key(|&(s, e)| std::cmp::Reverse(e - s));
     chosen.truncate(MAX_APPARITIONS);
     chosen.sort_by_key(|&(s, _)| s);
+
+    if chosen.iter().all(|a| arc_days(a) < TRACKLET_DAYS) {
+        let last = sorted_obs[n - 1].epoch();
+        let start = sorted_obs.partition_point(|o| (last - o.epoch()).elapsed > MERGE_WINDOW_DAYS);
+        if arc_days(&(start, n)) >= TRACKLET_DAYS {
+            return vec![cap_apparition(&sorted_obs[start..], MAX_IOD_OBS)];
+        }
+    }
 
     chosen
         .into_iter()
@@ -445,7 +437,7 @@ fn best_pair_near_baseline(
     let mut j = 1_usize;
     for i in 0..n {
         // Advance j until dt(i,j) >= target (bracket from below).
-        while j < n && (sorted_obs[j].epoch().jd - sorted_obs[i].epoch().jd) < target_days {
+        while j < n && (sorted_obs[j].epoch() - sorted_obs[i].epoch()).elapsed < target_days {
             j += 1;
         }
         // Check j-1 and j (they bracket the target baseline).
@@ -453,7 +445,7 @@ fn best_pair_near_baseline(
             if candidate <= i || candidate >= n {
                 continue;
             }
-            let dt = sorted_obs[candidate].epoch().jd - sorted_obs[i].epoch().jd;
+            let dt = (sorted_obs[candidate].epoch() - sorted_obs[i].epoch()).elapsed;
             if dt < 1e-6 {
                 continue;
             }
@@ -486,9 +478,8 @@ fn select_distributed_obs(sorted_obs: &[AstrometricObservation], n_max: usize) -
         return vec![0];
     }
     // Invariant: n > n_max >= 2.
-    let t_start = sorted_obs[0].epoch().jd;
-    let t_end = sorted_obs[n - 1].epoch().jd;
-    let t_span = t_end - t_start;
+    let t_start = sorted_obs[0].epoch();
+    let t_span = (sorted_obs[n - 1].epoch() - t_start).elapsed;
     if t_span < 1e-12 {
         return (0..n_max).collect();
     }
@@ -497,7 +488,7 @@ fn select_distributed_obs(sorted_obs: &[AstrometricObservation], n_max: usize) -
         let frac = k as f64 / (n_max - 1) as f64;
         let t_target = t_start + t_span * frac;
         let idx = sorted_obs
-            .partition_point(|o| o.epoch().jd < t_target)
+            .partition_point(|o| o.epoch() < t_target)
             .min(n - 1);
         if selected.last() != Some(&idx) {
             selected.push(idx);
@@ -522,7 +513,7 @@ fn run_ranging_for_pair(
     let los_a = Vector::<Equatorial>::from_ra_dec(ra_a, dec_a);
     let los_b = Vector::<Equatorial>::from_ra_dec(ra_b, dec_b);
 
-    let dt = obs_b.epoch.jd - obs_a.epoch.jd;
+    let dt = (obs_b.epoch - obs_a.epoch).elapsed;
     if dt.abs() < 1e-6 {
         return Err(Error::ValueError(
             "IOD: selected pair too close in time".into(),
@@ -539,6 +530,25 @@ fn run_ranging_for_pair(
         .into_iter()
         .map(|i| sorted_obs[i].clone())
         .collect();
+
+    // The candidate through the two lines of sight at ranges `rho_a` and `rho_b`.
+    // Each position is where the light left the object, so it holds at its
+    // observation epoch less the light travel time; the Lambert arc spans the
+    // interval between those two emission epochs.
+    let candidate = |rho_a: f64, rho_b: f64| -> Option<State<Equatorial>> {
+        let t_a = obs_a.epoch - rho_a * C_AU_PER_DAY_INV;
+        let t_b = obs_b.epoch - rho_b * C_AU_PER_DAY_INV;
+        let r_a = obs_a.pos + los_a * rho_a;
+        let r_b = obs_b.pos + los_b * rho_b;
+        let vel = lambert_velocity(&r_a, &r_b, (t_b - t_a).elapsed)?;
+        Some(State::new(
+            kete_core::desigs::Desig::Empty,
+            t_a,
+            r_a,
+            vel,
+            0,
+        ))
+    };
 
     // 2-D grid scan over (log rho_a, log rho_b).
     // Independent distances for the two observations -- no equal-helio-distance
@@ -557,15 +567,10 @@ fn run_ranging_for_pair(
 
             let frac_a = ia as f64 / (n_scan - 1) as f64;
             let rho_a = (log_min + (log_max - log_min) * frac_a).exp();
-            let r_a = obs_a.pos + los_a * rho_a;
-
             let frac_b = ib as f64 / (n_scan - 1) as f64;
             let rho_b = (log_min + (log_max - log_min) * frac_b).exp();
-            let r_b = obs_b.pos + los_b * rho_b;
 
-            let vel = lambert_velocity(&r_a, &r_b, dt)?;
-            let state = State::new(kete_core::desigs::Desig::Empty, obs_a.epoch, r_a, vel, 0);
-
+            let state = candidate(rho_a, rho_b)?;
             if !is_physically_valid(&state) {
                 return None;
             }
@@ -609,18 +614,9 @@ fn run_ranging_for_pair(
 
     for &(seed_score, rho_a_seed, rho_b_seed) in &seeds {
         // Seed state -- used as the fallback if no refinement cell improves on it.
-        let seed_r_a = obs_a.pos + los_a * rho_a_seed;
-        let seed_r_b = obs_b.pos + los_b * rho_b_seed;
-        let Some(seed_vel) = lambert_velocity(&seed_r_a, &seed_r_b, dt) else {
+        let Some(seed_state) = candidate(rho_a_seed, rho_b_seed) else {
             continue;
         };
-        let seed_state = State::new(
-            kete_core::desigs::Desig::Empty,
-            obs_a.epoch,
-            seed_r_a,
-            seed_vel,
-            0,
-        );
 
         let n_refine: usize = 11;
         let half_width = coarse_step;
@@ -641,18 +637,14 @@ fn run_ranging_for_pair(
                 if rho_a < 1e-5 {
                     return None;
                 }
-                let r_a = obs_a.pos + los_a * rho_a;
-
                 let frac_b = ib as f64 / (n_refine - 1) as f64;
                 let log_b = (center_b - half_width) + 2.0 * half_width * frac_b;
                 let rho_b = log_b.exp();
                 if rho_b < 1e-5 {
                     return None;
                 }
-                let r_b = obs_b.pos + los_b * rho_b;
 
-                let vel = lambert_velocity(&r_a, &r_b, dt)?;
-                let state = State::new(kete_core::desigs::Desig::Empty, obs_a.epoch, r_a, vel, 0);
+                let state = candidate(rho_a, rho_b)?;
                 if !is_physically_valid(&state) {
                     return None;
                 }
@@ -721,8 +713,8 @@ fn gauss_iod(
     let l3 = Vector::<Equatorial>::from_ra_dec(ra3, dec3);
 
     // Time intervals in days (Gauss uses tau = k * dt where k = sqrt(mu)).
-    let tau1 = GMS_SQRT * (o1.epoch.jd - o2.epoch.jd);
-    let tau3 = GMS_SQRT * (o3.epoch.jd - o2.epoch.jd);
+    let tau1 = GMS_SQRT * (o1.epoch - o2.epoch).elapsed;
+    let tau3 = GMS_SQRT * (o3.epoch - o2.epoch).elapsed;
     let tau = tau3 - tau1;
 
     // Cross products for the D matrix.
@@ -747,9 +739,11 @@ fn gauss_iod(
     let d32 = o3.pos.dot(&p2);
     let d33 = o3.pos.dot(&p3);
 
-    // Gauss ratios (Curtis eqn 5.98-5.99, adapted for non-uniform spacing).
-    let a_coeff = (-d12 * tau / tau3 + d22 + d32 * tau / tau1) / d0;
-    let b_coeff = (d12 * (tau * tau - tau3 * tau3) * tau3 + d32 * (tau * tau - tau1 * tau1) * tau1)
+    // Gauss coefficients (Curtis 2014, Algorithm 5.5, eqns 5.112-5.113). The
+    // times are scaled by sqrt(mu), so mu is 1 in these expressions.
+    let a_coeff = (-d12 * tau3 / tau + d22 + d32 * tau1 / tau) / d0;
+    let b_coeff = (d12 * (tau3 * tau3 - tau * tau) * tau3 / tau
+        + d32 * (tau * tau - tau1 * tau1) * tau1 / tau)
         / (6.0 * d0);
 
     // Scalar equation for r2 = |R2 + rho2 * L2|.
@@ -767,7 +761,6 @@ fn gauss_iod(
 
     // Find real positive roots by scanning and bisection.
     // The polynomial p(r) = r^8 + c6*r^6 + c3*r^3 + c0.
-    // For physical orbits, r2 is in (0.001, 1000) AU.
     let poly = |r: f64| -> f64 {
         let r3 = r * r * r;
         let r6 = r3 * r3;
@@ -813,14 +806,15 @@ fn gauss_iod(
         // Position at middle observation.
         let pos2 = o2.pos + l2 * rho2;
 
-        // Slant ranges at observations 1 and 3 (Curtis eqn 5.112-5.113).
+        // Slant ranges at observations 1 and 3 (Curtis 2014, eqns 5.131 and
+        // 5.133).
         let rho1 = ((6.0 * (d31 * tau1 / tau3 + d21 * tau / tau3) * r2_cubed
-            + d31 * (tau * tau - tau1 * tau1) * tau1)
+            + d31 * (tau * tau - tau1 * tau1) * tau1 / tau3)
             / (6.0 * r2_cubed + tau * tau - tau3 * tau3)
             - d11)
             / d0;
         let rho3 = ((6.0 * (d13 * tau3 / tau1 - d23 * tau / tau1) * r2_cubed
-            + d13 * (tau * tau - tau3 * tau3) * tau3)
+            + d13 * (tau * tau - tau3 * tau3) * tau3 / tau1)
             / (6.0 * r2_cubed + tau * tau - tau1 * tau1)
             - d33)
             / d0;
@@ -853,7 +847,9 @@ fn gauss_iod(
         // from f/g is in AU per Gaussian day.  Convert: v_au_day = v * GMS_SQRT.
         let vel2 = (pos3 * f1 - pos1 * f3) / fg_det * GMS_SQRT;
 
-        let state = State::new(kete_core::desigs::Desig::Empty, o2.epoch, pos2, vel2, 0);
+        // pos2 is where the light received at o2 left the object.
+        let epoch2 = o2.epoch - rho2 * C_AU_PER_DAY_INV;
+        let state = State::new(kete_core::desigs::Desig::Empty, epoch2, pos2, vel2, 0);
 
         if is_physically_valid(&state) {
             results.push(state);
@@ -1143,9 +1139,9 @@ mod tests {
     use kete_core::desigs::Desig;
     use kete_core::frames::{SSB, SunCenter};
     use kete_core::kepler::{light_time_correct, propagate_two_body};
+    use kete_core::propagation::NBody;
     use kete_core::time::{TDB, Time};
-    use kete_spice::prelude::{LOADED_SPK, propagate_n_body_spk};
-
+    use kete_spice::prelude::SpiceEphemeris;
     use kete_spice::test_data::ensure_test_spk;
 
     fn make_state(pos: [f64; 3], vel: [f64; 3], jd: f64) -> State<Equatorial, SunCenter> {
@@ -1181,7 +1177,8 @@ mod tests {
         }
     }
 
-    /// Synthesize observations with an ecliptic-plane observer.
+    /// Synthesize observations with an ecliptic-plane observer, including light
+    /// travel time from the object.
     fn synth_optical_ecliptic(
         obj: &State<Equatorial, SunCenter>,
         epochs: &[f64],
@@ -1215,7 +1212,9 @@ mod tests {
                     vel: observer_sun.vel,
                     center: SSB,
                 };
-                let d = obj_at.pos - observer.pos;
+                let emitted = light_time_correct(&obj_at, &observer_sun.pos)
+                    .expect("light time correction failed");
+                let d = emitted.pos - observer.pos;
                 let (ra, dec) = d.to_ra_dec();
                 let ra_noisy = ra + rng.gaussian() * noise_rad / dec.cos().max(0.1);
                 let dec_noisy = dec + rng.gaussian() * noise_rad;
@@ -1254,12 +1253,74 @@ mod tests {
             .unwrap()
     }
 
-    /// Extract just the states from scored IOD results.
-    fn states(scored: &[(f64, State<Equatorial>)]) -> Vec<&State<Equatorial>> {
-        scored.iter().map(|(_, s)| s).collect()
+    /// Gauss IOD on noise-free observations over 17 days recovers the state at
+    /// the middle observation.
+    #[test]
+    fn gauss_iod_recovers_state() {
+        ensure_test_spk();
+        let r = 2.3_f64;
+        let v = (GMS / r).sqrt();
+        let inc = 0.2_f64;
+        let obj = make_state([0.0, r, 0.0], [-v, 0.0, 0.3 * v * inc.sin()], 2_460_000.5);
+        let epochs = [2_460_000.5 - 8.0, 2_460_000.5, 2_460_000.5 + 9.0];
+        let obs = synth_optical_ecliptic(&obj, &epochs, 0.0, 1);
+        let candidates = gauss_iod(&obs, 0, 1, 2);
+        assert!(!candidates.is_empty(), "Gauss produced no candidate");
+
+        let best = candidates
+            .iter()
+            .map(|cand| {
+                let truth = propagate_two_body(&obj, cand.epoch).unwrap();
+                let pos_err = (cand.pos - truth.pos).norm() / truth.pos.norm();
+                let vel_err = (cand.vel - truth.vel).norm() / truth.vel.norm();
+                (pos_err, vel_err)
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .unwrap();
+        println!(
+            "gauss_iod: position error {:e}, velocity error {:e}",
+            best.0, best.1
+        );
+        assert!(best.0 < 1e-3, "position error {:e}", best.0);
+        assert!(best.1 < 1e-3, "velocity error {:e}", best.1);
     }
 
     // -- Scanning IOD tests ---------------------------------------------------
+
+    /// Three single tracklets 100 days apart are separate apparitions, and none
+    /// constrains an orbit alone. IOD links across the gaps.
+    #[test]
+    fn iod_links_separate_tracklets() {
+        ensure_test_spk();
+        let r = 2.5_f64;
+        let v = (GMS / r).sqrt();
+        let obl = 23.44_f64.to_radians();
+        let i = 8.0_f64.to_radians();
+        let obj = make_state(
+            [r, 0.0, 0.0],
+            [0.0, v * (obl + i).cos(), v * (obl + i).sin()],
+            2460000.5,
+        );
+        let t0 = 2460000.5;
+        let epochs = [
+            t0,
+            t0 + 0.02,
+            t0 + 100.0,
+            t0 + 100.02,
+            t0 + 200.0,
+            t0 + 200.02,
+        ];
+        let obs = synth_optical_ecliptic(&obj, &epochs, 0.0, 1);
+        assert_eq!(select_iod_apparitions(&obs).len(), 1);
+        let results = initial_orbit_determination(&obs).expect("IOD");
+        let best = results
+            .iter()
+            .map(|(_, c)| (c.pos - propagate_two_body(&obj, c.epoch).unwrap().pos).norm())
+            .fold(f64::INFINITY, f64::min);
+        // The synthetic observer is heliocentric but labeled barycentric, which
+        // limits the agreement to about 1e-2 AU.
+        assert!(best < 0.05, "best candidate is {best:e} AU from the truth");
+    }
 
     #[test]
     fn test_scanning_30min_cadence() {
@@ -1294,7 +1355,7 @@ mod tests {
         assert!(!results.is_empty(), "Should find at least one candidate");
 
         let true_r = 2.0;
-        let has_reasonable = states(&results).iter().any(|c| {
+        let has_reasonable = results.iter().map(|(_, s)| s).any(|c| {
             let r = c.pos.norm();
             r > true_r / 3.0 && r < true_r * 3.0
         });
@@ -1302,9 +1363,9 @@ mod tests {
             has_reasonable,
             "At least one candidate should be within 3x of true distance {true_r} AU, \
              got distances: {:?}",
-            states(&results)
+            results
                 .iter()
-                .map(|c| c.pos.norm())
+                .map(|(_, s)| s.pos.norm())
                 .collect::<Vec<_>>()
         );
     }
@@ -1473,7 +1534,7 @@ mod tests {
         assert!(!results.is_empty(), "Should find at least one candidate");
 
         let true_r = 2.0;
-        let has_reasonable = states(&results).iter().any(|c| {
+        let has_reasonable = results.iter().map(|(_, s)| s).any(|c| {
             let cr = c.pos.norm();
             cr > true_r / 3.0 && cr < true_r * 3.0
         });
@@ -1481,9 +1542,9 @@ mod tests {
             has_reasonable,
             "At least one candidate should be within 3x of true distance {true_r} AU, \
              got distances: {:?}",
-            states(&results)
+            results
                 .iter()
-                .map(|c| c.pos.norm())
+                .map(|(_, s)| s.pos.norm())
                 .collect::<Vec<_>>()
         );
     }
@@ -1560,7 +1621,9 @@ mod tests {
             }
         }
 
-        let spk = LOADED_SPK.try_read().unwrap();
+        let eph = SpiceEphemeris::loaded().unwrap();
+
+        let spk = eph.spk();
         let noise_arcsec = 1.0_f64;
         let noise_rad = noise_arcsec * std::f64::consts::PI / (180.0 * 3600.0);
         let mut rng = Rng::new(77777);
@@ -1568,14 +1631,12 @@ mod tests {
         let observations: Vec<AstrometricObservation> = epochs
             .iter()
             .map(|&jd| {
-                let obj_at = propagate_n_body_spk(
-                    spk.try_to_ssb(obj.clone())
-                        .expect("Center conversion failed"),
-                    Time::<TDB>::new(jd),
-                    false,
-                    None,
-                )
-                .expect("N-body propagation failed");
+                let force = NBody::new(&eph, false);
+                let obj_at = spk
+                    .try_to_ssb(obj.clone())
+                    .expect("Center conversion failed")
+                    .propagate_with(&force, Time::<TDB>::new(jd))
+                    .expect("N-body propagation failed");
 
                 let observer: State<Equatorial> = spk
                     .try_get_state_with_center(399, Time::<TDB>::new(jd), 0)
@@ -1626,7 +1687,9 @@ mod tests {
 
         let obj_at = {
             let obj_ssb = spk.try_to_ssb(obj.clone()).unwrap();
-            propagate_n_body_spk(obj_ssb, results[0].1.epoch, false, None).unwrap()
+            obj_ssb
+                .propagate_with(&NBody::new(&eph, false), results[0].1.epoch)
+                .unwrap()
         };
         let best = best_candidate(&results, &obj_at);
         let pos_err = (best.pos - obj_at.pos).norm();
@@ -1688,7 +1751,7 @@ mod tests {
         // in the right ballpark (within 3x of true).
         let obj_at = propagate_two_body(&obj, Time::<TDB>::new(epochs[0])).unwrap();
         let true_r = obj_at.pos.norm();
-        let has_reasonable = states(&results).iter().any(|c| {
+        let has_reasonable = results.iter().map(|(_, s)| s).any(|c| {
             let cr = c.pos.norm();
             cr > true_r / 3.0 && cr < true_r * 3.0
         });
@@ -1696,9 +1759,9 @@ mod tests {
             has_reasonable,
             "Close-encounter NEO: at least one candidate within 3x of true r={true_r:.3}, \
              got distances: {:?}",
-            states(&results)
+            results
                 .iter()
-                .map(|c| c.pos.norm())
+                .map(|(_, s)| s.pos.norm())
                 .collect::<Vec<_>>()
         );
     }
@@ -1848,9 +1911,9 @@ mod tests {
         let last_jd = epochs[epochs.len() - 1];
         for (_, c) in &results {
             assert!(
-                (c.epoch.jd - last_jd).abs() < 1e-10,
+                (c.epoch.jd() - last_jd).abs() < 1e-10,
                 "Epoch should be last obs {last_jd}, got {}",
-                c.epoch.jd
+                c.epoch.jd()
             );
         }
     }

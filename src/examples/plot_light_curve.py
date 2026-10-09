@@ -42,7 +42,8 @@ for dt in dts:
     earth_pos = kete.spice.get_state("Earth", jd + dt).pos
     final_pos = kete.propagate_two_body(state, jd + dt, earth_pos).pos
 
-    obj2obs = final_pos - earth_pos
+    obs2obj = final_pos - earth_pos
+    obj2sun = -final_pos
 
     # Rotate the normal vectors around the defined axis of rotation
     new_normals = np.array(
@@ -52,12 +53,14 @@ for dt in dts:
         ]
     )
 
-    ss_temp = kete.flux.sub_solar_temperature(obj2obs.r, albedo, G, beaming, emissivity)
-    temps = kete.flux.neatm_facet_temps(new_normals, ss_temp, obj2obs)
+    ss_temp = kete.flux.sub_solar_temperature(
+        final_pos.r, albedo, G, beaming, emissivity
+    )
+    temps = kete.flux.neatm_facet_temps(new_normals, ss_temp, obj2sun)
     facet_fluxes = [kete.flux.black_body_flux(t, wavelength) for t in temps]
     facet_fluxes = np.array(facet_fluxes) * geom.areas
     flux = kete.flux.lambertian_flux(
-        facet_fluxes, geom.normals, -obj2obs, diameter, emissivity
+        facet_fluxes, new_normals, obs2obj, diameter, emissivity
     )
     fluxes.append(flux)
 plt.plot(dts, fluxes)

@@ -1,8 +1,13 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 use crate::{frame::PyFrames, vector::VectorLike};
 use itertools::Itertools;
 use kete_core::constants::{
     w1_color_correction, w2_color_correction, w3_color_correction, w4_color_correction,
 };
+use kete_core::geometry::{ConvexShape, TriangleShape};
 use kete_core::prelude::Error;
 use kete_flux::*;
 use nalgebra::UnitVector3;
@@ -49,11 +54,12 @@ pub fn lambertian_flux_py(
         .sum()
 }
 
-/// Return the Solar flux in Jy / Steradian from the 2000 ASTM Standard Extraterrestrial
+/// Return the Solar flux density in Janskys from the 2000 ASTM Standard Extraterrestrial
 /// Spectrum Reference E-490-00:
 /// <https://www.nrel.gov/grid/solar-resource/spectra-astm-e490.html>
 ///
-/// Returned values are units Janskys / steradian per unit freq.
+/// Returned values are flux densities in units of Janskys, scaled by
+/// ``1 / dist^2`` from the tabulated 1 au spectrum.
 ///
 /// Parameters
 /// ----------
@@ -171,8 +177,8 @@ pub fn neatm_facet_temperature_py(
         .map(|normal| {
             neatm_facet_temperature(
                 &UnitVector3::new_normalize(normal.into()),
+                subsolar_temp,
                 &obj2sun,
-                &subsolar_temp,
             )
         })
         .collect_vec()
@@ -371,7 +377,7 @@ impl PyTriangleShape {
             ));
         }
         Ok(Self {
-            shape: TriangleShape::new_ellipsoid(n_div, x_scale, y_scale, z_scale),
+            shape: TriangleShape::new_ellipsoid(n_div, x_scale, y_scale, z_scale)?,
         })
     }
 

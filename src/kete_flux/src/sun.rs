@@ -1,37 +1,11 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Reference Solar Spectrum
 //!
 //! This is the 2000 ASTM Standard Extraterrestrial Spectrum Reference E-490-00:
 //! <https://www.nrel.gov/grid/solar-resource/spectra-astm-e490.html>
-//!
-// BSD 3-Clause License
-//
-// Copyright (c) 2026, Dar Dahlen
-// Copyright (c) 2025, California Institute of Technology
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice, this
-//    list of conditions and the following disclaimer.
-//
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-//
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from
-//    this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use std::f64::consts::PI;
 
@@ -47,7 +21,8 @@ use crate::black_body_flux;
 ///
 /// If query is outside of the range of data, then [`None`] is returned.
 ///
-/// Returned values are units Janskys / steradian.
+/// Returned values are flux densities in units of Janskys, scaled by
+/// `1 / dist^2` from the tabulated 1 au spectrum.
 ///
 /// # Arguments
 ///
@@ -72,7 +47,7 @@ pub fn solar_flux(dist: f64, wavelength: f64) -> Option<f64> {
     let w_frac = (wavelength - low[0]) / (high[0] - low[0]);
     let val = w_frac * (high[1] - low[1]) + low[1];
 
-    // convert from Watts / m^2 / micron to Jy / Steradian
+    // convert from Watts / m^2 / micron to Janskys
     Some(val * 1e20 * wavelength.powi(2) / C_M_PER_S / dist.powi(2))
 }
 
@@ -82,7 +57,7 @@ pub fn solar_flux(dist: f64, wavelength: f64) -> Option<f64> {
 /// This is an approximation which breaks down when the object gets within a few solar
 /// radii.
 ///
-/// This returns the flux at the object in Jy / steradian per unit frequency.
+/// This returns the flux density at the object in Janskys.
 ///
 /// # Arguments
 ///

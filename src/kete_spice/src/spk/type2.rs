@@ -1,9 +1,13 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! SPK Segment Type 2 - Chebyshev Polynomials (Position Only).
 //!
 //! <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/spk.html#Type%202:%20Chebyshev%20position%20only>
 
 use super::SpkArray;
-use crate::interpolation::chebyshev_evaluate_both;
+use crate::interpolation::{ChebyshevLayout, chebyshev_evaluate_both};
 use kete_core::constants::AU_KM;
 use kete_core::errors::Error;
 use kete_core::prelude::KeteResult;
@@ -16,10 +20,7 @@ use kete_core::time::{TDB, Time};
 #[derive(Debug)]
 pub struct SpkSegmentType2 {
     pub(crate) array: SpkArray,
-    jds_step: f64,
-    n_coef: usize,
-    n_records: usize,
-    record_len: usize,
+    layout: ChebyshevLayout,
 }
 
 /// Type 2 Record View
@@ -37,39 +38,38 @@ struct Type2RecordView<'a> {
 impl SpkSegmentType2 {
     #[inline(always)]
     fn get_record(&self, idx: usize) -> Type2RecordView<'_> {
+        let record_len = self.layout.record_len;
+        let n_coef = self.layout.n_coef;
+        // SAFETY: `ChebyshevLayout::from_array` checked that the array holds
+        // `n_records` records of `record_len` values, with
+        // `record_len = 3 * n_coef + 2`. The only caller takes `idx` from
+        // `record_index`, which returns at most `n_records - 1`.
         unsafe {
             let vals = self
                 .array
                 .daf
                 .data
-                .get_unchecked(idx * self.record_len..(idx + 1) * self.record_len);
+                .get_unchecked(idx * record_len..(idx + 1) * record_len);
 
             Type2RecordView {
                 t_mid: vals.get_unchecked(0),
                 t_step: vals.get_unchecked(1),
-                x_coef: vals.get_unchecked(2..(self.n_coef + 2)),
-                y_coef: vals.get_unchecked((self.n_coef + 2)..(2 * self.n_coef + 2)),
-                z_coef: vals.get_unchecked((2 * self.n_coef + 2)..(3 * self.n_coef + 2)),
+                x_coef: vals.get_unchecked(2..(n_coef + 2)),
+                y_coef: vals.get_unchecked((n_coef + 2)..(2 * n_coef + 2)),
+                z_coef: vals.get_unchecked((2 * n_coef + 2)..(3 * n_coef + 2)),
             }
         }
     }
 
     #[inline(always)]
-    pub(crate) fn try_get_pos_vel(&self, jds: f64) -> KeteResult<([f64; 3], [f64; 3])> {
-        let jds_start = self.array.jds_start;
-
-        #[allow(
-            clippy::cast_sign_loss,
-            reason = "This is correct as long as the file is correct."
-        )]
-        // Clamp to the last record when jds lands exactly on the segment end boundary.
-        let record_index =
-            (((jds - jds_start) / self.jds_step).floor() as usize).min(self.n_records - 1);
+    pub(crate) fn try_get_pos_vel(&self, time: Time<TDB>) -> KeteResult<([f64; 3], [f64; 3])> {
+        let jds = time.j2000_seconds();
+        let record_index = self.layout.record_index(jds);
         let record = self.get_record(record_index);
 
         let t_step = record.t_step;
 
-        let t = (jds - record.t_mid) / t_step;
+        let t = time.j2000_seconds_minus(*record.t_mid) / t_step;
 
         let t_step_scaled = 86400.0 / t_step / AU_KM;
 
@@ -86,22 +86,21 @@ impl SpkSegmentType2 {
 
     /// Create a Type 2 (Chebyshev position only, fixed intervals) SPK array.
     ///
-    /// # Arguments
-    /// * `object_id`    - NAIF ID of the body.
-    /// * `center_id`    - NAIF ID of the center body.
-    /// * `frame_id`     - NAIF frame ID.
-    /// * `cdata`        - Flat Chebyshev coefficients, `(polydg+1)*3` values per record.
-    /// * `n_records`    - Number of records.
-    /// * `btime`        - Begin time of first interval (SPICE seconds from J2000).
-    /// * `intlen`       - Length of each interval (seconds). Must be > 0.
-    /// * `polydg`       - Polynomial degree, in `[0, 27]`.
-    /// * `jd_start`     - Segment start epoch.
-    /// * `jd_end`       - Segment end epoch.
-    /// * `segment_name` - Name stored in the DAF name record (max 40 chars).
+    /// `object_id` is the NAIF ID of the body, and `center_id` is the NAIF ID
+    /// of the center body. `frame_id` is the NAIF frame ID. `cdata` holds the
+    /// flat Chebyshev coefficients, `3 * (polydg + 1)` values per record.
+    /// `n_records` is the number of records. `btime` is the start of the first
+    /// interval, in TDB seconds from J2000. `intlen` is the length of each
+    /// interval, in seconds. `polydg` is the polynomial degree. `jds_start` and
+    /// `jds_end` are the segment start and end, in TDB seconds from J2000.
+    /// `segment_name` is the name stored in the DAF name record, which holds at
+    /// most 40 characters.
     ///
     /// # Errors
-    /// Returns an error if `polydg` is outside `[0, 27]` or `cdata` length is
-    /// inconsistent with `n_records` and `polydg`.
+    /// Returns [`Error::ValueError`] in these cases:
+    /// - `polydg` is greater than 27.
+    /// - `intlen` is zero or negative.
+    /// - The length of `cdata` is not `3 * (polydg + 1) * n_records`.
     pub fn new_array(
         object_id: i32,
         center_id: i32,
@@ -111,8 +110,8 @@ impl SpkSegmentType2 {
         btime: f64,
         intlen: f64,
         polydg: usize,
-        jd_start: Time<TDB>,
-        jd_end: Time<TDB>,
+        jds_start: f64,
+        jds_end: f64,
         segment_name: &str,
     ) -> KeteResult<SpkArray> {
         let data = build_type2_data(cdata, n_records, btime, intlen, polydg)?;
@@ -121,8 +120,8 @@ impl SpkSegmentType2 {
             center_id,
             frame_id,
             2,
-            jd_start,
-            jd_end,
+            jds_start,
+            jds_end,
             data,
             segment_name.to_string(),
         ))
@@ -133,31 +132,8 @@ impl TryFrom<SpkArray> for SpkSegmentType2 {
     type Error = Error;
 
     fn try_from(array: SpkArray) -> Result<Self, Self::Error> {
-        #[allow(
-            clippy::cast_sign_loss,
-            reason = "This is correct as long as the file is correct."
-        )]
-        let record_len = array.daf[array.daf.len() - 2] as usize;
-        let jds_step = array.daf[array.daf.len() - 3];
-        #[allow(
-            clippy::cast_sign_loss,
-            reason = "This is correct as long as the file is correct."
-        )]
-        let n_records = array.daf[array.daf.len() - 1] as usize;
-
-        let n_coef = (record_len - 2) / 3;
-
-        if 3 * n_coef + 2 != record_len {
-            return Err(Error::ValueError("File incorrectly formatted, found number of Chebyshev coefficients doesn't match expected".into()));
-        }
-
-        Ok(Self {
-            array,
-            jds_step,
-            n_coef,
-            n_records,
-            record_len,
-        })
+        let layout = ChebyshevLayout::from_array(&array.daf, 3)?;
+        Ok(Self { array, layout })
     }
 }
 
@@ -239,6 +215,65 @@ mod tests {
         assert_eq!(data[9], 100.0);
         assert_eq!(data[10], 8.0); // ninrec + 2 = 6 + 2
         assert_eq!(data[11], 1.0);
+    }
+
+    /// Build three degree 0 records that hold the constants 1, 2, and 3 km.
+    fn three_constant_records(jds_start: f64, jds_end: f64) -> SpkSegmentType2 {
+        let cdata = [1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0];
+        let array = SpkSegmentType2::new_array(
+            1000, 10, 1, &cdata, 3, 0.0, 100.0, 0, jds_start, jds_end, "test",
+        )
+        .unwrap();
+        array.try_into().unwrap()
+    }
+
+    #[test]
+    fn type2_record_located_from_init() {
+        // The segment starts part way through the first record, as in a kernel
+        // cut from a larger one. The reader must still locate records from
+        // INIT.
+        let seg = three_constant_records(50.0, 300.0);
+        for (jds, expected) in [(50.0, 1.0), (99.0, 1.0), (120.0, 2.0), (199.0, 2.0)] {
+            let (p, v) = seg.try_get_pos_vel(Time::from_j2000_seconds(jds)).unwrap();
+            assert!(
+                (p[0] * AU_KM - expected).abs() < 1e-9,
+                "jds={jds}: {}",
+                p[0]
+            );
+            assert_eq!(v, [0.0; 3]);
+        }
+        // A time exactly at the end of the last record uses the last record.
+        let (p, _) = seg
+            .try_get_pos_vel(Time::from_j2000_seconds(300.0))
+            .unwrap();
+        assert!((p[0] * AU_KM - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn type2_rejects_inconsistent_layout() {
+        let seg = three_constant_records(0.0, 300.0);
+        let mut data = seg.array.daf.data.to_vec();
+        let n = data.len();
+        let make = |data: Vec<f64>| {
+            SpkSegmentType2::try_from(SpkArray::new(
+                1000,
+                10,
+                1,
+                2,
+                0.0,
+                300.0,
+                data,
+                "bad".into(),
+            ))
+        };
+        data[n - 1] = 0.0;
+        assert!(make(data.clone()).is_err());
+        data[n - 1] = 4.0;
+        assert!(make(data.clone()).is_err());
+        data[n - 1] = 3.0;
+        data[n - 2] = 1.0;
+        assert!(make(data).is_err());
+        assert!(make(vec![0.0; 3]).is_err());
     }
 
     #[test]

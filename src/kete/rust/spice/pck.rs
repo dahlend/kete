@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 use kete_core::frames::ecef_to_geodetic_lat_lon;
 use kete_core::{constants, prelude::*};
 use kete_spice::prelude::{LOADED_PCK, LOADED_SPK};
@@ -110,8 +114,12 @@ pub fn pck_reset_py() {
     LOADED_PCK.write().unwrap().reset()
 }
 
-/// Return a list of all loaded objects in the PCK singleton.
-/// This is a list of the center NAIF IDs of the segments.
+/// Return the frame IDs of all loaded segments in the PCK singleton.
+///
+/// Returns
+/// -------
+/// list of int
+///   Unique frame IDs of the loaded segments, in no particular order.
 #[pyfunction]
 #[pyo3(name = "pck_loaded")]
 pub fn pck_loaded_objects_py() -> Vec<i32> {

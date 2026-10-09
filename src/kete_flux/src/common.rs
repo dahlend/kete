@@ -1,37 +1,14 @@
-// BSD 3-Clause License
-//
-// Copyright (c) 2026, Dar Dahlen
-// Copyright (c) 2025, California Institute of Technology
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice, this
-//    list of conditions and the following disclaimer.
-//
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-//
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from
-//    this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
 
-use nalgebra::UnitVector3;
+use nalgebra::{UnitVector3, Vector3};
 use std::f64::consts::PI;
 
-use kete_core::constants::{AU_KM, SOLAR_FLUX, STEFAN_BOLTZMANN};
+use crate::frm::frm_nodes;
+use crate::neatm::neatm_nodes;
+use crate::{hg_apparent_flux, hg_apparent_mag};
+use kete_core::constants::{AU_KM, SOLAR_FLUX, STEFAN_BOLTZMANN, V_MAG_ZERO};
 pub use kete_core::{BandInfo, ColorCorrFn};
 
 /// Output of a flux calculation.
@@ -59,26 +36,12 @@ pub struct ModelResults {
     pub v_band_flux: f64,
 }
 
-impl ModelResults {
-    /// Compute what fraction of the total flux is due to the HG reflection model.
-    #[must_use]
-    pub fn reflected_fraction(&self) -> Vec<f64> {
-        let mut frac = vec![0.0; self.fluxes.len()];
-        frac.iter_mut()
-            .zip(self.fluxes.iter())
-            .zip(self.hg_fluxes.iter())
-            .for_each(|((f, total_flux), vis_flux)| *f = vis_flux / total_flux);
-        frac
-    }
-}
-
 /// Calculate the black body radiation for a list of temperatures at the specified
 /// wavelength.
 ///
 /// Flux is always set to 0.0 if wavelength is less than 10 nm or temperature is less
-/// than 30 kelvin. This improves performance of the thermal models by about 2-3x as
-/// long as the wavelength stays less than around 20 um. This implementation is not
-/// tuned for radio astronomy.
+/// than 30 kelvin, where it is negligible for wavelengths shorter than around 20 um.
+/// This implementation is not tuned for radio astronomy.
 ///
 /// Flux is in units Janskys / steradian.
 /// This can be converted to being per unit wavelength by multiplying the result of
@@ -109,6 +72,181 @@ pub fn black_body_flux(temp: f64, wavelength: f64) -> f64 {
     coef / (exponent.exp() - 1.0)
 }
 
+/// [`black_body_flux`] and its derivative with respect to the log of temperature,
+/// `T dB/dT`, in Jy / steradian.
+#[inline(always)]
+fn black_body_flux_log_derivative(temp: f64, wavelength: f64) -> (f64, f64) {
+    if wavelength < 10.0 || temp < 30.0 {
+        return (0.0, 0.0);
+    }
+    let wavelength_um = wavelength * 1e-3;
+    let exponent = 1.43877688e4 / (wavelength_um * temp);
+    let coef = 397.289171e17 / wavelength_um.powi(3);
+    let flux = coef / (exponent.exp() - 1.0);
+    // T dB/dT = B x e^x / (e^x - 1), and e^x / (e^x - 1) = 1 + B / coef.
+    (flux, flux * exponent * (1.0 + flux / coef))
+}
+
+/// Relative temperature step for the central difference of a color correction.
+const COLOR_CORRECTION_STEP: f64 = 1e-5;
+
+/// Thermal model whose sub-solar temperature a [`ThermalGeometry`] applies.
+#[derive(Debug, Clone, Copy)]
+enum ThermalModel {
+    /// NEATM, with the beaming given to the flux methods.
+    Neatm,
+    /// FRM, with a beaming of pi.
+    Frm,
+}
+
+/// Precomputed thermal surface of one observation, for NEATM or FRM.
+///
+/// The surface is a list of nodes `(weight, temp_fraction)`. The weight is the
+/// quadrature weight, including the projection toward the observer. The
+/// temperature fraction is the node temperature divided by the sub-solar
+/// temperature. The nodes depend only on the geometry, so they are computed once
+/// and reused for any physical parameters.
+///
+/// [`Self::neatm`] and [`Self::frm`] build the nodes of their model and record the
+/// model. The flux methods then apply that model's sub-solar temperature, so NEATM
+/// nodes are always evaluated with the given beaming and FRM nodes with a beaming
+/// of pi.
+#[derive(Debug, Clone)]
+pub(crate) struct ThermalGeometry {
+    /// Model of the nodes.
+    model: ThermalModel,
+
+    /// `(weight, temp_fraction)` of each node visible to the observer.
+    nodes: Vec<(f64, f64)>,
+
+    /// Object to Sun distance in AU.
+    sun_dist: f64,
+
+    /// Object to observer distance in km.
+    obs_dist_km: f64,
+}
+
+impl ThermalGeometry {
+    /// NEATM surface of an object at `sun2obj` seen from `sun2obs`, both in AU
+    /// from the Sun. See [`neatm_nodes`].
+    pub(crate) fn neatm(sun2obj: &Vector3<f64>, sun2obs: &Vector3<f64>) -> Self {
+        Self::new(
+            ThermalModel::Neatm,
+            neatm_nodes(sun2obj, sun2obs),
+            sun2obj,
+            sun2obs,
+        )
+    }
+
+    /// FRM surface of an object at `sun2obj` seen from `sun2obs`, both in AU from
+    /// the Sun. See [`frm_nodes`].
+    pub(crate) fn frm(sun2obj: &Vector3<f64>, sun2obs: &Vector3<f64>) -> Self {
+        Self::new(
+            ThermalModel::Frm,
+            frm_nodes(sun2obj, sun2obs),
+            sun2obj,
+            sun2obs,
+        )
+    }
+
+    fn new(
+        model: ThermalModel,
+        nodes: Vec<(f64, f64)>,
+        sun2obj: &Vector3<f64>,
+        sun2obs: &Vector3<f64>,
+    ) -> Self {
+        Self {
+            model,
+            nodes,
+            sun_dist: sun2obj.norm(),
+            obs_dist_km: (sun2obj - sun2obs).norm() * AU_KM,
+        }
+    }
+
+    /// Sub-solar temperature in kelvin. FRM ignores `beaming` and uses pi.
+    fn sub_solar_temperature(
+        &self,
+        vis_albedo: f64,
+        g_param: f64,
+        beaming: f64,
+        emissivity: f64,
+    ) -> f64 {
+        let beaming = match self.model {
+            ThermalModel::Neatm => beaming,
+            ThermalModel::Frm => PI,
+        };
+        sub_solar_temperature(self.sun_dist, vis_albedo, g_param, beaming, emissivity)
+    }
+
+    /// Thermal flux in Jy in one band.
+    ///
+    /// The flux is `emissivity * (D / obs_dist)^2 * sum w * B(T) * c(T)`, where
+    /// `T = T_ss * temp_fraction`, `B` is the black body flux and `c` the band's
+    /// color correction. `diameter` is in km. FRM ignores `beaming`.
+    pub(crate) fn flux(
+        &self,
+        band: &BandInfo,
+        diameter: f64,
+        vis_albedo: f64,
+        g_param: f64,
+        beaming: f64,
+        emissivity: f64,
+    ) -> f64 {
+        let ss_temp = self.sub_solar_temperature(vis_albedo, g_param, beaming, emissivity);
+        let mut total = 0.0;
+        for &(weight, frac) in &self.nodes {
+            let temp = ss_temp * frac;
+            if temp < 30.0 {
+                continue;
+            }
+            let mut flux = black_body_flux(temp, band.wavelength);
+            if let Some(func) = band.color_correction {
+                flux *= func(temp);
+            }
+            total += weight * flux;
+        }
+        total * emissivity * (diameter / self.obs_dist_km).powi(2)
+    }
+
+    /// [`Self::flux`] and its derivative with respect to the log of the sub-solar
+    /// temperature.
+    ///
+    /// The color correction derivative is a central difference.
+    pub(crate) fn flux_and_log_derivative(
+        &self,
+        band: &BandInfo,
+        diameter: f64,
+        vis_albedo: f64,
+        g_param: f64,
+        beaming: f64,
+        emissivity: f64,
+    ) -> (f64, f64) {
+        let ss_temp = self.sub_solar_temperature(vis_albedo, g_param, beaming, emissivity);
+        let mut total = 0.0;
+        let mut deriv = 0.0;
+        for &(weight, frac) in &self.nodes {
+            let temp = ss_temp * frac;
+            if temp < 30.0 {
+                continue;
+            }
+            let (flux, flux_deriv) = black_body_flux_log_derivative(temp, band.wavelength);
+            if let Some(func) = band.color_correction {
+                let corr = func(temp);
+                let corr_deriv = (func(temp * (1.0 + COLOR_CORRECTION_STEP))
+                    - func(temp * (1.0 - COLOR_CORRECTION_STEP)))
+                    / (2.0 * COLOR_CORRECTION_STEP);
+                total += weight * flux * corr;
+                deriv += weight * (flux_deriv * corr + flux * corr_deriv);
+            } else {
+                total += weight * flux;
+                deriv += weight * flux_deriv;
+            }
+        }
+        let scale = emissivity * (diameter / self.obs_dist_km).powi(2);
+        (total * scale, deriv * scale)
+    }
+}
+
 /// Calculate the total flux visible from an observers position from a Lambertian
 /// surface.
 ///
@@ -133,34 +271,13 @@ pub fn lambertian_flux(
     diameter: f64,
     emissivity: f64,
 ) -> f64 {
-    lambertian_vis_scale_factor(facet_normal, obs2obj, obs2obj_r, diameter, emissivity) * facet_flux
-}
-
-/// Scale factor for emitted flux from a lambertian surface.
-/// This is a helper function for [`lambertian_flux`], see that function for
-/// more description.
-///
-/// This is broken out into its own function because the FRM and
-/// NEATM models run over the same geometry for different
-/// wavelengths.
-/// This allows this to be computed once per geometry, but then multiple wavelengths
-/// be multiplied against it. This resulted in a 50% speedup in FRM and NEATM overall.
-#[inline(always)]
-#[must_use]
-pub fn lambertian_vis_scale_factor(
-    facet_normal: &UnitVector3<f64>,
-    obs2obj: &UnitVector3<f64>,
-    obs2obj_r: f64,
-    diameter: f64,
-    emissivity: f64,
-) -> f64 {
     // effective scaling due to distance from the observer
     let scale = (obs2obj_r * AU_KM / diameter).powi(-2);
 
     // flipping direction of observer vector
     let observed = -facet_normal.dot(obs2obj);
     if observed > 0.0 {
-        return observed * emissivity * PI * scale;
+        return observed * emissivity * PI * scale * facet_flux;
     }
     0.0
 }
@@ -224,6 +341,66 @@ pub fn mag_to_flux(mag: f64, mag_zero_flux: f64) -> f64 {
 #[must_use]
 pub fn flux_to_mag(flux: f64, mag_zero_flux: f64) -> f64 {
     -2.5 * (flux / mag_zero_flux).log10()
+}
+
+/// Add the HG reflected-light contribution to a set of thermal fluxes and assemble the
+/// [`ModelResults`].
+///
+/// Used by NEATM and FRM with their per-band thermal flux.
+///
+/// # Arguments
+///
+/// * `obs_bands` - Wavelength band information of the observer.
+/// * `band_albedos` - Albedo of the object for each band.
+/// * `thermal_fluxes` - Thermal flux in Jy for each band.
+/// * `diameter` - Diameter of the object in km.
+/// * `g_param` - The G parameter in the HG system.
+/// * `h_mag` - The H parameter of the object in the HG system.
+/// * `sun2obj` - Position of the object with respect to the Sun in AU.
+/// * `sun2obs` - Position of the observer with respect to the Sun in AU.
+#[must_use]
+pub(crate) fn assemble_total(
+    obs_bands: &[BandInfo],
+    band_albedos: &[f64],
+    thermal_fluxes: Vec<f64>,
+    diameter: f64,
+    g_param: f64,
+    h_mag: f64,
+    sun2obj: &Vector3<f64>,
+    sun2obs: &Vector3<f64>,
+) -> ModelResults {
+    let mut hg_fluxes = Vec::with_capacity(thermal_fluxes.len());
+    let mut fluxes = Vec::with_capacity(thermal_fluxes.len());
+    for ((band, t_flux), albedo) in obs_bands.iter().zip(&thermal_fluxes).zip(band_albedos) {
+        let refl = hg_apparent_flux(
+            g_param,
+            diameter,
+            sun2obj,
+            sun2obs,
+            band.wavelength,
+            *albedo,
+        ) * band.solar_correction;
+        hg_fluxes.push(refl);
+        fluxes.push(*t_flux + refl);
+    }
+
+    let v_band_magnitude = hg_apparent_mag(g_param, h_mag, sun2obj, sun2obs);
+    let v_band_flux = mag_to_flux(v_band_magnitude, V_MAG_ZERO);
+
+    let magnitudes: Vec<_> = obs_bands
+        .iter()
+        .zip(&fluxes)
+        .map(|(band_info, flux)| flux_to_mag(*flux, band_info.zero_mag))
+        .collect();
+
+    ModelResults {
+        fluxes,
+        magnitudes,
+        thermal_fluxes,
+        hg_fluxes,
+        v_band_magnitude,
+        v_band_flux,
+    }
 }
 
 #[cfg(test)]

@@ -1,8 +1,12 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Python support for kepler orbit calculations
 use itertools::Itertools;
 use kete_core::frames::{Ecliptic, Equatorial, SunCenter, Vector};
+use kete_core::kepler;
 use kete_core::state::State;
-use kete_core::{constants, kepler};
 use pyo3::{Py, PyAny, PyErr, Python, exceptions};
 use pyo3::{PyResult, pyfunction};
 use rayon::prelude::*;
@@ -12,24 +16,24 @@ use crate::state::PyState;
 use crate::time::PyTime;
 use crate::vector::PyVector;
 
-/// Solve kepler's equation for the Eccentric Anomaly.
+/// Solve Kepler's equation for the eccentric anomaly.
 ///
 /// Parameters
 /// ----------
-/// ecc :
-///     Eccentricity, must be non-negative.
-/// mean_anom :
-///     Mean Anomaly between 0 and 2*pi.
-/// peri_dist :
-///     Perihelion distance in AU.
+/// ecc : list of float
+///   Eccentricity, must be non-negative.
+/// mean_anom : list of float
+///   Mean anomaly in radians.
+///
+/// Returns
+/// -------
+/// list of float
+///   Eccentric anomaly in radians in ``[0, 2 pi)`` for ``ecc <= 1``, and the
+///   hyperbolic anomaly for ``ecc > 1``. Invalid inputs give NaN.
 #[pyfunction]
 #[pyo3(name = "compute_eccentric_anomaly")]
-pub fn compute_eccentric_anomaly_py(
-    ecc: Vec<f64>,
-    mean_anom: Vec<f64>,
-    peri_dist: Vec<f64>,
-) -> PyResult<Vec<f64>> {
-    if ecc.len() != mean_anom.len() || ecc.len() != peri_dist.len() {
+pub fn compute_eccentric_anomaly_py(ecc: Vec<f64>, mean_anom: Vec<f64>) -> PyResult<Vec<f64>> {
+    if ecc.len() != mean_anom.len() {
         return Err(PyErr::new::<exceptions::PyValueError, _>(
             "Input lengths must all match.",
         ));
@@ -37,35 +41,32 @@ pub fn compute_eccentric_anomaly_py(
     Ok(ecc
         .iter()
         .zip(mean_anom)
-        .zip(peri_dist)
         .collect_vec()
         .par_iter()
-        .map(|((e, anom), peri)| {
-            kepler::compute_eccentric_anomaly(**e, *anom, *peri).unwrap_or(f64::NAN)
-        })
+        .map(|(e, anom)| kepler::compute_eccentric_anomaly(**e, *anom).unwrap_or(f64::NAN))
         .collect())
 }
 
 /// Propagate the :class:`~kete.State` for all the objects to the specified time.
-/// This assumes 2 body interactions.
 ///
-/// This is a multi-core operation.
+/// This assumes two-body motion about the Sun. This is a multi-core operation.
 ///
 /// Parameters
 /// ----------
-/// state :
-///     List of states, which are in units of AU from the Sun and velocity is in AU/Day.
-/// epoch :
-///     Time to integrate to in JD days with TDB scaling.
-/// observer_pos :
-///     A vector of length 3 describing the position of an observer. If this is
-///     provided then the estimated states will be returned as a result of light
-///     propagation delay.
+/// states : State or list of State
+///   States to propagate, in AU and AU/Day.
+/// epoch : float or Time
+///   Time to propagate to, in JD with TDB scaling.
+/// observer_pos : Vector, optional
+///   Sun-centered position of an observer. If it is given, the states are
+///   corrected for light travel time to the observer. The delay is iterated
+///   until it changes by less than 1e-12 days, at most 3 times. Defaults to
+///   no correction.
 ///
 /// Returns
 /// -------
-/// State
-///     Final states after propagating to the target time.
+/// State or list of State
+///   States after propagation. A state that fails to propagate has NaN values.
 #[pyfunction]
 #[pyo3(name = "propagate_two_body", signature = (states, epoch, observer_pos=None))]
 pub fn propagation_kepler_py(
@@ -105,8 +106,7 @@ pub fn propagation_kepler_py(
 
             if let Some(observer_pos) = &observer_pos {
                 let observer_pos: Vector<Equatorial> = observer_pos.clone().into();
-                let delay = -(new_state.pos - observer_pos).norm() / constants::C_AU_PER_DAY;
-                new_state = match kepler::propagate_two_body(&new_state, new_state.epoch + delay) {
+                new_state = match kepler::light_time_correct(&new_state, &observer_pos) {
                     Ok(state) => state,
                     Err(_) => State {
                         desig: state.raw.desig.clone(),

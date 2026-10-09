@@ -1,38 +1,14 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! # Definitions of contiguous field of views
 //! These field of views are made up of single contiguous patches of sky, typically single image sensors.
-// BSD 3-Clause License
-//
-// Copyright (c) 2026, Dar Dahlen
-// Copyright (c) 2025, California Institute of Technology
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice, this
-//    list of conditions and the following disclaimer.
-//
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-//
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from
-//    this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use std::fmt::Debug;
 
-use super::{Contains, FovLike, OnSkyRectangle, SkyPatch, SphericalCone};
+use super::FovLike;
+use crate::geometry::{Contains, SkyPatch, SphericalCone, SphericalPolygon};
 use crate::{
     errors::{Error, KeteResult},
     fov::FOV,
@@ -46,7 +22,7 @@ pub struct GenericRectangle {
     pub(crate) observer: State<Equatorial>,
 
     /// Patch of sky
-    pub(crate) patch: OnSkyRectangle,
+    pub(crate) patch: SphericalPolygon,
 
     /// Rotation of the FOV.
     pub rotation: f64,
@@ -54,20 +30,24 @@ pub struct GenericRectangle {
 
 impl GenericRectangle {
     /// Create a new Generic Rectangular FOV
-    #[must_use]
+    ///
+    /// # Errors
+    /// Returns [`Error::ValueError`] if
+    /// `pointing` is not finite or points at a celestial pole, where the rotation
+    /// is undefined. See [`SphericalPolygon::new`](crate::geometry::SphericalPolygon::new).
     pub fn new(
         pointing: Vector<Equatorial>,
         rotation: f64,
         lon_width: f64,
         lat_width: f64,
         observer: State<Equatorial>,
-    ) -> Self {
-        let patch = OnSkyRectangle::new(pointing, rotation, lon_width, lat_width);
-        Self {
+    ) -> KeteResult<Self> {
+        let patch = SphericalPolygon::new(pointing, rotation, lon_width, lat_width)?;
+        Ok(Self {
             observer,
             patch,
             rotation,
-        }
+        })
     }
 
     /// Create a Field of view from a collection of corners.
@@ -77,7 +57,7 @@ impl GenericRectangle {
         observer: State<Equatorial>,
         expand_angle: f64,
     ) -> Self {
-        let patch = OnSkyRectangle::from_corners(corners, expand_angle);
+        let patch = SphericalPolygon::from_corners(corners, expand_angle);
         Self {
             patch,
             observer,
@@ -136,7 +116,7 @@ impl FovLike for GenericRectangle {
 
     #[inline]
     fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
-        Ok(self.patch.corners().into())
+        Ok(self.patch.corners())
     }
 }
 
@@ -198,7 +178,73 @@ impl FovLike for OmniDirectional {
     }
 }
 
-/// Generic rectangular FOV
+/// Generic polygon FOV, convex or not.
+///
+/// See [`SphericalPolygon::try_from_corners`] for the conditions on the
+/// corners.
+#[derive(Debug, Clone)]
+pub struct GenericPolygon {
+    pub(crate) observer: State<Equatorial>,
+
+    /// Patch of sky.
+    pub patch: SphericalPolygon,
+}
+
+impl GenericPolygon {
+    /// The polygon FOV with `corners`, given in order around it, seen by
+    /// `observer`.
+    ///
+    /// # Errors
+    /// [`Error::ValueError`] if the corners do not form a valid polygon.
+    pub fn new(corners: &[Vector<Equatorial>], observer: State<Equatorial>) -> KeteResult<Self> {
+        Ok(Self {
+            observer,
+            patch: SphericalPolygon::try_from_corners(corners)?,
+        })
+    }
+}
+
+impl FovLike for GenericPolygon {
+    type ChildFov = Self;
+
+    #[inline]
+    fn get_child(&self, index: usize) -> Self {
+        assert!(index == 0, "FOV only has a single patch");
+        self.clone()
+    }
+
+    #[inline]
+    fn into_fov(self) -> FOV {
+        FOV::GenericPolygon(self)
+    }
+
+    #[inline]
+    fn observer(&self) -> &State<Equatorial> {
+        &self.observer
+    }
+
+    #[inline]
+    fn contains(&self, obs_to_obj: &Vector<Equatorial>) -> (usize, Contains) {
+        (0, self.patch.contains(obs_to_obj))
+    }
+
+    #[inline]
+    fn n_patches(&self) -> usize {
+        1
+    }
+
+    #[inline]
+    fn pointing(&self) -> KeteResult<Vector<Equatorial>> {
+        Ok(self.patch.pointing())
+    }
+
+    #[inline]
+    fn corners(&self) -> KeteResult<Vec<Vector<Equatorial>>> {
+        Ok(self.patch.corners())
+    }
+}
+
+/// Generic conic FOV
 #[derive(Debug, Clone)]
 pub struct GenericCone {
     pub(crate) observer: State<Equatorial>,
@@ -208,18 +254,18 @@ pub struct GenericCone {
 }
 
 impl GenericCone {
-    /// Create a new Generic Conic FOV
+    /// Create a new Generic Conic FOV, `angle` is in radians.
     #[must_use]
     pub fn new(pointing: Vector<Equatorial>, angle: f64, observer: State<Equatorial>) -> Self {
         let patch = SphericalCone::new(&pointing, angle);
         Self { observer, patch }
     }
 
-    /// Angle of the cone from the central pointing vector.
+    /// Angle of the cone from the central pointing vector in radians.
     #[inline]
     #[must_use]
-    pub fn angle(&self) -> &f64 {
-        &self.patch.angle
+    pub fn angle(&self) -> f64 {
+        self.patch.angle()
     }
 }
 

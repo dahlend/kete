@@ -1,37 +1,12 @@
-//! Interpolation methods used by Spice SPK Files.
-//!
-//! It is unlikely to be useful outside of reading these files.
-//!
-// BSD 3-Clause License
-//
-// Copyright (c) 2026, Dar Dahlen
-// Copyright (c) 2025, California Institute of Technology
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice, this
-//    list of conditions and the following disclaimer.
-//
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-//
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from
-//    this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
 
+//! Interpolation methods and record layouts for the SPICE kernel readers.
+//!
+//! The SPK, PCK, and CK readers in this crate use these functions.
+
+use crate::daf::DafArray;
 use kete_core::{errors::Error, prelude::KeteResult};
 use nalgebra::DVector;
 
@@ -61,10 +36,14 @@ pub(crate) fn chebyshev_evaluate_both(
     let n_coef = coefx.len();
 
     if n_coef < 2 {
-        Err(Error::IOError(
-            "File not formatted correctly. Chebyshev polynomial must be greater than order 2."
-                .into(),
-        ))?;
+        // One coefficient is a constant series. No coefficients is a malformed
+        // file.
+        return match (coefx.first(), coefy.first(), coefz.first()) {
+            (Some(x), Some(y), Some(z)) => Ok(([*x, *y, *z], [0.0; 3])),
+            _ => Err(Error::IOError(
+                "File not formatted correctly. Chebyshev polynomial has no coefficients.".into(),
+            )),
+        };
     }
     let x2 = 2.0 * t;
 
@@ -132,10 +111,14 @@ pub(crate) fn chebyshev_evaluate(
     let n_coef = coefx.len();
 
     if n_coef < 2 {
-        Err(Error::IOError(
-            "File not formatted correctly. Chebyshev polynomial must be greater than order 2."
-                .into(),
-        ))?;
+        // One coefficient is a constant series. No coefficients is a malformed
+        // file.
+        return match (coefx.first(), coefy.first(), coefz.first()) {
+            (Some(x), Some(y), Some(z)) => Ok([*x, *y, *z]),
+            _ => Err(Error::IOError(
+                "File not formatted correctly. Chebyshev polynomial has no coefficients.".into(),
+            )),
+        };
     }
     let x2 = 2.0 * t;
 
@@ -161,20 +144,134 @@ pub(crate) fn chebyshev_evaluate(
     Ok(val)
 }
 
+/// Record layout of a fixed-interval Chebyshev segment.
+///
+/// SPK types 2 and 3 and PCK type 2 use this layout. The segment holds `N`
+/// records of `RSIZE` values. The segment then ends with the four values
+/// `[INIT, INTLEN, RSIZE, N]`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ChebyshevLayout {
+    /// Start of the first record, in seconds from J2000 TDB.
+    init: f64,
+
+    /// Length of each record, in seconds.
+    intlen: f64,
+
+    /// Number of records.
+    pub(crate) n_records: usize,
+
+    /// Number of values in each record.
+    pub(crate) record_len: usize,
+
+    /// Number of coefficients in each Chebyshev series of a record.
+    pub(crate) n_coef: usize,
+}
+
+impl ChebyshevLayout {
+    /// Read and validate the final four values of a segment.
+    ///
+    /// `n_series` is the number of Chebyshev series in each record. The series
+    /// follow the midpoint and radius of the record.
+    ///
+    /// # Errors
+    /// Returns [`Error::IOError`] in these cases:
+    /// - The array holds fewer than four values.
+    /// - `INIT` or `INTLEN` is not finite, or `INTLEN` is not positive.
+    /// - `RSIZE` or `N` is not a whole number of at least 1.
+    /// - `RSIZE` does not hold `n_series` series after the midpoint and radius.
+    /// - The array length is not `RSIZE * N + 4`.
+    pub(crate) fn from_array(daf: &DafArray, n_series: usize) -> KeteResult<Self> {
+        let len = daf.len();
+        if len < 4 {
+            return Err(Error::IOError(
+                "Chebyshev segment is too short to hold its layout.".into(),
+            ));
+        }
+        let init = daf[len - 4];
+        let intlen = daf[len - 3];
+        let record_len = daf[len - 2];
+        let n_records = daf[len - 1];
+
+        let valid_count = |x: f64| x.is_finite() && x >= 1.0 && x.fract() == 0.0;
+        let valid = valid_count(record_len)
+            && valid_count(n_records)
+            && init.is_finite()
+            && intlen.is_finite()
+            && intlen > 0.0;
+        if !valid {
+            return Err(Error::IOError(format!(
+                "Chebyshev segment layout is invalid: init={init}, intlen={intlen}, \
+                 rsize={record_len}, n={n_records}."
+            )));
+        }
+        #[allow(
+            clippy::cast_sign_loss,
+            clippy::cast_possible_truncation,
+            reason = "Checked above to be positive whole numbers."
+        )]
+        let (record_len, n_records) = (record_len as usize, n_records as usize);
+
+        let n_coef = record_len.saturating_sub(2) / n_series;
+        if n_coef == 0 || n_series * n_coef + 2 != record_len {
+            return Err(Error::IOError(format!(
+                "Chebyshev segment record size {record_len} does not hold {n_series} \
+                 series."
+            )));
+        }
+        if record_len
+            .checked_mul(n_records)
+            .and_then(|x| x.checked_add(4))
+            != Some(len)
+        {
+            return Err(Error::IOError(format!(
+                "Chebyshev segment holds {len} values, expected {n_records} records of \
+                 {record_len} plus 4 layout values."
+            )));
+        }
+        Ok(Self {
+            init,
+            intlen,
+            n_records,
+            record_len,
+            n_coef,
+        })
+    }
+
+    /// Compute the index of the record that covers `jds`.
+    ///
+    /// `jds` is the time in TDB seconds from J2000. The index counts from
+    /// `INIT`. `INIT` can precede the segment start when the segment was cut
+    /// from a larger one. A time before `INIT` gives the first record. A time
+    /// on or after the end of the last record gives the last record.
+    #[inline(always)]
+    pub(crate) fn record_index(&self, jds: f64) -> usize {
+        // The cast saturates, so a time before INIT gives record 0.
+        #[allow(
+            clippy::cast_sign_loss,
+            clippy::cast_possible_truncation,
+            reason = "The cast saturates, and the result is bounded by n_records."
+        )]
+        let idx = ((jds - self.init) / self.intlen).floor() as usize;
+        idx.min(self.n_records - 1)
+    }
+}
+
 /// Interpolate using Hermite interpolation.
 ///
 /// # Arguments
 ///
 /// * `times` - Times where the function `f` is evaluated at.
-/// * `y_vals` - The values of the function `f` at the specified times.
+/// * `y` - The values of the function `f` at the specified times.
 /// * `dy` - The values of the derivative of the function `f`.
-/// * `eval_time` - Time at which to evaluate the interpolation function.
+/// * `offset` - Time at which to evaluate the interpolation function, as an offset
+///   from `times[0]`. The caller forms it from a time of higher precision than a
+///   single f64, so the interpolation never subtracts two large times.
 #[inline(always)]
 pub(crate) fn hermite_interpolation(
     times: &[f64],
     y: &[f64],
     dy: &[f64],
-    eval_time: f64,
+    offset: f64,
 ) -> (f64, f64) {
     debug_assert_eq!(times.len(), y.len(), "Input lengths must match");
     debug_assert_eq!(times.len(), dy.len(), "Input lengths must match");
@@ -189,8 +286,8 @@ pub(crate) fn hermite_interpolation(
     }
 
     for idx in 1..n {
-        let c1 = times[idx] - eval_time;
-        let c2 = eval_time - times[idx - 1];
+        let c1 = (times[idx] - times[0]) - offset;
+        let c2 = offset - (times[idx - 1] - times[0]);
         let denom = times[idx] - times[idx - 1];
 
         let prev = 2 * idx - 2;
@@ -200,20 +297,20 @@ pub(crate) fn hermite_interpolation(
         d_work[prev] = work[cur];
         d_work[cur] = (work[next] - work[prev]) / denom;
 
-        let tmp = work[cur] * (eval_time - times[idx - 1]) + work[prev];
+        let tmp = work[cur] * c2 + work[prev];
         work[cur] = (c1 * work[prev] + c2 * work[next]) / denom;
         work[prev] = tmp;
     }
 
     d_work[2 * n - 2] = work[2 * n - 1];
-    work[2 * n - 2] += work[2 * n - 1] * (eval_time - times[n - 1]);
+    work[2 * n - 2] += work[2 * n - 1] * (offset - (times[n - 1] - times[0]));
 
     for idj in 2..(2 * n) {
         for idi in 1..=(2 * n - idj) {
             let xi = idi.div_ceil(2);
             let xij = (idi + idj).div_ceil(2);
-            let c1 = times[xij - 1] - eval_time;
-            let c2 = eval_time - times[xi - 1];
+            let c1 = (times[xij - 1] - times[0]) - offset;
+            let c2 = offset - (times[xi - 1] - times[0]);
             let denom = times[xij - 1] - times[xi - 1];
 
             d_work[idi - 1] =
@@ -284,14 +381,35 @@ pub(crate) fn chebyshev_fit(x_samples: &[f64], y_samples: &[f64], z_samples: &[f
     out
 }
 
-/// Interpolate using lagrange interpolation.
+/// Interpolate using Lagrange interpolation.
 ///
-/// # Arguments
+/// `x` holds the sample times, and `y` holds the function values at those
+/// times. The function overwrites `y` with the divided differences.
+/// `offset` is the time at which to evaluate the interpolating polynomial, as an
+/// offset from `x[0]`.
 ///
-/// * `times` - Times where the function `f` is evaluated at.
-/// * `y_vals` - The values of the function `f` at the specified times.
-/// * `eval_time` - Time at which to evaluate the interpolation function.
-pub(crate) fn lagrange_interpolation(x: &[f64], y: &mut [f64], eval_time: f64) -> f64 {
+/// # Panics
+/// Panics if `x` is empty, or if `y` is shorter than `x`. Debug builds also
+/// panic if the lengths differ.
+pub(crate) fn lagrange_interpolation(x: &[f64], y: &mut [f64], offset: f64) -> f64 {
+    lagrange_interpolation_both(x, y, offset).0
+}
+
+/// Interpolate using Lagrange interpolation, and return the derivative too.
+///
+/// The function returns `(value, derivative)`. The derivative is the derivative
+/// of the interpolating polynomial. The CK type 5 reader uses it as the
+/// quaternion rate for subtypes 1 and 3.
+///
+/// `x` holds the sample times, and `y` holds the function values at those
+/// times. The function overwrites `y` with the divided differences.
+/// `offset` is the time at which to evaluate the interpolating polynomial, as an
+/// offset from `x[0]`.
+///
+/// # Panics
+/// Panics if `x` is empty, or if `y` is shorter than `x`. Debug builds also
+/// panic if the lengths differ.
+pub(crate) fn lagrange_interpolation_both(x: &[f64], y: &mut [f64], offset: f64) -> (f64, f64) {
     debug_assert_eq!(x.len(), y.len(), "Input lengths must match");
 
     // implementation of newton interpolation
@@ -300,12 +418,17 @@ pub(crate) fn lagrange_interpolation(x: &[f64], y: &mut [f64], eval_time: f64) -
             y[idy] = (y[idy] - y[idx - 1]) / (x[idy] - x[idx - 1]);
         }
     }
+    // Evaluate the Newton form with Horner's rule. The derivative follows from
+    // the same recurrence.
     let deg = x.len() - 1;
     let mut val = y[deg];
+    let mut der = 0.0_f64;
     for k in 1..=deg {
-        val = y[deg - k] + (eval_time - x[deg - k]) * val;
+        let dt = offset - (x[deg - k] - x[0]);
+        der = der.mul_add(dt, val);
+        val = y[deg - k] + dt * val;
     }
-    val
+    (val, der)
 }
 
 #[cfg(test)]
@@ -387,7 +510,7 @@ mod tests {
 
         for v in 0..100 {
             let eval_time = f64::from(v) / 100. * 9.0;
-            let interp = lagrange_interpolation(&times, &mut y.clone(), eval_time);
+            let interp = lagrange_interpolation(&times, &mut y.clone(), eval_time - times[0]);
             assert!((interp - eval_time).abs() < 1e-12);
         }
 
@@ -399,7 +522,7 @@ mod tests {
         for v in 0..100 {
             let x = f64::from(v) / 100. * 9.0;
             let expected = x + 1.75 * x.powi(2) - 3.0 * x.powi(3) - 11.0 * x.powi(4);
-            let interp = lagrange_interpolation(&times, &mut y1.clone(), x);
+            let interp = lagrange_interpolation(&times, &mut y1.clone(), x - times[0]);
             assert!(
                 (interp - expected).abs() < 1e-10,
                 "x={} interp={} expected={} diff={}",

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! # Numerical Integrators
 //! Numerical ODE integrators for orbit propagation.
 //!
@@ -17,7 +20,11 @@
 //! called to demonstrate some of the differences in performance between the different
 //! integrators. These tests are very simple, but informative.
 //!
-//!
+//! Separate from the general-purpose ODE integrators above, [`WisdomHolman`] is a
+//! fixed-step symplectic N-body map for very long term (millions to billions of
+//! years) orbital evolution, where adaptive integrators accumulate secular energy
+//! drift. It trades short-term accuracy for bounded long-term error; see its
+//! documentation for the splitting it uses and the domain where it applies.
 
 mod bulirsch_stoer;
 mod gauss_jackson;
@@ -25,6 +32,7 @@ mod picard;
 mod radau;
 mod runge_kutta;
 mod util;
+mod wisdom_holman;
 
 pub use bulirsch_stoer::BulirschStoerIntegrator;
 pub use gauss_jackson::GaussJacksonIntegrator;
@@ -32,8 +40,9 @@ pub use picard::{
     PC15, PC25, PicardIntegrator, PicardStep, PicardStepSecondOrder, dumb_picard_init,
     dumb_picard_init_second_order,
 };
-pub use radau::RadauIntegrator;
+pub use radau::{RadauDense, RadauFirstOrder, RadauIntegrator};
 pub use runge_kutta::RK45Integrator;
+pub use wisdom_holman::{Encounter, LostParticle, LostReason, WisdomHolman};
 
 #[cfg(test)]
 mod stress_tests;

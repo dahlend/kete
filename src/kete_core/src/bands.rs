@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Photometric band definitions used across kete.
 //!
 //! Two types are provided:
@@ -202,7 +205,7 @@ impl BandInfo {
 
     /// Convenience: resolve a band name to calibration data.
     ///
-    /// Returns `None` for unrecognised names. Equivalent to
+    /// Returns `None` for unrecognized names. Equivalent to
     /// `Band::from_name(s).calibration()`.
     #[must_use]
     pub fn from_name(s: &str) -> Option<Self> {
@@ -350,11 +353,11 @@ impl Band {
     ///
     /// Matching is **case-sensitive** and trims whitespace.
     /// Case distinguishes photometric systems: `"r"` = SDSS r, `"R"` = Cousins R.
-    /// Unrecognised names produce `Band::Unknown(...)`.
+    /// Unrecognized names produce `Band::Unknown(...)`.
     ///
-    /// Recognised names -- Johnson-Cousins: `V`, `U`, `B`, `R`, `I`;
+    /// Recognized names -- Johnson-Cousins: `V`, `U`, `B`, `R`, `I`;
     /// 2MASS: `J`, `H`, `Ks` (also `K`); Y band: `Y`;
-    /// SDSS: `g`, `r`, `i`, `z`;
+    /// SDSS: `Su`, `g`, `r`, `i`, `z`;
     /// Pan-STARRS: `w`, `y`; ATLAS: `o`, `c`;
     /// Gaia: `G` (also `Gaia_G`), `Gb` (also `Gaia_BP`), `Gr` (also `Gaia_RP`);
     /// WISE: `W1`-`W4`; NEOS: `NEOS1`-`NEOS2`;
@@ -374,7 +377,7 @@ impl Band {
             "H" => Self::H,
             "Ks" | "K" => Self::Ks,
             "Y" => Self::Y,
-            "u" | "Su" => Self::SdssU,
+            "Su" => Self::SdssU,
             "g" | "Sg" => Self::SdssG,
             "r" | "Sr" => Self::SdssR,
             "i" | "Si" => Self::SdssI,
@@ -441,7 +444,7 @@ impl Band {
             Self::H => "H",
             Self::Ks => "Ks",
             Self::Y => "Y",
-            Self::SdssU => "u",
+            Self::SdssU => "Su",
             Self::SdssG => "g",
             Self::SdssR => "r",
             Self::SdssI => "i",
@@ -545,5 +548,79 @@ impl Band {
     #[must_use]
     pub fn is_known(&self) -> bool {
         !matches!(self, Self::Unknown(_))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn name_round_trips() {
+        let names = [
+            "V",
+            "U",
+            "B",
+            "R",
+            "I",
+            "J",
+            "H",
+            "Ks",
+            "Y",
+            "Su",
+            "g",
+            "r",
+            "i",
+            "z",
+            "Pg",
+            "Pr",
+            "Pi",
+            "Pz",
+            "Pw",
+            "Py",
+            "Lu",
+            "Lg",
+            "Lr",
+            "Li",
+            "Lz",
+            "Ly",
+            "VR",
+            "o",
+            "c",
+            "G",
+            "Gb",
+            "Gr",
+            "W1",
+            "W2",
+            "W3",
+            "W4",
+            "NEOS1",
+            "NEOS2",
+            "IRAC1",
+            "IRAC2",
+            "IRAC3",
+            "IRAC4",
+            "MIPS24",
+            "MIPS70",
+            "MIPS160",
+            "IRS Peak-Up Blue",
+            "IRS Peak-Up Red",
+        ];
+        for name in names {
+            let band = Band::from_name(name);
+            assert!(band.is_known(), "{name} did not parse");
+            assert_eq!(band.name(), name);
+            assert!(band.calibration().is_some());
+        }
+    }
+
+    #[test]
+    fn mpc_uncalibrated_codes_are_unknown() {
+        for name in ["u", "C", "L", "W"] {
+            let band = Band::from_name(name);
+            assert!(!band.is_known(), "{name} should be Unknown");
+            assert_eq!(band.name(), name);
+            assert!(band.calibration().is_none());
+        }
     }
 }

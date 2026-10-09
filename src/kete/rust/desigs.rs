@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Interface for Minor Planet Center (MPC) utilities
 //!
 //!
@@ -108,14 +111,16 @@ impl TryInto<(String, i32)> for NaifIDLike {
     fn try_into(self) -> Result<(String, i32), Self::Error> {
         match self {
             NaifIDLike::String(s) => {
-                if s.chars().all(|c| c.is_ascii_digit()) {
-                    // If the string is all digits, convert it directly to an integer.
-                    if let Ok(id) = s.parse::<i32>() {
-                        return Ok((kete_core::desigs::try_name_from_id(id).unwrap_or(s), id));
-                    }
+                let mut spk = kete_spice::prelude::LOADED_SPK.write().unwrap();
+                // A string of digits which is a loaded NAIF ID is that ID, otherwise
+                // it is matched as a name.
+                if s.chars().all(|c| c.is_ascii_digit())
+                    && let Ok(id) = s.parse::<i32>()
+                    && (id == 0 || spk.loaded_objects(true).contains(&id))
+                {
+                    return Ok((kete_core::desigs::try_name_from_id(id).unwrap_or(s), id));
                 }
                 // try the spk cache
-                let mut spk = kete_spice::prelude::LOADED_SPK.write().unwrap();
                 let id = spk.try_id_from_name(&s)?;
                 Ok((id.name, id.id))
             }

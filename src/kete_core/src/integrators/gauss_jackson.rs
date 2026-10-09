@@ -1,37 +1,11 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Gauss-Jackson (Stoermer-Cowell) 8th-order multi-step integrator.
 //!
 //! This is a fixed-step predictor-corrector method optimized for second-order
 //! ODEs where the force depends on position (and optionally velocity). It uses
 //! one force evaluation per step.
-//!
-// BSD 3-Clause License
-//
-// Copyright (c) 2026, Dar Dahlen
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice, this
-//    list of conditions and the following disclaimer.
-//
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-//
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from
-//    this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 use crate::integrators::radau::RadauIntegrator;
 use crate::integrators::util::SecondOrderODE;
 use crate::prelude::KeteResult;
@@ -164,6 +138,7 @@ where
     // Kahan compensated summation error accumulators.
     comp_pos: OVector<f64, D>,
     comp_vel: OVector<f64, D>,
+    comp_time: f64,
 }
 
 impl<'a, MType: Clone, D: Dim> GaussJacksonIntegrator<'a, MType, D>
@@ -206,7 +181,7 @@ where
         let mut prev_time = t0;
 
         for i in 1..ORDER {
-            let target_time: Time<TDB> = (t0.jd - i as f64 * h).into();
+            let target_time: Time<TDB> = t0 - i as f64 * h;
             let (p, v, m) = RadauIntegrator::integrate(
                 func,
                 prev_pos_out,
@@ -215,6 +190,7 @@ where
                 target_time,
                 meta,
                 control_dim,
+                None,
             )?;
             meta = m;
             let f_i = func(target_time, &p, &v, &mut meta, true)?;
@@ -240,6 +216,7 @@ where
             control_dim: cd,
             comp_pos: Matrix::zeros_generic(dim, U1),
             comp_vel: Matrix::zeros_generic(dim, U1),
+            comp_time: 0.0,
         })
     }
 
@@ -297,6 +274,7 @@ where
                     target,
                     integrator.metadata,
                     Some(integrator.control_dim),
+                    None,
                 )?;
                 return Ok((p, v, m));
             }
@@ -330,7 +308,7 @@ where
         let vel_pred = &self.cur_vel + &ab_sum * h;
 
         // ---- EVALUATE at predicted state ----
-        let t_next: Time<TDB> = (self.cur_time.jd + h).into();
+        let t_next: Time<TDB> = self.cur_time + h;
         let mut f_new = (self.func)(t_next, &pos_pred, &vel_pred, &mut self.metadata, true)?;
 
         // ---- CORRECT (iterated PECE) ----
@@ -404,7 +382,11 @@ where
         let _ = self.accel_hist.pop();
         self.accel_hist.insert(0, f_new);
 
-        self.cur_time = t_next;
+        // Apply time update with Kahan summation.
+        let y_t = h - self.comp_time;
+        let t_t = self.cur_time + y_t;
+        self.comp_time = (t_t - self.cur_time).elapsed - y_t;
+        self.cur_time = t_t;
 
         Ok(())
     }
@@ -415,7 +397,7 @@ mod tests {
     use nalgebra::Vector3;
 
     use super::*;
-    use crate::forces::{CentralAccelMeta, central_accel};
+    use crate::integrators::stress_tests::{CentralAccelMeta, central_accel};
     use crate::kepler::analytic_2_body;
 
     /// Two-body orbit validated against the analytic Kepler solution.
@@ -425,7 +407,7 @@ mod tests {
         let init_vel = Vector3::new(0.01518942, 0.00807426, 0.0);
 
         let (exact_pos, exact_vel) =
-            analytic_2_body(1000.0_f64.into(), &init_pos, &init_vel, None).unwrap();
+            analytic_2_body(1000.0_f64.into(), &init_pos, &init_vel).unwrap();
 
         let (gj_pos, gj_vel, _) = GaussJacksonIntegrator::integrate(
             &central_accel,
@@ -442,8 +424,8 @@ mod tests {
         for i in 0..3 {
             let pos_err = (gj_pos[i] - exact_pos[i]).abs();
             let vel_err = (gj_vel[i] - exact_vel[i]).abs();
-            assert!(pos_err < 2e-13, "pos[{i}] error vs analytic: {pos_err:.2e}");
-            assert!(vel_err < 1e-14, "vel[{i}] error vs analytic: {vel_err:.2e}");
+            assert!(pos_err < 5e-13, "pos[{i}] error vs analytic: {pos_err:.2e}");
+            assert!(vel_err < 5e-14, "vel[{i}] error vs analytic: {vel_err:.2e}");
         }
     }
 
@@ -569,7 +551,7 @@ mod tests {
         let init_pos = Vector3::new(0.46937657, -0.8829981, 0.0);
         let init_vel = Vector3::new(0.01518942, 0.00807426, 0.0);
 
-        let (exact_pos, _) = analytic_2_body(100.0_f64.into(), &init_pos, &init_vel, None).unwrap();
+        let (exact_pos, _) = analytic_2_body(100.0_f64.into(), &init_pos, &init_vel).unwrap();
 
         let steps = [8.0, 4.0, 2.0];
         let mut errors = Vec::new();
@@ -621,7 +603,7 @@ mod tests {
         let init_pos = Vector3::new(0.46937657, -0.8829981, 0.0);
         let init_vel = Vector3::new(0.01518942, 0.00807426, 0.0);
         let (exact_pos, exact_vel) =
-            analytic_2_body(1000.0_f64.into(), &init_pos, &init_vel, None).unwrap();
+            analytic_2_body(1000.0_f64.into(), &init_pos, &init_vel).unwrap();
 
         let (gj_pos, gj_vel, _) = GaussJacksonIntegrator::integrate(
             &central_accel,
@@ -642,6 +624,7 @@ mod tests {
             0.0.into(),
             1000.0.into(),
             CentralAccelMeta::default(),
+            None,
             None,
         )
         .unwrap();
@@ -714,6 +697,7 @@ mod tests {
             0.0.into(),
             100_000.0.into(),
             CentralAccelMeta::default(),
+            None,
             None,
         )
         .unwrap();

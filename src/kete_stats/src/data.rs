@@ -1,35 +1,10 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! # Data
 //!
 //! Handling of finite, nonempty datasets for basic statistical calculations.
-//!
-// BSD 3-Clause License
-//
-// Copyright (c) 2026, Dar Dahlen
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice, this
-//    list of conditions and the following disclaimer.
-//
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-//
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from
-//    this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 use std::{fmt::Debug, ops::Index};
 
 /// Error types for statistics calculations.
@@ -199,10 +174,6 @@ where
         let n_data = self.len();
 
         let frac_idx = quant * T::from(n_data - 1).unwrap();
-        #[allow(
-            clippy::cast_sign_loss,
-            reason = "By construction this is always positive."
-        )]
         let idx = frac_idx.floor().to_usize().unwrap();
 
         if T::from(idx).unwrap() == frac_idx {
@@ -223,10 +194,6 @@ where
     ///
     /// <https://en.wikipedia.org/wiki/Median_absolute_deviation>
     #[must_use]
-    #[allow(
-        clippy::missing_panics_doc,
-        reason = "By construction this cannot panic."
-    )]
     pub fn mad(&mut self) -> T {
         let median = self.median();
         let mut abs_deviation_from_med: Vec<T> = self
@@ -564,10 +531,6 @@ where
     /// <https://en.wikipedia.org/wiki/Median_absolute_deviation>
     ///
     #[must_use]
-    #[allow(
-        clippy::missing_panics_doc,
-        reason = "By construction this cannot panic."
-    )]
     pub fn mad(&self) -> T {
         let median = self.median();
         let mut abs_deviation_from_med: Vec<T> = self
@@ -674,10 +637,6 @@ where
         let n_data = self.0.len();
 
         let frac_idx = quant * T::from(n_data - 1).unwrap();
-        #[allow(
-            clippy::cast_sign_loss,
-            reason = "By construction this is always positive."
-        )]
         let idx = frac_idx.floor().to_usize().unwrap();
 
         if T::from(idx).unwrap() == frac_idx {

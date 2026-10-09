@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Dar Dahlen
+# SPDX-FileCopyrightText: 2025 California Institute of Technology
+# SPDX-License-Identifier: BSD-3-Clause
+
 import numpy as np
 import pytest
 
@@ -21,7 +25,7 @@ from kete.conversion import (
 ECC_ANOM_VALUES = [
     [0.0, 90, 90],
     [0.5, 35.190199, 60],
-    [1.0, 66.8450757, 57.2957795],
+    [1.0, 32.7042205, 90],
     [1.5, 40.9451300, 55.1428098],
 ]
 
@@ -73,12 +77,35 @@ def test_dec_deg_dms():
         dec_out = dec_dms_to_degrees(dec_degrees_to_dms(deg))
         assert np.allclose(deg, dec_out)
 
-    with pytest.raises(ValueError, match="format"):
+    with pytest.raises(ValueError, match="more than three numbers"):
         dec_dms_to_degrees("+0 1 2 3 4")
     with pytest.raises(ValueError, match="between"):
         dec_degrees_to_dms(95)
     with pytest.raises(ValueError, match="between"):
         dec_degrees_to_dms(-95)
+
+
+def test_sexagesimal_rounding_carries():
+    """
+    Seconds that round up at the printed precision carry into the minutes.
+    """
+    assert ra_degrees_to_hms(15 * (1 + 2 / 60 + 59.9996 / 3600)) == "01 03 00.000"
+    assert ra_degrees_to_hms(15 * (23 + 59 / 60 + 59.9996 / 3600)) == "00 00 00.000"
+    assert dec_degrees_to_dms(10 + 20 / 60 + 59.996 / 3600) == "+10 21 00.00"
+    assert dec_degrees_to_dms(-0.5) == "-00 30 00.00"
+
+
+def test_sexagesimal_invalid():
+    for bad in ["25 00 00", "-01 00 00", "10 60 00", "10 00 60", "10 -5 00"]:
+        with pytest.raises(ValueError):
+            ra_hms_to_degrees(bad)
+    for bad in ["95 00 00", "-90 00 01", "10 75 00"]:
+        with pytest.raises(ValueError):
+            dec_dms_to_degrees(bad)
+    with pytest.raises(ValueError):
+        ra_degrees_to_hms(np.nan)
+    with pytest.raises(ValueError):
+        dec_degrees_to_dms(np.nan)
 
 
 @pytest.mark.parametrize("ecc, mean_anom, expected_ecc_anom", ECC_ANOM_VALUES)
@@ -118,3 +145,12 @@ def test_tisserand():
 
     val = compute_tisserand(2, 0, 0, 2)
     assert np.isclose(val, 3)
+
+
+def test_sexagesimal_error_names_the_cause():
+    with pytest.raises(ValueError, match="less than 60, found 75"):
+        ra_hms_to_degrees("10 75 00")
+    with pytest.raises(ValueError, match="less than 60, found 30 and 61"):
+        dec_dms_to_degrees("+10 30 61")
+    with pytest.raises(ValueError, match="not one to three numbers"):
+        ra_hms_to_degrees("10h 30")

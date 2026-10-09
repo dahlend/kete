@@ -5,6 +5,128 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v3.3.0]
+
+### Added
+
+- Polyhedron and spherical harmonic gravity for massive bodies:
+  `register_polyhedron`, `register_spherical_harmonics`, `kete.shape.read_obj`.
+- `NonGravModel.with_free` to warm-start non-grav fits.
+- `kernel_reload` also loads CK and SCLK kernels, detecting each file's type from
+  its header, and raises `ValueError` for unsupported kernel types.
+- `kernel_reload` loads frames (FK), text PCK, instrument (IK) and meta-kernels.
+- `kete.spice.instrument_fov`, `instrument_fov_definition` and `kernel_variable`.
+- SPK segment type 19 (ESOC/DDID piecewise interpolation).
+- CK segment types 5 and 6 (MEX/Rosetta attitude interpolation).
+- PCK segments relative to J2000, FK4 or GALACTIC, as well as ECLIPJ2000.
+- `PolygonFOV`, a polygon field of view that can be non-convex.
+- Earth orientation: `approx_earth_frame`, `teme_frame`, `earth_nutation` (IAU 2000B),
+  `approx_ut1` and `approx_delta_t`.
+- `kete_core::geometry::TriMesh`, a validated closed triangle mesh.
+
+### Changed
+
+- `fov_state_check` is exact n-body, and raises if a FOV's observer cannot be placed.
+  `dt_limit` is deprecated.
+- `Time` holds whole days plus a fraction of a day, about 10 ps resolution at any epoch,
+  and ephemeris, attitude and Earth-rotation lookups use it. Rust: `Time.jd` is now `jd()`.
+- Re-added the predictor step to the Radau implementation.
+- `fit_orbit` raises on unconstrained parameters; non-converged fits report a NaN
+  covariance instead of zeros.
+- `fit_orbit_ranging` refines for up to 12 rounds, up from 4.
+- `fit_orbit_ranging` is faster on multi-night arcs.
+- `UncertainState.cov_matrix` is over modified equinoctial elements; `elements` and
+  `cartesian_cov_matrix` give its mean orbit and cartesian form.
+- Earth frames use the IAU 2006 precession, obliquity and sidereal time, and include
+  the frame bias to the ICRF. `earth_rotation_angle` is replaced by
+  `greenwich_mean_sidereal_time`.
+- Updated the MPC observatory code table.
+- Rust: N-body propagation and FOV checks moved to `kete_core`, generic over its new
+  `Ephemeris` (states and frames); `SpiceEphemeris` serves it.
+- Rust: forces implement `ParameterizedForce`; the `NonGravModel` enum is replaced by
+  `NonGravKind`, with `ParameterMask` marking which parameters are free.
+- Rust: `check_visible` drops `dt_limit`; `check_n_body`, `check_two_body` and
+  `check_linear` are removed.
+- Rust: SPK and PCK writers take coverage and epochs in TDB seconds from J2000
+  rather than `Time<TDB>`.
+- Rust: frames are named by `FrameId`; `try_get_frame` is now `try_get_pointing`.
+- Rust: text kernels load into one `TextKernels` store; clocks are named by `ClockId`.
+- Rust: `NonInertialFrame` no longer has a `frame_id` field.
+- Rust: a `NonInertialFrame` without a rotation rate errors on velocity transforms.
+- Rust: geometry types moved to `kete_core::geometry`, from `kete_flux` and
+  `kete_core::fov`.
+- Rust: `SphericalPolygon` replaces `OnSkyRectangle` and can be non-convex.
+- Rust: removed `ModelResults::reflected_fraction` and `lambertian_vis_scale_factor`,
+  and reordered the arguments of `neatm_facet_temperature`.
+
+### Fixed
+
+- `propagate_n_body` detects impacts again.
+- `compute_stm` and `propagate_covariance` use the input state's frame.
+- Non-grav lower bounds were applied to the wrong parameter with some held fixed.
+- Overlapping SPK, CK and PCK segments resolve to the file loaded last, and within a
+  file to the segment stored last, as in SPICE; kete used the file loaded first.
+- `kernel_reload` loads the cache before the default kernels, so the defaults and
+  then the given files take precedence.
+- Kernel directories load in sorted order, and a file that fails partway through
+  loads none of its segments.
+- Changing a state's center follows the segments covering its epoch, and
+  `SpkCollection::build_mapping` is removed.
+- SPK type 10 states are rotated from TEME to J2000; they were returned in TEME.
+- SPK types 9 and 13 no longer shift even-sized interpolation windows by one point.
+- SPK type 18 chooses its interpolation window as SPICE does, and rejects windows
+  and segments SPICE rejects.
+- Malformed SPK type 1, 9, 13 and 21 segments raise an error instead of panicking.
+- Malformed DAF files raise an error instead of panicking or hanging, and a DAF
+  damaged by a text mode transfer is detected.
+- SPK type 1 and 21 writers include the epoch directory SPICE expects, and a query
+  past the last record no longer reads past the segment data.
+- `SpkBuilder.add_tle_segment` stores epochs as TDB, uses WGS72, and takes
+  `pad_days` so single-TLE segments cover time.
+- `repack_spk` checks every output record against `threshold_km` and raises where it
+  cannot fit, rather than leaving gaps or unchecked records.
+- `repack_spk` fits the input file's data where the core kernels also cover the object.
+- CK lookups fall back to an earlier segment inside a gap of a later one and never
+  extrapolate across a gap, as SPICE does.
+- CK type 2 pointing between interval starts, and CK type 3 intervals after the
+  first, match SPICE.
+- Malformed CK type 2 and 3 segments raise an error instead of panicking.
+- SCLK clocks with a TT time system, and SCLK string parsing, match SPICE.
+- `instrument_frame_to_equatorial` and `instrument_equatorial_to_frame` resolve CK
+  frames defined relative to another CK frame, and a bare list passed to
+  `instrument_equatorial_to_frame` is equatorial, not ecliptic.
+- `fov_state_check` could miss objects near a FOV edge or moving with the observer.
+- `fov_state_check` no longer drops visible objects whose center differs from the observer's.
+- Leap seconds took effect 36-37 s before 00:00 UTC, so UTC conversions were 1 s off
+  in that window.
+- `TT` is now its own time scale rather than an alias of `TDB`. UTC and TAI to TDB
+  conversions now include the periodic TDB-TT term, up to 1.7 ms.
+- `Time(jd, scaling="tt")` and `Time.from_mjd(mjd, "tt")` treated TT as TDB.
+- `Time - number` returns the Time that many days earlier, matching `Time + number`; it
+  returned days to the number read as a JD. `Time + Time` raises `TypeError`.
+- Fixed outlier rejection and convergence in `fit_orbit`, priors in `fit_orbit_mcmc`, and epochs in the orbit filter.
+- `fit_orbit` no longer stalls on a non-grav parameter at its lower bound.
+- IOD candidates are labeled at the light emission epoch; they were labeled at the
+  observation epoch.
+- `fit_orbit_ranging` uses the full RA/Dec covariance, scores an orbit only against
+  every observation, and raises SPICE errors rather than hiding them.
+- `fit_orbit_ranging` overlaps its attributable windows, redraws invalid samples, and
+  requires 3 optical observations.
+- `moid` could return a local rather than the global minimum, off by up to 0.8 AU.
+  It now finds every critical point and returns the smallest.
+- `compute_b_plane` returned values for the wrong geometry. It now uses the incoming
+  asymptote and ecliptic-referenced axes.
+- `approx_earth_pos_to_ecliptic` returned a spurious velocity. It now also includes
+  nutation, and Delta T before 1972.
+- `earth_precession_rotation` composed its angles in the wrong order.
+- `equation_of_time` returned mean minus apparent solar time.
+- `ecef_to_geodetic_lat_lon` returned wrong heights on the polar axis.
+- MPC designations follow the MPC packed-format specification.
+- MPC band `u` is now unknown, as the MPC defines it; SDSS u is `Su`.
+- RA/Dec sexagesimal strings no longer show 60 seconds, and invalid RA/Dec values
+  raise `ValueError`.
+- Rust: `Sclk` conversions error outside the clock's partitions.
+
 ## [3.2.3]
 
 ### Fixed
@@ -748,6 +870,7 @@ Initial Release
 
 
 [Unreleased]: https://github.com/dahlend/kete/tree/main
+[3.3.0]: https://github.com/dahlend/kete/releases/tag/v3.3.0
 [3.2.3]: https://github.com/dahlend/kete/releases/tag/v3.2.3
 [3.2.2]: https://github.com/dahlend/kete/releases/tag/v3.2.2
 [3.2.1]: https://github.com/dahlend/kete/releases/tag/v3.2.1

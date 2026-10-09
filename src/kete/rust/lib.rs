@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Core kete library code, which are wrappers over the kete_core rust package.
 //! Primarily enables python interfaces
 //!
@@ -14,7 +18,6 @@
     dead_code,
     improper_ctypes,
     non_shorthand_field_patterns,
-    no_mangle_generic_items,
     overflowing_literals,
     path_statements,
     patterns_in_fns_without_body,
@@ -33,7 +36,6 @@
 
 use kete_core::forces::{known_masses, register_custom_mass, register_mass, registered_masses};
 use pyo3::prelude::*;
-use state::PyState;
 
 pub mod analysis;
 pub mod debias;
@@ -47,14 +49,14 @@ pub mod horizons;
 pub mod kepler;
 pub mod maybe_vec;
 pub mod nongrav;
+pub mod polyhedron;
 pub mod propagation;
-pub mod simult_states;
+pub mod simulation;
+pub mod spherical_harmonics;
 pub mod spice;
 pub mod state;
-pub mod state_transition;
 pub mod stats;
 pub mod time;
-pub mod uncertain_state;
 pub mod utils;
 pub mod vector;
 
@@ -72,12 +74,17 @@ pub mod vector;
 #[pymodule]
 fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<frame::PyFrames>()?;
-    m.add_class::<PyState>()?;
     m.add_class::<vector::PyVector>()?;
     m.add_class::<elements::PyCometElements>()?;
-    m.add_class::<simult_states::PySimultaneousStates>()?;
-    m.add_class::<nongrav::PyNonGravModel>()?;
+    m.add_class::<elements::PyEquinoctialElements>()?;
     m.add_class::<time::PyTime>()?;
+    m.add_class::<nongrav::PyNonGravModel>()?;
+    m.add_class::<kete_core::analysis::BPlane>()?;
+
+    m.add_class::<state::PyState>()?;
+    m.add_class::<state::PySimultaneousStates>()?;
+    m.add_class::<state::PyUncertainState>()?;
+    m.add_class::<simulation::PySymplecticSim>()?;
 
     m.add_class::<fovs::PyNeosCmos>()?;
     m.add_class::<fovs::PyNeosVisit>()?;
@@ -90,27 +97,42 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<fovs::PySpherexField>()?;
     m.add_class::<fovs::PySpitzerFrame>()?;
     m.add_class::<fovs::PyGenericRectangle>()?;
+    m.add_class::<fovs::PyGenericPolygon>()?;
     m.add_class::<fovs::PyGenericCone>()?;
     m.add_class::<fovs::PyOmniDirectional>()?;
+    m.add_class::<spice::PySpkBuilder>()?;
 
     m.add_class::<flux::PyModelResults>()?;
     m.add_class::<flux::PyTriangleShape>()?;
+    m.add_class::<polyhedron::PyPolyhedron>()?;
+    m.add_class::<spherical_harmonics::PySphericalHarmonics>()?;
     m.add_class::<flux::PyFluxObs>()?;
     m.add_class::<flux::PyParamPrior>()?;
     m.add_class::<flux::PyFluxPriors>()?;
-    m.add_class::<stats::PyData>()?;
     m.add_class::<flux::PyFitResult>()?;
+
+    m.add_class::<stats::PyData>()?;
+
+    m.add_class::<fitting::PyObservation>()?;
+    m.add_class::<fitting::PyOrbitFit>()?;
+    m.add_class::<fitting::PyOrbitSamples>()?;
+    m.add_class::<fitting::PyRangingSamples>()?;
 
     m.add_class::<horizons::PyHorizonsProperties>()?;
 
-    m.add_class::<uncertain_state::PyUncertainState>()?;
-
     m.add_class::<debias::PyDebiasTable>()?;
+
+    m.add_function(wrap_pyfunction!(state::compute_stm_py, m)?)?;
 
     m.add_function(wrap_pyfunction!(known_masses, m)?)?;
     m.add_function(wrap_pyfunction!(register_mass, m)?)?;
     m.add_function(wrap_pyfunction!(register_custom_mass, m)?)?;
     m.add_function(wrap_pyfunction!(registered_masses, m)?)?;
+    m.add_function(wrap_pyfunction!(polyhedron::register_polyhedron, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        spherical_harmonics::register_spherical_harmonics,
+        m
+    )?)?;
 
     m.add_function(wrap_pyfunction!(frame::wgs_lat_lon_to_ecef, m)?)?;
     m.add_function(wrap_pyfunction!(frame::ecef_to_wgs_lat_lon, m)?)?;
@@ -130,7 +152,6 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(analysis::sphere_of_influence_py, m)?)?;
     m.add_function(wrap_pyfunction!(analysis::specific_energy_py, m)?)?;
     m.add_function(wrap_pyfunction!(analysis::compute_b_plane_py, m)?)?;
-    m.add_class::<kete_core::analysis::BPlane>()?;
 
     m.add_function(wrap_pyfunction!(propagation::propagation_n_body_spk_py, m)?)?;
     m.add_function(wrap_pyfunction!(propagation::propagation_n_body_py, m)?)?;
@@ -183,7 +204,6 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(spice::spk_available_info_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::spk_load_cache_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::spk_load_core_py, m)?)?;
-    m.add_class::<spice::PySpkBuilder>()?;
     m.add_function(wrap_pyfunction!(spice::repack_spk_py, m)?)?;
 
     m.add_function(wrap_pyfunction!(spice::pck_reset_py, m)?)?;
@@ -193,31 +213,20 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(spice::pck_loaded_objects_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::pck_load_core_py, m)?)?;
 
-    m.add_function(wrap_pyfunction!(spice::sclk_load_py, m)?)?;
-    m.add_function(wrap_pyfunction!(spice::sclk_loaded_objects_py, m)?)?;
-    m.add_function(wrap_pyfunction!(spice::sclk_reset_py, m)?)?;
-    m.add_function(wrap_pyfunction!(spice::sclk_str_to_time_py, m)?)?;
-    m.add_function(wrap_pyfunction!(spice::sclk_tick_to_time_py, m)?)?;
-    m.add_function(wrap_pyfunction!(spice::sclk_time_to_tick_py, m)?)?;
-
     m.add_function(wrap_pyfunction!(spice::ck_reset_py, m)?)?;
-    m.add_function(wrap_pyfunction!(spice::ck_load_py, m)?)?;
+    m.add_function(wrap_pyfunction!(spice::text_kernels_reset_py, m)?)?;
+    m.add_function(wrap_pyfunction!(spice::instrument_fov_py, m)?)?;
+    m.add_function(wrap_pyfunction!(spice::instrument_fov_definition_py, m)?)?;
+    m.add_function(wrap_pyfunction!(spice::kernel_variable_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::ck_sc_frame_to_equatorial, m)?)?;
     m.add_function(wrap_pyfunction!(spice::ck_sc_equatorial_to_frame, m)?)?;
-    m.add_function(wrap_pyfunction!(spice::ck_loaded_instrument_info_py, m)?)?;
-    m.add_function(wrap_pyfunction!(spice::ck_loaded_instruments_py, m)?)?;
 
+    m.add_function(wrap_pyfunction!(spice::kernel_load_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::daf_header_info_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::daf_convert_be_py, m)?)?;
     m.add_function(wrap_pyfunction!(spice::obs_codes, m)?)?;
     m.add_function(wrap_pyfunction!(spice::find_obs_code_py, m)?)?;
 
-    m.add_function(wrap_pyfunction!(state_transition::compute_stm_py, m)?)?;
-
-    m.add_class::<fitting::PyObservation>()?;
-    m.add_class::<fitting::PyOrbitFit>()?;
-    m.add_class::<fitting::PyOrbitSamples>()?;
-    m.add_class::<fitting::PyRangingSamples>()?;
     m.add_function(wrap_pyfunction!(fitting::fit_orbit_py, m)?)?;
     m.add_function(wrap_pyfunction!(
         fitting::initial_orbit_determination_py,

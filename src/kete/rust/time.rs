@@ -1,10 +1,14 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Python support for time conversions.
 
 use kete_core::{
     errors::Error,
-    time::{TAI, TCB, TDB, Time, UTC},
+    time::{TAI, TCB, TDB, TT, Time, UTC},
 };
-use pyo3::prelude::*;
+use pyo3::{IntoPyObjectExt, prelude::*};
 
 /// A representation of time, always in JD with TDB scaling.
 ///
@@ -18,13 +22,16 @@ use pyo3::prelude::*;
 /// bit fuzzy when attempting to represent future times. All conversion of future times
 /// therefore ignores the possibility of leap seconds.
 ///
-/// This representation and conversion tools make some small tradeoff for performance
-/// vs accuracy. Conversion between time scales is only accurate on the millisecond
-/// scale, however internal representation accuracy is on the microsecond scale.
+/// Times are held to about 10 picoseconds at any epoch. Reading one back as a single
+/// float Julian date, from :py:attr:`~Time.jd`, rounds it to about 40 microseconds
+/// near the present.
 ///
-/// TDB is treated as equivalent to TT, because these times only differ by less
-/// than milliseconds per century. TCB is properly converted via a linear secular
-/// drift of L_B = 1.550519768e-8 relative to TDB (IAU 2006).
+/// TT is converted to TDB with the periodic TDB - TT term, under 2 milliseconds. TCB
+/// is converted via a linear secular drift of L_B = 1.550519768e-8 relative to TDB
+/// (IAU 2006).
+///
+/// Adding or subtracting a number gives a new Time that many TDB days later or
+/// earlier. Subtracting one Time from another gives the TDB days between them.
 ///
 /// Parameters
 /// ----------
@@ -72,13 +79,14 @@ impl PyTime {
     #[new]
     #[pyo3(signature = (jd, scaling="tdb"))]
     pub fn new(jd: PyTime, scaling: &str) -> PyResult<Self> {
-        let jd = jd.jd();
+        // Keep both parts of the Julian date, so a Time passed in keeps its precision.
+        let (days, frac) = jd.0.jd_parts();
         Ok(match scaling.to_ascii_lowercase().as_str() {
-            "tt" => PyTime(Time::<TDB>::new(jd)),
-            "tdb" => PyTime(Time::<TDB>::new(jd)),
-            "tcb" => PyTime(Time::<TCB>::new(jd).tdb()),
-            "tai" => PyTime(Time::<TAI>::new(jd).tdb()),
-            "utc" => PyTime(Time::<UTC>::new(jd).tdb()),
+            "tdb" => jd,
+            "tt" => PyTime(Time::<TT>::from_parts(days, frac).tdb()),
+            "tcb" => PyTime(Time::<TCB>::from_parts(days, frac).tdb()),
+            "tai" => PyTime(Time::<TAI>::from_parts(days, frac).tdb()),
+            "utc" => PyTime(Time::<UTC>::from_parts(days, frac).tdb()),
             s => Err(Error::ValueError(format!(
                 "Scaling of type ({s}) is not supported, must be one of: 'tt', 'tdb', 'tcb', 'tai', 'utc'",
             )))?,
@@ -100,7 +108,7 @@ impl PyTime {
         let scaling = scaling.to_lowercase();
 
         Ok(match scaling.as_str() {
-            "tt" => PyTime(Time::<TDB>::from_mjd(mjd)),
+            "tt" => PyTime(Time::<TT>::from_mjd(mjd).tdb()),
             "tdb" => PyTime(Time::<TDB>::from_mjd(mjd)),
             "tcb" => PyTime(Time::<TCB>::from_mjd(mjd).tdb()),
             "tai" => PyTime(Time::<TAI>::from_mjd(mjd).tdb()),
@@ -143,14 +151,14 @@ impl PyTime {
 
     /// Create time object from the Year, Month, and Day.
     ///
-    /// These times are assumed to be in UTC amd conversion is performed automatically.
+    /// These times are assumed to be in UTC and conversion is performed automatically.
     ///
     /// Parameters
     /// ----------
     /// year:
     ///     The Year, for example `2020`
     /// month:
-    ///     The Month as an integer, 0 = January etc.
+    ///     The Month as an integer, 1 = January etc.
     /// day:
     ///     The day as an integer or float.
     #[staticmethod]
@@ -177,16 +185,12 @@ impl PyTime {
     }
 
     /// Julian Date in TDB scaled time.
-    /// The difference between TT and TDB is never more than a few milliseconds
-    /// per century, so these are treated as equivalent.
     #[getter]
     pub fn jd(&self) -> f64 {
-        self.0.jd
+        self.0.jd()
     }
 
     /// Modified Julian Date in TDB scaled time.
-    /// The difference between TT and TDB is never more than a few milliseconds
-    /// per century, so these are treated as equivalent.
     #[getter]
     pub fn mjd(&self) -> f64 {
         self.0.mjd()
@@ -195,7 +199,7 @@ impl PyTime {
     /// Julian Date in UTC scaled time.
     #[getter]
     pub fn utc_jd(&self) -> f64 {
-        self.0.utc().jd
+        self.0.utc().jd()
     }
 
     /// Modified Julian Date in UTC scaled time.
@@ -236,27 +240,38 @@ impl PyTime {
         Ok(self.0.utc().year_as_float()?)
     }
 
-    fn __add__(&self, other: PyTime) -> Self {
-        (self.0.jd + other.0.jd).into()
+    fn __add__(&self, days: f64) -> Self {
+        PyTime(self.0 + days)
     }
 
-    fn __sub__(&self, other: PyTime) -> f64 {
-        self.0.jd - other.0.jd
+    fn __radd__(&self, days: f64) -> Self {
+        PyTime(self.0 + days)
     }
 
-    fn __rsub__(&self, other: PyTime) -> f64 {
-        other.0.jd - self.0.jd
+    /// A Time minus a Time is the TDB days between them; a Time minus a number of
+    /// days is a Time.
+    fn __sub__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        if let Ok(time) = other.cast_exact::<PyTime>() {
+            return (self.0 - time.get().0).elapsed.into_py_any(py);
+        }
+        PyTime(self.0 - other.extract::<f64>()?).into_py_any(py)
+    }
+
+    /// TDB days from this time to `jd`, a Julian date.
+    fn __rsub__(&self, jd: f64) -> f64 {
+        (Time::<TDB>::new(jd) - self.0).elapsed
     }
 
     fn __repr__(&self) -> String {
-        format!("Time({})", self.0.jd)
+        format!("Time({})", self.0.jd())
     }
 
+    /// Times compare by their Julian date as an f64, the value :attr:`jd` reports.
     fn __eq__(&self, other: PyTime) -> bool {
-        self.0 == other.0
+        self.0.jd() == other.0.jd()
     }
 
     fn __lt__(&self, other: PyTime) -> bool {
-        self.0.jd < other.0.jd
+        self.0.jd() < other.0.jd()
     }
 }

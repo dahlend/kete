@@ -1,39 +1,14 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! # Field of View
 //! On-Sky field of view checks.
-// BSD 3-Clause License
-//
-// Copyright (c) 2026, Dar Dahlen
-// Copyright (c) 2025, California Institute of Technology
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice, this
-//    list of conditions and the following disclaimer.
-//
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-//
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from
-//    this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+mod checks;
 mod fov_like;
 mod generic;
 mod neos;
-mod patches;
 mod ptf;
 mod spherex;
 mod spitzer;
@@ -42,12 +17,13 @@ mod ztf;
 
 use crate::errors::KeteResult;
 use crate::frames::{Equatorial, Vector};
+use crate::geometry::Contains;
 use crate::state::State;
 
-pub use self::fov_like::{FovLike, check_linear, check_statics, check_two_body};
-pub use self::generic::{GenericCone, GenericRectangle, OmniDirectional};
+pub use self::checks::{check_ephemeris, check_visible};
+pub use self::fov_like::{FovLike, check_statics};
+pub use self::generic::{GenericCone, GenericPolygon, GenericRectangle, OmniDirectional};
 pub use self::neos::{NeosCmos, NeosVisit};
-pub use self::patches::{Contains, OnSkyRectangle, SkyPatch, SphericalCone, SphericalPolygon};
 pub use self::ptf::{PTFFilter, PtfCcd, PtfField};
 pub use self::spherex::{SpherexCmos, SpherexField};
 pub use self::spitzer::{SpitzerBand, SpitzerFrame};
@@ -67,6 +43,9 @@ pub enum FOV {
 
     /// Generic rectangle FOV without any additional metadata.
     GenericRectangle(GenericRectangle),
+
+    /// Generic polygon FOV, convex or not, without any additional metadata.
+    GenericPolygon(GenericPolygon),
 
     /// WISE or NEOWISE FOV.
     Wise(WiseCmos),
@@ -107,6 +86,7 @@ macro_rules! dispatch_fov {
             Self::ZtfCcdQuad(fov) => fov.$method($($arg),*),
             Self::GenericCone(fov) => fov.$method($($arg),*),
             Self::GenericRectangle(fov) => fov.$method($($arg),*),
+            Self::GenericPolygon(fov) => fov.$method($($arg),*),
             Self::ZtfField(fov) => fov.$method($($arg),*),
             Self::NeosVisit(fov) => fov.$method($($arg),*),
             Self::OmniDirectional(fov) => fov.$method($($arg),*),
@@ -133,6 +113,7 @@ impl FovLike for FOV {
             Self::ZtfCcdQuad(fov) => Self::ZtfCcdQuad(fov.get_child(index)),
             Self::GenericCone(fov) => Self::GenericCone(fov.get_child(index)),
             Self::GenericRectangle(fov) => Self::GenericRectangle(fov.get_child(index)),
+            Self::GenericPolygon(fov) => Self::GenericPolygon(fov.get_child(index)),
             Self::ZtfField(fov) => Self::ZtfCcdQuad(fov.get_child(index)),
             Self::NeosVisit(fov) => Self::NeosCmos(fov.get_child(index)),
             Self::OmniDirectional(fov) => Self::OmniDirectional(fov.get_child(index)),

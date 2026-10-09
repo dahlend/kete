@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Lambert's problem solver.
 //!
 //! Given two heliocentric position vectors and a transfer time, find the
@@ -9,69 +12,11 @@
 //! time-of-flight equation, solved via Newton-Raphson with bisection
 //! fallback.  For near-collinear geometries, the orbit plane is resolved
 //! by choosing an arbitrary normal perpendicular to the position vectors.
-//!
-// BSD 3-Clause License
-//
-// Copyright (c) 2026, Dar Dahlen
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice, this
-//    list of conditions and the following disclaimer.
-//
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-//
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from
-//    this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use kete_core::constants::GMS;
 use kete_core::frames::{InertialFrame, Vector};
+use kete_core::kepler::stumpff_c2_c3;
 use kete_core::prelude::{Error, KeteResult};
-
-/// Stumpff function C(z) = (1 - cos(sqrt(z))) / z.
-///
-/// Handles elliptic (z > 0), parabolic (z ~ 0), and hyperbolic (z < 0).
-fn stumpff_c(z: f64) -> f64 {
-    if z.abs() < 1e-8 {
-        0.5 - z / 24.0 + z * z / 720.0
-    } else if z > 0.0 {
-        let sz = z.sqrt();
-        (1.0 - sz.cos()) / z
-    } else {
-        let sz = (-z).sqrt();
-        (sz.cosh() - 1.0) / (-z)
-    }
-}
-
-/// Stumpff function S(z) = (sqrt(z) - sin(sqrt(z))) / sqrt(z)^3.
-///
-/// Handles elliptic (z > 0), parabolic (z ~ 0), and hyperbolic (z < 0).
-fn stumpff_s(z: f64) -> f64 {
-    if z.abs() < 1e-8 {
-        1.0 / 6.0 - z / 120.0 + z * z / 5040.0
-    } else if z > 0.0 {
-        let sz = z.sqrt();
-        (sz - sz.sin()) / (sz * sz * sz)
-    } else {
-        let sz = (-z).sqrt();
-        (sz.sinh() - sz) / (sz * sz * sz)
-    }
-}
 
 /// Solve Lambert's problem for up to `max_revs` complete revolutions.
 ///
@@ -202,11 +147,11 @@ fn lambert_core<T: InertialFrame>(
 
     // y(z) helper.
     let y_of_z = |z: f64| -> f64 {
-        let cz = stumpff_c(z);
+        let (cz, sz) = stumpff_c2_c3(z);
         if cz.abs() < 1e-30 {
             return f64::MAX;
         }
-        r1_mag + r2_mag + a_coeff * (z * stumpff_s(z) - 1.0) / cz.sqrt()
+        r1_mag + r2_mag + a_coeff * (z * sz - 1.0) / cz.sqrt()
     };
 
     // F(z) = [y/C]^{3/2} * S + A * sqrt(y) - sqrt(mu) * dt.
@@ -215,8 +160,7 @@ fn lambert_core<T: InertialFrame>(
         if y < 0.0 {
             return f64::MAX;
         }
-        let cz = stumpff_c(z);
-        let sz = stumpff_s(z);
+        let (cz, sz) = stumpff_c2_c3(z);
         if cz.abs() < 1e-30 {
             return f64::MAX;
         }
@@ -229,7 +173,7 @@ fn lambert_core<T: InertialFrame>(
         if y < 1e-30 {
             return 1.0;
         }
-        let cz = stumpff_c(z);
+        let (cz, sz) = stumpff_c2_c3(z);
         if cz.abs() < 1e-30 {
             return 1.0;
         }
@@ -239,7 +183,6 @@ fn lambert_core<T: InertialFrame>(
             return (f_of_z(eps) - f_of_z(-eps)) / (2.0 * eps);
         }
 
-        let sz = stumpff_s(z);
         let y_over_c = y / cz;
         let yc32 = y_over_c.powf(1.5);
 
@@ -361,10 +304,6 @@ mod tests {
     use kete_core::prelude::State;
     use kete_core::time::{TDB, Time};
 
-    fn vec_eq(x: f64, y: f64, z: f64) -> Vector<Equatorial> {
-        Vector::new([x, y, z])
-    }
-
     fn round_trip(r1: Vector<Equatorial>, v1: Vector<Equatorial>, dt_days: f64, tol: f64) {
         let epoch: Time<TDB> = 2460000.5_f64.into();
         let s1 = State::<Equatorial, SunCenter> {
@@ -375,7 +314,7 @@ mod tests {
             center: SunCenter,
         };
 
-        let target: Time<TDB> = (epoch.jd + dt_days).into();
+        let target: Time<TDB> = epoch + dt_days;
         let s2 = propagate_two_body(&s1, target).expect("two-body propagation failed");
 
         let solutions = lambert(&r1, &s2.pos, dt_days, true, 0).expect("Lambert solver failed");
@@ -403,8 +342,8 @@ mod tests {
         let v = (GMS / r).sqrt();
         let obl = 23.44_f64.to_radians();
 
-        let r1 = vec_eq(r, 0.0, 0.0);
-        let v1 = vec_eq(0.0, v * obl.cos(), v * obl.sin());
+        let r1 = Vector::<Equatorial>::new([r, 0.0, 0.0]);
+        let v1 = Vector::<Equatorial>::new([0.0, v * obl.cos(), v * obl.sin()]);
         round_trip(r1, v1, 30.0, 1e-10);
     }
 
@@ -418,8 +357,8 @@ mod tests {
         let inc = 10.0_f64.to_radians();
         let tilt = obl + inc;
 
-        let r1 = vec_eq(r_peri, 0.0, 0.0);
-        let v1 = vec_eq(0.0, v_peri * tilt.cos(), v_peri * tilt.sin());
+        let r1 = Vector::<Equatorial>::new([r_peri, 0.0, 0.0]);
+        let v1 = Vector::<Equatorial>::new([0.0, v_peri * tilt.cos(), v_peri * tilt.sin()]);
         round_trip(r1, v1, 50.0, 1e-10);
     }
 
@@ -431,8 +370,8 @@ mod tests {
         let v_peri = (GMS * (2.0 / r_peri - 1.0 / a)).sqrt();
         let obl = 23.44_f64.to_radians();
 
-        let r1 = vec_eq(r_peri, 0.0, 0.0);
-        let v1 = vec_eq(0.0, v_peri * obl.cos(), v_peri * obl.sin());
+        let r1 = Vector::<Equatorial>::new([r_peri, 0.0, 0.0]);
+        let v1 = Vector::<Equatorial>::new([0.0, v_peri * obl.cos(), v_peri * obl.sin()]);
         round_trip(r1, v1, 20.0, 1e-9);
     }
 
@@ -444,8 +383,8 @@ mod tests {
         let v_peri = (GMS * (2.0 / r_peri - 1.0 / a)).sqrt();
         let obl = 23.44_f64.to_radians();
 
-        let r1 = vec_eq(r_peri, 0.0, 0.0);
-        let v1 = vec_eq(0.0, v_peri * obl.cos(), v_peri * obl.sin());
+        let r1 = Vector::<Equatorial>::new([r_peri, 0.0, 0.0]);
+        let v1 = Vector::<Equatorial>::new([0.0, v_peri * obl.cos(), v_peri * obl.sin()]);
         round_trip(r1, v1, 10.0, 1e-9);
     }
 
@@ -456,8 +395,8 @@ mod tests {
         let v = (GMS * (2.0 / r - 1.0 / a)).sqrt();
         let obl = 23.44_f64.to_radians();
 
-        let r1 = vec_eq(r, 0.0, 0.0);
-        let v1 = vec_eq(0.0, v * obl.cos(), v * obl.sin());
+        let r1 = Vector::<Equatorial>::new([r, 0.0, 0.0]);
+        let v1 = Vector::<Equatorial>::new([0.0, v * obl.cos(), v * obl.sin()]);
         round_trip(r1, v1, 2.0, 1e-10);
     }
 
@@ -467,8 +406,8 @@ mod tests {
         let v = (GMS / r).sqrt();
         let inc = 150.0_f64.to_radians();
 
-        let r1 = vec_eq(r, 0.0, 0.0);
-        let v1 = vec_eq(0.0, v * inc.cos(), v * inc.sin());
+        let r1 = Vector::<Equatorial>::new([r, 0.0, 0.0]);
+        let v1 = Vector::<Equatorial>::new([0.0, v * inc.cos(), v * inc.sin()]);
 
         let epoch: Time<TDB> = 2460000.5_f64.into();
         let s1 = State::<Equatorial, SunCenter> {
@@ -478,7 +417,7 @@ mod tests {
             vel: v1,
             center: SunCenter,
         };
-        let target: Time<TDB> = (epoch.jd + 30.0).into();
+        let target: Time<TDB> = epoch + 30.0;
         let s2 = propagate_two_body(&s1, target).expect("propagation failed");
 
         let solutions = lambert(&r1, &s2.pos, 30.0, false, 0).expect("Lambert solver failed");
@@ -497,8 +436,8 @@ mod tests {
         let a_transfer: f64 = f64::midpoint(r1_mag, r2_mag);
         let dt = std::f64::consts::PI * (a_transfer.powi(3) / GMS).sqrt();
 
-        let r1 = vec_eq(r1_mag, 0.0, 0.0);
-        let r2 = vec_eq(-r2_mag, 1e-4, 0.0);
+        let r1 = Vector::<Equatorial>::new([r1_mag, 0.0, 0.0]);
+        let r2 = Vector::<Equatorial>::new([-r2_mag, 1e-4, 0.0]);
 
         let (v1, _v2) = lambert(&r1, &r2, dt, true, 0).expect("Hohmann failed")[0];
 
@@ -514,23 +453,23 @@ mod tests {
 
     #[test]
     fn test_negative_dt_error() {
-        let r1 = vec_eq(1.0, 0.0, 0.0);
-        let r2 = vec_eq(0.0, 1.5, 0.0);
+        let r1 = Vector::<Equatorial>::new([1.0, 0.0, 0.0]);
+        let r2 = Vector::<Equatorial>::new([0.0, 1.5, 0.0]);
         assert!(lambert(&r1, &r2, -10.0, true, 0).is_err());
     }
 
     #[test]
     fn test_zero_dt_error() {
-        let r1 = vec_eq(1.0, 0.0, 0.0);
-        let r2 = vec_eq(0.0, 1.5, 0.0);
+        let r1 = Vector::<Equatorial>::new([1.0, 0.0, 0.0]);
+        let r2 = Vector::<Equatorial>::new([0.0, 1.5, 0.0]);
         assert!(lambert(&r1, &r2, 0.0, true, 0).is_err());
     }
 
     #[test]
     fn test_collinear_same_direction() {
         // r1 and r2 aligned along the same direction (dnu ~ 0).
-        let r1 = vec_eq(1.0, 0.0, 0.0);
-        let r2 = vec_eq(2.0, 0.0, 0.0);
+        let r1 = Vector::<Equatorial>::new([1.0, 0.0, 0.0]);
+        let r2 = Vector::<Equatorial>::new([2.0, 0.0, 0.0]);
         assert!(lambert(&r1, &r2, 30.0, true, 0).is_err());
     }
 
@@ -538,8 +477,8 @@ mod tests {
     fn test_collinear_pi_transfer() {
         // Pi-transfer: r2 = -r1 direction.  Should succeed (orbit plane
         // is arbitrary).
-        let r1 = vec_eq(1.0, 0.0, 0.0);
-        let r2 = vec_eq(-1.5, 0.0, 0.0);
+        let r1 = Vector::<Equatorial>::new([1.0, 0.0, 0.0]);
+        let r2 = Vector::<Equatorial>::new([-1.5, 0.0, 0.0]);
         let result = lambert(&r1, &r2, 200.0, true, 0);
         assert!(result.is_ok(), "pi-transfer should succeed: {result:?}");
     }
@@ -554,8 +493,8 @@ mod tests {
         let inc = 20.0_f64.to_radians();
         let tilt = obl + inc;
 
-        let r1 = vec_eq(r_peri, 0.0, 0.0);
-        let v1 = vec_eq(0.0, v_peri * tilt.cos(), v_peri * tilt.sin());
+        let r1 = Vector::<Equatorial>::new([r_peri, 0.0, 0.0]);
+        let v1 = Vector::<Equatorial>::new([0.0, v_peri * tilt.cos(), v_peri * tilt.sin()]);
         round_trip(r1, v1, 200.0, 1e-9);
     }
 
@@ -564,8 +503,8 @@ mod tests {
         let r = 1.0;
         let v = (GMS / r).sqrt();
         let obl = 23.44_f64.to_radians();
-        let r1 = vec_eq(r, 0.0, 0.0);
-        let v1 = vec_eq(0.0, v * obl.cos(), v * obl.sin());
+        let r1 = Vector::<Equatorial>::new([r, 0.0, 0.0]);
+        let v1 = Vector::<Equatorial>::new([0.0, v * obl.cos(), v * obl.sin()]);
         round_trip(r1, v1, 1.0, 1e-10);
     }
 
@@ -576,10 +515,10 @@ mod tests {
         let r = 1.0;
         let v = (GMS / r).sqrt();
         let obl = 23.44_f64.to_radians();
-        let r1 = vec_eq(r, 0.0, 0.0);
+        let r1 = Vector::<Equatorial>::new([r, 0.0, 0.0]);
 
         let epoch: Time<TDB> = 2460000.5_f64.into();
-        let v1 = vec_eq(0.0, v * obl.cos(), v * obl.sin());
+        let v1 = Vector::<Equatorial>::new([0.0, v * obl.cos(), v * obl.sin()]);
         let s1 = State::<Equatorial, SunCenter> {
             desig: kete_core::desigs::Desig::Empty,
             epoch,
@@ -589,7 +528,7 @@ mod tests {
         };
         // Transfer > 1 full period (~365 days).
         let dt_days = 400.0;
-        let target: Time<TDB> = (epoch.jd + dt_days).into();
+        let target: Time<TDB> = epoch + dt_days;
         let s2 = propagate_two_body(&s1, target).expect("propagation failed");
 
         let solutions = lambert(&r1, &s2.pos, dt_days, true, 2).expect("multi_rev failed");

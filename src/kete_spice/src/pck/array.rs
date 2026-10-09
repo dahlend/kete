@@ -1,5 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 use crate::daf::{DAFType, DafArray};
-use crate::jd_to_spice_jd;
 use kete_core::errors::Error;
 use kete_core::time::{TDB, Time};
 
@@ -11,10 +13,10 @@ pub struct PckArray {
     /// The internal representation of the DAF array.
     pub daf: DafArray,
 
-    /// JD Time in spice units of seconds from J2000.
+    /// Start of the coverage, in TDB seconds from J2000.
     pub jds_start: f64,
 
-    /// JD Time in spice units of seconds from J2000.
+    /// End of the coverage, in TDB seconds from J2000.
     pub jds_end: f64,
 
     /// The ID which identifies this frame.
@@ -31,23 +33,28 @@ impl PckArray {
     /// Is the specified JD within the range of this array.
     #[must_use]
     pub fn contains(&self, jd: Time<TDB>) -> bool {
-        let jds = jd_to_spice_jd(jd);
+        let jds = jd.j2000_seconds();
         (jds >= self.jds_start) && (jds <= self.jds_end)
     }
 
     /// Construct a new PCK array from high-level parameters and data.
+    ///
+    /// `frame_id` is the ID of the body-fixed frame. `reference_frame_id` is
+    /// the ID of the inertial reference frame. `segment_type` is the PCK
+    /// segment type. `jds_start` and `jds_end` are the coverage start and end,
+    /// in TDB seconds from J2000, as the file stores them. `data` is the raw
+    /// array content for the segment type. `name` is the name stored in the DAF
+    /// name record.
     #[must_use]
     pub fn new(
         frame_id: i32,
         reference_frame_id: i32,
         segment_type: i32,
-        jd_start: Time<TDB>,
-        jd_end: Time<TDB>,
+        jds_start: f64,
+        jds_end: f64,
         data: Vec<f64>,
         name: String,
     ) -> Self {
-        let jds_start = jd_to_spice_jd(jd_start);
-        let jds_end = jd_to_spice_jd(jd_end);
         let summary_floats: Box<[f64]> = vec![jds_start, jds_end].into();
         let summary_ints: Box<[i32]> =
             vec![frame_id, reference_frame_id, segment_type, 0, 0].into();

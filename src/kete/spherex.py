@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Dar Dahlen
+# SPDX-License-Identifier: BSD-3-Clause
+
 """
 Spherex Related Functions and Data.
 """
@@ -79,7 +82,7 @@ def fetch_fovs(update_cache=False):
     values to within about 30km.
     """
     table = fetch_observation_table(update_cache=update_cache)
-    table = table[[s is not None for s in table["s_region"]]]
+    table = table[table["s_region"].notna()]
     fields = defaultdict(list)
 
     for row in table.itertuples():
@@ -87,7 +90,7 @@ def fetch_fovs(update_cache=False):
         if (row.obs_id, row.obsid) in fields:
             observer = fields[(row.obs_id, row.obsid)][0].observer
         else:
-            time = (row.time_bounds_lower + row.time_bounds_lower) / 2
+            time = (row.time_bounds_lower + row.time_bounds_upper) / 2
             jd = Time.from_mjd(time, scaling="UTC").jd
             observer = get_state("spherex", jd)
         cmos = SpherexCmos(region, observer, row.uri, row.planeid)

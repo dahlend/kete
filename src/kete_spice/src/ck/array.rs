@@ -1,5 +1,8 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 use crate::daf::{DAFType, DafArray};
-use kete_core::errors::Error;
+use kete_core::errors::{Error, KeteResult};
 
 /// DAF Array of CK data.
 /// These are segments of data.
@@ -17,9 +20,6 @@ pub struct CkArray {
 
     /// Instrument ID
     pub instrument_id: i32,
-
-    /// NAIF ID of the spacecraft.
-    pub naif_id: i32,
 
     /// The spice frame ID of the array.
     /// Called the `Reference` in SPICE documentation.
@@ -52,7 +52,6 @@ impl CkArray {
         name: String,
     ) -> Self {
         let avflag = i32::from(produces_angular_rates);
-        let naif_id = instrument_id / 1000;
         let summary_floats: Box<[f64]> = vec![tick_start, tick_end].into();
         let summary_ints: Box<[i32]> = vec![
             instrument_id,
@@ -69,11 +68,33 @@ impl CkArray {
             tick_start,
             tick_end,
             instrument_id,
-            naif_id,
             reference_frame_id,
             segment_type,
             produces_angular_rates,
         }
+    }
+}
+
+/// Convert a count stored as a float in a CK segment to `usize`.
+///
+/// `value` is the stored float. `max` is the largest valid count. `what` names
+/// the count in the error message.
+///
+/// # Errors
+/// [`Error::IOError`] if `value` is not a finite whole number in `[0, max]`.
+#[allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "The value is checked to be a whole number in range first."
+)]
+pub(in crate::ck) fn stored_count(value: f64, max: usize, what: &str) -> KeteResult<usize> {
+    if value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value <= max as f64 {
+        Ok(value as usize)
+    } else {
+        Err(Error::IOError(format!(
+            "CK segment has an invalid {what}: {value}."
+        )))
     }
 }
 
@@ -102,7 +123,6 @@ impl TryFrom<DafArray> for CkArray {
         // Those two values are already contained within the DafArray stored in this
         // object.
         let instrument_id = array.summary_ints[0];
-        let naif_id = array.summary_ints[0] / 1000;
         let frame_id = array.summary_ints[1];
         let segment_type = array.summary_ints[2];
         let produces_angular_rates = array.summary_ints[3] == 1;
@@ -112,7 +132,6 @@ impl TryFrom<DafArray> for CkArray {
             tick_start,
             tick_end,
             instrument_id,
-            naif_id,
             reference_frame_id: frame_id,
             segment_type,
             produces_angular_rates,

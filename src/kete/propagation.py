@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Dar Dahlen
+# SPDX-FileCopyrightText: 2025 California Institute of Technology
+# SPDX-License-Identifier: BSD-3-Clause
+
 """
 Propagation of objects using orbital mechanics, this includes a simplified 2 body model
 as well as a N body model which includes some general relativistic effects.
@@ -7,6 +11,7 @@ from __future__ import annotations
 
 from ._core import (
     NonGravModel,
+    SymplecticSim,
     a_over_m_from_physical,
     closest_approach,
     density_from_a_over_m,
@@ -15,6 +20,10 @@ from ._core import (
     propagate_n_body,
     propagate_n_body_long,
     propagate_two_body,
+    register_custom_mass,
+    register_mass,
+    register_polyhedron,
+    register_spherical_harmonics,
     thermal_inertia_from_lambda_0,
 )
 
@@ -28,5 +37,10 @@ __all__ = [
     "propagate_n_body",
     "propagate_n_body_long",
     "propagate_two_body",
+    "register_custom_mass",
+    "register_mass",
+    "register_polyhedron",
+    "register_spherical_harmonics",
+    "SymplecticSim",
     "thermal_inertia_from_lambda_0",
 ]

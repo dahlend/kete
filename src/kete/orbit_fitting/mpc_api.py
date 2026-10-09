@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Dar Dahlen
+# SPDX-License-Identifier: BSD-3-Clause
+
 """MPC ADES API: fetch observations and convert to fitting Observations."""
 
 from __future__ import annotations
@@ -16,13 +19,23 @@ from ..cache import cache_path
 from ..time import Time
 from ..vector import Frames, State
 from .common import (
+    _MIN_AXIS_SIGMA,
     _fetch_debias_table,
+    _floor_error_ellipse,
+    _ground_observer,
     _over_obs_reweight_factors,
     _time_sigma_for_obs,
     get_observatory_std,
 )
 
 logger = logging.getLogger(__name__)
+
+
+# Lower limit (arcsec) on both principal axes of the error ellipse of optical
+# records. Some ADES records report sigmas of micro-arcseconds, below what the
+# astrometry supports, and a few of them can outweigh every other observation in
+# a fit.
+_ADES_OPTICAL_SIGMA_FLOOR = 0.01
 
 # ADES ``astCat`` name -> single-character MPC catalog code.
 # Source: EFCC18 ``bias.dat`` header cross-referenced with
@@ -58,57 +71,6 @@ _ADES_TO_MPC_CODE: dict[str, str] = {
 }
 
 
-def _build_observer(stn: str, jd: float, rec: dict):
-    """Return an SSB-centered equatorial observer State from an ADES record, or None."""
-    from .. import constants, spice
-    from ..vector import Vector
-
-    # Ground-station lookup.
-    try:
-        obs = spice.mpc_code_to_ecliptic(stn, jd, center=0).as_equatorial
-        if obs.is_finite:
-            return obs
-    except Exception:
-        pass
-
-    # Fallback: pos1/pos2/pos3 from ADES record (satellite/roving observers).
-    pos1, pos2, pos3 = rec.get("pos1"), rec.get("pos2"), rec.get("pos3")
-    if pos1 is None or pos2 is None or pos3 is None:
-        return None
-    try:
-        sys = rec.get("sys", "").upper()
-        ctr = int(float(rec.get("ctr", 399)))
-
-        pos_km = np.array([float(pos1), float(pos2), float(pos3)])
-        if sys == "ICRF_AU":
-            pos_au = pos_km
-        elif sys == "ICRF_KM":
-            pos_au = pos_km / constants.AU_KM
-        elif sys == "WGS84":
-            lon, lat, alt = float(pos1), float(pos2), float(pos3)
-            return spice.earth_pos_to_ecliptic(
-                jd, lat, lon, alt, name=stn, center=10
-            ).as_equatorial
-        else:
-            logger.warning(
-                "Unsupported ADES coordinate system '%s' for stn %s", sys, stn
-            )
-            return None
-
-        center_state = spice.get_state(ctr, jd, center=10).as_equatorial
-        ssb_pos = center_state.pos + Vector(list(pos_au), Frames.Equatorial)
-        return State(
-            stn,
-            jd,
-            ssb_pos,
-            center_state.vel,
-            Frames.Equatorial,
-            center_id=center_state.center_id,
-        )
-    except Exception:
-        return None
-
-
 def fetch_mpc_observations(
     desig: str,
     use_observatory_residuals: bool = True,
@@ -121,15 +83,28 @@ def fetch_mpc_observations(
 
     Queries ``https://data.minorplanetcenter.net/api/get-obs`` for the
     given object designation and returns optical observations ready for
-    orbit fitting.  Only optical records with valid RA/Dec are included;
-    radar and other types are silently skipped.
+    orbit fitting.  Only optical and occultation records with valid positions
+    are included; radar and other types are silently skipped, as are records
+    the MPC marks as deprecated.
 
     Results are cached under ``~/.kete/observations/`` so that repeated
     queries for the same designation do not hit the network.
 
-    Uncertainties are first taken from a pre-computed table of residual error by
-    observatory code, if available.  If not, the MPC-provided ``rmsra`` and
-    ``rmsdec`` fields are used, defaulting to 1 arcsecond if not provided.
+    Uncertainties are taken from the MPC-provided ``rmsra`` and ``rmsdec``
+    fields when present. Otherwise they come from a pre-computed table of
+    residual error by observatory code, and then from an epoch-based default.
+    Both principal axes of the error ellipse of optical records are limited to
+    at least 10 mas, and those of occultations to at least 0.1 mas. The limit
+    keeps the orientation of the ellipse.
+
+    The timing uncertainty is the ADES ``rmsTime`` when present. Otherwise it is
+    a default by epoch, with separate defaults for spacecraft observers (a
+    position in ``ICRF_KM`` or ``ICRF_AU``) and video observations (mode
+    ``VID``).
+
+    Ground-station positions use the Earth orientation of the loaded PCK
+    kernels. Before their coverage starts, they use the approximate Earth
+    orientation of :func:`~kete.spice.approx_earth_pos_to_ecliptic`.
 
     When ``debias`` is True, the EFCC18 star-catalog bias correction is applied
     to each observation's (RA, Dec) using the ADES ``astCat`` field.
@@ -146,9 +121,8 @@ def fetch_mpc_observations(
         Object designation recognized by the MPC (e.g. ``"Apophis"``,
         ``"101955"``, ``"1999 RQ36"``).
     use_observatory_residuals :
-        If ``True``, apply per-observatory sigmas from the pre-computed
-        residual table when available; otherwise, use the MPC-provided
-        ``rmsra`` and ``rmsdec`` fields, defaulting to 1 arcsecond.
+        If ``True``, use the per-observatory sigmas from the pre-computed
+        residual table for records without ``rmsra`` and ``rmsdec``.
     debias :
         If ``True``, apply the EFCC18 star-catalog debiasing correction.
         Requires the JPL ``debias_2018.tgz`` archive, downloaded on first use.
@@ -207,8 +181,12 @@ def fetch_mpc_observations(
 
     # validate and collect all fields needed for reweighting.
     valid = []
+    n_no_observer = 0
     for rec in records["ADES_DF"]:
         obstype = rec.get("Obstype")
+        if rec.get("deprecated"):
+            # The MPC keeps deprecated records for provenance; they are superseded.
+            continue
 
         if obstype == "optical":
             ra_str = rec.get("ra")
@@ -255,9 +233,25 @@ def fetch_mpc_observations(
 
         observer = _build_observer(stn, jd, rec)
         if observer is None:
+            n_no_observer += 1
             continue
 
-        time_std, std = _time_sigma_for_obs(rec.get("note2", ""), epoch.ymd[0])
+        # ADES has no note2; spacecraft and video observations are identified by
+        # their position system and their mode. A reported rmsTime replaces the
+        # default timing uncertainty.
+        if (rec.get("sys") or "").upper() in ("ICRF_KM", "ICRF_AU"):
+            note2 = "S"
+        elif rec.get("mode") == "VID":
+            note2 = "n"
+        else:
+            note2 = ""
+        time_std, std = _time_sigma_for_obs(note2, epoch.ymd[0])
+        try:
+            rmstime = float(rec.get("rmstime"))
+            if np.isfinite(rmstime) and rmstime > 0:
+                time_std = rmstime
+        except (TypeError, ValueError):
+            pass
 
         # Observation.optical expects sky-plane sigma_ra (sigma_ra * cos(dec))
         # to match the convention of MPC ADES, Gaia DR3, and other astrometric
@@ -288,16 +282,18 @@ def fetch_mpc_observations(
         # It captures the geometry of the uncertainty ellipse (e.g. along-track
         # elongation from timing uncertainty) independently of sigma magnitude,
         # so it is applied regardless of whether sigmas came from the
-        # per-observatory table or the ADES record.  Clamp strictly inside (-1, 1).
+        # per-observatory table or the ADES record.
         sigma_corr = 0.0
         rmscorr = rec.get("rmscorr")
         if rmscorr is not None:
             try:
                 rmscorr = float(rmscorr)
                 if np.isfinite(rmscorr):
-                    sigma_corr = max(min(rmscorr, 0.999), -0.999)
+                    sigma_corr = rmscorr
             except (TypeError, ValueError):
                 pass
+        floor = _MIN_AXIS_SIGMA if is_occultation else _ADES_OPTICAL_SIGMA_FLOOR
+        s_ra, s_dec, sigma_corr = _floor_error_ellipse(s_ra, s_dec, sigma_corr, floor)
 
         if debias_table is not None and not is_occultation:
             # Occultation positions are tied to the Gaia reference frame
@@ -332,6 +328,14 @@ def fetch_mpc_observations(
                 "is_occultation": is_occultation,
                 "time_std": time_std,
             }
+        )
+
+    if n_no_observer:
+        logger.warning(
+            "Skipped %d observations of %s with no observer state: unknown "
+            "observatory code, or an epoch outside the loaded ephemeris.",
+            n_no_observer,
+            desig,
         )
 
     if not valid:
@@ -370,3 +374,63 @@ def fetch_mpc_observations(
         )
 
     return observations
+
+
+def _build_observer(stn: str, jd: float, rec: dict):
+    """Return an SSB-centered equatorial observer State from an ADES record, or None."""
+    from .. import constants, spice
+    from ..mpc import find_obs_code
+    from ..vector import Vector
+
+    # Ground-station lookup. Codes without a ground location (spacecraft) have NaN
+    # coordinates, and unknown codes raise.
+    try:
+        lat, lon, height, *_ = find_obs_code(stn)
+    except Exception:
+        lat = float("nan")
+    if np.isfinite(lat):
+        try:
+            obs = _ground_observer(jd, lat, lon, height, stn)
+        except ValueError:
+            # The loaded ephemeris does not cover the epoch.
+            return None
+        if obs.is_finite:
+            return obs
+
+    # Fallback: pos1/pos2/pos3 from ADES record (satellite/roving observers).
+    pos1, pos2, pos3 = rec.get("pos1"), rec.get("pos2"), rec.get("pos3")
+    if pos1 is None or pos2 is None or pos3 is None:
+        return None
+    try:
+        sys = rec.get("sys", "").upper()
+        ctr = int(float(rec.get("ctr", 399)))
+
+        pos_km = np.array([float(pos1), float(pos2), float(pos3)])
+        if sys == "ICRF_AU":
+            pos_au = pos_km
+        elif sys == "ICRF_KM":
+            pos_au = pos_km / constants.AU_KM
+        elif sys == "WGS84":
+            # ADES gives WGS84 altitude in meters.
+            lon, lat, alt_m = float(pos1), float(pos2), float(pos3)
+            return spice.earth_pos_to_ecliptic(
+                jd, lat, lon, alt_m / 1000.0, name=stn, center=10
+            ).as_equatorial
+        else:
+            logger.warning(
+                "Unsupported ADES coordinate system '%s' for stn %s", sys, stn
+            )
+            return None
+
+        center_state = spice.get_state(ctr, jd, center=10).as_equatorial
+        ssb_pos = center_state.pos + Vector(list(pos_au), Frames.Equatorial)
+        return State(
+            stn,
+            jd,
+            ssb_pos,
+            center_state.vel,
+            Frames.Equatorial,
+            center_id=center_state.center_id,
+        )
+    except Exception:
+        return None

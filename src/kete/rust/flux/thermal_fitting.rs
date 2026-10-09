@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! PyO3 bindings for model fitting (NEATM/FRM/HG).
 //!
 //! Exposes [`kete_flux::fitting`] types and functions to Python under
@@ -11,7 +14,7 @@ use kete_flux::fitting::{self, FitResult, FluxObs, FluxPriors, Model, ParamPrior
 use kete_stats::prelude::Data;
 use pyo3::prelude::*;
 
-/// Resolve a band argument -- either a recognised name or a wavelength in nm.
+/// Resolve a band argument -- either a recognized name or a wavelength in nm.
 ///
 /// Accepted names: ``"W1"``-``"W4"``, ``"NEOS1"``, ``"NEOS2"``, ``"V"``,
 /// ``"IRAC1"``-``"IRAC4"``, ``"MIPS24"``, ``"MIPS70"``, ``"MIPS160"``,
@@ -41,14 +44,27 @@ impl BandArg {
     }
 }
 
-/// A single flux observation at a known geometry.
+/// A single flux constraint at a known geometry.
+///
+/// A constraint on the model flux is expressed the same way a :class:`ParamPrior`
+/// constrains a parameter: an optional hard ``bounds`` interval plus an optional
+/// (possibly asymmetric) Gaussian point estimate. Provide ``flux``/``sigma``
+/// for a point estimate, ``bounds`` for a hard interval, or both. The
+/// :meth:`detection`, :meth:`upper_limit`, and :meth:`bounded` static
+/// constructors cover the common cases.
+///
+/// ``flux`` and ``sigma`` are always the first two arguments; pass ``None`` for
+/// both to give a bounds-only constraint.
 ///
 /// Parameters
 /// ----------
 /// flux :
-///     Observed flux in Jy (or upper-limit threshold).
+///     Gaussian point estimate (Jy), or the upper-limit threshold when
+///     ``is_upper_limit``. ``None`` for a bounds-only constraint.
 /// sigma :
-///     1-sigma uncertainty in Jy.
+///     1-sigma uncertainty in Jy (lower side if asymmetric). Required when
+///     ``flux`` is given, except for an upper limit, whose single noise scale
+///     may be passed as either ``sigma`` or ``sigma_hi`` (not both).
 /// band :
 ///     Band identifier: a WISE name (``"W1"``-``"W4"``) or a wavelength in nm.
 /// sun2obj :
@@ -56,43 +72,198 @@ impl BandArg {
 /// sun2obs :
 ///     Sun-to-observer vector in AU (Ecliptic frame).
 /// is_upper_limit :
-///     If ``True``, ``flux`` is a non-detection upper limit.
+///     If ``True``, ``flux`` is a non-detection upper-limit threshold.
+/// sigma_hi :
+///     Optional upper-side 1-sigma uncertainty (``sigma_plus``) in Jy. ``None``
+///     means the error is symmetric and equal to ``sigma``.
+/// bounds :
+///     Optional hard ``(lo, hi)`` interval on the model flux (Jy): a wall, flat
+///     inside, not scaled by the fitted error inflation.
 #[pyclass(frozen, module = "kete.flux", name = "FluxObs", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyFluxObs(pub FluxObs);
 
+impl PyFluxObs {
+    /// Validate a hard flux interval before it reaches the core constructor
+    /// (which panics on a degenerate interval).
+    fn check_bounds(bounds: Option<(f64, f64)>) -> PyResult<()> {
+        if let Some((lo, hi)) = bounds
+            && (hi <= lo || lo.is_nan() || hi.is_nan())
+        {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "`bounds` requires lo < hi, got ({lo}, {hi})"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Build the inner [`FluxObs`] from already-validated parts.
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        flux: Option<f64>,
+        sigma: Option<f64>,
+        sigma_hi: Option<f64>,
+        bounds: Option<(f64, f64)>,
+        is_upper_limit: bool,
+        band: BandArg,
+        sun2obj: VectorLike,
+        sun2obs: VectorLike,
+    ) -> PyResult<Self> {
+        Self::check_bounds(bounds)?;
+        // Resolve the point estimate as (mean, scale_lo, scale_hi). An upper
+        // limit is one-sided: only the above-threshold side is constrained, so
+        // its single noise scale may be given as either `sigma` or `sigma_hi`
+        // (the latter matches the getters, so getter round-trips reconstruct).
+        let point = match (flux, sigma, sigma_hi) {
+            (Some(_), Some(_), Some(_)) if is_upper_limit => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "an upper limit takes a single noise scale: \
+                     pass `sigma` or `sigma_hi`, not both",
+                ));
+            }
+            (Some(f), Some(s), None) if is_upper_limit => Some((f, None, Some(s))),
+            (Some(f), None, Some(s)) if is_upper_limit => Some((f, None, Some(s))),
+            (Some(f), Some(s), sh) => Some((f, Some(s), Some(sh.unwrap_or(s)))),
+            (Some(_), None, _) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "`sigma` is required when `flux` is given",
+                ));
+            }
+            (None, s, sh) => {
+                if s.is_some() || sh.is_some() || is_upper_limit {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "`sigma`/`sigma_hi`/`is_upper_limit` require `flux` to be set",
+                    ));
+                }
+                None
+            }
+        };
+        if point.is_none() && bounds.is_none() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "a FluxObs needs at least one of `flux` (point estimate) or `bounds`",
+            ));
+        }
+        Ok(Self(FluxObs::from_parts(
+            bounds,
+            point,
+            band.into_band_info()?,
+            sun2obj.into_vector(PyFrames::Ecliptic).into(),
+            sun2obs.into_vector(PyFrames::Ecliptic).into(),
+        )))
+    }
+}
+
 #[pymethods]
 impl PyFluxObs {
     #[new]
-    #[pyo3(signature = (flux, sigma, band, sun2obj, sun2obs, is_upper_limit=false))]
+    #[pyo3(signature = (flux, sigma, band, sun2obj, sun2obs, is_upper_limit=false, sigma_hi=None, bounds=None))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
+        flux: Option<f64>,
+        sigma: Option<f64>,
+        band: BandArg,
+        sun2obj: VectorLike,
+        sun2obs: VectorLike,
+        is_upper_limit: bool,
+        sigma_hi: Option<f64>,
+        bounds: Option<(f64, f64)>,
+    ) -> PyResult<Self> {
+        Self::build(
+            flux,
+            sigma,
+            sigma_hi,
+            bounds,
+            is_upper_limit,
+            band,
+            sun2obj,
+            sun2obs,
+        )
+    }
+
+    /// A two-sided flux detection ``flux +/- sigma`` (asymmetric if ``sigma_hi``).
+    #[staticmethod]
+    #[pyo3(signature = (flux, sigma, band, sun2obj, sun2obs, sigma_hi=None))]
+    fn detection(
         flux: f64,
         sigma: f64,
         band: BandArg,
         sun2obj: VectorLike,
         sun2obs: VectorLike,
-        is_upper_limit: bool,
+        sigma_hi: Option<f64>,
     ) -> PyResult<Self> {
-        Ok(Self(FluxObs {
+        Ok(Self(FluxObs::detection_asym(
             flux,
             sigma,
-            band: band.into_band_info()?,
-            is_upper_limit,
-            sun2obj: sun2obj.into_vector(PyFrames::Ecliptic).into(),
-            sun2obs: sun2obs.into_vector(PyFrames::Ecliptic).into(),
-        }))
+            sigma_hi.unwrap_or(sigma),
+            band.into_band_info()?,
+            sun2obj.into_vector(PyFrames::Ecliptic).into(),
+            sun2obs.into_vector(PyFrames::Ecliptic).into(),
+        )))
     }
 
-    /// Observed flux in Jy.
-    #[getter]
-    fn flux(&self) -> f64 {
-        self.0.flux
+    /// A soft photometric upper limit: a non-detection at ``threshold`` with
+    /// noise scale ``sigma``.
+    #[staticmethod]
+    #[pyo3(signature = (threshold, sigma, band, sun2obj, sun2obs))]
+    fn upper_limit(
+        threshold: f64,
+        sigma: f64,
+        band: BandArg,
+        sun2obj: VectorLike,
+        sun2obs: VectorLike,
+    ) -> PyResult<Self> {
+        Ok(Self(FluxObs::upper_limit(
+            threshold,
+            sigma,
+            band.into_band_info()?,
+            sun2obj.into_vector(PyFrames::Ecliptic).into(),
+            sun2obs.into_vector(PyFrames::Ecliptic).into(),
+        )))
     }
 
-    /// 1-sigma uncertainty in Jy.
+    /// A hard flux interval ``[lo, hi]`` with no point estimate.
+    #[staticmethod]
+    #[pyo3(signature = (lo, hi, band, sun2obj, sun2obs))]
+    fn bounded(
+        lo: f64,
+        hi: f64,
+        band: BandArg,
+        sun2obj: VectorLike,
+        sun2obs: VectorLike,
+    ) -> PyResult<Self> {
+        Self::check_bounds(Some((lo, hi)))?;
+        Ok(Self(FluxObs::bounded(
+            lo,
+            hi,
+            band.into_band_info()?,
+            sun2obj.into_vector(PyFrames::Ecliptic).into(),
+            sun2obs.into_vector(PyFrames::Ecliptic).into(),
+        )))
+    }
+
+    /// Point-estimate flux in Jy, or ``None`` for a bounds-only constraint.
     #[getter]
-    fn sigma(&self) -> f64 {
-        self.0.sigma
+    fn flux(&self) -> Option<f64> {
+        self.0.point_estimate()
+    }
+
+    /// The 1-sigma uncertainty in Jy. This is the lower-side width of a detection,
+    /// the noise scale of an upper limit, or ``None`` if there is no point estimate.
+    #[getter]
+    fn sigma(&self) -> Option<f64> {
+        self.0.sigma_lo().or_else(|| self.0.sigma_hi())
+    }
+
+    /// Upper-side 1-sigma uncertainty in Jy, or ``None`` if no point estimate.
+    #[getter]
+    fn sigma_hi(&self) -> Option<f64> {
+        self.0.sigma_hi()
+    }
+
+    /// Hard ``(lo, hi)`` flux interval in Jy, or ``None`` if unbounded.
+    #[getter]
+    fn bounds(&self) -> Option<(f64, f64)> {
+        self.0.bounds()
     }
 
     /// Band wavelength in nm.
@@ -104,7 +275,7 @@ impl PyFluxObs {
     /// Whether this is a non-detection upper limit.
     #[getter]
     fn is_upper_limit(&self) -> bool {
-        self.0.is_upper_limit
+        self.0.is_upper_limit()
     }
 
     /// Sun-to-object vector in AU (Ecliptic frame), as ``[x, y, z]``.
@@ -120,9 +291,32 @@ impl PyFluxObs {
     }
 
     fn __repr__(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(mean) = self.0.point_estimate() {
+            match (self.0.sigma_lo(), self.0.sigma_hi()) {
+                (Some(lo), Some(hi)) if lo == hi => {
+                    parts.push(format!("flux={mean:.4e}, sigma={lo:.4e}"));
+                }
+                (Some(lo), Some(hi)) => {
+                    parts.push(format!(
+                        "flux={mean:.4e}, sigma={lo:.4e}, sigma_hi={hi:.4e}"
+                    ));
+                }
+                // Upper limit: only the above-threshold side is constrained;
+                // label matches the getter that returns it.
+                (None, Some(hi)) => parts.push(format!("threshold={mean:.4e}, sigma_hi={hi:.4e}")),
+                (Some(lo), None) => parts.push(format!("flux={mean:.4e}, sigma_lo={lo:.4e}")),
+                (None, None) => parts.push(format!("flux={mean:.4e}")),
+            }
+        }
+        if let Some((lo, hi)) = self.0.bounds() {
+            parts.push(format!("bounds=({lo:.4e}, {hi:.4e})"));
+        }
         format!(
-            "FluxObs(flux={:.4e}, sigma={:.4e}, wavelength={:.1}, upper_limit={})",
-            self.0.flux, self.0.sigma, self.0.band.wavelength, self.0.is_upper_limit
+            "FluxObs({}, wavelength={:.1}, upper_limit={})",
+            parts.join(", "),
+            self.0.band.wavelength,
+            self.0.is_upper_limit()
         )
     }
 }
@@ -133,9 +327,14 @@ impl PyFluxObs {
 /// Parameters
 /// ----------
 /// bounds :
-///     ``(low, high)`` logistic-barrier hard bounds.
+///     ``(low, high)`` hard bounds. Each bound is a smooth wall, so the sampler
+///     can use gradients. The soft part of a wall is about 2% of the smallest of
+///     the bound's magnitude, ``high - low``, and 1. Inside the bounds, away from
+///     the walls, the prior is flat.
 /// gaussian :
-///     Optional ``(mean, sigma)`` Gaussian centering prior.
+///     Optional Gaussian centering prior. Either ``(mean, sigma)`` for a
+///     symmetric prior, or ``(mean, sigma_lo, sigma_hi)`` for an asymmetric one
+///     (``sigma_lo`` is the 1-sigma width below ``mean``, ``sigma_hi`` above).
 ///     ``None`` means flat (uniform) within the bounds.
 #[pyclass(frozen, module = "kete.flux", name = "ParamPrior", skip_from_py_object)]
 #[derive(Clone, Debug)]
@@ -148,7 +347,14 @@ impl<'a, 'py> FromPyObject<'a, 'py> for PyParamPrior {
         if let Ok(pp) = ob.cast::<PyParamPrior>() {
             return Ok(pp.get().clone());
         }
-        // 4-tuple (low, high, mean, std) -> bounds + gaussian.
+        // 5-tuple (low, high, mean, sigma_lo, sigma_hi) -> bounds + asym gaussian.
+        if let Ok((low, high, mean, sigma_lo, sigma_hi)) = ob.extract::<(f64, f64, f64, f64, f64)>()
+        {
+            return Ok(Self(ParamPrior::with_gaussian_asym(
+                low, high, mean, sigma_lo, sigma_hi,
+            )));
+        }
+        // 4-tuple (low, high, mean, std) -> bounds + symmetric gaussian.
         if let Ok((low, high, mean, sigma)) = ob.extract::<(f64, f64, f64, f64)>() {
             return Ok(Self(ParamPrior::with_gaussian(low, high, mean, sigma)));
         }
@@ -157,18 +363,32 @@ impl<'a, 'py> FromPyObject<'a, 'py> for PyParamPrior {
             return Ok(Self(ParamPrior::bounds_only(low, high)));
         }
         Err(pyo3::exceptions::PyTypeError::new_err(
-            "Expected a ParamPrior, a 2-tuple (low, high), or a 4-tuple (low, high, mean, std)",
+            "Expected a ParamPrior, a 2-tuple (low, high), a 4-tuple \
+             (low, high, mean, std), or a 5-tuple (low, high, mean, sigma_lo, sigma_hi)",
         ))
     }
+}
+
+/// Gaussian centering argument: symmetric `(mean, sigma)` or asymmetric
+/// `(mean, sigma_lo, sigma_hi)`.
+#[derive(FromPyObject, IntoPyObject)]
+enum GaussianArg {
+    Sym((f64, f64)),
+    Asym((f64, f64, f64)),
 }
 
 #[pymethods]
 impl PyParamPrior {
     #[new]
     #[pyo3(signature = (bounds, gaussian=None))]
-    fn new(bounds: (f64, f64), gaussian: Option<(f64, f64)>) -> Self {
+    fn new(bounds: (f64, f64), gaussian: Option<GaussianArg>) -> Self {
         Self(match gaussian {
-            Some((mean, sigma)) => ParamPrior::with_gaussian(bounds.0, bounds.1, mean, sigma),
+            Some(GaussianArg::Sym((mean, sigma))) => {
+                ParamPrior::with_gaussian(bounds.0, bounds.1, mean, sigma)
+            }
+            Some(GaussianArg::Asym((mean, sigma_lo, sigma_hi))) => {
+                ParamPrior::with_gaussian_asym(bounds.0, bounds.1, mean, sigma_lo, sigma_hi)
+            }
             None => ParamPrior::bounds_only(bounds.0, bounds.1),
         })
     }
@@ -178,17 +398,29 @@ impl PyParamPrior {
         self.0.bounds
     }
 
+    /// Gaussian center as ``(mean, sigma)``, ``(mean, sigma_lo, sigma_hi)`` when
+    /// the two widths differ, or ``None``.
     #[getter]
-    fn gaussian(&self) -> Option<(f64, f64)> {
-        self.0.gaussian
+    fn gaussian(&self) -> Option<GaussianArg> {
+        self.0.gaussian.map(|(mean, sigma_lo, sigma_hi)| {
+            if sigma_lo == sigma_hi {
+                GaussianArg::Sym((mean, sigma_lo))
+            } else {
+                GaussianArg::Asym((mean, sigma_lo, sigma_hi))
+            }
+        })
     }
 
     fn __repr__(&self) -> String {
         let (low, high) = self.0.bounds;
         match self.0.gaussian {
-            Some((mean, sigma)) => {
-                format!("ParamPrior(bounds=({low}, {high}), gaussian=({mean}, {sigma}))")
+            // Collapse to the (mean, sigma) form when symmetric.
+            Some((mean, sigma_lo, sigma_hi)) if sigma_lo == sigma_hi => {
+                format!("ParamPrior(bounds=({low}, {high}), gaussian=({mean}, {sigma_lo}))")
             }
+            Some((mean, sigma_lo, sigma_hi)) => format!(
+                "ParamPrior(bounds=({low}, {high}), gaussian=({mean}, {sigma_lo}, {sigma_hi}))"
+            ),
             None => format!("ParamPrior(bounds=({low}, {high}))"),
         }
     }
@@ -216,6 +448,7 @@ impl PyParamPrior {
 ///         h_mag      = (-5.0, 35.0),
 ///         g_param    = (-0.3, 0.7, 0.2, 0.05),
 ///         vis_albedo = (0.01, 1.0),
+///         f_sigma    = (0.5, 5.0),
 ///     )
 ///
 /// Each prior is a :class:`ParamPrior` specifying ``bounds`` (logistic
@@ -237,6 +470,8 @@ impl PyParamPrior {
 ///     :class:`ParamPrior` for G parameter.
 /// vis_albedo :
 ///     :class:`ParamPrior` for visible geometric albedo.
+/// f_sigma :
+///     :class:`ParamPrior` for the factor that scales every flux uncertainty.
 #[pyclass(frozen, module = "kete.flux", name = "FluxPriors", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyFluxPriors(pub FluxPriors);
@@ -251,6 +486,7 @@ impl PyFluxPriors {
         h_mag=None,
         g_param=None,
         vis_albedo=None,
+        f_sigma=None,
     ))]
     fn new(
         diameter: Option<PyParamPrior>,
@@ -259,6 +495,7 @@ impl PyFluxPriors {
         h_mag: Option<PyParamPrior>,
         g_param: Option<PyParamPrior>,
         vis_albedo: Option<PyParamPrior>,
+        f_sigma: Option<PyParamPrior>,
     ) -> Self {
         let d = FluxPriors::default();
         Self(FluxPriors {
@@ -268,20 +505,21 @@ impl PyFluxPriors {
             h_mag: h_mag.map_or(d.h_mag, |p| p.0),
             g_param: g_param.map_or(d.g_param, |p| p.0),
             vis_albedo: vis_albedo.map_or(d.vis_albedo, |p| p.0),
-            f_sigma: d.f_sigma,
+            f_sigma: f_sigma.map_or(d.f_sigma, |p| p.0),
         })
     }
 
     fn __repr__(&self) -> String {
         let p = &self.0;
         format!(
-            "FluxPriors(\n  diameter={},\n  beaming={},\n  r_ir={},\n  h_mag={},\n  g_param={},\n  vis_albedo={})",
+            "FluxPriors(\n  diameter={},\n  beaming={},\n  r_ir={},\n  h_mag={},\n  g_param={},\n  vis_albedo={},\n  f_sigma={})",
             PyParamPrior(p.diameter.clone()).__repr__(),
             PyParamPrior(p.beaming.clone()).__repr__(),
             PyParamPrior(p.r_ir.clone()).__repr__(),
             PyParamPrior(p.h_mag.clone()).__repr__(),
             PyParamPrior(p.g_param.clone()).__repr__(),
             PyParamPrior(p.vis_albedo.clone()).__repr__(),
+            PyParamPrior(p.f_sigma.clone()).__repr__(),
         )
     }
 
@@ -314,6 +552,11 @@ impl PyFluxPriors {
     fn vis_albedo(&self) -> PyParamPrior {
         PyParamPrior(self.0.vis_albedo.clone())
     }
+
+    #[getter]
+    fn f_sigma(&self) -> PyParamPrior {
+        PyParamPrior(self.0.f_sigma.clone())
+    }
 }
 
 /// Build a [`PyData`] from a single column of non-divergent MCMC draws.
@@ -334,77 +577,67 @@ fn stats_from_column(draws: &[Vec<f64>], divergent: &[bool], col: usize) -> PyDa
 #[derive(Clone, Debug)]
 pub struct PyFitResult(pub FitResult);
 
+impl PyFitResult {
+    /// Posterior statistics for the named draw column, or `None` if the model does
+    /// not have that column. Only non-divergent draws are included.
+    fn column(&self, name: &str) -> Option<PyData> {
+        self.0
+            .column_names()
+            .iter()
+            .position(|c| *c == name)
+            .map(|col| stats_from_column(&self.0.draws, &self.0.divergent, col))
+    }
+}
+
 #[pymethods]
 impl PyFitResult {
     /// Posterior statistics for diameter (km).  ``None`` for HG model.
     /// Only non-divergent draws are included.
     #[getter]
     fn diameter(&self) -> Option<PyData> {
-        (!self.0.model.is_hg()).then(|| stats_from_column(&self.0.draws, &self.0.divergent, 0))
+        self.column("diameter")
     }
 
     /// Posterior statistics for visual geometric albedo.  ``None`` for HG model.
     /// Only non-divergent draws are included.
     #[getter]
     fn vis_albedo(&self) -> Option<PyData> {
-        (!self.0.model.is_hg()).then(|| stats_from_column(&self.0.draws, &self.0.divergent, 1))
+        self.column("vis_albedo")
     }
 
     /// Posterior statistics for beaming (NEATM only).  ``None`` for FRM/HG.
     /// Only non-divergent draws are included.
     #[getter]
     fn beaming(&self) -> Option<PyData> {
-        self.0
-            .model
-            .is_neatm()
-            .then(|| stats_from_column(&self.0.draws, &self.0.divergent, 2))
+        self.column("beaming")
     }
 
     /// Posterior statistics for H magnitude.
     /// Only non-divergent draws are included.
     #[getter]
     fn h_mag(&self) -> PyData {
-        let col = match self.0.model {
-            Model::Neatm => 3,
-            Model::Frm => 2,
-            Model::Hg => 0,
-        };
-        stats_from_column(&self.0.draws, &self.0.divergent, col)
+        self.column("h_mag").expect("every model fits h_mag")
     }
 
     /// Posterior statistics for G parameter.
     /// Only non-divergent draws are included.
     #[getter]
     fn g_param(&self) -> PyData {
-        let col = match self.0.model {
-            Model::Neatm => 4,
-            Model::Frm => 3,
-            Model::Hg => 1,
-        };
-        stats_from_column(&self.0.draws, &self.0.divergent, col)
+        self.column("g_param").expect("every model fits g_param")
     }
 
     /// Posterior statistics for uncertainty inflation factor.
     /// Only non-divergent draws are included.
     #[getter]
     fn f_sigma(&self) -> PyData {
-        let col = match self.0.model {
-            Model::Neatm => 6,
-            Model::Frm => 5,
-            Model::Hg => 2,
-        };
-        stats_from_column(&self.0.draws, &self.0.divergent, col)
+        self.column("f_sigma").expect("every model fits f_sigma")
     }
 
     /// Posterior statistics for IR-to-visible albedo ratio.  ``None`` for HG model.
     /// Only non-divergent draws are included.
     #[getter]
     fn ir_albedo_ratio(&self) -> Option<PyData> {
-        if self.0.model.is_hg() {
-            return None;
-        }
-        let col = if self.0.model.is_neatm() { 5 } else { 4 };
-        Some(stats_from_column(&self.0.draws, &self.0.divergent, col))
+        self.column("ir_albedo_ratio")
     }
 
     /// Model name (``"Neatm"``, ``"Frm"``, or ``"Hg"``).
@@ -436,27 +669,9 @@ impl PyFitResult {
     /// Column names for each element of a draw vector.
     #[getter]
     fn columns(&self) -> Vec<&'static str> {
-        match self.0.model {
-            Model::Neatm => vec![
-                "diameter",
-                "vis_albedo",
-                "beaming",
-                "h_mag",
-                "g_param",
-                "ir_albedo_ratio",
-                "f_sigma",
-            ],
-            Model::Frm => vec![
-                "diameter",
-                "vis_albedo",
-                "h_mag",
-                "g_param",
-                "ir_albedo_ratio",
-                "f_sigma",
-            ],
-            Model::Hg => vec!["h_mag", "g_param", "f_sigma"],
-        }
+        self.0.column_names().to_vec()
     }
+
     /// Per-draw divergence flags from the NUTS sampler.
     #[getter]
     fn divergent(&self) -> Vec<bool> {
@@ -487,7 +702,10 @@ impl PyFitResult {
         self.0.best_fit_fluxes.clone()
     }
 
-    /// Standardized residuals ``(obs - model) / (f_sigma * sigma)`` at the MAP.
+    /// Standardized residuals ``(obs - model) / (f_sigma * sigma)`` at the MAP,
+    /// using the residual side's sigma. ``0.0`` where undefined: bounds-only
+    /// constraints, and one-sided limits whose model flux sits on the
+    /// unconstrained side (e.g. below an upper-limit threshold).
     #[getter]
     fn best_fit_residuals(&self) -> Vec<f64> {
         self.0.best_fit_residuals.clone()
@@ -499,32 +717,16 @@ impl PyFitResult {
     }
 
     fn __repr__(&self) -> String {
-        let div = &self.0.divergent;
-        let n_good = div.iter().filter(|&&d| !d).count();
-        if self.0.model.is_hg() {
-            let h = stats_from_column(&self.0.draws, div, 0);
-            let g = stats_from_column(&self.0.draws, div, 1);
-            return format!(
-                "FitResult(model=Hg, h_mag={}, g_param={}, n_draws={}, n_divergent={})",
-                h, g, n_good, self.0.n_divergent,
-            );
-        }
-        let d = stats_from_column(&self.0.draws, div, 0);
-        let pv = stats_from_column(&self.0.draws, div, 1);
-        let (beaming, h_col) = if self.0.model.is_neatm() {
-            (Some(stats_from_column(&self.0.draws, div, 2)), 3)
-        } else {
-            (None, 2)
-        };
-        let h = stats_from_column(&self.0.draws, div, h_col);
-        let g = stats_from_column(&self.0.draws, div, h_col + 1);
-        let rir = stats_from_column(&self.0.draws, div, h_col + 2);
-
-        let beaming_str = beaming
-            .map(|b| format!("\n  beaming={b},"))
-            .unwrap_or_default();
+        let n_good = self.0.divergent.iter().filter(|&&d| !d).count();
+        let stats: String = self
+            .0
+            .column_names()
+            .iter()
+            .filter(|name| **name != "f_sigma")
+            .filter_map(|name| self.column(name).map(|s| format!("\n  {name}={s},")))
+            .collect();
         format!(
-            "FitResult(model={:?},\n  diameter={d},\n  vis_albedo={pv},{beaming_str}\n  h_mag={h},\n  g_param={g},\n  ir_albedo_ratio={rir},\n  n_draws={}, n_divergent={})",
+            "FitResult(model={:?},{stats}\n  n_draws={}, n_divergent={})",
             self.0.model, n_good, self.0.n_divergent,
         )
     }
@@ -605,14 +807,21 @@ pub fn fit_model_py(
     let mut priors = priors.map_or_else(FluxPriors::default, |p| p.0);
     let c_hg_val = c_hg.unwrap_or(kete_core::constants::C_V);
 
-    // Override prior centers from convenience arguments.
+    // Override prior centers from convenience arguments, preserving any
+    // existing (possibly asymmetric) widths.
     if let Some(h) = h_mag {
-        let sigma = priors.h_mag.gaussian.map_or(0.25, |(_, s)| s);
-        priors.h_mag.gaussian = Some((h, sigma));
+        let (lo, hi) = priors
+            .h_mag
+            .gaussian
+            .map_or((0.25, 0.25), |(_, lo, hi)| (lo, hi));
+        priors.h_mag.gaussian = Some((h, lo, hi));
     }
     if let Some(g) = g_param {
-        let sigma = priors.g_param.gaussian.map_or(0.05, |(_, s)| s);
-        priors.g_param.gaussian = Some((g, sigma));
+        let (lo, hi) = priors
+            .g_param
+            .gaussian
+            .map_or((0.05, 0.05), |(_, lo, hi)| (lo, hi));
+        priors.g_param.gaussian = Some((g, lo, hi));
     }
 
     let raw_obs = extract_obs(&obs);

@@ -1,81 +1,36 @@
-// BSD 3-Clause License
-//
-// Copyright (c) 2026, Dar Dahlen
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice, this
-//    list of conditions and the following disclaimer.
-//
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-//
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from
-//    this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
 
 //! MCMC posterior sampling via NUTS for model fitting,
 //! plus parallel batch fitting.
 
-use super::types::{FluxObs, FluxPriors, Model};
+use super::types::{FitProblem, FluxObs, FluxPriors, Model};
 use kete_core::errors::{Error, KeteResult};
 use kete_stats::fitting::{NelderMeadResult, nelder_mead};
-use nalgebra::{DMatrix, DVector};
 use nuts_rs::rand::SeedableRng;
 use nuts_rs::{Chain, CpuLogpFunc, CpuMath, CpuMathError, DiagNutsSettings, LogpError, Settings};
 use rayon::prelude::*;
 use std::collections::HashMap;
 
 /// Build a negative log-posterior closure for Nelder-Mead minimization.
-fn build_neg_log_posterior(
-    model: Model,
-    obs: &[FluxObs],
-    c_hg: f64,
-    emissivity: f64,
-    priors: &FluxPriors,
-) -> impl Fn(&[f64]) -> f64 {
-    let obs = obs.to_vec();
-    let priors = priors.clone();
+fn build_neg_log_posterior(problem: &FitProblem) -> impl Fn(&[f64]) -> f64 {
     move |x: &[f64]| -> f64 {
-        let lp = model.log_posterior(x, &obs, c_hg, emissivity, &priors);
+        let lp = problem.log_posterior(x);
         if lp.is_finite() { -lp } else { f64::MAX }
     }
 }
 
-/// Nelder-Mead seed result (kept minimal -- only fields MCMC needs).
-struct NelderMeadSeed {
-    /// Raw parameter vector at the best NM point.
-    params: Vec<f64>,
-}
-
-/// Multi-start Nelder-Mead to find a good starting point for MCMC.
-fn nelder_mead_seed(
-    model: Model,
-    obs: &[FluxObs],
-    c_hg: f64,
-    emissivity: f64,
-    priors: &FluxPriors,
-) -> KeteResult<NelderMeadSeed> {
-    let objective = build_neg_log_posterior(model, obs, c_hg, emissivity, priors);
+/// Multi-start Nelder-Mead to find a good starting point for MCMC. Returns the raw
+/// parameter vector at the best point.
+fn nelder_mead_seed(problem: &FitProblem) -> KeteResult<Vec<f64>> {
+    let objective = build_neg_log_posterior(problem);
+    let priors = &problem.priors;
 
     // Derive seed values for H, G from priors.
     let h0 = priors.h_mag.center();
     let g0 = priors.g_param.center();
 
-    let (starts, scale): (Vec<Vec<f64>>, Vec<f64>) = match model {
+    let (starts, scale): (Vec<Vec<f64>>, Vec<f64>) = match problem.model {
         Model::Neatm => {
             // [D, beaming, H, G, f_sigma, R_IR]
             let mid_d = priors.diameter.center();
@@ -176,15 +131,12 @@ fn nelder_mead_seed(
             "Nelder-Mead converged to an infeasible point (log-posterior = -inf)".into(),
         ));
     }
-    Ok(NelderMeadSeed { params })
+    Ok(params)
 }
 
-/// Step size for finite-difference gradients.
-const FINITE_DIFF_STEP: f64 = 1e-5;
-
-/// Fallback gradient value when finite-differences produce non-finite or zero
-/// results. Must be nonzero because nuts-rs rejects zero gradient components
-/// during initialization (`array_all_finite_and_nonzero`).
+/// Replacement for a non-finite or zero gradient component. Must be nonzero because
+/// nuts-rs rejects zero gradient components during initialization
+/// (`array_all_finite_and_nonzero`).
 const GRAD_FALLBACK: f64 = 1e-10;
 
 /// Result of a full MCMC fit.
@@ -218,7 +170,10 @@ pub struct FitResult {
     /// Model fluxes at the MAP point, one per observation.
     pub best_fit_fluxes: Vec<f64>,
 
-    /// Standardized residuals at the MAP point: `(obs - model) / (f_sigma * sigma_i)`.
+    /// Standardized residuals at the MAP point: `(obs - model) / (f_sigma * sigma_i)`
+    /// using the residual side's sigma. 0.0 where undefined: bounds-only
+    /// constraints, and one-sided limits whose model flux sits on the
+    /// unconstrained side (e.g. below an upper-limit threshold).
     pub best_fit_residuals: Vec<f64>,
 
     /// Reflected-light fraction at the MAP point, one per observation.
@@ -253,88 +208,58 @@ impl std::error::Error for RecoverableError {}
 /// Log-posterior for MCMC.
 ///
 /// The sampler operates in whitened "xi-space"; physical parameters are
-/// recovered via `x = seed + L * xi`.
-struct Posterior {
-    obs: Vec<FluxObs>,
-    c_hg: f64,
-    emissivity: f64,
-    priors: FluxPriors,
+/// recovered via `x = seed + scales * xi`, see [`unwhiten`].
+struct Posterior<'a> {
+    problem: &'a FitProblem,
     /// Center of the whitening transform (best NM point).
-    seed_vec: DVector<f64>,
-    /// Cholesky-like factor: `x = seed + L * xi`.
-    whiten_l: DMatrix<f64>,
-    model: Model,
+    seed: &'a [f64],
+    /// Per-parameter whitening scales.
+    scales: &'a [f64],
 }
 
-impl Posterior {
-    /// Convert whitened xi -> physical parameter vector x.
-    fn xi_to_x(&self, xi: &[f64]) -> Vec<f64> {
-        let xi = DVector::from_column_slice(xi);
-        let x = &self.seed_vec + &self.whiten_l * &xi;
-        x.as_slice().to_vec()
-    }
-
-    /// Evaluate the log-posterior at physical parameter vector `x`.
-    fn eval_logp(&self, x: &[f64]) -> f64 {
-        self.model
-            .log_posterior(x, &self.obs, self.c_hg, self.emissivity, &self.priors)
-    }
+/// Physical parameter vector `x = seed + scales * xi` of a whitened `xi`.
+fn unwhiten(seed: &[f64], scales: &[f64], xi: &[f64]) -> Vec<f64> {
+    seed.iter()
+        .zip(scales)
+        .zip(xi)
+        .map(|((s, k), v)| s + k * v)
+        .collect()
 }
 
-impl nuts_rs::HasDims for Posterior {
+impl nuts_rs::HasDims for Posterior<'_> {
     fn dim_sizes(&self) -> HashMap<String, u64> {
         let mut m = HashMap::new();
-        let _ = m.insert("dim".to_string(), self.seed_vec.len() as u64);
+        let _ = m.insert("dim".to_string(), self.seed.len() as u64);
         m
     }
 }
 
-impl CpuLogpFunc for Posterior {
+impl CpuLogpFunc for Posterior<'_> {
     type LogpError = RecoverableError;
     type FlowParameters = ();
     type ExpandedVector = Vec<f64>;
 
     fn dim(&self) -> usize {
-        self.seed_vec.len()
+        self.seed.len()
     }
 
     fn logp(&mut self, position: &[f64], gradient: &mut [f64]) -> Result<f64, Self::LogpError> {
-        let x = self.xi_to_x(position);
-        let lp = self.eval_logp(&x);
+        let x = unwhiten(self.seed, self.scales, position);
+        let mut grad_x = vec![0.0; x.len()];
+        let lp = self.problem.log_posterior_and_gradient(&x, &mut grad_x);
         if !lp.is_finite() {
             return Err(RecoverableError);
         }
 
-        // Finite-difference gradient in xi-space.
-        // Each dimension is independent -- evaluate all perturbed points in parallel.
-        let d = self.dim();
-        let this = &*self;
-        let pos = position.to_vec();
-        let grad_vals: Vec<f64> = (0..d)
-            .into_par_iter()
-            .map(|j| {
-                let mut buf = pos.clone();
-                buf[j] += FINITE_DIFF_STEP;
-                let lp_plus = this.eval_logp(&this.xi_to_x(&buf));
-                buf[j] -= 2.0 * FINITE_DIFF_STEP;
-                let lp_minus = this.eval_logp(&this.xi_to_x(&buf));
-                let g = if lp_plus.is_finite() && lp_minus.is_finite() {
-                    (lp_plus - lp_minus) / (2.0 * FINITE_DIFF_STEP)
-                } else if lp_plus.is_finite() {
-                    (lp_plus - lp) / FINITE_DIFF_STEP
-                } else if lp_minus.is_finite() {
-                    (lp - lp_minus) / FINITE_DIFF_STEP
-                } else {
-                    GRAD_FALLBACK
-                };
-                if g.is_finite() && g != 0.0 {
-                    g
-                } else {
-                    GRAD_FALLBACK
-                }
-            })
-            .collect();
-        gradient.copy_from_slice(&grad_vals);
+        // Chain rule into xi-space: d/dxi = scales * d/dx.
+        for ((g, gx), k) in gradient.iter_mut().zip(grad_x).zip(self.scales) {
+            let gx = k * gx;
+            *g = if gx.is_finite() && gx != 0.0 {
+                gx
+            } else {
+                GRAD_FALLBACK
+            };
+        }
         Ok(lp)
     }
 
@@ -349,7 +274,7 @@ impl CpuLogpFunc for Posterior {
 
 /// Run one NUTS chain and return `(draws, divergent_flags)`.
 fn run_chain(
-    posterior: Posterior,
+    posterior: Posterior<'_>,
     num_tune: u64,
     num_draws: u64,
     maxdepth: u64,
@@ -465,6 +390,7 @@ fn hessian_whitening_scales(
 /// thermal emissivity (not fitted).
 ///
 /// # Errors
+/// - If a prior's bounds do not satisfy `lo < hi`.
 /// - If Nelder-Mead fails to find a feasible starting point.
 /// - If all MCMC chains fail to produce valid draws.
 pub fn fit_mcmc(
@@ -477,28 +403,29 @@ pub fn fit_mcmc(
     num_tune: usize,
     num_draws: usize,
 ) -> KeteResult<FitResult> {
-    // 1. Multi-start NM seed.
-    let nm = nelder_mead_seed(model, obs, c_hg, emissivity, priors)?;
-    let seed = nm.params;
+    priors.validate()?;
+    let problem = FitProblem::new(model, obs, c_hg, emissivity, priors);
 
-    let seed_vec = DVector::from_column_slice(&seed);
+    // 1. Multi-start NM seed.
+    let seed = nelder_mead_seed(&problem)?;
 
     // MAP diagnostics at the NM seed.
     let (reduced_chi2, nobs, best_fit_fluxes, best_fit_residuals, best_fit_reflected_frac) = {
-        let params = model.unpack(&seed, emissivity, c_hg);
-        let fwd = model.evaluate_forward_model(&params, obs);
+        let params = problem.unpack(&seed);
+        let fwd = problem.forward(&params);
         let mut chi2 = 0.0;
         let mut n = 0_usize;
         let mut residuals = Vec::with_capacity(obs.len());
         for (i, ob) in obs.iter().enumerate() {
-            let sigma = params.f_sigma * ob.sigma;
-            let r = if sigma > 0.0 {
-                (ob.flux - fwd.model_fluxes[i]) / sigma
-            } else {
-                0.0
-            };
+            // Standardized residual matches the likelihood's effective sigma.
+            // Reported as 0 when undefined: bounds-only constraints (no point
+            // estimate) and one-sided limits whose model flux sits on the
+            // unconstrained side (e.g. below an upper-limit threshold).
+            let r = ob
+                .standardized_residual(fwd.model_fluxes[i], params.f_sigma)
+                .unwrap_or(0.0);
             residuals.push(r);
-            if !ob.is_upper_limit {
+            if ob.is_detection() {
                 chi2 += r * r;
                 n += 1;
             }
@@ -513,22 +440,17 @@ pub fn fit_mcmc(
     let fallback: Vec<f64> = std::iter::once(0.3)
         .chain(std::iter::repeat_n(0.15, d - 1))
         .collect();
-    let objective = build_neg_log_posterior(model, obs, c_hg, emissivity, priors);
+    let objective = build_neg_log_posterior(&problem);
     let scales = hessian_whitening_scales(&objective, &seed, &fallback);
-    let whiten_l = DMatrix::from_diagonal(&DVector::from_column_slice(&scales));
 
     // 2. Run chains in parallel.
     let chain_outcomes: Vec<Result<(Vec<Vec<f64>>, Vec<bool>), String>> = (0..num_chains)
         .into_par_iter()
         .map(|chain_idx| {
             let posterior = Posterior {
-                obs: obs.to_vec(),
-                c_hg,
-                emissivity,
-                priors: priors.clone(),
-                seed_vec: seed_vec.clone(),
-                whiten_l: whiten_l.clone(),
-                model,
+                problem: &problem,
+                seed: &seed,
+                scales: &scales,
             };
             let (xi_draws, div) = run_chain(
                 posterior,
@@ -542,9 +464,7 @@ pub fn fit_mcmc(
                 .iter()
                 .zip(div)
                 .map(|(xi, d)| {
-                    let xi_dv = DVector::from_column_slice(xi);
-                    let x = &seed_vec + &whiten_l * &xi_dv;
-                    let p = model.unpack(x.as_slice(), emissivity, c_hg);
+                    let p = problem.unpack(&unwhiten(&seed, &scales, xi));
                     (p.to_draw_row(model), d)
                 })
                 .unzip();

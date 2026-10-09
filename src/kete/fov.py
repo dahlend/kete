@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Dar Dahlen
+# SPDX-FileCopyrightText: 2025 California Institute of Technology
+# SPDX-License-Identifier: BSD-3-Clause
+
 """
 Field of view definitions, along with tests for checks to see if objects are within the
 FOVs.
@@ -9,6 +13,7 @@ from ._core import (
     NeosCmos,
     NeosVisit,
     OmniDirectionalFOV,
+    PolygonFOV,
     PtfCcd,
     PtfField,
     RectangleFOV,
@@ -34,6 +39,7 @@ __all__ = [
     "ZtfField",
     "PtfCcd",
     "PtfField",
+    "PolygonFOV",
     "RectangleFOV",
     "ConeFOV",
     "OmniDirectionalFOV",

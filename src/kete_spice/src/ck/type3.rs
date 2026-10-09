@@ -1,52 +1,24 @@
-// BSD 3-Clause License
-//
-// Copyright (c) 2026, Dar Dahlen
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice, this
-//    list of conditions and the following disclaimer.
-//
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-//
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from
-//    this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
 
-use super::CkArray;
-use crate::sclk::LOADED_SCLK;
+use super::array::stored_count;
+use super::{CkArray, instrument_frame};
+use crate::text::sclk::Sclk;
 use kete_core::errors::{Error, KeteResult};
 use kete_core::frames::NonInertialFrame;
 use kete_core::time::{TDB, Time};
-use nalgebra::{Quaternion, Rotation3, Unit, UnitQuaternion};
+use nalgebra::{Quaternion, Unit, UnitQuaternion};
 
-/// Discrete pointing data with linear interpolation between.
+/// Discrete pointing data with linear interpolation between records.
 ///
-/// This segment type is broken up into intervals, each with a beginning and
-/// end. One or more data points may be contained within each intervals. Linear
-/// interpolation may be performed within a intervals.
+/// The segment holds a set of interpolation intervals. Each interval has a
+/// start time and holds one or more records. The reader interpolates only
+/// between two records of the same interval.
 ///
-/// Queries may include a user supplied tolerance on the requested time.
-///
-/// Interpolation does not extend past the bounds of an interval, the closest
-/// point may be returned, provided it is within the specified tolerance.
-///
-/// Single points of data are allowed (no interpolation as long as it is within
-/// the tolerance).
+/// Interpolation does not extend past the bounds of an interval. The segment
+/// holds no pointing between intervals. A request exactly on a record returns
+/// that record. Thus an interval with a single record holds pointing only at
+/// the time of that record.
 ///
 /// <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/ck.html#Data%20Type%203>
 #[derive(Debug)]
@@ -70,7 +42,7 @@ impl CkSegmentType3 {
                 .get_unchecked(idx * self.rec_size..(idx + 1) * self.rec_size);
             Type3RecordView {
                 quaternion: rec[..4].try_into().unwrap_unchecked(),
-                accel: &rec[4..],
+                rates: &rec[4..],
             }
         }
     }
@@ -93,120 +65,118 @@ impl CkSegmentType3 {
         }
     }
 
-    /// Get the list of times inside of the interval.
+    /// Return whether `tick` falls inside one of the interpolation intervals.
     ///
-    /// This queries the directory of interval start times, then uses the
-    /// start and stop of the matching interval to find the list of times
-    /// in the SCLK time directory.
-    ///
-    /// If the time requested is not within any interval, return the closest
-    /// interval, and the start index of the associated clock times.
-    fn get_times_in_interval(&self, time_sclk: f64) -> (&[f64], usize) {
-        // first, check if the time is inside a known interval
-        let interval_starts = self.interval_starts();
-        if self.n_intervals == 1 {
-            // If there is only one interval, return its times
-            return (self.record_times(), 0);
+    /// An interval runs from its start time to the last record before the next
+    /// interval starts. The segment holds no pointing between intervals.
+    pub(in crate::ck) fn has_data_at(&self, tick: f64) -> bool {
+        let starts = self.interval_starts();
+        let idx = starts.partition_point(|&x| x <= tick);
+        if idx == 0 {
+            return false;
         }
-        let mut interval_idx = interval_starts.partition_point(|&x| x <= time_sclk);
-
-        // if the interval_index is the last one, or the second to last one, return the last interval
-        if interval_idx >= self.n_intervals - 1 {
-            interval_idx = self.n_intervals - 2;
-        }
-        let interval_start_time = interval_starts[interval_idx];
-        let interval_stop_time = interval_starts[interval_idx + 1];
-
-        // find the start and stop index in the time directory uing the interval times
-        let record_times = self.record_times();
-        let start_idx = record_times.partition_point(|&x| x < interval_start_time);
-        let stop_idx = record_times.partition_point(|&x| x <= interval_stop_time);
-        (&record_times[start_idx..stop_idx], start_idx)
+        let times = self.record_times();
+        let end = if idx < self.n_intervals {
+            times.partition_point(|&x| x < starts[idx])
+        } else {
+            self.n_records
+        };
+        end > 0 && tick <= times[end - 1]
     }
 
     pub(crate) fn try_get_orientation(
         &self,
         time: Time<TDB>,
+        tick: f64,
+        sclk: &Sclk,
     ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
-        let (time, quaternion, accel) = self.get_quaternion_at_time(time)?;
+        let (time, quaternion, rates) = self.get_quaternion_at_time(time, tick, sclk)?;
 
-        let mut rates: [f64; 3] = accel.unwrap_or_default();
-        for x in &mut rates {
-            *x *= 86400.0;
-        }
-        let rotation_rate = Rotation3::from_scaled_axis(rates.into());
-
-        let frame = NonInertialFrame::from_rotations(
+        let frame = instrument_frame(
             time,
-            quaternion.to_rotation_matrix().inverse(),
-            Some(rotation_rate.inverse().into_inner()),
+            quaternion.to_rotation_matrix(),
+            rates,
             self.array.reference_frame_id,
-            self.array.instrument_id,
         );
 
         Ok((time, frame))
     }
 
-    /// Return the record at the given time, interpolating if necessary.
+    /// Return the pointing at the given time, interpolating if necessary.
     ///
-    /// This will return the best effort record, along with the time of
-    /// the record. If the requested time is outside of any interval, this
-    /// will return the closest record.
+    /// The rules follow SPICE CKR03 and CKE03 with zero tolerance. Between two
+    /// records of the same interval, the rotation turns at a constant angular
+    /// rate. The turn is about the axis of the rotation that carries the first
+    /// C-matrix to the second. The angular velocity is interpolated linearly. A
+    /// request exactly on a record with no partner in its interval returns that
+    /// record.
+    ///
+    /// The function returns the time, the quaternion of the C-matrix, and the
+    /// angular velocity if the records hold it. The time is the request time
+    /// when the function interpolates. Otherwise it is the record time.
+    ///
+    /// `tick` is `time` on the segment's clock `sclk`.
+    ///
+    /// # Errors
+    /// [`Error::Bounds`] if no interval covers the time.
     pub(crate) fn get_quaternion_at_time(
         &self,
         time: Time<TDB>,
+        tick: f64,
+        sclk: &Sclk,
     ) -> KeteResult<(Time<TDB>, UnitQuaternion<f64>, Option<[f64; 3]>)> {
-        let sclk = LOADED_SCLK
-            .try_read()
-            .map_err(|_| Error::Bounds("Failed to read SCLK data.".into()))?;
-        let tick = sclk.try_time_to_tick(self.array.naif_id, time)?;
+        let times = self.record_times();
+        let starts = self.interval_starts();
+        let not_covered =
+            || Error::Bounds("CK type 3 segment has no pointing at the requested time.".into());
 
-        // If there is only one record, return it immediately.
-        if self.n_records == 1 {
-            let record = self.get_record(0);
-            let t = sclk.try_tick_to_time(self.array.naif_id, self.record_times()[0])?;
-            let (quat, accel) = record.into();
-            return Ok((t, Unit::from_quaternion(quat), accel));
+        let single = |idx: usize| -> KeteResult<_> {
+            let (quat, rates) = self.get_record(idx).into();
+            let t = sclk.tick_to_time(times[idx])?;
+            Ok((t, Unit::from_quaternion(quat), rates))
+        };
+
+        // Number of records at or before the request.
+        let n_before = times.partition_point(|&x| x <= tick);
+        if n_before == 0 {
+            return Err(not_covered());
+        }
+        if n_before == self.n_records {
+            return if tick == times[self.n_records - 1] {
+                single(self.n_records - 1)
+            } else {
+                Err(not_covered())
+            };
+        }
+        let (left, right) = (n_before - 1, n_before);
+
+        // The following record belongs to the same interval only if it comes
+        // before the next interval starts.
+        let next_start = starts
+            .get(starts.partition_point(|&x| x <= tick))
+            .copied()
+            .unwrap_or(f64::INFINITY);
+        if times[right] >= next_start {
+            return if tick == times[left] {
+                single(left)
+            } else {
+                Err(not_covered())
+            };
         }
 
-        let (interval_times, start_idx) = self.get_times_in_interval(tick);
+        let frac = (tick - times[left]) / (times[right] - times[left]);
+        let (q0, rate0) = self.get_record(left).into();
+        let (q1, rate1) = self.get_record(right).into();
+        let (q0, q1) = (Unit::from_quaternion(q0), Unit::from_quaternion(q1));
+        // Use the shortest rotation from the first record to the second. It
+        // does not depend on the sign of either stored quaternion.
+        let quaternion = q0 * (q0.inverse() * q1).powf(frac);
 
-        // find the closest two times in the interval
-        let mut idx = interval_times.partition_point(|&x| x <= tick);
-        if interval_times.len() == idx {
-            // if the index is after the end of the interval, return the last record
-            let record = self.get_record(idx - 1);
-            let (quat, accel) = record.into();
-            let t = sclk.try_tick_to_time(self.array.naif_id, *(interval_times.last().unwrap()))?;
-            Ok((t, Unit::from_quaternion(quat), accel))
-        } else if idx == 0 {
-            // if the index is before the beginning of the interval, return the first record
-            let record = self.get_record(0);
-            let (quat, accel) = record.into();
-            let t =
-                sclk.try_tick_to_time(self.array.naif_id, *(interval_times.first().unwrap()))?;
-            Ok((t, Unit::from_quaternion(quat), accel))
-        } else {
-            // otherwise, we have two records to interpolate between
-            idx -= 1;
-            let t1 = interval_times[idx];
-            let t2 = interval_times[idx + 1];
-            let (q0, acc0) = self.get_record(start_idx + idx).into();
-            let (q1, acc1) = self.get_record(start_idx + idx + 1).into();
-            let dt = (tick - t1) / (t2 - t1);
-            let quaternion = q0.lerp(&q1, dt);
-
-            let accel: Option<[f64; 3]> = acc0.map(|acc0| {
-                acc0.iter()
-                    .zip(acc1.unwrap())
-                    .map(|(a1, a2)| a1 * (1.0 - dt) + a2 * dt)
-                    .collect::<Vec<_>>()
-                    .try_into()
-                    .unwrap()
-            });
-
-            Ok((time, Unit::from_quaternion(quaternion), accel))
-        }
+        let rates = match (rate0, rate1) {
+            (Some(a), Some(b)) => Some(std::array::from_fn(|i| a[i] * (1.0 - frac) + b[i] * frac)),
+            _ => None,
+        };
+        Ok((time, quaternion, rates))
     }
 
     /// Build a CK Type 3 data array (discrete pointing with linear interpolation).
@@ -331,7 +301,7 @@ impl CkSegmentType3 {
 
 struct Type3RecordView<'a> {
     quaternion: &'a [f64; 4],
-    accel: &'a [f64],
+    rates: &'a [f64],
 }
 
 impl From<Type3RecordView<'_>> for (Quaternion<f64>, Option<[f64; 3]>) {
@@ -340,24 +310,24 @@ impl From<Type3RecordView<'_>> for (Quaternion<f64>, Option<[f64; 3]>) {
             &[a, b, c, d] => Quaternion::new(a, b, c, d),
         };
 
-        let accel = match record.accel {
+        let rates = match record.rates {
             &[a, b, c] => Some([a, b, c]),
             _ => None,
         };
-        (quaternion, accel)
+        (quaternion, rates)
     }
 }
 
 impl TryFrom<CkArray> for CkSegmentType3 {
     type Error = Error;
 
-    #[allow(
-        clippy::cast_sign_loss,
-        reason = "cast should work except when file is incorrectly formatted"
-    )]
     fn try_from(array: CkArray) -> Result<Self, Self::Error> {
-        let n_records = array.daf[array.daf.len() - 1] as usize;
-        let n_intervals = array.daf[array.daf.len() - 2] as usize;
+        let len = array.daf.len();
+        if len < 2 {
+            return Err(Error::Bounds("CK Segment Type 3 is truncated.".into()));
+        }
+        let n_records = stored_count(array.daf[len - 1], len, "record count")?;
+        let n_intervals = stored_count(array.daf[len - 2], len, "interval count")?;
 
         if n_records == 0 {
             return Err(Error::Bounds(

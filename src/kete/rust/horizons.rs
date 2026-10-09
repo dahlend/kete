@@ -1,11 +1,16 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! PyO3 wrappers around [`kete_fitting::HorizonsProperties`] and its fetch API.
 use std::fmt::Debug;
 
 use crate::elements::PyCometElements;
 use crate::nongrav::PyNonGravModel;
 use crate::state::PyState;
-use crate::uncertain_state::PyUncertainState;
+use crate::state::PyUncertainState;
 use kete_core::errors::Error;
+
 use pyo3::prelude::*;
 
 /// Horizons object properties
@@ -173,13 +178,17 @@ impl PyHorizonsProperties {
     /// Returns ``None`` if no covariance was provided.
     #[getter]
     fn uncertain_state(&self) -> Option<PyUncertainState> {
-        self.0.uncertain_state.clone().map(PyUncertainState)
+        self.0
+            .uncertain_state
+            .clone()
+            .map(|state| PyUncertainState { state })
     }
 
     /// Non-gravitational force model from Horizons, if available.
     #[getter]
     fn non_grav(&self) -> Option<PyNonGravModel> {
-        self.0.non_grav.clone().map(PyNonGravModel)
+        let f = self.0.non_grav.as_ref()?;
+        PyNonGravModel::from_force(f.inner(), f.fixed_values().ok()?)
     }
 
     /// Alternate designations for this object.

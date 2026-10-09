@@ -1,6 +1,9 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 #![allow(missing_docs, reason = "Unnecessary for benchmarks")]
 #![allow(unused_results, reason = "Unnecessary for benchmarks")]
-#![allow(clippy::missing_assert_message, reason = "Unnecessary for benchmarks")]
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use kete_core::{
@@ -35,6 +38,7 @@ fn spice_get_state(jd: f64) {
 
 #[allow(clippy::missing_panics_doc, reason = "Benchmarking only")]
 pub fn spice_benchmark(c: &mut Criterion) {
+    kete_spice::test_data::ensure_test_spk();
     let spice = &LOADED_SPK.try_read().unwrap();
     let state = spice
         .try_get_state_with_center(5, 2451545.0.into(), 10)

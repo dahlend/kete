@@ -1,6 +1,6 @@
 [project]
 name = "kete"
-version = "3.2.3"
+version = "3.3.0"
 description = "Kete Asteroid Survey Tools"
 readme = "README.md"
 authors = [{name = "Dar Dahlen", email = "dardahlen@gmail.com"},
@@ -38,7 +38,6 @@ bindings = "pyo3"
 python-source = "src"
 module-name = "kete._core"
 manifest-path = "Cargo.toml"
-include = ["LICENSE"]
 
 [project.optional-dependencies]
 dev = ["ruff",

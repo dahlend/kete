@@ -1,9 +1,13 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Python bindings for orbit determination and fitting.
 //!
 //! Wraps `kete_fitting` types and functions for use from Python.
 
 use kete_core::Band;
-use kete_core::forces::NonGravModel;
+
+use kete_core::forces::NonGravMask;
 use kete_core::frames::{Equatorial, Vector};
 use kete_core::prelude::*;
 use kete_fitting::{
@@ -15,9 +19,13 @@ use pyo3::{PyResult, pyclass, pyfunction, pymethods};
 
 use crate::nongrav::PyNonGravModel;
 use crate::state::PyState;
+use crate::state::PyUncertainState;
 use crate::time::PyTime;
-use crate::uncertain_state::PyUncertainState;
 use crate::vector::PyVector;
+
+fn py_to_fit(m: &PyNonGravModel) -> NonGravMask {
+    m.to_mask()
+}
 
 /// Radians to arcseconds conversion factor.
 const RAD_TO_ARCSEC: f64 = 180.0 * 3600.0 / std::f64::consts::PI;
@@ -297,7 +305,7 @@ impl PyObservation {
     /// measurement for this observation against a given object state.
     ///
     /// The state is expected at this observation's epoch (use
-    /// :func:`~kete.propagate_n_body` to bring an arbitrary-epoch state to
+    /// :func:`~kete.propagation.propagate_n_body` to bring an arbitrary-epoch state to
     /// ``self.epoch`` first).  Light-time correction is applied internally;
     /// for radar the iterative ``t_tx`` refinement and relativistic two-way
     /// Doppler are handled by the same code path used during fitting.
@@ -463,7 +471,7 @@ impl PyObservation {
 
     /// String representation.
     fn __repr__(&self) -> String {
-        let epoch = self.obs.epoch().jd;
+        let epoch = self.obs.epoch().jd();
         match &self.obs {
             AstrometricObservation::Optical {
                 ra,
@@ -526,7 +534,9 @@ impl PyOrbitFit {
     /// The uncertain orbit state (state + covariance + non-grav model).
     #[getter]
     fn uncertain_state(&self) -> PyUncertainState {
-        PyUncertainState(self.inner.uncertain_state.clone())
+        PyUncertainState {
+            state: self.inner.uncertain_state.clone(),
+        }
     }
 
     /// Best-fit state at the reference epoch (Sun-centered, Ecliptic).
@@ -534,9 +544,9 @@ impl PyOrbitFit {
     /// Convenience shortcut for ``self.uncertain_state.state``.
     #[getter]
     fn state(&self) -> PyResult<PyState> {
-        let st = self.inner.uncertain_state.state.clone();
-        let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-        let st: State<Equatorial> = spk.try_to_sun(st)?.into();
+        // The elements are already referred to the Sun, so this is a direct read rather
+        // than a re-centering.
+        let st = self.inner.uncertain_state.state::<Equatorial>()?;
         Ok(st.into())
     }
 
@@ -607,21 +617,19 @@ impl PyOrbitFit {
     }
 
     /// Fitted non-gravitational model, or None if not fitted.
-    ///
-    /// Convenience shortcut for ``self.uncertain_state.non_grav``.
     #[getter]
     fn non_grav(&self) -> Option<PyNonGravModel> {
-        self.inner
-            .uncertain_state
-            .non_grav
-            .clone()
-            .map(PyNonGravModel)
+        let f = self.inner.non_grav.as_ref()?;
+        PyNonGravModel::from_force(f.inner(), f.fixed_values().ok()?)
     }
 
-    /// Whether the solver achieved strict convergence.
+    /// Whether the solver converged.
     ///
-    /// When ``False`` the fit is the best found within the iteration
-    /// limit but the correction norm did not drop below `tol`.
+    /// The fit has converged when the full Gauss-Newton step from it would
+    /// reduce chi-squared by less than 1e-4, a step of about 0.01 sigma. When
+    /// ``False`` the fit is the best found within the iteration limit, and the
+    /// covariance is NaN when it could not be computed or the observations do
+    /// not constrain every parameter.
     #[getter]
     fn converged(&self) -> bool {
         self.inner.converged
@@ -637,7 +645,7 @@ impl PyOrbitFit {
             n_included,
             n_total,
             self.inner.converged,
-            self.inner.uncertain_state.state.epoch.jd,
+            self.inner.uncertain_state.elements.epoch.jd(),
         )
     }
 }
@@ -656,9 +664,10 @@ impl PyOrbitFit {
 /// **long, well-sampled arcs**.  For short arcs where the uncertainty
 /// is non-Gaussian, consider :func:`fit_orbit_mcmc` instead.
 ///
-/// For arcs longer than 180 days, progressively wider time windows are
-/// fitted around the reference epoch so that each stage bootstraps from
-/// the previous converged solution.  The final pass fits the full arc
+/// When the arc extends more than 30 days from the reference epoch,
+/// time windows starting at +/-30 days and doubling in width are fitted
+/// around it first, so that each stage bootstraps from the previous
+/// converged solution.  The final pass fits the full arc
 /// and re-evaluates all observations for outlier rejection (if enabled).
 ///
 /// The input state is automatically re-centered to the solar system
@@ -671,7 +680,17 @@ impl PyOrbitFit {
 /// observations : list
 ///     List of :class:`~kete.fitting.Observation` to fit.
 /// non_grav : :class:`~kete.propagation.NonGravModel`, optional
-///     Non-gravitational force model.
+///     Non-gravitational force model. Parameters set to NaN in the model are
+///     fit (starting from 0), after a gravity-only pass that moves
+///     ``initial_state`` to the gravity-only solution; parameters with concrete
+///     values are held fixed. Parameters freed with
+///     :py:meth:`~kete.propagation.NonGravModel.with_free` are fit starting
+///     from their values, and ``initial_state`` is then taken as the matching
+///     starting point: the gravity-only pass is skipped. A starting value below
+///     a parameter's lower bound raises; a parameter on its bound stays there
+///     until the fit moves it up. A model with no free parameters is used as a
+///     fixed force and nothing in it is fit. A fit that converges to a solution
+///     the observations do not constrain in some parameter raises, naming it.
 /// include_asteroids : bool
 ///     If True, include asteroid masses in the force model (slower but more
 ///     accurate for near-Earth objects). Default is False.
@@ -719,17 +738,18 @@ pub fn fit_orbit_py(
     };
 
     let obs: Vec<AstrometricObservation> = observations.into_iter().map(|o| o.obs).collect();
-    let ng = non_grav.as_ref().map(|m| &m.0);
+    let ng_fit = non_grav.as_ref().map(py_to_fit);
+    let ng_start = non_grav.as_ref().and_then(PyNonGravModel::start_values);
 
     let fit = fit_orbit(
         &state_ssb,
         &obs,
         include_asteroids,
-        ng,
-        50,   // max_iter
-        1e-8, // tol
+        ng_fit.as_ref(),
+        50, // max_iter
         chi2_threshold,
         max_reject_passes,
+        ng_start.as_deref(),
     )?;
     Ok(PyOrbitFit { inner: fit })
 }
@@ -839,7 +859,7 @@ impl PyOrbitSamples {
     /// Common reference epoch (JD, TDB).
     #[getter]
     fn epoch(&self) -> f64 {
-        self.0.epoch
+        self.0.epoch.jd()
     }
 
     /// Designator of the fitted object.
@@ -859,8 +879,7 @@ impl PyOrbitSamples {
         let epoch_jd = self.0.epoch;
         let desig = self.0.desig.clone();
         let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-        let sun_state: State<Equatorial> =
-            spk.try_get_state_with_center(10, Time::new(epoch_jd), 0)?;
+        let sun_state: State<Equatorial> = spk.try_get_state_with_center(10, epoch_jd, 0)?;
         self.0
             .draws
             .iter()
@@ -917,7 +936,7 @@ impl PyOrbitSamples {
         self.0.divergent.clone()
     }
 
-    /// Log-posterior density at each draw (nats, relative only).
+    /// Log-posterior density at each draw (natural log, relative only).
     ///
     /// Values are only meaningful relative to each other within a single
     /// run.  Useful for weighting draws or diagnosing chain quality.
@@ -944,7 +963,8 @@ impl PyOrbitSamples {
         let n_div = self.0.divergent.iter().filter(|&&d| d).count();
         format!(
             "OrbitSamples(desig={}, draws={n}, seeds={n_seeds}, divergent={n_div}, epoch={:.6})",
-            self.0.desig, self.0.epoch
+            self.0.desig,
+            self.0.epoch.jd()
         )
     }
 }
@@ -985,7 +1005,9 @@ impl PyOrbitSamples {
 ///
 /// ``num_draws`` is the **total** number of orbit samples returned
 /// across all seeds.  Each seed receives roughly
-/// ``num_draws / len(seeds)`` draws.
+/// ``num_draws / len(seeds)`` draws. A chain that diverges through most of
+/// its warmup is dropped, and a new chain draws its samples. When every chain
+/// of a seed is dropped, the other seeds draw its samples.
 ///
 /// Parameters
 /// ----------
@@ -1005,6 +1027,10 @@ impl PyOrbitSamples {
 ///     sampling parameters.  These draws are discarded.  Default is 500.
 /// non_grav : :class:`~kete.propagation.NonGravModel`, optional
 ///     Shared non-gravitational force model applied to all chains.
+///     Parameters set to NaN in the model are sampled, starting from 0.
+///     Parameters freed with :meth:`~kete.propagation.NonGravModel.with_free`
+///     are sampled, starting from their values. Other parameters are held
+///     fixed at their values.
 /// maxdepth : int
 ///     Maximum tree depth for the sampler.  Higher values allow more
 ///     thorough exploration at greater computational cost.
@@ -1023,7 +1049,8 @@ impl PyOrbitSamples {
 /// Raises
 /// ------
 /// ValueError
-///     If ``seeds`` is empty or two-body epoch propagation fails.
+///     If ``seeds`` is empty or two-body epoch propagation fails, or if the
+///     chains keep diverging so the requested draws cannot be collected.
 #[pyfunction]
 #[pyo3(
     name = "fit_orbit_mcmc",
@@ -1049,7 +1076,8 @@ pub fn fit_orbit_mcmc_py(
     };
 
     let obs: Vec<AstrometricObservation> = observations.into_iter().map(|o| o.obs).collect();
-    let ng: Option<NonGravModel> = non_grav.map(|m| m.0);
+    let ng: Option<NonGravMask> = non_grav.as_ref().map(py_to_fit);
+    let ng_start = non_grav.as_ref().and_then(PyNonGravModel::start_values);
 
     let result = fit_orbit_mcmc(
         &ssb_seeds,
@@ -1058,6 +1086,7 @@ pub fn fit_orbit_mcmc_py(
         num_draws,
         num_tune,
         ng.as_ref(),
+        ng_start.as_deref(),
         maxdepth,
         target_accept,
     )?;
@@ -1073,10 +1102,10 @@ pub struct PyRangingSamples(pub RangingSamples);
 
 #[pymethods]
 impl PyRangingSamples {
-    /// Reference epoch (JD TDB).
+    /// Epoch of every draw (JD TDB), the attributable reference epoch.
     #[getter]
     fn epoch(&self) -> f64 {
-        self.0.epoch
+        self.0.epoch.jd()
     }
 
     /// Sampled orbits as :class:`~kete.State` objects (Sun-centered Ecliptic).
@@ -1084,8 +1113,7 @@ impl PyRangingSamples {
     fn draws(&self) -> PyResult<Vec<PyState>> {
         let epoch_jd = self.0.epoch;
         let spk = LOADED_SPK.try_read().map_err(Error::from)?;
-        let sun_state: State<Equatorial> =
-            spk.try_get_state_with_center(10, Time::new(epoch_jd), 0)?;
+        let sun_state: State<Equatorial> = spk.try_get_state_with_center(10, epoch_jd, 0)?;
         self.0
             .draws
             .iter()
@@ -1112,19 +1140,31 @@ impl PyRangingSamples {
         self.0.draws.clone()
     }
 
-    /// Normalized log-posterior weight per draw.
+    /// Log posterior density of the grid cell each draw came from, relative to the
+    /// maximum across draws.
+    ///
+    /// Draws are already distributed according to the posterior and are equally
+    /// weighted; these values are not importance weights.
     #[getter]
     fn log_posterior(&self) -> Vec<f64> {
         self.0.log_posterior.clone()
     }
 
-    /// Effective sample size of the grid before drawing.
+    /// Effective sample size over the grid cells before drawing.
+    ///
+    /// This counts cells, not independent orbit solutions.  Refinement splits
+    /// cells, so it grows with grid resolution.
     #[getter]
     fn effective_sample_size(&self) -> f64 {
         self.0.effective_sample_size
     }
 
-    /// Warning message if ESS < 50, else ``None``.
+    /// Warning message, else ``None``.
+    ///
+    /// Set when, after refinement, the grid ESS is below 50, the grid is still
+    /// coarser than the posterior structure it samples, the linear attributable
+    /// model does not describe the observations, or the best orbit fits the
+    /// observations far worse than their uncertainties allow.
     #[getter]
     fn convergence_warning(&self) -> Option<&str> {
         self.0.convergence_warning.as_deref()
@@ -1139,7 +1179,7 @@ impl PyRangingSamples {
             "RangingSamples(draws={}, ess={:.1}, epoch={:.6})",
             self.0.draws.len(),
             self.0.effective_sample_size,
-            self.0.epoch,
+            self.0.epoch.jd(),
         )
     }
 }
@@ -1147,9 +1187,18 @@ impl PyRangingSamples {
 /// Generate orbit samples covering the full admissible region from sparse
 /// observations.
 ///
-/// Scans a grid over topocentric distances at a selected pair of observations,
-/// scores each cell via Gaussian chi^2, adaptively refines in high-probability
-/// regions, and draws samples with within-cell Gaussian perturbation.
+/// Scans a grid over topocentric range and range-rate, scores each cell by the
+/// chi^2 of its attributable, refines the grid where the posterior is
+/// significant, and draws samples in proportion to each cell's posterior mass,
+/// with Gaussian jitter within the cell.
+///
+/// The attributable comes from a short window of observations from a single
+/// observer, chosen where the linear-motion approximation fits best. All
+/// observations are used to score the cells, and an orbit that cannot be compared
+/// with every one of them is not scored.
+///
+/// Observations are weighted by their RA/Dec uncertainties and correlation
+/// (``sigma_corr``). The timing uncertainty ``time_sigma`` is not used.
 ///
 /// This is the appropriate tool when the arc is short and MCMC cannot explore
 /// the ridge, or when multiple orbital families may be consistent with the data.
@@ -1157,16 +1206,18 @@ impl PyRangingSamples {
 /// Parameters
 /// ----------
 /// observations : list
-///     At least 2 :class:`~kete.fitting.Observation` objects.
+///     At least 3 optical :class:`~kete.fitting.Observation` objects. Radar
+///     observations are ignored.
 /// num_draws : int
 ///     Number of orbit samples to return. Default 1000.
 /// temperature : float
 ///     Likelihood temperature. 1.0 gives the true Bayesian posterior.
 ///     Higher values produce a softer distribution that is easier to sample but
-///     less statistically rigorous. Default is 10.0, producing results similar to
-///     JPL Scout.
+///     less statistically rigorous. Must be finite and positive. Default is 10.0,
+///     producing results similar to JPL Scout.
 /// seed : int
-///     RNG seed for reproducibility. Default 0.
+///     RNG seed. The same observations and seed give the same draws for a given
+///     build of kete. Default 0.
 ///
 /// Returns
 /// -------

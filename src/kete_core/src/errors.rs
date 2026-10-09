@@ -1,35 +1,9 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-FileCopyrightText: 2025 California Institute of Technology
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! # Errors
 //! Errors emitted by ``kete_core``
-//
-// BSD 3-Clause License
-//
-// Copyright (c) 2026, Dar Dahlen
-// Copyright (c) 2025, California Institute of Technology
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice, this
-//    list of conditions and the following disclaimer.
-//
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-//
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from
-//    this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 /// Define all errors which may be raise by this crate, as well as optionally provide
 /// conversion to pyo3 error types which allow for the errors to be raised in Python.
@@ -53,9 +27,6 @@ pub enum Error {
     /// Attempting to query outside of data limits.
     Bounds(String),
 
-    /// Attempting to load or convert to/from an Frame of reference which is not known.
-    UnknownFrame(i32),
-
     /// Error related to IO.
     IOError(String),
 
@@ -64,9 +35,6 @@ pub enum Error {
 
     /// Failed to acquire lock on memory.
     LockFailed,
-
-    /// Out of memory error.
-    OutOfMemory,
 }
 
 impl error::Error for Error {}
@@ -77,18 +45,12 @@ impl fmt::Display for Error {
             Self::Convergence(s) | Self::ValueError(s) | Self::Bounds(s) | Self::IOError(s) => {
                 write!(f, "{s}")
             }
-            Self::UnknownFrame(_) => {
-                write!(f, "This reference frame is not supported.")
-            }
             Self::Impact(s, t) => {
-                let t = t.jd;
+                let t = t.jd();
                 write!(f, "Propagation detected an impact with {s} at time {t}")
             }
             Self::LockFailed => {
                 write!(f, "Failed to acquire lock on memory.")
-            }
-            Self::OutOfMemory => {
-                write!(f, "The system ran out of memory.")
             }
         }
     }
@@ -124,21 +86,14 @@ impl From<Error> for PyErr {
                 Self::new::<exceptions::PyValueError, _>(s)
             }
 
-            Error::UnknownFrame(_) => {
-                Self::new::<exceptions::PyValueError, _>("This reference frame is not supported.")
-            }
-
             Error::LockFailed => {
                 Self::new::<exceptions::PyValueError, _>("Failed to acquire lock on memory.")
             }
 
             Error::Impact(s, t) => Self::new::<exceptions::PyValueError, _>({
-                let t = t.jd;
+                let t = t.jd();
                 format!("Propagation detected an impact with {s} at time {t}")
             }),
-            Error::OutOfMemory => {
-                Self::new::<exceptions::PyMemoryError, _>("The system ran out of memory.")
-            }
         }
     }
 }

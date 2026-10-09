@@ -1,7 +1,13 @@
+// SPDX-FileCopyrightText: 2026 Dar Dahlen
+// SPDX-License-Identifier: BSD-3-Clause
+
 //! Orbital analysis tools.
 //!
-//! Functions for characterizing orbits: Hill radius, sphere of influence,
-//! Tisserand parameter, and related quantities.
+//! Perturbation-regime and encounter quantities: Hill radius, sphere of influence,
+//! Tisserand parameter, specific energy, and B-plane geometry.
+//!
+//! Quantities of the two-body conic itself - semi-major axis, perihelion distance,
+//! anomalies, propagation - live in [`kepler`](crate::kepler).
 
 // Docstrings in this module use NumPy-style formatting (e.g. `param :`) so they
 // render correctly in both Rust and Python (via cfg_attr pyfunction/pyclass).
@@ -9,7 +15,8 @@
 
 use crate::errors::{Error, KeteResult};
 use crate::forces::GravParams;
-use crate::frames::InertialFrame;
+use crate::frames::{Ecliptic, InertialFrame};
+use crate::kepler::compute_peri_dist;
 use crate::state::State;
 use nalgebra::Vector3;
 
@@ -86,23 +93,6 @@ pub fn tisserand(semi_major: f64, eccentricity: f64, inclination: f64, a_planet:
             * ((semi_major / a_planet) * (1.0 - eccentricity * eccentricity)).sqrt()
 }
 
-/// Look up the gravitational parameter for a NAIF center ID.
-///
-/// # Errors
-/// Returns an error if the center ID is not in the known masses list.
-fn gm_for_center(center_id: i32) -> KeteResult<f64> {
-    let known = GravParams::known_masses();
-    known
-        .iter()
-        .find(|p| p.naif_id == center_id)
-        .map(|p| p.mass)
-        .ok_or_else(|| {
-            Error::ValueError(format!(
-                "Unknown center_id {center_id}: no gravitational parameter available"
-            ))
-        })
-}
-
 /// Specific orbital energy from a state.
 ///
 ///   E = v^2/2 - mu/r
@@ -114,7 +104,7 @@ fn gm_for_center(center_id: i32) -> KeteResult<f64> {
 /// Returns an error if the center body's GM is unknown.
 ///
 pub fn specific_energy<T: InertialFrame>(state: &State<T>) -> KeteResult<f64> {
-    let gm = gm_for_center(state.center_id())?;
+    let gm = GravParams::try_mass_from_naif_id(state.center_id())?;
     let r = state.pos.norm();
     let v2 = state.vel.norm_squared();
     Ok(0.5 * v2 - gm / r)
@@ -122,29 +112,23 @@ pub fn specific_energy<T: InertialFrame>(state: &State<T>) -> KeteResult<f64> {
 
 /// B-plane encounter geometry for a hyperbolic flyby.
 ///
-/// When one body approaches another on a hyperbolic trajectory, it follows a
-/// curved path that, far from the encounter, approaches two straight lines
-/// called asymptotes. The incoming asymptote is the straight-line path the
-/// body would follow if there were no gravity.
-///
-/// The B-plane is the plane that passes through the center of the target body
-/// and is perpendicular to this incoming asymptote. Imagine looking down the
-/// barrel of the incoming trajectory: the B-plane is the "target" you see,
-/// with the target body at the origin.
+/// The incoming asymptote is the straight line the hyperbolic trajectory
+/// approaches far before the encounter; its unit direction is S. The B-plane
+/// passes through the center of the target body and is perpendicular to S.
 ///
 /// The B-vector points from the center of the target body to the point where
-/// the incoming asymptote pierces this plane. Its length is the impact
-/// parameter, the distance by which the body would miss if there were no
-/// gravity. A larger B-vector means a wider miss; a B-vector of zero means
-/// a head-on collision.
+/// the incoming asymptote pierces the B-plane. Its length is the impact
+/// parameter, the miss distance in the absence of the target's gravity. A
+/// radial trajectory (zero angular momentum) has a B-vector of zero.
 ///
-/// The B-plane is split into two axes:
+/// The B-plane axes are:
 ///
-/// - T lies along the intersection of the B-plane with the ecliptic plane.
-/// - R is perpendicular to T within the B-plane.
+/// - T = S x K / |S x K|, where K is the ecliptic north pole, so T lies in the
+///   ecliptic plane.
+/// - R = S x T.
 ///
-/// The components B dot T and B dot R locate where the incoming asymptote
-/// pierces the B-plane, giving a 2D coordinate for the encounter geometry.
+/// The axes are defined in the ecliptic frame regardless of the frame of the
+/// input state.
 ///
 /// Attributes
 /// ----------
@@ -205,49 +189,71 @@ impl BPlane {
 /// a full N-body propagation to capture real perturbations, but the
 /// B-plane decomposition itself is an analytical two-body projection.
 ///
+/// See [`BPlane`] for the axis definitions.
+///
 /// # Errors
-/// Returns an error if the orbit is bound (energy < 0).
+/// Returns an error if the center body's GM is unknown, or if the orbit is
+/// not hyperbolic (energy <= 0 or non-finite, or eccentricity <= 1).
 pub fn compute_b_plane<T: InertialFrame>(state: &State<T>) -> KeteResult<BPlane> {
-    let gm = gm_for_center(state.center_id())?;
+    let gm = GravParams::try_mass_from_naif_id(state.center_id())?;
+    let state = state.clone().into_frame::<Ecliptic>();
     let pos: Vector3<f64> = state.pos.into();
     let vel: Vector3<f64> = state.vel.into();
     let r = pos.norm();
     let v2 = vel.norm_squared();
     let energy = 0.5 * v2 - gm / r;
 
-    if energy < 0.0 {
+    if energy.is_nan() || energy <= 0.0 || energy.is_infinite() {
         return Err(Error::ValueError(
-            "compute_b_plane requires a hyperbolic orbit (energy >= 0)".into(),
+            "compute_b_plane requires a hyperbolic orbit (finite energy > 0)".into(),
         ));
     }
 
     let v_inf = (2.0 * energy).sqrt();
 
+    // Periapsis from the shared two-body form rather than re-derived here.
+    let closest_approach = compute_peri_dist(&pos, &vel, gm);
+
     // Angular momentum
     let h = pos.cross(&vel);
+    let h_mag = h.norm();
+
+    // A radial trajectory passes through the center: B is zero and the
+    // in-plane directions below are undefined.
+    if h_mag == 0.0 {
+        return Ok(BPlane {
+            b_t: 0.0,
+            b_r: 0.0,
+            b_mag: 0.0,
+            theta: 0.0,
+            v_inf,
+            closest_approach,
+        });
+    }
 
     // Eccentricity vector
     let e_vec = vel.cross(&h) / gm - pos / r;
     let ecc = e_vec.norm();
+    // Rounding can leave an orbit with energy just above zero with an eccentricity
+    // at or below one, where the asymptote does not exist.
+    if ecc <= 1.0 {
+        return Err(Error::ValueError(format!(
+            "compute_b_plane requires a hyperbolic orbit, the eccentricity is {ecc}"
+        )));
+    }
 
-    // Semi-major axis (negative for hyperbola)
-    let a = -gm / (2.0 * energy);
+    // B-plane miss distance, the impact parameter `|h| / v_inf`. This equals
+    // `|a| sqrt(e^2 - 1)` but stays finite as the energy approaches zero, where `a`
+    // diverges.
+    let b_mag = h_mag / v_inf;
 
-    // B-plane miss distance and periapsis
-    let b_mag = a.abs() * (ecc * ecc - 1.0).sqrt();
-    let closest_approach = a.abs() * (ecc - 1.0);
-
-    // Incoming asymptote direction: S = (e_hat * cos(theta_inf) - p_hat * sin(theta_inf))
-    // where theta_inf = acos(-1/e) is the true anomaly at infinity.
-    // Equivalently, S = v_inf_hat when the body is far away and approaching.
-    // For the B-plane we use: S = (e_vec/ecc * cos(theta_inf) + h x e_vec / (h_mag * ecc) * sin(theta_inf))
-    let cos_theta_inf = -1.0 / ecc;
-    let sin_theta_inf = (1.0 - cos_theta_inf * cos_theta_inf).sqrt();
-    let h_mag = h.norm();
+    // Incoming asymptote direction. In the perifocal basis (e_hat, p_hat), the
+    // velocity at true anomaly nu is proportional to (-sin(nu), e + cos(nu)).
+    // At nu = -theta_inf, with cos(theta_inf) = -1/e, this normalizes to
+    // S = e_hat / e + p_hat * sqrt(1 - 1/e^2).
     let e_hat = e_vec / ecc;
-    let p_hat = h.cross(&e_vec) / (h_mag * ecc);
-    // Incoming asymptote (from infinity toward periapsis)
-    let s_hat = e_hat * cos_theta_inf + p_hat * sin_theta_inf;
+    let p_hat = h.cross(&e_hat) / h_mag;
+    let s_hat = e_hat / ecc + p_hat * (1.0 - 1.0 / (ecc * ecc)).sqrt();
 
     // Reference direction: ecliptic pole (k-hat)
     let k_hat = Vector3::new(0.0, 0.0, 1.0);
@@ -265,10 +271,10 @@ pub fn compute_b_plane<T: InertialFrame>(state: &State<T>) -> KeteResult<BPlane>
     };
     let r_hat = s_hat.cross(&t_hat);
 
-    // B vector: perpendicular from center body to the incoming asymptote line.
-    // B = b_mag * (h x S) / |h x S|
-    let h_cross_s = h.cross(&s_hat);
-    let b_vec = b_mag * h_cross_s / h_cross_s.norm();
+    // B vector: from the center body to the closest point of the incoming
+    // asymptote line. It lies in the orbit plane, perpendicular to S, on the
+    // side of periapsis: B_hat = S x h_hat.
+    let b_vec = b_mag * s_hat.cross(&h) / h_mag;
 
     let b_t = b_vec.dot(&t_hat);
     let b_r = b_vec.dot(&r_hat);
@@ -294,9 +300,8 @@ mod tests {
 
     // Earth GM from DE441 masses.tsv: 3.00348961546514e-06 * GMS
     const EARTH_GM: f64 = 3.003_489_615_465_14e-06 * GMS;
-    // Jupiter GM: 2.82534584083387e-07 / 3.00348961546514e-06 ... actually
-    // Jupiter mass fraction from masses.tsv is 9.54790662709902e-04
-    const JUPITER_GM: f64 = 9.547_906_627_099_02e-04 * GMS;
+    // Jupiter mass fraction from masses.tsv is 9.547919099414246e-04
+    const JUPITER_GM: f64 = 9.547_919_099_414_246e-04 * GMS;
 
     #[test]
     fn test_hill_radius_earth() {
@@ -456,5 +461,128 @@ mod tests {
             10,
         );
         assert!(compute_b_plane(&state).is_err());
+    }
+
+    #[test]
+    fn test_b_plane_periapsis_on_t_axis() {
+        // Periapsis on +x, motion along +y, orbit in the ecliptic plane.
+        // The incoming asymptote is S = (1/e, sqrt(1 - 1/e^2), 0), so both
+        // S x h_hat and S x K equal (sqrt(1 - 1/e^2), -1/e, 0): B lies on +T.
+        let v_inf: f64 = 0.0002;
+        let r_p = 0.0001;
+        let v_peri = (v_inf * v_inf + 2.0 * EARTH_GM / r_p).sqrt();
+        let state = State::<Ecliptic>::new(
+            Desig::Empty,
+            Time::<TDB>::new(2451545.0),
+            Vector::new([r_p, 0.0, 0.0]),
+            Vector::new([0.0, v_peri, 0.0]),
+            399,
+        );
+        let bp = compute_b_plane(&state).unwrap();
+
+        // Impact parameter of a hyperbola: b = r_p sqrt(1 + 2 mu / (r_p v_inf^2)).
+        let expected_b = r_p * (1.0 + 2.0 * EARTH_GM / (r_p * v_inf * v_inf)).sqrt();
+        assert!((bp.b_mag - expected_b).abs() / expected_b < 1e-10);
+        assert!((bp.b_t - expected_b).abs() / expected_b < 1e-10);
+        assert!(bp.b_r.abs() / expected_b < 1e-10);
+        assert!(bp.theta.abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_b_plane_matches_backward_propagation() {
+        // Propagate a 3D flyby backward with two-body mechanics until it is far
+        // from the target. There the velocity direction approximates the
+        // incoming asymptote S and the position's component perpendicular to S
+        // approximates B, with an error that falls off with distance.
+        let pos = Vector3::new(4.0e-4, -2.5e-4, 1.5e-4);
+        let vel = Vector3::new(-2.0e-3, 3.0e-3, 2.0e-3);
+        let state = State::<Ecliptic>::new(
+            Desig::Empty,
+            Time::<TDB>::new(2451545.0),
+            Vector::<Ecliptic>::from(pos),
+            Vector::<Ecliptic>::from(vel),
+            399,
+        );
+        let bp = compute_b_plane(&state).unwrap();
+
+        let (mut far_pos, mut far_vel) = (pos, vel);
+        for _ in 0..40 {
+            let (d_pos, d_vel) =
+                crate::kepler::analytic_2_body_delta(-250.0, &far_pos, &far_vel, EARTH_GM).unwrap();
+            far_pos += d_pos;
+            far_vel += d_vel;
+        }
+        assert!(far_pos.norm() > 1.0, "not far enough: {}", far_pos.norm());
+
+        let s_hat = far_vel.normalize();
+        let b_vec = far_pos - far_pos.dot(&s_hat) * s_hat;
+        let t_hat = s_hat.cross(&Vector3::z()).normalize();
+        let r_hat = s_hat.cross(&t_hat);
+        let b_t = b_vec.dot(&t_hat);
+        let b_r = b_vec.dot(&r_hat);
+
+        let tol = 1e-3 * bp.b_mag;
+        assert!((bp.b_t - b_t).abs() < tol, "b_t: {} vs {b_t}", bp.b_t);
+        assert!((bp.b_r - b_r).abs() < tol, "b_r: {} vs {b_r}", bp.b_r);
+
+        // The same state expressed in the equatorial frame gives the same
+        // ecliptic-referenced result.
+        let bp_eq = compute_b_plane(&state.clone().into_frame::<Equatorial>()).unwrap();
+        assert!((bp_eq.b_t - bp.b_t).abs() < 1e-12 * bp.b_mag);
+        assert!((bp_eq.b_r - bp.b_r).abs() < 1e-12 * bp.b_mag);
+    }
+
+    #[test]
+    fn test_b_plane_radial_is_zero() {
+        let state = State::<Ecliptic>::new(
+            Desig::Empty,
+            Time::<TDB>::new(2451545.0),
+            Vector::new([1e-3, 0.0, 0.0]),
+            Vector::new([-1e-2, 0.0, 0.0]),
+            399,
+        );
+        let bp = compute_b_plane(&state).unwrap();
+        assert!(bp.b_mag == 0.0 && bp.b_t == 0.0 && bp.b_r == 0.0);
+    }
+
+    #[test]
+    fn test_b_plane_non_finite_rejected() {
+        let state = State::<Ecliptic>::new(
+            Desig::Empty,
+            Time::<TDB>::new(2451545.0),
+            Vector::new([1e-3, 0.0, 0.0]),
+            Vector::new([f64::NAN, 1e-2, 0.0]),
+            399,
+        );
+        assert!(compute_b_plane(&state).is_err());
+    }
+
+    /// Within rounding of the escape speed the result is either an error or finite;
+    /// it is never NaN.
+    #[test]
+    fn test_b_plane_near_escape_is_never_nan() {
+        let gm = EARTH_GM;
+        for i in 0..40 {
+            let r = 1e-4 * (1.0 + f64::from(i) * 0.25);
+            let escape = (2.0 * gm / r).sqrt();
+            for k in 0..40 {
+                let v = escape * (1.0 + f64::from(k) * f64::EPSILON);
+                let state = State::<Ecliptic>::new(
+                    Desig::Empty,
+                    Time::<TDB>::new(2451545.0),
+                    Vector::new([r * 0.6, r * 0.8, 0.0]),
+                    Vector::new([v * 0.6, -v * 0.48, v * 0.64]),
+                    399,
+                );
+                if let Ok(bp) = compute_b_plane(&state) {
+                    assert!(
+                        [bp.b_t, bp.b_r, bp.b_mag, bp.theta]
+                            .iter()
+                            .all(|x| x.is_finite()),
+                        "r = {r}, v = {v}: {bp:?}"
+                    );
+                }
+            }
+        }
     }
 }

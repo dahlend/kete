@@ -310,7 +310,11 @@ Code  Long.   cos      sin    Name
 308 138.362760.808792+0.586530Usuda Deep Space Center, 64-m, Nagano
 309 289.595690.909943-0.414336Cerro Paranal
 310 288.871640.739802+0.670574Minor Planet Center Test Code
+311                           NOAA GOES-19
 312 112.334  0.9574  +0.2877  Tsingtao field station, Xisha Islands
+313                           NASA Parker Solar Probe
+314                           NOAA SOLAR-1
+315                           ESA Solar Orbiter
 318 115.691  0.85206 -0.52170 Quinns Rock
 319 116.1350 0.84883 -0.52702 Perth Observatory, Perth-Lowell Telescope
 320 116.4381 0.85859 -0.51102 Chiro Observatory
@@ -320,8 +324,10 @@ Code  Long.   cos      sin    Name
 324 116.3277 0.76598 +0.64072 Peking Observatory, Shaho Station
 327 117.5750 0.76278 +0.64470 Peking Observatory, Xinglong Station
 330 118.8209 0.84828 +0.52788 Purple Mountain Observatory, Nanking
+332                           Jupiter Icy Moons Explorer (JUICE)
 333 249.5236 0.84936 +0.52642 Desert Eagle Observatory
 334 120.3196 0.80925 +0.58552 Tsingtao
+335                           PUNCH
 336                           Lucy
 337 121.1843 0.85708 +0.51348 Sheshan
 338                           Psyche
@@ -364,7 +370,7 @@ Code  Long.   cos      sin    Name
 375 134.8708 0.8206  +0.5697  Uzurano
 376 139.0392 0.81321 +0.58022 Uenohara
 377 135.7933 0.82014 +0.57031 Kwasan Observatory, Kyoto
-378 136.0142 0.82437 +0.56426 Murou
+378 136.011320.824347+0.564310Murou
 379 137.6279 0.82300 +0.56613 Hamamatsu-Yuto
 380 137.0349 0.82190 +0.56772 Ishiki
 381 137.625420.812172+0.581777Tokyo-Kiso
@@ -689,7 +695,7 @@ Code  Long.   cos      sin    Name
 700 250.3817 0.80656 +0.58960 Chinle
 701 249.797160.853823+0.519224Junk Bond Observatory, Sierra Vista
 702 252.8117 0.8305  +0.5561  Joint Obs. for cometary research, Socorro
-703 249.267360.845311+0.533211Catalina Sky Survey
+703 249.267360.845311+0.533211University of Arizona Catalina Sky Survey
 704 253.340930.831869+0.553542Lincoln Laboratory ETS, New Mexico
 705 254.179420.841945+0.538563Apache Point
 706 253.9366 0.78294 +0.62043 Salida
@@ -956,7 +962,7 @@ Code  Long.   cos      sin    Name
 967 358.9778 0.61508 +0.78585 Greens Norton
 968   0.4250 0.6158  +0.7853  Haverhill
 969 359.8454 0.6235  +0.7792  London-Regents Park
-970   0.4954 0.62045 +0.78162 Chelmsford
+970   0.493480.620452+0.781632Chelmsford
 971 350.812490.781336+0.622040Lisbon
 972 357.5833 0.54359 +0.83656 Dun Echt
 973 359.6671 0.62271 +0.77983 Harrow
@@ -1128,7 +1134,7 @@ B38  11.857460.724995+0.686523Santa Mama
 B39   8.9072 0.69950 +0.71231 Tradate
 B40  15.0706 0.79331 +0.60690 Skylive Observatory, Catania
 B41  17.6925 0.65449 +0.75362 Zlin Observatory
-B42  30.3275 0.57401 +0.81614 Vitebsk
+B42  30.325140.574055+0.816105Vitebsk
 B43   7.3089 0.63404 +0.77073 Hennef
 B44   5.5906 0.71772 +0.69419 Eygalayes
 B45  19.9356 0.64169 +0.76447 Narama
@@ -1203,7 +1209,7 @@ C13   9.100310.698332+0.713430Como
 C14  15.967000.668463+0.741344Sky Vistas Observatory, Eichgraben
 C15 132.1656 0.72418 +0.68737 ISON-Ussuriysk Observatory
 C16  11.572610.673687+0.736691Isarwinkel Observatory, Bad Tolz
-C17   0.743810.744124+0.665978Observatorio Joan Roget, Ager
+C17   0.743810.744124+0.665978Pingu, Ager
 C18   3.604000.634888+0.770037Frasnes-Lez-Anvaing
 C19   5.4231 0.71591 +0.69599 ROSA Observatory, Vaucluse
 C20  42.661910.723859+0.688104Kislovodsk Mtn. Astronomical Stn., Pulkovo Obs.
@@ -1532,7 +1538,7 @@ G92 249.2814 0.84920 +0.52660 Jarnac Observatory, Vail
 G93 249.3726 0.85215 +0.52201 Sonoita Research Observatory, Sonoita
 G94 249.9267 0.84971 +0.52594 Sonoran Skies Observatory, St. David
 G95 249.7622 0.85404 +0.51888 Hereford Arizona Observatory, Hereford
-G96 249.211280.845107+0.533611Mt. Lemmon Survey
+G96 249.211280.845107+0.533611University of Arizona Mt. Lemmon Survey
 G97 250.8694 0.84965 +0.52600 Astronomical League Alpha Observatory, Portal
 G98 251.343540.815037+0.578012Calvin-Rehoboth Observatory, Rehoboth
 G99 251.8104 0.84192 +0.53835 NF Observatory, Silver City
@@ -1793,7 +1799,7 @@ J53 354.892780.791142+0.609607Posadas
 J54 343.4906 0.88149 +0.47142 Bradford Robotic Telescope
 J55 344.3144 0.88549 +0.46313 Los Altos de Arguineguin Observatory
 J56 344.4536 0.88416 +0.46624 Observatorio La Avejerilla
-J57 358.890890.767817+0.638833Centro Astronomico Alto Turia, Valencia
+J57 358.890830.767822+0.638840Centro Astronomico Alto Turia 1
 J58 356.6644 0.62304 +0.77959 Brynllefrith Observatory, Llantwit Fardre
 J59 356.202560.726956+0.684386Observatorio Linceo, Santander
 J60 354.3406 0.74773 +0.66201 Tocororo Observatory, Arquillinos
@@ -2134,6 +2140,7 @@ N87  87.175030.727076+0.684720Nanshan Station, Xinjiang Observatory
 N88  87.173220.727098+0.684697Xingming Observatory #3, Nanshan
 N89  87.179060.727107+0.684682Xingming Observatory #2, Nanshan
 N94  88.727920.675788+0.734831Altay Astronomical Observatory
+N98  89.753610.725576+0.686265Xingyuan Observatory #2, Qitai
 O02  90.526140.866434+0.498958Galaxy Tibet YBJ Observatory,Yangbajing
 O17  93.886690.783127+0.620730Purple Mountain Observatory, Lenghu-1
 O18  93.895220.782966+0.621021WFST, Lenghu
@@ -2235,14 +2242,25 @@ R13 342.120710.877650+0.478474GOTO North
 R14 342.232060.878518+0.476188VillaDeMazoElHoyo
 R16 343.464640.880457+0.472653Tafuriaste, La Orotava
 R17 343.489690.881484+0.471430ATLAS-TDO
+R18 343.490250.881483+0.471432Two-meter Twin Telescope, TTT4
 R20 344.577110.882360+0.469022LaMelira, Las Palmas de Gran Canaria
+R39 352.306830.798224+0.600382Dobsonian Power, Algarve
+R40 351.169780.783453+0.619386STB Astro Observatory, Setubal
+R41 356.303670.761143+0.646784UAM, Madrid
+R42 358.246140.746259+0.663617Observatorio Astronomico del Moncayo
+R43 353.372810.786772+0.615322TransAstra TKO at e-EYE
 R44 353.011640.741813+0.668665Metis Trevinca Skies
 R45 353.011580.741811+0.668654Tycho Brahe, Trevinca
+R46 357.691430.599819+0.797488Lovell (76-m, Jodrell Bank)
+R47 355.751990.762362+0.645190Madrid DSS-63 (70-m)
+R48 358.890920.767825+0.638837Centro Astronomico Alto Turia 2
 R49 354.560480.772650+0.632947Observatorio Villuercas-Navezuelas, Navezuelas
 R50 354.406580.745697+0.664228Obsservatorio astronomico Orion
 R51 354.918080.765253+0.641682Astrogredos Observatory, Arenas de San Pedro
 R52 355.465030.803836+0.592881Observatorio IES Al-Baytar, Benalmadena
 R53 355.413330.803227+0.593731Pinos, Alhaurin de la Torre
+R54 356.788500.679215+0.731500Petit Cosquet, Bangor
+R55 357.232260.774034+0.631202ALFA CENTAURI, LAS MESAS
 R56 170.483890.720473-0.691324Scott Street Observatory, Lake Tekapo
 R57 170.472780.720489-0.691309Aorangi Iti Observatory, Lake Tekapo
 R58 170.490390.697579-0.714138Beverly-Begg Observatory, Dunedin
@@ -2268,6 +2286,7 @@ R77   3.727440.723117+0.688470Observatoire de l'etoile qui rit
 R78 175.091040.788021-0.613626Crystal Lake Observatory, Ngutunui
 R79   4.334030.708332+0.703766Observatoire Hubert Reeves, Mars
 R80   4.410890.708799+0.703289Observatoire International de Beauvert
+R81   2.087000.749353+0.660015Obs Vallespir, Sabadell
 R83   5.646470.720583+0.691196Observatoire Banon La Tuilerie, Banon
 R85   7.071810.725295+0.686171Telescope Leonard de Vinci, GAPRA, Antibes
 R86   6.989470.681270+0.729861Mont-Soleil, Saint-Imier
@@ -2276,9 +2295,14 @@ R88   7.144470.680871+0.730105La Porte des Etoiles, Corgemont
 R92   8.780940.600059+0.797286Osterholz-Scharmbeck
 R93   9.067190.710955+0.700966Sanse Observatory, San Sebastiano Curone
 R95   9.790450.718941+0.692828Fiammetta Observatory, La Spezia
+R96  10.431010.716999+0.694998Osservatorio Pierino Zambonini
 R97  10.539530.649091+0.758232Baudenbach
 R99  11.238080.723496+0.688038Giuliano Betti Observatory, Firenze
+S03  12.921560.670725+0.739321Stierlingwald, Buermoos
 S04  12.712850.744787+0.665093Osservatorio Astronomico Narciso Spuntoni
+S05  12.833320.668165+0.741616Sternwarte Burghausen
+S06  13.075840.744332+0.665855ASTRIS Osservatorio Astronomico Claudio Del Sole
+S15  16.361470.919630-0.392205Namibia1/HAKOS, Hakos, Namibia, Hakos
 S16  16.705000.759851+0.648047ASI Matera Flyeye
 S24  19.546830.671902+0.738204Szilard Leo Observatory, Bujak
 S30  21.497440.674553+0.735785Zenit, Hajduboszormeny
@@ -2315,6 +2339,7 @@ U62 238.955080.811970+0.581864TransAstra TKO at SkiesAway
 U63 239.194560.681217+0.729770Burnt Tree Hill Observatory, Cle Elum
 U64 239.461510.683272+0.727821CWU-Lind Observatory, Ellensburg
 U65 239.459830.683247+0.727841CWU Observatory, Ellensburg
+U66 240.920560.791644+0.609534June Lake Overlook
 U67 240.203580.776325+0.628595Jack C. Davis Observatory, Carson City
 U68 240.587010.799040+0.599620JPL SynTrack Robotic Telescope, Auberry
 U69 240.5870 0.79904 +0.59962 iTelescope SRO Observatory, Auberry
@@ -2333,6 +2358,7 @@ U81 243.615140.827367+0.560037CS3-Trojan Station, Landers
 U82 243.615190.827368+0.560036CS3-Palmer Divide Station, Landers
 U83 243.573110.841238+0.53938 Mount Laguna Observatory
 U86 244.535560.857900+0.512937BOOTES-5, Bajo California
+U91 246.304860.791059+0.610084BURSST, Beryl
 U92 251.830000.827059+0.560862Astrottica Network USA2, Pie Town
 U93 246.287610.791740+0.609209Skygems Dreamscope Utah, Beryl Junction
 U94 246.302500.792006+0.608864iTelescope Observatory, Beryl Junction
@@ -2424,6 +2450,8 @@ W16 273.768690.822976+0.566292Pleasant Groves Observatory
 W17 273.771220.765700+0.641103Arrowhead, Sheridan
 W18 274.249620.767039+0.639505Red Fox Observatory, Pendleton
 W19 274.372830.740783+0.669559Kalamazoo
+W20 276.485500.781341+0.622075Moeller Observatory, Manchester
+W21 282.906280.778653+0.625363Spots Observatory, Bethesda
 W22 275.004470.844595+0.533635WestRock Observatory, Columbus
 W23 275.380190.772786+0.632594Hevonen Farm Observatory, Oxford
 W24 275.238170.722574+0.689025Shamrock Banks Observatory, Clare
@@ -2530,6 +2558,7 @@ X24 289.988310.887329-0.460106Observatorio Desierto Cosmico, Atacama
 X25 289.146780.862375-0.505111UBC Southern Observatory
 X26 295.572330.852247-0.521566NAOS, Alta Gracia
 X27 289.200810.865545-0.499828SARA-CT
+X28 289.988280.887329-0.460106CHILE1/ODC, Atacama
 X29 299.137610.840299-0.540322Observatorio Astronomico Municipal de Funes
 X31 299.479340.850485-0.524263Galileo Galilei Observatory, Oro Verde
 X33 299.990390.998647-0.051941OARU, Manaus
@@ -2541,6 +2570,7 @@ X50 303.824190.821025-0.568999Observatorio Astronomico de Montevideo
 X57 305.406260.903659-0.426885Polo Astronomico CMF,Foz do Iguacu
 X60 306.425560.895232-0.444317Guaraciaba Observatory
 X70 308.433220.931623-0.362375Observatorio OATU, Tupi Paulista
+X71 308.920250.896628-0.441642OASMiS, Sao Miguel da Serra
 X72 308.878890.868775-0.493560Waccobs, Sao Leopoldo
 X74 309.494220.931569-0.362525Observatorio Campo dos Amarais
 X76 309.990970.990274-0.138870SUN Observatory, Redencao
@@ -2552,10 +2582,12 @@ X89 312.217860.962401-0.271311Rocca Observatory, Brasilia
 X90 312.132080.963322-0.268189Carina Observatory, Brasilia
 X91 312.788810.917193-0.397452Orion-Colesanti observatory, Mairinque
 X93 313.6047 0.92363 -0.38244 Munhoz Observatory
+X98 314.583610.924574-0.380207Observatorio Pedra Preta, Itajuba
 Y00 315.215040.935906-0.351562SONEAR Observatory, Oliveira
 Y01 316.015800.940890-0.337985SONEAR 2 Observatory, Belo Horizonte
 Y05 316.310000.941320-0.337075SONEAR Wykrota-CEAMIG, Serra da Piedade
 Y16 318.687940.929268-0.368170ROCG, Campos dos Goytacazes
+Y20 319.631690.938049-0.345356Omega Centauri Observatory, Cariacica
 Y28 321.3126 0.98840 -0.15179 OASI, Nova Itacuruba
 Y40 324.038890.989706-0.143217Discovery Observatory, Caruaru
 Y63 352.133680.856447+0.515346SNX-NET, Oukaimeden
@@ -2675,7 +2707,7 @@ Z80 359.628080.623054+0.779568Northolt Branch Observatory
 Z81 355.732400.802530+0.594629Observatorio Estrella de Mar
 Z82 355.958970.802136+0.595174BOOTES-2 Observatory, Algarrobo
 Z83 356.2881 0.76033 +0.64755 Chicharronian 3C Observatory, Tres Cantos
-Z84 357.451840.797536+0.601835Calar Alto-Schmidt
+Z84 357.451840.797530+0.601830Calar Alto-Schmidt
 Z85 356.750280.801058+0.596932Observatorio Sierra Contraviesa
 Z86 356.8900 0.62347 +0.77923 St. Mellons
 Z87 357.102100.608005+0.791293Stanley Laver Observatory, Pontesbury
