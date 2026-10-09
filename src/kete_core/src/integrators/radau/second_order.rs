@@ -543,7 +543,6 @@ where
         for _ in 0..10 {
             self.b_scratch.set_column(0, &self.cur_b.column(6));
             // Calculate b and g
-            #[allow(clippy::cast_possible_wrap, reason = "idx does not exceed 8")]
             for (idj, gauss_radau_frac) in GAUSS_RADAU_SPACINGS.iter().enumerate().skip(1) {
                 // the sample point at the Guass-Radau spacings.
                 // Update each parameter using the current B as a guess to estimate the

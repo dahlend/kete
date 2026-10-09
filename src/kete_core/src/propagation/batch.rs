@@ -74,7 +74,6 @@ where
         ))?;
     }
 
-    #[allow(clippy::missing_panics_doc, reason = "not possible by construction.")]
     let jd_init = states.first().unwrap().epoch;
 
     let mut pos: Vec<f64> = Vec::new();

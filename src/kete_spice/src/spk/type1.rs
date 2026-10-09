@@ -29,10 +29,6 @@ pub struct SpkSegmentType1 {
     n_records: usize,
 }
 
-#[allow(
-    clippy::cast_sign_loss,
-    reason = "This is correct as long as the file is correct."
-)]
 impl SpkSegmentType1 {
     #[inline(always)]
     fn get_record(&self, idx: usize) -> &[f64] {

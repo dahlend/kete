@@ -150,7 +150,6 @@ fn face_xy_to_ang(nside: u32, face: u32, x: f64, y: f64) -> (f64, f64) {
 /// Disc query in the RING scheme. Walks only the rings that overlap in
 /// latitude and computes the phi half-width per ring from spherical geometry.
 #[allow(
-    clippy::cast_sign_loss,
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     reason = "ring/pixel indices are bounded by nside"

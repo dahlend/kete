@@ -12,7 +12,6 @@ use crate::frames::{InertialFrame, SunCenter, Vector};
 use crate::prelude::KeteResult;
 use crate::state::State;
 use crate::time::{Duration, TDB, Time};
-use core::f64;
 use nalgebra::{ComplexField, Vector3};
 use std::f64::consts::TAU;
 

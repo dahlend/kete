@@ -245,12 +245,6 @@ fn unfit_error(
 
 /// Binary-search for the largest step size (SPICE seconds) that keeps the
 /// position error below `threshold_km`.
-#[allow(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "n_records bounded; exact in f64."
-)]
 fn find_step_size(
     source: &super::SpkCollection,
     object_id: i32,
@@ -629,12 +623,6 @@ fn t13_fit_subrange(
 
 /// Binary-search for the largest node spacing that keeps interpolation error
 /// below `threshold_km`.
-#[allow(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "n_nodes bounded by range/T13_S_MIN; exact in f64."
-)]
 fn t13_find_step_size(
     source: &super::SpkCollection,
     object_id: i32,
@@ -1276,7 +1264,6 @@ mod tests {
         let (jd_start, jd_end, ..) = repacked_info[0];
         let mut max_err_km = 0.0_f64;
         for i in 0..100 {
-            #[allow(clippy::cast_precision_loss, reason = "i in [0,99]; exact in f64.")]
             let frac = f64::from(i) / 99.0;
             let jd = jd_start + frac * (jd_end - jd_start).elapsed;
 
@@ -1482,7 +1469,6 @@ mod tests {
         let (jd_start, jd_end, ..) = repacked_info[0];
         let mut max_err_km = 0.0_f64;
         for i in 0..100 {
-            #[allow(clippy::cast_precision_loss, reason = "i in [0,99]; exact in f64.")]
             let frac = f64::from(i) / 99.0;
             let jd = jd_start + frac * (jd_end - jd_start).elapsed;
 

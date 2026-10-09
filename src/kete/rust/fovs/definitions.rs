@@ -18,7 +18,6 @@ use crate::{state::PyState, vector::PyVector};
 /// of the individual wavelength bands.
 #[pyclass(module = "kete", frozen, name = "WiseCmos", from_py_object)]
 #[derive(Clone, Debug)]
-#[allow(clippy::upper_case_acronyms)]
 pub struct PyWiseCmos(pub fov::WiseCmos);
 
 /// Field of view of a NEOS CMOS chip.
@@ -55,7 +54,6 @@ pub struct PyWiseCmos(pub fov::WiseCmos);
 ///     north is undefined. Construct such a field from its corners instead.
 #[pyclass(module = "kete", frozen, name = "NeosCmos", from_py_object)]
 #[derive(Clone, Debug)]
-#[allow(clippy::upper_case_acronyms)]
 pub struct PyNeosCmos(pub fov::NeosCmos);
 
 /// Field of view of a NEOS Visit.
@@ -157,33 +155,28 @@ pub struct PyNeosCmos(pub fov::NeosCmos);
 ///     Band, can be either 1 or 2 to represent NC1/NC2.
 #[pyclass(module = "kete", frozen, name = "NeosVisit", from_py_object)]
 #[derive(Clone, Debug)]
-#[allow(clippy::upper_case_acronyms)]
 pub struct PyNeosVisit(pub fov::NeosVisit);
 
 /// Field of view of a Single ZTF chips/quad combination.
 #[pyclass(module = "kete", frozen, name = "ZtfCcdQuad", from_py_object)]
 #[derive(Clone, Debug)]
-#[allow(clippy::upper_case_acronyms)]
 pub struct PyZtfCcdQuad(pub fov::ZtfCcdQuad);
 
 /// Field of view of all 64 ZTF chips/quad combinations.
 /// This is a meta collection of individual ZTF CCD Quad FOVs.
 #[pyclass(module = "kete", frozen, name = "ZtfField", sequence, from_py_object)]
 #[derive(Clone, Debug)]
-#[allow(clippy::upper_case_acronyms)]
 pub struct PyZtfField(pub fov::ZtfField);
 
 /// Field of view of all PTF ccds.
 /// This is a meta collection of individual PTF CCD Quad FOVs.
 #[pyclass(module = "kete", frozen, name = "PtfField", sequence, from_py_object)]
 #[derive(Clone, Debug)]
-#[allow(clippy::upper_case_acronyms)]
 pub struct PyPtfField(pub fov::PtfField);
 
 /// Field of view of a Single PTF ccd.
 #[pyclass(module = "kete", frozen, name = "PtfCcd", from_py_object)]
 #[derive(Clone, Debug)]
-#[allow(clippy::upper_case_acronyms)]
 pub struct PyPtfCcd(pub fov::PtfCcd);
 
 /// Field of view of multiple Spherex CMOS at one time.
@@ -196,19 +189,16 @@ pub struct PyPtfCcd(pub fov::PtfCcd);
     from_py_object
 )]
 #[derive(Clone, Debug)]
-#[allow(clippy::upper_case_acronyms)]
 pub struct PySpherexField(pub fov::SpherexField);
 
 /// Field of view of a Single Spherex cmos.
 #[pyclass(module = "kete", frozen, name = "SpherexCmos", from_py_object)]
 #[derive(Clone, Debug)]
-#[allow(clippy::upper_case_acronyms)]
 pub struct PySpherexCmos(pub fov::SpherexCmos);
 
 /// Field of view of a Spitzer BCD frame (IRAC or MIPS).
 #[pyclass(module = "kete", frozen, name = "SpitzerFrame", from_py_object)]
 #[derive(Clone, Debug)]
-#[allow(clippy::upper_case_acronyms)]
 pub struct PySpitzerFrame(pub fov::SpitzerFrame);
 
 /// Generic Rectangular Field of view.
@@ -292,7 +282,7 @@ pub struct PyOmniDirectional(pub fov::OmniDirectional);
 
 /// Field of views supported by the python interface
 #[derive(Debug, Clone, FromPyObject, IntoPyObject)]
-#[allow(clippy::upper_case_acronyms, missing_docs)]
+#[allow(missing_docs)]
 pub enum AllowedFOV {
     WISE(PyWiseCmos),
     NEOS(PyNeosCmos),
@@ -1147,7 +1137,6 @@ impl PyZtfCcdQuad {
 }
 
 #[pymethods]
-#[allow(clippy::too_many_arguments)]
 impl PyZtfField {
     /// Representation of an entire ZTF Field, made up of up to 64 ZTF CCD FOVs.
     ///
@@ -1367,7 +1356,6 @@ impl PyPtfCcd {
 }
 
 #[pymethods]
-#[allow(clippy::too_many_arguments)]
 impl PyPtfField {
     /// Representation of an entire PTF Field, made up of multiple CCDs.
     ///
@@ -1441,7 +1429,6 @@ impl PyPtfField {
 }
 
 #[pymethods]
-#[allow(clippy::too_many_arguments)]
 impl PySpherexCmos {
     /// Construct a new PTF CCD FOV from the corners.
     /// The corners must be provided in clockwise order.
@@ -1524,7 +1511,6 @@ impl PySpherexCmos {
 }
 
 #[pymethods]
-#[allow(clippy::too_many_arguments)]
 impl PySpherexField {
     /// Representation of an entire PTF Field, made up of multiple CCDs.
     ///

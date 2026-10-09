@@ -124,10 +124,6 @@ impl SpkSegmentType21 {
     }
 
     #[inline(always)]
-    #[allow(
-        clippy::cast_sign_loss,
-        reason = "This is correct as long as the file is correct."
-    )]
     pub(crate) fn try_get_pos_vel(&self, time: Time<TDB>) -> KeteResult<([f64; 3], [f64; 3])> {
         let jds = time.j2000_seconds();
         // Records are laid out as so:

@@ -40,7 +40,7 @@ impl From<kete_flux::ModelResults> for PyModelResults {
 impl PyModelResults {
     #[new]
     #[pyo3(signature = (fluxes, thermal_fluxes, hg_fluxes, v_band_magnitude, v_band_flux, magnitudes=None))]
-    #[allow(clippy::too_many_arguments, missing_docs)]
+    #[allow(missing_docs)]
     pub fn new(
         fluxes: Vec<f64>,
         thermal_fluxes: Vec<f64>,

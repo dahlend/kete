@@ -674,7 +674,7 @@ fn score_patch(
                 };
                 // Raise the shared best.  A lost race only leaves it lower than it could
                 // be, which abandons fewer cells and changes no result.
-                let _ = best.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |bits| {
+                let _ = best.try_update(Ordering::Relaxed, Ordering::Relaxed, |bits| {
                     (log_w > f64::from_bits(bits)).then_some(log_w.to_bits())
                 });
                 row_cells.push(Cell {

@@ -39,10 +39,6 @@ pub fn bytes_to_f64(bytes: &[u8]) -> KeteResult<f64> {
 ///
 /// # Errors
 /// Returns an error if the byte length is not a multiple of 8.
-#[allow(
-    clippy::missing_panics_doc,
-    reason = "chunks_exact(8) guarantees each chunk is exactly 8 bytes"
-)]
 pub fn bytes_to_f64_vec(bytes: &[u8]) -> KeteResult<Box<[f64]>> {
     let byte_len = bytes.len();
     if !byte_len.is_multiple_of(8) {
@@ -63,10 +59,6 @@ pub fn bytes_to_f64_vec(bytes: &[u8]) -> KeteResult<Box<[f64]>> {
 ///
 /// # Errors
 /// Returns an error if the byte length is not a multiple of 4.
-#[allow(
-    clippy::missing_panics_doc,
-    reason = "chunks_exact(4) guarantees each chunk is exactly 4 bytes"
-)]
 pub fn bytes_to_i32_vec(bytes: &[u8]) -> KeteResult<Box<[i32]>> {
     let byte_len = bytes.len();
     if !byte_len.is_multiple_of(4) {

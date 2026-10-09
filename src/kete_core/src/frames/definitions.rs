@@ -265,10 +265,6 @@ impl NonInertialFrame {
     /// # Errors
     /// - [`Error::Bounds`] if the reference frame is not supported.
     /// - [`Error::ValueError`] if the frame has no rotation rate.
-    #[allow(
-        clippy::wrong_self_convention,
-        reason = "Always need position and velocity together"
-    )]
     pub fn from_equatorial(
         &self,
         pos: impl Into<Vector3<f64>>,

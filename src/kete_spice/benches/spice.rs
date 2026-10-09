@@ -4,7 +4,6 @@
 
 #![allow(missing_docs, reason = "Unnecessary for benchmarks")]
 #![allow(unused_results, reason = "Unnecessary for benchmarks")]
-#![allow(clippy::missing_assert_message, reason = "Unnecessary for benchmarks")]
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use kete_core::{

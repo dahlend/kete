@@ -251,10 +251,6 @@ fn combine_sexagesimal(first: f64, minutes: f64, seconds: f64) -> KeteResult<f64
 /// whole minutes, and seconds.
 fn split_sexagesimal(units: u64, scale: u64) -> (u32, u32, f64) {
     let seconds = (units % (60 * scale)) as f64 / scale as f64;
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "minutes are below 60; the leading term of a finite angle fits u32"
-    )]
     let minutes = ((units / (60 * scale)) % 60) as u32;
     #[allow(
         clippy::cast_possible_truncation,

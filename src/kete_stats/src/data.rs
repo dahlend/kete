@@ -174,10 +174,6 @@ where
         let n_data = self.len();
 
         let frac_idx = quant * T::from(n_data - 1).unwrap();
-        #[allow(
-            clippy::cast_sign_loss,
-            reason = "By construction this is always positive."
-        )]
         let idx = frac_idx.floor().to_usize().unwrap();
 
         if T::from(idx).unwrap() == frac_idx {
@@ -198,10 +194,6 @@ where
     ///
     /// <https://en.wikipedia.org/wiki/Median_absolute_deviation>
     #[must_use]
-    #[allow(
-        clippy::missing_panics_doc,
-        reason = "By construction this cannot panic."
-    )]
     pub fn mad(&mut self) -> T {
         let median = self.median();
         let mut abs_deviation_from_med: Vec<T> = self
@@ -539,10 +531,6 @@ where
     /// <https://en.wikipedia.org/wiki/Median_absolute_deviation>
     ///
     #[must_use]
-    #[allow(
-        clippy::missing_panics_doc,
-        reason = "By construction this cannot panic."
-    )]
     pub fn mad(&self) -> T {
         let median = self.median();
         let mut abs_deviation_from_med: Vec<T> = self
@@ -649,10 +637,6 @@ where
         let n_data = self.0.len();
 
         let frac_idx = quant * T::from(n_data - 1).unwrap();
-        #[allow(
-            clippy::cast_sign_loss,
-            reason = "By construction this is always positive."
-        )]
         let idx = frac_idx.floor().to_usize().unwrap();
 
         if T::from(idx).unwrap() == frac_idx {

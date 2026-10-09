@@ -154,7 +154,6 @@ fn prop_n_body_stm(state: State<Ecliptic>, dt: f64) {
 }
 
 /// Benchmark functions for the propagation algorithms
-#[allow(clippy::missing_panics_doc, reason = "Benchmarking only")]
 fn n_body_prop(c: &mut Criterion) {
     kete_spice::test_data::ensure_test_spk();
     let mut nbody_group = c.benchmark_group("N-Body");

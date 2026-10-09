@@ -486,7 +486,6 @@ impl<T: InertialFrame> WisdomHolman<T> {
     /// kind), or `dt` is zero or non-finite.
     #[allow(
         clippy::too_many_arguments,
-        clippy::fn_params_excessive_bools,
         reason = "parallel per-object lists plus independent physics toggles"
     )]
     pub fn new(

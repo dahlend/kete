@@ -2145,7 +2145,6 @@ fn perf_production_scale() {
 
 #[test]
 #[ignore = "long running, profiling measurement"]
-#[allow(clippy::cast_precision_loss, reason = "test statistics")]
 fn profile_test_particle_scaling() {
     // Warm up the thread pool and caches.
     let _ = throughput(2000, 200, false);

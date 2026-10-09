@@ -238,10 +238,6 @@ pub fn hg_apparent_flux(
 /// # Errors
 /// This can fail if fewer than two of (`h_mag`, `vis_albedo`, `diameter`) are provided,
 /// or if all three are provided but not self consistent.
-#[allow(
-    clippy::missing_panics_doc,
-    reason = "Unwraps are guarded by prior checks"
-)]
 pub fn resolve_hg_params(
     h_mag: Option<f64>,
     vis_albedo: Option<f64>,

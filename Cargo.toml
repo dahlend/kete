@@ -86,11 +86,14 @@ clippy.pedantic = { level = "deny", priority = 1 }
 # Pedantic overrides
 clippy.float_cmp = {level = "allow", priority = 2 }
 clippy.inline_always = {level = "allow", priority = 2 }
-clippy.unreadable-literal = {level = "allow", priority = 2}
+clippy.unreadable_literal = {level = "allow", priority = 2}
 clippy.similar_names = {level = "allow", priority = 2}
 clippy.too_many_lines = {level = "allow", priority = 2}
 clippy.cast_precision_loss = {level = "allow", priority = 2}
 clippy.cast_possible_truncation = {level = "allow", priority = 2}
+# The suggested `assert_eq!(x, [] as [T; 0])` form is harder to read than
+# `assert!(x.is_empty())` in tests.
+clippy.assert_is_empty = {level = "allow", priority = 2}
 
 # General list
 clippy.too_many_arguments = "allow"

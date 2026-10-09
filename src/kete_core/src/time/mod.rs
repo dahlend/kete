@@ -318,7 +318,6 @@ impl Time<UTC> {
     /// "A Machine Algorithm for Processing Calendar Dates"
     /// <https://doi.org/10.1145/364096.364097>
     ///
-    #[allow(clippy::cast_possible_truncation, reason = "Truncation is expected")]
     pub fn from_year_month_day(year: i64, month: u32, day: u32, frac_day: f64) -> Self {
         let month = i64::from(month);
         let tmp = (month - 14) / 12;

@@ -161,7 +161,6 @@ impl PyNonGravModel {
 #[pymethods]
 impl PyNonGravModel {
     /// Unused constructor; use the static factory methods.
-    #[allow(clippy::new_without_default)]
     #[new]
     pub fn new() -> PyResult<Self> {
         Err(Error::ValueError(
