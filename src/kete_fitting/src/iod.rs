@@ -44,8 +44,8 @@ use crate::lambert::lambert;
 /// 3. Coarse 2-D scan over (`log rho_a`, `log rho_b`), the topocentric
 ///    distances at each observation. 100x100 grid, log-spaced
 ///    0.00001-1000 AU.
-/// 4. Solve Lambert's problem (prograde, falling back to retrograde) for
-///    each grid point to obtain velocity.
+/// 4. Solve Lambert's problem in both directions of motion at each grid
+///    point, and keep the better scoring orbit.
 /// 5. Refine the best seeds with a single-pass 11x11 local grid.
 /// 6. Append Gauss angles-only candidates from distributed triplets.
 /// 7. Return the best candidates, de-duplicated by position.
@@ -501,7 +501,7 @@ fn select_distributed_obs(sorted_obs: &[AstrometricObservation], n_max: usize) -
 ///
 /// Returns a vector of `(score, state)` candidates, scored against
 /// observations distributed across the full arc.  Velocity at each grid
-/// point is solved via Lambert (prograde, falling back to retrograde).
+/// point is solved via Lambert in both directions of motion.
 fn run_ranging_for_pair(
     sorted_obs: &[AstrometricObservation],
     i_a: usize,
@@ -535,19 +535,29 @@ fn run_ranging_for_pair(
     // Each position is where the light left the object, so it holds at its
     // observation epoch less the light travel time; the Lambert arc spans the
     // interval between those two emission epochs.
-    let candidate = |rho_a: f64, rho_b: f64| -> Option<State<Equatorial>> {
+    //
+    // Two orbits connect the positions, one in each direction around the Sun,
+    // and Lambert returns each of them when asked.  Both are scored and the
+    // better physically valid one is kept, so that retrograde objects are
+    // found as readily as prograde ones.
+    let candidate = |rho_a: f64, rho_b: f64| -> Option<(f64, State<Equatorial>)> {
         let t_a = obs_a.epoch - rho_a * C_AU_PER_DAY_INV;
         let t_b = obs_b.epoch - rho_b * C_AU_PER_DAY_INV;
         let r_a = obs_a.pos + los_a * rho_a;
         let r_b = obs_b.pos + los_b * rho_b;
-        let vel = lambert_velocity(&r_a, &r_b, (t_b - t_a).elapsed)?;
-        Some(State::new(
-            kete_core::desigs::Desig::Empty,
-            t_a,
-            r_a,
-            vel,
-            0,
-        ))
+        let dt = (t_b - t_a).elapsed;
+        [true, false]
+            .into_iter()
+            .filter_map(|prograde| {
+                let vel = lambert(&r_a, &r_b, dt, prograde, 0).ok()?[0].0;
+                let state = State::new(kete_core::desigs::Desig::Empty, t_a, r_a, vel, 0);
+                if !is_physically_valid(&state) {
+                    return None;
+                }
+                let score = score_candidate_residual(&state, &scoring_obs)?;
+                Some((score, state))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
     };
 
     // 2-D grid scan over (log rho_a, log rho_b).
@@ -570,12 +580,7 @@ fn run_ranging_for_pair(
             let frac_b = ib as f64 / (n_scan - 1) as f64;
             let rho_b = (log_min + (log_max - log_min) * frac_b).exp();
 
-            let state = candidate(rho_a, rho_b)?;
-            if !is_physically_valid(&state) {
-                return None;
-            }
-
-            let score = score_candidate_residual(&state, &scoring_obs)?;
+            let (score, _) = candidate(rho_a, rho_b)?;
             Some((score, rho_a, rho_b))
         })
         .collect();
@@ -614,7 +619,7 @@ fn run_ranging_for_pair(
 
     for &(seed_score, rho_a_seed, rho_b_seed) in &seeds {
         // Seed state -- used as the fallback if no refinement cell improves on it.
-        let Some(seed_state) = candidate(rho_a_seed, rho_b_seed) else {
+        let Some((_, seed_state)) = candidate(rho_a_seed, rho_b_seed) else {
             continue;
         };
 
@@ -644,12 +649,7 @@ fn run_ranging_for_pair(
                     return None;
                 }
 
-                let state = candidate(rho_a, rho_b)?;
-                if !is_physically_valid(&state) {
-                    return None;
-                }
-                let score = score_candidate_residual(&state, &scoring_obs)?;
-                Some((score, state))
+                candidate(rho_a, rho_b)
             })
             .reduce(
                 || (f64::INFINITY, seed_state.clone()),
@@ -665,19 +665,6 @@ fn run_ranging_for_pair(
     }
 
     Ok(refined)
-}
-
-/// Solve Lambert's problem for the velocity at `r_a` connecting to `r_b`
-/// across `dt` days. Tries prograde first, then retrograde.
-fn lambert_velocity(
-    r_a: &Vector<Equatorial>,
-    r_b: &Vector<Equatorial>,
-    dt: f64,
-) -> Option<Vector<Equatorial>> {
-    let solutions = lambert(r_a, r_b, dt, true, 0)
-        .or_else(|_| lambert(r_a, r_b, dt, false, 0))
-        .ok()?;
-    Some(solutions[0].0)
 }
 
 /// Gauss angles-only IOD using three observations.
@@ -1103,11 +1090,8 @@ fn is_physically_valid(state: &State<Equatorial>) -> bool {
         return false;
     }
 
-    if compute_eccentricity(state) >= 5.0 {
-        return false;
-    }
-
-    true
+    // A non-finite eccentricity is not a valid orbit either.
+    compute_eccentricity(state) < 5.0
 }
 
 /// Return indices of states to keep after deduplication.

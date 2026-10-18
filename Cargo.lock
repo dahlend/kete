@@ -10,6 +10,7 @@ dependencies = [
  "kete_core",
  "kete_fitting",
  "kete_flux",
+ "kete_linking",
  "kete_spice",
  "kete_stats",
  "nalgebra",
@@ -1860,6 +1861,17 @@ dependencies = [
  "nuts-rs",
  "pprof",
  "rand",
+ "rayon",
+]
+
+[[package]]
+name = "kete_linking"
+version = "3.3.0"
+dependencies = [
+ "kete_core",
+ "kete_fitting",
+ "kete_spice",
+ "kete_stats",
  "rayon",
 ]
 

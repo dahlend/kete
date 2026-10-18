@@ -28,7 +28,7 @@ fn py_to_fit(m: &PyNonGravModel) -> NonGravMask {
 }
 
 /// Radians to arcseconds conversion factor.
-const RAD_TO_ARCSEC: f64 = 180.0 * 3600.0 / std::f64::consts::PI;
+pub(crate) const RAD_TO_ARCSEC: f64 = 180.0 * 3600.0 / std::f64::consts::PI;
 
 /// Astronomical observation for orbit determination.
 ///
@@ -40,7 +40,12 @@ const RAD_TO_ARCSEC: f64 = 180.0 * 3600.0 / std::f64::consts::PI;
 /// - :py:meth:`Observation.optical`
 /// - :py:meth:`Observation.radar_range`
 /// - :py:meth:`Observation.radar_rate`
-#[pyclass(frozen, module = "kete.fitting", name = "Observation", from_py_object)]
+#[pyclass(
+    frozen,
+    module = "kete.orbit_fitting",
+    name = "Observation",
+    from_py_object
+)]
 #[derive(Debug, Clone)]
 pub struct PyObservation {
     /// The core observation data (astrometry / radar).
@@ -522,7 +527,12 @@ impl PyObservation {
 ///
 /// Returned by :func:`fit_orbit`.  Contains the best-fit orbital state,
 /// its uncertainty (covariance), and diagnostic information about the fit.
-#[pyclass(frozen, module = "kete.fitting", name = "OrbitFit", from_py_object)]
+#[pyclass(
+    frozen,
+    module = "kete.orbit_fitting",
+    name = "OrbitFit",
+    from_py_object
+)]
 #[derive(Debug, Clone)]
 pub struct PyOrbitFit {
     /// The fitted orbit, covariance, residuals, and diagnostics.
@@ -579,7 +589,7 @@ impl PyOrbitFit {
     /// observations (including rejected ones), use ``all_observations``.
     ///
     /// Band and magnitude metadata from the original
-    /// :class:`~kete.fitting.Observation` inputs are preserved.
+    /// :class:`~kete.orbit_fitting.Observation` inputs are preserved.
     #[getter]
     fn observations(&self) -> Vec<PyObservation> {
         self.inner
@@ -678,7 +688,7 @@ impl PyOrbitFit {
 /// initial_state : :class:`~kete.State`
 ///     Initial guess for the object state (any center / frame).
 /// observations : list
-///     List of :class:`~kete.fitting.Observation` to fit.
+///     List of :class:`~kete.orbit_fitting.Observation` to fit.
 /// non_grav : :class:`~kete.propagation.NonGravModel`, optional
 ///     Non-gravitational force model. Parameters set to NaN in the model are
 ///     fit (starting from 0), after a gravity-only pass that moves
@@ -795,8 +805,9 @@ pub fn initial_orbit_determination_py(
 ///
 /// When ``max_revs`` is 0 only the zero-revolution (direct) solution is
 /// returned.  For ``max_revs > 0`` the solver also finds multi-revolution
-/// solutions up to that limit; the result list contains one pair per
-/// solution, ordered by ascending number of revolutions.
+/// solutions up to that limit.  Each number of revolutions which admits a
+/// solution has two of them.  The result list contains one pair per solution,
+/// ordered by ascending number of revolutions.
 ///
 /// Parameters
 /// ----------
@@ -807,9 +818,13 @@ pub fn initial_orbit_determination_py(
 /// dt : float
 ///     Transfer time in days. Must be positive.
 /// prograde : bool
-///     If True (default), selects the short-way transfer (transfer angle
-///     less than 180 degrees for prograde orbits). If False, selects
-///     the long-way transfer.
+///     If True (default), selects the orbit whose angular momentum has a
+///     non-negative z component in the Equatorial frame. If False, selects
+///     the orbit with a negative z component. This is the short way between
+///     the two positions only when the object moves in that direction,
+///     otherwise it is the long way around the Sun. An orbit within 23.4
+///     degrees of polar can be prograde in the Ecliptic frame and retrograde
+///     in the Equatorial frame.
 /// max_revs : int
 ///     Maximum number of complete revolutions to include.  Default is 0
 ///     (single direct transfer only).
@@ -823,8 +838,8 @@ pub fn initial_orbit_determination_py(
 /// Raises
 /// ------
 /// ValueError
-///     If ``dt <= 0``, positions are zero-length, or positions are nearly
-///     collinear (transfer angle near 0 or 180 degrees).
+///     If ``dt <= 0``, positions are zero-length, or the positions are along
+///     the same direction from the Sun.
 /// RuntimeError
 ///     If the iterative solver fails to converge.
 #[pyfunction]
@@ -850,7 +865,12 @@ pub fn lambert_py(
 /// Returned by :func:`fit_orbit_mcmc`.  Each orbit (draw) is statistically
 /// consistent with the observations; the spread of the collection represents
 /// the uncertainty in the orbit.
-#[pyclass(frozen, module = "kete.fitting", name = "OrbitSamples", from_py_object)]
+#[pyclass(
+    frozen,
+    module = "kete.orbit_fitting",
+    name = "OrbitSamples",
+    from_py_object
+)]
 #[derive(Debug, Clone)]
 pub struct PyOrbitSamples(pub OrbitSamples);
 
@@ -1000,7 +1020,7 @@ impl PyOrbitSamples {
 /// Sampling is parallelized automatically across available CPU cores.
 /// When there are fewer seeds than cores, each seed spawns multiple
 /// independent sub-chains.  The ``seed_id`` in the returned
-/// :class:`~kete.fitting.OrbitSamples` identifies which seed (orbital
+/// :class:`~kete.orbit_fitting.OrbitSamples` identifies which seed (orbital
 /// mode) produced each draw.
 ///
 /// ``num_draws`` is the **total** number of orbit samples returned
@@ -1017,7 +1037,7 @@ impl PyOrbitSamples {
 ///     different epochs are automatically propagated to the first seed's epoch.
 ///     The input states are re-centered to SSB Equatorial internally.
 /// observations : list
-///     List of :class:`~kete.fitting.Observation` to evaluate against.
+///     List of :class:`~kete.orbit_fitting.Observation` to evaluate against.
 /// include_asteroids : bool
 ///     If True, include asteroid masses in the force model. Default is False.
 /// num_draws : int
@@ -1206,7 +1226,7 @@ impl PyRangingSamples {
 /// Parameters
 /// ----------
 /// observations : list
-///     At least 3 optical :class:`~kete.fitting.Observation` objects. Radar
+///     At least 3 optical :class:`~kete.orbit_fitting.Observation` objects. Radar
 ///     observations are ignored.
 /// num_draws : int
 ///     Number of orbit samples to return. Default 1000.

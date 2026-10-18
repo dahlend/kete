@@ -6,7 +6,7 @@ Query tools for Gaia DR3 solar system object observations.
 
 Provides :func:`fetch_gaia_observations` to retrieve optical astrometry from
 the Gaia DR3 ``sso_observation`` table via TAP and return the results as
-:class:`~kete.fitting.Observation` objects ready for orbit fitting.
+:class:`~kete.orbit_fitting.Observation` objects ready for orbit fitting.
 """
 
 from __future__ import annotations
@@ -68,7 +68,7 @@ def fetch_gaia_observations(
     fitting Observations.
 
     Queries the ``gaiadr3.sso_observation`` table via the Gaia TAP service
-    for the given object and returns one :class:`~kete.fitting.Observation`
+    for the given object and returns one :class:`~kete.orbit_fitting.Observation`
     per accepted astrometric transit.  Only transits with
     ``astrometric_outcome_transit == 1`` (good positions) are returned.
 
@@ -118,7 +118,7 @@ def fetch_gaia_observations(
         import kete
 
         observations = kete.observations.fetch_gaia_observations("Apophis")
-        fit = kete.fitting.fit_orbit(initial_state, observations)
+        fit = kete.orbit_fitting.fit_orbit(initial_state, observations)
     """
     cols = ", ".join(_COLUMNS)
 

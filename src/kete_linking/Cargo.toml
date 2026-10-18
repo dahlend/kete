@@ -1,0 +1,28 @@
+[package]
+name = "kete_linking"
+readme = "README.md"
+keywords = ["physics", "simulation", "astronomy", "asteroid", "comet"]
+categories = ["Aerospace", "Science", "Simulation"]
+description = "Observation linking for Kete."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "kete_linking"
+
+[lints]
+workspace = true
+
+[dependencies]
+kete_core = {version = "*", path = "../kete_core"}
+kete_fitting = {version = "*", path = "../kete_fitting"}
+kete_spice = {version = "*", path = "../kete_spice"}
+kete_stats = {version = "*", path = "../kete_stats"}
+rayon = "^1.11.0"
+
+[dev-dependencies]
+kete_spice = {version = "*", path = "../kete_spice", features = ["test"]}

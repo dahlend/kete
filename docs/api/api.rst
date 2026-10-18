@@ -15,6 +15,7 @@ API
    flux
    fov
    interface
+   linking
    observatory
    population
    propagation

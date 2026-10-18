@@ -354,7 +354,9 @@ fn two_body_halving(
 ///   [`GMS`] for solar orbits; a radiation-reduced value `(1 - beta) GMS` for
 ///   dust grains.
 ///
-/// Returns the universal anomaly and `beta = 2 mu / r0 - v0_sq`.
+/// Returns the universal anomaly and `beta = 2 mu / r0 - v0_sq`. On a bound
+/// orbit `dt` is first reduced by whole periods, `dt % period` with
+/// `period = 2 pi mu / beta^(3/2)`, and the anomaly is that of the remainder.
 ///
 /// # Errors
 ///
@@ -549,6 +551,154 @@ pub(crate) fn universal_g(s: f64, beta: f64) -> [f64; 4] {
         (s - g1) / beta
     };
     [g0, g1, g2, g3]
+}
+
+/// Propagate a Sun-centered [`State`] with two-body motion about the Sun, and
+/// return its state transition matrix: the derivative of the final position
+/// and velocity over the initial position and velocity, as a 6 x 6 matrix
+/// whose rows and columns are `[x, y, z, vx, vy, vz]`.
+///
+/// With `x0` and `v0` the initial position and velocity, `r0 = |x0|`,
+/// `sigma0 = x0.v0` and `beta = 2 mu / r0 - v0^2`, the final state is
+/// `F x0 + G v0` and `F' x0 + G' v0` with the Lagrange coefficients
+/// `F = 1 - mu G2 / r0`, `G = r0 G1 + sigma0 G2`, `F' = -mu G1 / (r r0)` and
+/// `G' = 1 - mu G2 / r`, in the universal functions `Gk` of the universal
+/// anomaly `s`, with the final distance
+/// `r = r0 G0 + sigma0 G1 + mu G2`. The matrix is `F`, `G`, `F'` and `G'` times
+/// the identity on its four blocks, plus `x0` and `v0` times the gradients of
+/// the coefficients, which follow by the chain rule from the gradients of
+/// `r0`, `sigma0`, `beta` and `s`, with `dGk/ds = G(k-1)`,
+/// `dG0/ds = -beta G1` and `dGk/dbeta = -(s G(k+1) - k G(k+2)) / 2`. Kepler's
+/// equation `t = r0 G1 + sigma0 G2 + mu G3` at a fixed time gives that of
+/// `s`, `r ds = -(G1 dr0 + G2 dsigma0 + (dt/dbeta) dbeta)`. This is the
+/// universal-variable form of Goodyear (1965), exact for every conic and at
+/// any time. The universal Kepler solve returns the anomaly of the time less
+/// whole periods of a bound orbit; the periods are added back here, since the
+/// period changes with `beta`.
+///
+/// The state is that of [`propagate_two_body`] wherever its first Kepler
+/// solve converges.
+///
+/// # Errors
+/// Returns [`Error::Convergence`] if the Kepler solve fails.
+pub fn propagate_two_body_with_stm<T: InertialFrame>(
+    state: &State<T, SunCenter>,
+    time_final: Time<TDB>,
+) -> KeteResult<(State<T, SunCenter>, nalgebra::Matrix6<f64>)> {
+    let dot = |a: &[f64; 3], b: &[f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let mu = GMS;
+    let dt = (time_final - state.epoch).elapsed;
+    let (x0, v0) = (<[f64; 3]>::from(state.pos), <[f64; 3]>::from(state.vel));
+    let r0 = state.pos.norm();
+    let sigma0 = dot(&x0, &v0);
+    let (s, beta) = solve_kepler_universal(dt, r0, dot(&v0, &v0), sigma0, mu)?;
+    let s = if beta > 0.0 {
+        let period = mu * beta.sqrt().powi(-3) * TAU;
+        s + ((dt - dt % period) / period).round() * TAU / beta.sqrt()
+    } else {
+        s
+    };
+    let [g0, g1, g2, g3] = universal_g(s, beta);
+    let (g4, g5) = higher_g(s, beta, g2, g3);
+
+    let f_hat = -mu * g2 / r0;
+    let g = r0 * g1 + sigma0 * g2;
+    let pos = state.pos + (state.pos * f_hat + state.vel * g);
+    let r = pos.norm();
+    let f_dot = -mu / (r * r0) * g1;
+    let g_dot_hat = -mu * g2 / r;
+    let vel = state.vel + (state.pos * f_dot + state.vel * g_dot_hat);
+
+    // Gradients over the six numbers of the initial state.
+    let sum = |terms: &[(f64, &[f64; 6])]| -> [f64; 6] {
+        std::array::from_fn(|j| terms.iter().map(|(a, v)| a * v[j]).sum())
+    };
+    let d_r0 = [x0[0] / r0, x0[1] / r0, x0[2] / r0, 0.0, 0.0, 0.0];
+    let d_sigma0 = [v0[0], v0[1], v0[2], x0[0], x0[1], x0[2]];
+    let pull = -2.0 * mu / (r0 * r0 * r0);
+    let d_beta = [
+        pull * x0[0],
+        pull * x0[1],
+        pull * x0[2],
+        -2.0 * v0[0],
+        -2.0 * v0[1],
+        -2.0 * v0[2],
+    ];
+    // The derivatives of `G0` to `G3` over `beta` at a fixed anomaly.
+    let b0 = -0.5 * s * g1;
+    let b1 = -0.5 * (s * g2 - g3);
+    let b2 = -0.5 * (s * g3 - 2.0 * g4);
+    let b3 = -0.5 * (s * g4 - 3.0 * g5);
+    let d_s = sum(&[
+        (-g1 / r, &d_r0),
+        (-g2 / r, &d_sigma0),
+        (-(r0 * b1 + sigma0 * b2 + mu * b3) / r, &d_beta),
+    ]);
+    let d_g0 = sum(&[(-beta * g1, &d_s), (b0, &d_beta)]);
+    let d_g1 = sum(&[(g0, &d_s), (b1, &d_beta)]);
+    let d_g2 = sum(&[(g1, &d_s), (b2, &d_beta)]);
+    let d_r = sum(&[
+        (g0, &d_r0),
+        (g1, &d_sigma0),
+        (r0, &d_g0),
+        (sigma0, &d_g1),
+        (mu, &d_g2),
+    ]);
+    let d_f = sum(&[(mu * g2 / (r0 * r0), &d_r0), (-mu / r0, &d_g2)]);
+    let d_g = sum(&[(g1, &d_r0), (g2, &d_sigma0), (r0, &d_g1), (sigma0, &d_g2)]);
+    let d_f_dot = sum(&[
+        (-mu / (r * r0), &d_g1),
+        (-f_dot / r, &d_r),
+        (-f_dot / r0, &d_r0),
+    ]);
+    let d_g_dot = sum(&[(-mu / r, &d_g2), (mu * g2 / (r * r), &d_r)]);
+
+    let matrix = nalgebra::Matrix6::from_fn(|i, j| {
+        let (k, of_x, of_v, d_x, d_v) = if i < 3 {
+            (i, 1.0 + f_hat, g, &d_f, &d_g)
+        } else {
+            (i - 3, f_dot, 1.0 + g_dot_hat, &d_f_dot, &d_g_dot)
+        };
+        let diagonal = if j == k {
+            of_x
+        } else if j == k + 3 {
+            of_v
+        } else {
+            0.0
+        };
+        diagonal + x0[k] * d_x[j] + v0[k] * d_v[j]
+    });
+    let at = State {
+        epoch: time_final,
+        pos,
+        vel,
+        ..state.clone()
+    };
+    Ok((at, matrix))
+}
+
+/// The universal functions `G4` and `G5` at universal anomaly `s`, next after
+/// the four of [`universal_g`], from its `G2` and `G3`. They follow from
+/// `G(k+2) = (s^k / k! - Gk) / beta`, which cancels for `|z| < 1` with
+/// `z = beta s^2`, so there they come from their series,
+/// `G4 = s^4 sum (-z)^n / (2n + 4)!` and `G5 = s^5 sum (-z)^n / (2n + 5)!`,
+/// whose ninth terms are below rounding.
+fn higher_g(s: f64, beta: f64, g2: f64, g3: f64) -> (f64, f64) {
+    let squared = s * s;
+    let z = beta * squared;
+    if z.abs() >= 1.0 {
+        return ((0.5 * squared - g2) / beta, (squared * s / 6.0 - g3) / beta);
+    }
+    let (mut c4, mut c5) = (1.0 / 24.0, 1.0 / 120.0);
+    let (mut term4, mut term5) = (c4, c5);
+    for n in 0..8_u8 {
+        let n = f64::from(n);
+        term4 *= -z / ((2.0 * n + 5.0) * (2.0 * n + 6.0));
+        term5 *= -z / ((2.0 * n + 6.0) * (2.0 * n + 7.0));
+        c4 += term4;
+        c5 += term5;
+    }
+    (squared * squared * c4, squared * squared * s * c5)
 }
 
 /// Compute `x - sin(x)` for `sign = -1` or `sinh(x) - x` for `sign = 1`.
@@ -1090,5 +1240,56 @@ mod tests {
             rel_err2 < 1e-13,
             "e=0.5: Energy drift too large after {n_steps} steps: {rel_err2:.3e}"
         );
+    }
+
+    #[test]
+    fn two_body_stm_is_the_propagation() {
+        // The state of the transition is that of the propagation, through
+        // whole periods of a bound orbit, and its matrix carries a change of
+        // state to the change of the propagated state.
+        use crate::desigs::Desig;
+        use crate::frames::Equatorial;
+        let epoch = 2460000.5;
+        let radius: f64 = 0.2;
+        let speed = (GMS / radius).sqrt();
+        let object: State<Equatorial, SunCenter> = State::new(
+            Desig::Empty,
+            Time::<TDB>::new(epoch),
+            Vector::new([radius, 0.0, 0.0]),
+            Vector::new([0.0, speed, 0.0]),
+            SunCenter,
+        );
+        let period = TAU * (radius.powi(3) / GMS).sqrt();
+        for dt in [-2.5 * period, -0.3, 0.0, 0.7 * period, 3.2 * period] {
+            let time: Time<TDB> = (epoch + dt).into();
+            let (at, matrix) = propagate_two_body_with_stm(&object, time).unwrap();
+            let propagated = propagate_two_body(&object, time).unwrap();
+            assert!((at.pos - propagated.pos).norm() < 1e-14, "{dt}");
+            assert!((at.vel - propagated.vel).norm() < 1e-14, "{dt}");
+            // The propagated state with the `k`th number of position and
+            // velocity of the object moved by `h`, as six numbers.
+            let moved = |k: usize, h: f64| -> [f64; 6] {
+                let mut moved = object.clone();
+                if k < 3 {
+                    moved.pos[k] += h;
+                } else {
+                    moved.vel[k - 3] += h;
+                }
+                let at = propagate_two_body(&moved, time).unwrap();
+                std::array::from_fn(|i| if i < 3 { at.pos[i] } else { at.vel[i - 3] })
+            };
+            let h = 1e-8;
+            for k in 0..6 {
+                let (up, down) = (moved(k, h), moved(k, -h));
+                for i in 0..6 {
+                    let differences = (up[i] - down[i]) / (2.0 * h);
+                    let exact = matrix[(i, k)];
+                    assert!(
+                        (differences - exact).abs() < 1e-5 * exact.abs().max(1.0),
+                        "{dt}, {i} {k}: {differences} against {exact}"
+                    );
+                }
+            }
+        }
     }
 }

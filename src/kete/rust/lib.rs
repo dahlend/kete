@@ -47,6 +47,7 @@ pub mod fovs;
 pub mod frame;
 pub mod horizons;
 pub mod kepler;
+pub mod linking;
 pub mod maybe_vec;
 pub mod nongrav;
 pub mod polyhedron;
@@ -117,6 +118,13 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<fitting::PyOrbitFit>()?;
     m.add_class::<fitting::PyOrbitSamples>()?;
     m.add_class::<fitting::PyRangingSamples>()?;
+
+    m.add_class::<linking::PySights>()?;
+    m.add_class::<linking::PyUnits>()?;
+    m.add_class::<linking::PyHypothesis>()?;
+    m.add_class::<linking::PyHypotheses>()?;
+    m.add_class::<linking::PyCandidate>()?;
+    m.add_class::<linking::PyConfirmed>()?;
 
     m.add_class::<horizons::PyHorizonsProperties>()?;
 
@@ -237,6 +245,20 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fitting::fit_orbit_ranging_py, m)?)?;
     m.add_function(wrap_pyfunction!(fitting::get_observatory_stats_py, m)?)?;
     m.add_function(wrap_pyfunction!(fitting::band_calibration_py, m)?)?;
+
+    m.add_function(wrap_pyfunction!(linking::form_units_py, m)?)?;
+    m.add_function(wrap_pyfunction!(linking::hypothesis_grid_py, m)?)?;
+    m.add_function(wrap_pyfunction!(linking::link_py, m)?)?;
+    m.add_function(wrap_pyfunction!(linking::confirm_py, m)?)?;
+    m.add_function(wrap_pyfunction!(linking::search_py, m)?)?;
+    m.add_function(wrap_pyfunction!(linking::parallax_margin_py, m)?)?;
+    m.add_function(wrap_pyfunction!(linking::tiles_py, m)?)?;
+    m.add_function(wrap_pyfunction!(linking::merge_pieces_py, m)?)?;
+    m.add_function(wrap_pyfunction!(linking::search_windows_py, m)?)?;
+    m.add("DEPTH_STEP", kete_linking::DEPTH_STEP)?;
+    m.add("RATE_STEP", kete_linking::RATE_STEP)?;
+    m.add("MAX_HYPOTHESES", kete_linking::MAX_HYPOTHESES)?;
+    m.add("MIN_ALIGNMENT", kete_linking::MIN_ALIGNMENT)?;
 
     m.add_function(wrap_pyfunction!(kete_core::cache::cache_path, m)?)?;
 
