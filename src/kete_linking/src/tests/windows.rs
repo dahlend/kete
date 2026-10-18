@@ -167,7 +167,7 @@ fn search_windows_refuses_bad_settings() {
     // A window so short that it would make more windows than are searched.
     let short = SearchSettings {
         min_gap: 0.0,
-        run_span: 0.0,
+        tracklet_span: 0.0,
         confirm: ConfirmRules {
             max_gap: 1e-5,
             ..ConfirmRules::default()

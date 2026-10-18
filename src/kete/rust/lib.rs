@@ -258,6 +258,7 @@ fn _core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("DEPTH_STEP", kete_linking::DEPTH_STEP)?;
     m.add("RATE_STEP", kete_linking::RATE_STEP)?;
     m.add("MAX_HYPOTHESES", kete_linking::MAX_HYPOTHESES)?;
+    m.add("MAX_UNITS", kete_linking::MAX_UNITS)?;
     m.add("MIN_ALIGNMENT", kete_linking::MIN_ALIGNMENT)?;
 
     m.add_function(wrap_pyfunction!(kete_core::cache::cache_path, m)?)?;

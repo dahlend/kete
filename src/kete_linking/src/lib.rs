@@ -32,12 +32,11 @@
 //! the observations, which the orbit fits of confirmation pull with.
 //!
 //! Two observations of one object give its direction on the sky at two times,
-//! but not the two numbers that place it along the lines of sight. A
-//! hypothesis asserts those two numbers for every object at once, as the
-//! depth of the object along a fixed direction and its rate at a reference
-//! time. Under it a pair of observations becomes one orbit, a run of several
-//! close in time becomes the orbit that fits them best, and the orbits of one
-//! object agree.
+//! but not the two numbers that place it along the lines of sight. A hypothesis
+//! asserts those two numbers for every object at once, as the depth of the
+//! object along a fixed direction and its rate at a reference time. Under it a
+//! pair of observations becomes one orbit, a tracklet of several close in time
+//! becomes the orbit that fits them best, and the orbits of one object agree.
 //!
 //! The crate assumes nothing about the observer, the observing geometry, or
 //! the cadence. The search uses two-body motion about the Sun, only bound
@@ -46,8 +45,8 @@
 //!
 //! - [`Sight`] is one detection as a line of sight.
 //! - [`form_units`] finds the units of linking: groups of sights which could
-//!   be one object, either runs of sights close in time or pairs across
-//!   gaps.
+//!   be one object, either tracklets, sights close in time which move
+//!   steadily on the sky, or pairs across gaps.
 //! - [`Hypothesis`] is an assertion of the depth and depth rate of the
 //!   objects along a fixed direction at a reference time, and
 //!   [`hypothesis_grid`] lists the hypotheses of a search.
@@ -97,7 +96,7 @@ mod windows;
 pub use confirm::{ConfirmRules, Confirmed, confirm, sight_from_observation};
 pub use grid::{DEPTH_STEP, MAX_HYPOTHESES, RATE_STEP, hypothesis_grid};
 pub use hypothesis::{Hypothesis, MIN_ALIGNMENT};
-pub use link::{Candidate, LinkSettings, link};
+pub use link::{Candidate, LinkSettings, MAX_UNITS, link};
 pub use merge::merge_pieces;
 pub use search::{SearchPass, SearchSettings, search};
 pub use sight::Sight;

@@ -17,6 +17,7 @@ use rayon::prelude::*;
 use crate::calibration::{Scaled, station_factors};
 use crate::confirm::{accept_disjoint, confirm_with, rank, sight_from_observation, sun_centered};
 use crate::grid::grid_layers;
+use crate::link::check_unit_count;
 use crate::merge::merge;
 use crate::sight::first_and_last;
 use crate::tiles::tiles;
@@ -33,8 +34,8 @@ pub struct SearchPass {
     /// grid of the pass.
     pub grid_factor: f64,
 
-    /// Largest apparent rate of motion within a run and of a pair, in radians
-    /// per day, finite and positive, see [`form_units`].
+    /// Largest apparent rate of motion within a tracklet and of a pair, in
+    /// radians per day, finite and positive, see [`form_units`].
     ///
     /// Pairing does not compare observers, so for the pairs of sights from
     /// observers at different places to form, the rate has to cover the
@@ -55,11 +56,43 @@ pub struct SearchSettings {
     /// [`form_units`]. The largest is the `max_gap` of [`Self::confirm`].
     pub min_gap: f64,
 
-    /// Longest run, in days, see [`form_units`]. A little longer than the
-    /// time between the revisits of a field within a night, so that the
-    /// detections of one object in a night form a run, see
+    /// Longest tracklet, in days, see [`form_units`]. A little longer than
+    /// the time between the revisits of a field within a night, so that the
+    /// detections of one object in a night form a tracklet, see
     /// [`SearchSettings::default`].
-    pub run_span: f64,
+    pub tracklet_span: f64,
+
+    /// Fewest sights of a tracklet, at least 2, see [`form_units`]. Shorter
+    /// tracklets are left out, and their sights are lone. Two, the default,
+    /// keeps every tracklet.
+    ///
+    /// Two false detections within `tracklet_span` and the rate limit of each
+    /// other form a tracklet of two as readily as an object does, and a chain
+    /// of them breaks into such short pieces. Three or more leaves those out,
+    /// for a survey which sees each object three or more times in a visit,
+    /// such as a spacecraft which revisits a field every orbit, in data with
+    /// many false detections. An object seen fewer times than this in a visit
+    /// has no tracklet there, and is found only through the pairs of those
+    /// sights, see [`Self::lone_pairs`].
+    pub min_tracklet: usize,
+
+    /// Whether two lone sights, those in no tracklet, may be paired, see
+    /// [`form_units`]. False, the default, does not pair them.
+    ///
+    /// A lone sight pairs with every sight within the rate limit, not only
+    /// along the track of a tracklet, so where most sights are false
+    /// detections, which seldom form tracklets, those pairs grow as the square
+    /// of their density and outnumber every other unit, see
+    /// [`crate::MAX_UNITS`]. False leaves them out: every pair then holds the
+    /// end of a tracklet and lies on its track, which suits any survey that
+    /// sees each object at least [`Self::min_tracklet`] times in a visit,
+    /// such as one on the ground which takes its visits in pairs, or a
+    /// spacecraft which revisits a field every orbit. An object seen fewer
+    /// times than that in a visit is then found only through the pairs of
+    /// those sights with the ends of its tracklets in other visits, and an
+    /// object with no tracklet is not found. True suits a survey which sees
+    /// most objects once per visit, in data with few false detections.
+    pub lone_pairs: bool,
 
     /// Smallest depth of the hypotheses, in AU, see [`hypothesis_grid`].
     pub min_depth: f64,
@@ -81,62 +114,63 @@ pub struct SearchSettings {
 }
 
 impl Default for SearchSettings {
-    /// Runs up to an eighth of a day long, time groups parted at gaps of more
-    /// than a tenth of a day, pairs half a day to a day and a half apart,
+    /// Tracklets up to an eighth of a day long, time groups parted at gaps of
+    /// more than a tenth of a day, pairs half a day to a day and a half apart,
     /// motion up to 0.6 degrees a day in the first pass and a degree a day in
     /// the second, and depths from 0.5 to 4.5 AU. These suit main belt objects
-    /// seen by surveys on the ground in runs within a night; other cadences and
-    /// populations need their own.
+    /// seen by surveys on the ground in tracklets within a night; other
+    /// cadences and populations need their own.
     ///
     /// A degree a day is about twice the rate of the fastest main belt
     /// objects, the Hungarias, near opposition. A larger one finds no more
-    /// main belt objects; it costs little, as the ends of runs are paired only
-    /// along their tracks, but the pairs of sights in no run grow as its
+    /// main belt objects; it costs little, as the ends of tracklets are paired
+    /// only along their tracks, but the pairs of lone sights grow as its
     /// square.
     ///
-    /// A run of an eighth of a day holds the detections of one object from
-    /// one site in a night as one unit, for surveys which revisit a field
-    /// minutes apart and for those which revisit it two to three hours
+    /// A tracklet of an eighth of a day holds the detections of one object
+    /// from one site in a night as one unit, for surveys which revisit a
+    /// field minutes apart and for those which revisit it two to three hours
     /// apart, and its first and last detection are also paired across nights
-    /// along its track. A sight whose revisit falls just past the run span
-    /// is in no run and pairs with every sight in reach, so a span shorter
+    /// along its track. A sight whose revisit falls just past the tracklet
+    /// span is lone and pairs with every sight in reach, so a span shorter
     /// than a survey's revisits costs time and objects in that survey's
-    /// fields. A longer span also joins the visits of two sites a few hours
-    /// apart in one night into one run, which leaves the link fewer units of
-    /// those objects. So the span is chosen for the cadence: a little longer
-    /// than the longest time between revisits of a field within a night. It
-    /// is not taken from the sights themselves: in observations of several
-    /// surveys the times between revisits follow the mix of surveys, which
-    /// changes from field to field, and their tail is set by chance
-    /// neighbors, which grow with the density.
+    /// fields. A longer span also chains the visits of two sites a few hours
+    /// apart in one night, which part into two tracklets where their parallax
+    /// is larger than the track allows, and otherwise join into one, which
+    /// leaves the link fewer units of those objects. So the span is chosen for
+    /// the cadence: a little longer than the longest time between revisits of
+    /// a field within a night. It is not taken from the sights themselves: in
+    /// observations of several surveys the times between revisits follow the
+    /// mix of surveys, which changes from field to field, and their tail is
+    /// set by chance neighbors, which grow with the density.
     ///
-    /// An object close to the observer can move too much within a run for one
-    /// orbit to fit it, and is then found through the pairs of its ends
-    /// alone; a search aimed at objects within a few hundredths of an AU
-    /// takes runs and time groups of a hundredth of a day or less, see the
-    /// tests `units_close_observers` and `matrix_close_objects`.
+    /// An object close to the observer can move too much within a tracklet
+    /// for one orbit to fit it, and is then found through the pairs of its
+    /// ends alone; a search aimed at objects within a few hundredths of an AU
+    /// takes tracklets and time groups of a hundredth of a day or less, see
+    /// the tests `units_close_observers` and `matrix_close_objects`.
     ///
-    /// Detections no more than a tenth of a day after the one before are in
-    /// one time group of confirmation, a span set apart from that of runs:
-    /// runs only have to join the revisits of one object, while time groups
-    /// decide how many independent measurements of the motion a confirmation
-    /// has. Longer groups merge visits a few hours apart into one, and turn
-    /// down objects seen in those visits and once more beyond `max_gap`.
+    /// Detections no more than a tenth of a day after the one before are in one
+    /// time group of confirmation, a span set apart from that of tracklets:
+    /// tracklets only have to join the revisits of one object, while time
+    /// groups decide how many independent measurements of the motion a
+    /// confirmation has. Longer groups merge visits a few hours apart into one,
+    /// and turn down objects seen in those visits and once more beyond
+    /// `max_gap`.
     ///
     /// The first pass is at one and a half times [`DEPTH_STEP`] and
-    /// [`RATE_STEP`]. The number of hypotheses of a grid, and with it the
-    /// cost of a pass, goes about as the inverse of the product of the two
-    /// steps, so this coarse grid is the cheap one. It still finds most main
-    /// belt and more distant objects: a run averages the noise of its sights,
-    /// so its orbit under a hypothesis a step off still matches the other
-    /// units of its object. The second pass is at three tenths of the steps,
-    /// over the observations the first did not confirm, and recovers faster
-    /// objects, near-Earth objects and objects the coarse grid split. Its
-    /// grid has many times the hypotheses of the first, so it can take the
-    /// larger part of the time to link even over fewer observations, and a
-    /// finer second pass multiplies that time again. The test
-    /// `search_in_passes` shows the second pass recovering what the first
-    /// misses.
+    /// [`RATE_STEP`]. The number of hypotheses of a grid, and with it the cost
+    /// of a pass, goes about as the inverse of the product of the two steps, so
+    /// this coarse grid is the cheap one. It still finds most main belt and
+    /// more distant objects: a tracklet averages the noise of its sights, so
+    /// its orbit under a hypothesis a step off still matches the other units of
+    /// its object. The second pass is at three tenths of the steps, over the
+    /// observations the first did not confirm, and recovers faster objects,
+    /// near-Earth objects and objects the coarse grid split. Its grid has many
+    /// times the hypotheses of the first, so it can take the larger part of the
+    /// time to link even over fewer observations, and a finer second pass
+    /// multiplies that time again. The test `search_in_passes` shows the second
+    /// pass recovering what the first misses.
     ///
     /// The rate limit of the first pass is what keeps the halos of the tiles
     /// of [`crate::search_windows`] small in the pass which confirms most
@@ -154,7 +188,9 @@ impl Default for SearchSettings {
     fn default() -> Self {
         Self {
             min_gap: 0.5,
-            run_span: 0.125,
+            tracklet_span: 0.125,
+            min_tracklet: 2,
+            lone_pairs: false,
             min_depth: 0.5,
             max_depth: 4.5,
             passes: vec![
@@ -260,7 +296,7 @@ impl Default for SearchSettings {
 ///
 /// [`Error::ValueError`] for settings which [`form_units`],
 /// [`hypothesis_grid`], [`link()`] or [`crate::confirm()`] refuse, if there are
-/// no passes, if `stations` does not hold one label per observation, or
+/// no passes, if a pass forms more than [`crate::MAX_UNITS`] units, if `stations` does not hold one label per observation, or
 /// naming the first optical observation whose line of sight is not
 /// [`Sight::is_usable`]. Fails if the loaded kernels do not cover the Sun at
 /// the epoch of an optical observation, or do not cover the Sun, the planets
@@ -333,7 +369,8 @@ pub(crate) fn check_settings(
             settings.min_gap,
             settings.confirm.max_gap,
             pass.max_rate,
-            settings.run_span,
+            settings.tracklet_span,
+            settings.min_tracklet,
         )?;
         let (depth_step, rate_step) = (DEPTH_STEP * pass.grid_factor, RATE_STEP * pass.grid_factor);
         let (min_depth, max_depth) = (settings.min_depth, settings.max_depth);
@@ -438,7 +475,8 @@ pub(crate) fn in_passes(
 /// The hypotheses are about the observer of the sight of a unit nearest
 /// `target`, a Julian date, or nearest the middle of the span of the sights
 /// of the units if `target` is `None`, moved to the Sun. A pass with no
-/// units has no candidates.
+/// units has no candidates, and one with more than [`crate::MAX_UNITS`] is
+/// refused before its grid is built.
 fn pass_candidates(
     observations: &[AstrometricObservation],
     sights: &[Option<Sight>],
@@ -454,8 +492,11 @@ fn pass_candidates(
         settings.min_gap,
         settings.confirm.max_gap,
         pass.max_rate,
-        settings.run_span,
+        settings.tracklet_span,
+        settings.min_tracklet,
+        settings.lone_pairs,
     )?;
+    check_unit_count("Search", units.len())?;
     let target = target.unwrap_or_else(|| {
         let (first, last) = first_and_last(units.iter().flatten().map(|&i| own[i].time.jd()));
         f64::midpoint(first, last)

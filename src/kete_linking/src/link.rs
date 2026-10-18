@@ -29,6 +29,39 @@ const MIN_CELL: f64 = 1e-9;
 /// Ratio of the cell widths of neighboring levels of the hash.
 const LEVEL_RATIO: f64 = 4.0;
 
+/// Most units [`link()`] and each pass of [`crate::search()`] take.
+///
+/// Memory, not time, sets the limit. Each thread of [`link()`] works on one
+/// hypothesis at a time and holds every unit aligned with it, solved, at
+/// once: its state, the points of its sights, its errors, its entries in the
+/// hash of the matches, and its list of matches, several hundred bytes before
+/// the matches themselves. At this limit that is about half a gigabyte for
+/// each thread, a few gigabytes on a machine of eight to sixteen threads,
+/// and it grows in proportion to the units. The units of a field tens of
+/// degrees across from a survey with few false detections are well within
+/// it.
+///
+/// Many more units than that come from false detections: the pairs of
+/// lone sights grow as the square of their density, see
+/// [`crate::form_units`]. The remedies are fewer false detections, a smaller
+/// `max_rate`, `lone_pairs` false, a larger `min_tracklet`, or smaller tiles
+/// of the sky with [`crate::search_windows`].
+pub const MAX_UNITS: usize = 1_000_000;
+
+/// [`Error::ValueError`] if `count` units are more than [`MAX_UNITS`], naming
+/// `caller`, the count, and the remedies.
+pub(crate) fn check_unit_count(caller: &str, count: usize) -> KeteResult<()> {
+    if count > MAX_UNITS {
+        return Err(Error::ValueError(format!(
+            "{caller}: {count} units are more than MAX_UNITS ({MAX_UNITS}), too many to link in \
+             memory; most are likely pairs of false detections. Use fewer false detections, a \
+             smaller max_rate, lone_pairs false, a larger min_tracklet, or smaller tiles of the sky \
+             with search_windows"
+        )));
+    }
+    Ok(())
+}
+
 /// A hasher for the integer keys of grouping, such as hash cells and the
 /// indices of sights, cheaper than the default one, which is built to resist
 /// keys chosen by an adversary, which these are not. Matching looks up many
@@ -87,7 +120,7 @@ pub struct LinkSettings {
     /// probability about `exp(-threshold^2 / 2)`. A match of two pairs takes
     /// four comparisons, each pair against both sights of the other, so noise
     /// loses a true match with probability at most about four times that.
-    /// A run whose own sights miss its orbit by more than this times their
+    /// A tracklet whose own sights miss its orbit by more than this times their
     /// uncertainty, plus the grid allowance, is left out.
     pub threshold: f64,
 
@@ -151,12 +184,12 @@ pub struct Candidate {
 /// Candidate objects among the sights.
 ///
 /// A unit is two or more sights which could be one object, such as from
-/// [`crate::form_units`]: a run of sights close in time, or a pair across a
-/// gap. Under each hypothesis, every unit whose sights are all aligned with
+/// [`crate::form_units`]: a tracklet of sights close in time, or a pair across
+/// a gap. Under each hypothesis, every unit whose sights are all aligned with
 /// its direction is solved, see below. Units whose position at the reference
-/// time is too uncertain to group are left out, and so are runs whose own
+/// time is too uncertain to group are left out, and so are tracklets whose own
 /// sights miss their orbit by more than `threshold` times their uncertainty
-/// plus `grid_allowance`, such as a run joined across two objects.
+/// plus `grid_allowance`, such as a tracklet joined across two objects.
 ///
 /// Each solved unit then seeds a group, grown from the units which match the
 /// seed, taken best match first. The best one joins. Each later one joins
@@ -246,8 +279,9 @@ pub struct Candidate {
 /// index past the end of `sights`, a hypothesis is not finite or its
 /// direction not a unit vector, a reference time is more than 9e15 days from
 /// JD 0 or farther outside the span of the sights of the units than that
-/// span, a setting is negative or not finite, `max_uncertainty` is zero, or
-/// `threshold` and `grid_allowance` are both zero.
+/// span, a setting is negative or not finite, `max_uncertainty` is zero,
+/// `threshold` and `grid_allowance` are both zero, or there are more than
+/// [`MAX_UNITS`] units.
 pub fn link(
     sights: &[Sight],
     units: &[Vec<usize>],
@@ -256,6 +290,7 @@ pub fn link(
     settings: &LinkSettings,
 ) -> KeteResult<Vec<Candidate>> {
     settings.check()?;
+    check_unit_count("Link", units.len())?;
     check_inputs(sights, units, hypotheses)?;
     let merged = Mutex::new(Merged::default());
     let direction =
@@ -1192,11 +1227,11 @@ mod tests {
         State::new(Desig::Empty, epoch, pos, vel, SunCenter)
     }
 
-    /// Matches found by the hash and by comparing every two units, for
-    /// objects near opposition and clutter seen from 1 AU in runs of four
-    /// sights over half an hour on the given nights, with the reference time
-    /// at night zero. The units are the runs and the pairs across nights of
-    /// their ends and of the clutter. Within the reaches the two must agree.
+    /// Matches found by the hash and by comparing every two units, for objects
+    /// near opposition and clutter seen from 1 AU in tracklets of four sights
+    /// over half an hour on the given nights, with the reference time at night
+    /// zero. The units are the tracklets and the pairs across nights of their
+    /// ends and of the clutter. Within the reaches the two must agree.
     ///
     /// Returns the matches between units of one object, how many of them
     /// are beyond the reaches, and how many other matches are.
@@ -1238,8 +1273,8 @@ mod tests {
                 }
             }
         }
-        let units = form_units(&sights, 0.5, 1.1, 0.01, 0.05).unwrap();
-        assert!(units.iter().any(|unit| unit.len() == 4), "no runs");
+        let units = form_units(&sights, 0.5, 1.1, 0.01, 0.05, 2, true).unwrap();
+        assert!(units.iter().any(|unit| unit.len() == 4), "no tracklets");
         assert!(units.iter().any(|unit| unit.len() == 2), "no pairs");
         let every: Vec<usize> = (0..units.len()).collect();
         let origin = observer.clone();
@@ -1313,6 +1348,25 @@ mod tests {
             "off center: matches of one object {found}, beyond the reaches {beyond}, others beyond {others}"
         );
         assert!(found > 100, "only {found} matches of one object");
+    }
+
+    #[test]
+    fn unit_count_is_limited() {
+        assert!(check_unit_count("Link", MAX_UNITS).is_ok());
+        let message = check_unit_count("Link", MAX_UNITS + 1)
+            .unwrap_err()
+            .to_string();
+        let count = (MAX_UNITS + 1).to_string();
+        for part in [
+            "Link",
+            count.as_str(),
+            "max_rate",
+            "lone_pairs",
+            "min_tracklet",
+            "search_windows",
+        ] {
+            assert!(message.contains(part), "{part} missing from: {message}");
+        }
     }
 
     #[test]

@@ -398,44 +398,65 @@ impl PyUnits {
     }
 }
 
-/// The units of linking: runs of detections close in time, and pairs across
-/// gaps, which could be one object.
+/// The units of linking: tracklets of detections close in time, and pairs
+/// across gaps, which could be one object.
 ///
-/// A run is two or more detections from one place, up to ``run_span`` days
-/// long, which could be one object. Detections are joined into a run when
-/// each is the other's nearest neighbor: the nearest in time, then in
-/// direction, within ``run_span`` days, ``max_rate`` times the time between
-/// them on the sky, and with observers no farther apart than one observer
-/// could move in that time. So each detection is in at most one run, and
-/// detections of a crowd are left out of runs.
+/// A tracklet is two or more detections up to ``tracklet_span`` days long
+/// which move steadily along a great circle on the sky, and could be one
+/// object. Detections are chained when each is the other's nearest neighbor:
+/// the nearest in time, then in direction, within ``tracklet_span`` days,
+/// ``max_rate`` times the time between them on the sky, and with observers no
+/// farther apart than one observer could move in that time. So each detection
+/// is in at most one chain, and detections of a crowd are left out of chains.
 ///
-/// Pairs are formed among the detections in no run and the first and last
-/// detection of each run, except two of the same run: detections ``i`` and
-/// ``j`` are paired when ``j`` is later than ``i`` by between ``min_gap`` and
-/// ``max_gap`` days, and the angle between their directions is at most
-/// ``max_rate`` times that gap. Pairing the ends of runs keeps objects which
-/// move too much within a run for one orbit to fit it, such as objects close
-/// to the observer. With ``run_span`` zero there are no runs, and the units
-/// are the pairs of all the detections. The order of the units is not
-/// specified.
+/// Each chain is cut into tracklets in time order. The first two detections of
+/// a tracklet need only be chained; each later one joins the tracklet only
+/// when it lies on the tracklet's track, defined below, carried on from its
+/// last detection, and the tracklet then spans at most ``tracklet_span``. A
+/// detection off the track is left out, as a lone detection, when the one
+/// after it is on the track, so one stray detection does not cut a tracklet;
+/// otherwise the tracklet ends there and a new one starts at that detection.
+/// A tracklet measures a direction and a rate, and detections which do not
+/// share one are not the tracklet of one object. False detections chained by
+/// chance seldom line up within their noise, so a chain of them breaks into
+/// short pieces, and a chain of one object seen from two places whose
+/// parallax is larger than the track allows breaks where the place changes.
+/// The cost is an object whose motion on the sky curves beyond the track
+/// within ``tracklet_span``, such as a very close object seen from the ground:
+/// it is cut into shorter tracklets, which still link.
 ///
-/// A run measures its own motion on the sky, so the end of a run is paired
-/// only with detections near its track: its motion along the great circle
-/// from its first to its last detection, carried on at the same rate. The
-/// miss allowed is four times the uncertainties of the end and of the other
-/// detection added in quadrature, plus the time between the two times an
-/// allowed error of rate: four times the spread of the run over its span,
-/// plus a twentieth of ``max_rate``, and no more than ``max_rate``. The
-/// spread is ``sqrt(2)`` times the larger uncertainty of the first and last
-/// detection of the run, or the largest distance of a detection within the
-/// run from its track, if that is larger. Runs of two are held to their
-/// track too.
+/// Pairs are formed among the lone detections, those in no tracklet, and the
+/// first and last detection of each tracklet, except two of the same
+/// tracklet: detections ``i`` and ``j`` are paired when ``j`` is later than
+/// ``i`` by between ``min_gap`` and ``max_gap`` days, and the angle between
+/// their directions is at most ``max_rate`` times that gap. Pairing the ends
+/// of tracklets keeps objects which move too much within a tracklet for one
+/// orbit to fit it, such as objects close to the observer. With
+/// ``tracklet_span`` zero there are no tracklets, and the units are the pairs
+/// of all the detections. The order of the units is not specified.
+///
+/// The track of a tracklet is its motion along the great circle from its
+/// first to its last detection, carried on at the same rate. The end of a
+/// tracklet is paired only with detections on its track. The miss allowed is
+/// four times the uncertainties of the two detections added in quadrature,
+/// plus the time between the two times an allowed error of rate: four times
+/// ``sqrt(2)`` times the larger uncertainty of the first and last detection of
+/// the tracklet over its span, plus a twentieth of ``max_rate``, and no more
+/// than ``max_rate``. Tracklets of two are held to their track too.
 ///
 /// The observers are not compared for pairs. Two observers at different places
 /// see one object in different directions at the same time, so ``max_rate``
 /// has to be large enough to cover that parallax if such pairs are wanted, and
 /// a parallax larger than a track allows keeps a detection off the track of a
-/// run seen from another place.
+/// tracklet seen from another place.
+///
+/// Where most detections are false, few of them form tracklets, and the pairs
+/// of two lone detections, which are not held to any track, grow as the
+/// square of their density and outnumber every other unit. Two false
+/// detections close in time also form a tracklet of two. ``min_tracklet`` and
+/// ``lone_pairs`` trade the objects found only through such units for fewer
+/// units. Neither changes the tracklets of ``min_tracklet`` or more
+/// detections, or the pairs of their ends with each other.
 ///
 /// Parameters
 /// ----------
@@ -447,8 +468,30 @@ impl PyUnits {
 ///     Largest time between the detections of a pair, in days.
 /// max_rate : float
 ///     Largest apparent rate of motion, in degrees per day.
-/// run_span : float
-///     Longest run, in days. Zero forms pairs only.
+/// tracklet_span : float
+///     Longest tracklet, in days. Zero forms pairs only.
+/// min_tracklet : int
+///     Fewest detections of a tracklet, at least 2. Shorter tracklets are left
+///     out, and their detections are lone. Default is 2, which keeps every
+///     tracklet. Three or more suits a survey which sees each object three or
+///     more times in a visit, such as a spacecraft which revisits a field every
+///     orbit, and leaves out the tracklets of two that false detections form,
+///     and the short pieces a chain of them breaks into. An object seen fewer
+///     times in a visit has no tracklet there.
+/// lone_pairs : bool
+///     Whether two lone detections may be paired. Default is False: every
+///     pair holds the end of a tracklet and lies on its track, so the pairs
+///     grow with the density of the detections rather than its square. That
+///     suits any survey which sees each object at least ``min_tracklet``
+///     times in a visit, such as one on the ground which takes its visits in
+///     pairs, or a spacecraft which revisits a field every orbit. An object
+///     seen fewer times than that in a visit is then found only through the
+///     pairs of those detections with the ends of its tracklets in other
+///     visits, and an object with no tracklet is not found; with
+///     ``tracklet_span`` zero there are then no units. True also pairs lone
+///     detections, which a survey that sees most objects once per visit
+///     needs, at a cost that grows as the square of the density of false
+///     detections.
 ///
 /// Returns
 /// -------
@@ -458,31 +501,60 @@ impl PyUnits {
 /// ------
 /// ValueError
 ///     Unless ``0 <= min_gap <= max_gap``, ``max_rate`` is finite and
-///     positive, and ``run_span`` is finite and not negative.
+///     positive, ``tracklet_span`` is finite and not negative, and
+///     ``min_tracklet`` is at least 2.
 #[pyfunction]
-#[pyo3(name = "form_units", signature = (sights, min_gap, max_gap, max_rate, run_span))]
+#[pyo3(
+    name = "form_units",
+    signature = (
+        sights,
+        min_gap,
+        max_gap,
+        max_rate,
+        tracklet_span,
+        min_tracklet=default_count(SearchSettings::default().min_tracklet),
+        lone_pairs=SearchSettings::default().lone_pairs,
+    )
+)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the settings of form_units are keyword arguments"
+)]
 pub fn form_units_py(
     py: Python<'_>,
     sights: PyRef<'_, PySights>,
     min_gap: f64,
     max_gap: f64,
     max_rate: f64,
-    run_span: f64,
+    tracklet_span: f64,
+    min_tracklet: i64,
+    lone_pairs: bool,
 ) -> PyResult<PyUnits> {
     let max_rate = radians("Form units: max_rate", max_rate, true, false)?;
+    let min_tracklet = count("Form units: min_tracklet", min_tracklet)?;
     let sights = &sights.sights;
-    let units = py.detach(|| form_units(sights, min_gap, max_gap, max_rate, run_span))?;
+    let units = py.detach(|| {
+        form_units(
+            sights,
+            min_gap,
+            max_gap,
+            max_rate,
+            tracklet_span,
+            min_tracklet,
+            lone_pairs,
+        )
+    })?;
     Ok(PyUnits(units))
 }
 
 /// An assertion of the depth of an object along a fixed direction, and of its
 /// rate, at a reference time.
 ///
-/// At the epoch of :attr:`origin`, which is the reference time, the object is on
-/// the plane ``direction . (position - origin position) = depth``, and moves
+/// At the epoch of :attr:`origin`, which is the reference time, the object is
+/// on the plane ``direction . (position - origin position) = depth``, and moves
 /// through it at ``direction . (velocity - origin velocity) = depth_rate``.
-/// Under one hypothesis a pair of detections has one orbit, and a run the one
-/// that fits it best.
+/// Under one hypothesis a pair of detections has one orbit, and a tracklet the
+/// one that fits it best.
 ///
 /// Taken from :class:`Hypotheses`, such as from :func:`hypothesis_grid`.
 #[pyclass(frozen, module = "kete.linking", name = "Hypothesis", from_py_object)]
@@ -712,7 +784,7 @@ impl PyCandidate {
 /// 63 degrees of its direction, a cosine of at least :data:`MIN_ALIGNMENT`,
 /// is turned into an orbit, which is a two-body orbit about the Sun: the one
 /// through both detections of a pair, and the least-squares fit, with light
-/// time and each detection's own observer, of a run. A run whose own
+/// time and each detection's own observer, of a tracklet. A tracklet whose own
 /// detections miss its orbit by more than ``threshold`` times their
 /// uncertainty plus ``grid_allowance`` is left out, and so are units whose
 /// position at the reference time is more uncertain than ``max_uncertainty``
@@ -767,8 +839,9 @@ impl PyCandidate {
 ///     time order spanning some time, the reference time of a hypothesis is
 ///     more than 9e15 days from JD 0 or farther outside the span of the
 ///     detections of the units than that span, a setting is negative or not
-///     finite, ``min_sights`` is negative, ``max_uncertainty`` is zero, or
-///     ``threshold`` and ``grid_allowance`` are both zero.
+///     finite, ``min_sights`` is negative, ``max_uncertainty`` is zero,
+///     ``threshold`` and ``grid_allowance`` are both zero, or there are more
+///     than :data:`MAX_UNITS` units.
 #[pyfunction]
 #[pyo3(
     name = "link",
@@ -949,7 +1022,10 @@ fn confirmed_py(confirmed: Vec<Confirmed>) -> Vec<PyConfirmed> {
 ///     rule off.
 /// group_span : float
 ///     Largest time between consecutive detections of one time group, in
-///     days. Default is 0.1, that of :func:`search`.
+///     days. Default is 0.1, that of :func:`search`. It must be below the time
+///     between the revisits of a field by the survey, such as the orbit of a
+///     spacecraft which revisits a field every orbit, else the revisits of a
+///     whole visit are one time group.
 /// max_gap : float
 ///     Largest time between the two time groups of a confirmation with only
 ///     two, in days, the ``max_gap`` the units were formed with. Default is 1.5.
@@ -1030,13 +1106,14 @@ pub fn confirm_py(
 /// units span, and the time of that detection as the reference time. A pass
 /// with no units is skipped. Radar observations are passed over.
 ///
-/// The defaults suit main belt objects seen by surveys on the ground in runs
-/// within a night: a first pass at one and a half times :data:`DEPTH_STEP`
-/// and :data:`RATE_STEP` and up to 0.6 degrees a day, then a second at three
-/// tenths of them and up to a degree a day. ``run_span`` suits a survey when it
-/// is a little longer than the longest time between revisits of a field within
-/// a night. A search aimed at objects within a few hundredths of an AU takes
-/// ``run_span`` and ``group_span`` of a hundredth of a day or less.
+/// The defaults suit main belt objects seen by surveys on the ground in
+/// tracklets within a night: a first pass at one and a half times
+/// :data:`DEPTH_STEP` and :data:`RATE_STEP` and up to 0.6 degrees a day, then a
+/// second at three tenths of them and up to a degree a day. ``tracklet_span``
+/// suits a survey when it is a little longer than the longest time between
+/// revisits of a field within a night. A search aimed at objects within a few
+/// hundredths of an AU takes ``tracklet_span`` and ``group_span`` of a
+/// hundredth of a day or less.
 ///
 /// With ``stations``, confirmation scales the stated uncertainties of each
 /// station to the scatter of its detections. The factor of each station is
@@ -1078,11 +1155,28 @@ pub fn confirm_py(
 /// max_gap : float
 ///     Largest time between the detections of a pair, in days, and between the
 ///     two time groups of a confirmation with only two. Default is 1.5.
-/// run_span : float
-///     Longest run, in days. Default is 0.125.
+/// tracklet_span : float
+///     Longest tracklet, in days. Default is 0.125.
+/// min_tracklet : int
+///     Fewest detections of a tracklet, at least 2, see :func:`form_units`.
+///     Default is 2, which keeps every tracklet.
+/// lone_pairs : bool
+///     Whether two lone detections, those in no tracklet, may be paired, see
+///     :func:`form_units`. Default is False, which suits any survey that sees
+///     each object several times in a visit, such as a spacecraft which
+///     revisits a field every orbit, or one on the ground which takes its
+///     visits in pairs: the pairs, and so the memory and time of a pass, then
+///     grow with the density of false detections rather than its square, see
+///     :data:`MAX_UNITS`. Objects seen fewer than ``min_tracklet`` times in a
+///     visit are found only through the tracklets of their other visits. True
+///     suits a survey which sees most objects once per visit, in data with few
+///     false detections.
 /// group_span : float
 ///     Largest time between consecutive detections of one time group of a
-///     confirmation, in days. Default is 0.1.
+///     confirmation, in days. Default is 0.1. It must be below the time
+///     between the revisits of a field by the survey, such as the orbit of a
+///     spacecraft which revisits a field every orbit, else the revisits of a
+///     whole visit are one time group.
 /// min_depth : float
 ///     Smallest depth of the hypotheses, in AU. Default is 0.5. The size of
 ///     the grid grows as this to the power -1.5.
@@ -1092,7 +1186,7 @@ pub fn confirm_py(
 ///     One ``(grid_factor, max_rate)`` for each pass, in the order they run,
 ///     at least one: the factor on both :data:`DEPTH_STEP` and
 ///     :data:`RATE_STEP` for the grid of the pass, and its largest apparent
-///     rate of motion within a run and of a pair, in degrees per day, see
+///     rate of motion within a tracklet and of a pair, in degrees per day, see
 ///     :func:`form_units`; both finite and positive. For pairs of detections
 ///     from observers at different places the rate also has to cover the
 ///     parallax between them over the time of the pair. Default is
@@ -1127,7 +1221,8 @@ pub fn confirm_py(
 /// ------
 /// ValueError
 ///     If ``passes`` is empty or a ``grid_factor`` is not finite and positive,
-///     if ``stations`` does not hold one label per observation,
+///     if ``stations`` does not hold one label per observation, if a pass forms
+///     more than :data:`MAX_UNITS` units,
 ///     for settings that :func:`form_units`, :func:`hypothesis_grid`,
 ///     :func:`link` or :func:`confirm` refuse, for the first optical
 ///     observation whose line of sight :class:`Sights` would refuse, or if the
@@ -1141,7 +1236,9 @@ pub fn confirm_py(
         stations=None,
         min_gap=SearchSettings::default().min_gap,
         max_gap=ConfirmRules::default().max_gap,
-        run_span=SearchSettings::default().run_span,
+        tracklet_span=SearchSettings::default().tracklet_span,
+        min_tracklet=default_count(SearchSettings::default().min_tracklet),
+        lone_pairs=SearchSettings::default().lone_pairs,
         group_span=ConfirmRules::default().group_span,
         min_depth=SearchSettings::default().min_depth,
         max_depth=SearchSettings::default().max_depth,
@@ -1164,7 +1261,9 @@ pub fn search_py(
     stations: Option<Bound<'_, PyAny>>,
     min_gap: f64,
     max_gap: f64,
-    run_span: f64,
+    tracklet_span: f64,
+    min_tracklet: i64,
+    lone_pairs: bool,
     group_span: f64,
     min_depth: f64,
     max_depth: f64,
@@ -1178,7 +1277,8 @@ pub fn search_py(
 ) -> PyResult<Vec<PyConfirmed>> {
     let settings = search_settings(
         (min_gap, max_gap),
-        (run_span, group_span),
+        (tracklet_span, group_span),
+        (min_tracklet, lone_pairs),
         (min_depth, max_depth, passes),
         (threshold, grid_allowance, max_uncertainty),
         (min_sights, max_rms, min_sights_per_side),
@@ -1201,11 +1301,12 @@ fn default_passes() -> Vec<(f64, f64)> {
 }
 
 /// The settings of a search from the keyword arguments of :func:`search`, in
-/// their Python units, grouped as units, spans, grid, link and confirm
-/// settings.
+/// their Python units, grouped as units, spans, tracklets, grid, link and
+/// confirm settings.
 fn search_settings(
     (min_gap, max_gap): (f64, f64),
-    (run_span, group_span): (f64, f64),
+    (tracklet_span, group_span): (f64, f64),
+    (min_tracklet, lone_pairs): (i64, bool),
     (min_depth, max_depth, passes): (f64, f64, Vec<(f64, f64)>),
     (threshold, grid_allowance, max_uncertainty): (f64, f64, f64),
     (min_sights, max_rms, min_sights_per_side): (i64, f64, i64),
@@ -1229,7 +1330,9 @@ fn search_settings(
         .collect::<PyResult<_>>()?;
     Ok(SearchSettings {
         min_gap,
-        run_span,
+        tracklet_span,
+        min_tracklet: count("Search: min_tracklet", min_tracklet)?,
+        lone_pairs,
         min_depth,
         max_depth,
         passes,
@@ -1407,7 +1510,7 @@ pub fn tiles_py(
 /// window : float, optional
 ///     Time between the starts of consecutive windows, in days, half the length
 ///     of each. Finite, and at least the larger of ``max_gap`` and
-///     ``run_span``. Default is None, one window over the whole span.
+///     ``tracklet_span``. Default is None, one window over the whole span.
 /// parallax_margin : float
 ///     See :func:`tiles`, in degrees. Default is 0, for one observer.
 /// nside : int, optional
@@ -1417,8 +1520,12 @@ pub fn tiles_py(
 ///     See :func:`search`, in days. Default is 0.5.
 /// max_gap : float
 ///     See :func:`search`, in days. Default is 1.5.
-/// run_span : float
+/// tracklet_span : float
 ///     See :func:`search`, in days. Default is 0.125.
+/// min_tracklet : int
+///     See :func:`search`. Default is 2.
+/// lone_pairs : bool
+///     See :func:`search`. Default is False.
 /// group_span : float
 ///     See :func:`search`, in days. Default is 0.1.
 /// min_depth : float
@@ -1455,7 +1562,7 @@ pub fn tiles_py(
 /// ------
 /// ValueError
 ///     If ``window`` is not finite and positive, is less than the larger of
-///     ``max_gap`` and ``run_span``, or makes more than a hundred thousand
+///     ``max_gap`` and ``tracklet_span``, or makes more than a hundred thousand
 ///     windows, for settings that :func:`tiles` or :func:`search` refuse, for
 ///     the first optical observation whose line of sight :class:`Sights` would
 ///     refuse, or if the loaded kernels do not cover the Sun at the epoch of an
@@ -1471,7 +1578,9 @@ pub fn tiles_py(
         nside=None,
         min_gap=SearchSettings::default().min_gap,
         max_gap=ConfirmRules::default().max_gap,
-        run_span=SearchSettings::default().run_span,
+        tracklet_span=SearchSettings::default().tracklet_span,
+        min_tracklet=default_count(SearchSettings::default().min_tracklet),
+        lone_pairs=SearchSettings::default().lone_pairs,
         group_span=ConfirmRules::default().group_span,
         min_depth=SearchSettings::default().min_depth,
         max_depth=SearchSettings::default().max_depth,
@@ -1497,7 +1606,9 @@ pub fn search_windows_py(
     nside: Option<i64>,
     min_gap: f64,
     max_gap: f64,
-    run_span: f64,
+    tracklet_span: f64,
+    min_tracklet: i64,
+    lone_pairs: bool,
     group_span: f64,
     min_depth: f64,
     max_depth: f64,
@@ -1511,7 +1622,8 @@ pub fn search_windows_py(
 ) -> PyResult<Vec<PyConfirmed>> {
     let settings = search_settings(
         (min_gap, max_gap),
-        (run_span, group_span),
+        (tracklet_span, group_span),
+        (min_tracklet, lone_pairs),
         (min_depth, max_depth, passes),
         (threshold, grid_allowance, max_uncertainty),
         (min_sights, max_rms, min_sights_per_side),

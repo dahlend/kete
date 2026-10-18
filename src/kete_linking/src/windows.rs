@@ -99,7 +99,7 @@ const MAX_WINDOWS: f64 = 1e5;
 /// there whole, or an earlier window which held part of it confirmed that
 /// part, and the window holds the rest, which is confirmed as another piece
 /// if it can be. `window` is at least the longest time a unit spans, the
-/// larger of the `max_gap` of the confirmation rules and `run_span`, so
+/// larger of the `max_gap` of the confirmation rules and `tracklet_span`, so
 /// every unit of the search also lies whole in some window. Nothing is
 /// promised for an object whose observations spread over more than
 /// `window` days: it is found only where a window holds enough of it to
@@ -131,10 +131,10 @@ const MAX_WINDOWS: f64 = 1e5;
 /// * `stations` - The label of the station of each observation, see
 ///   [`crate::search()`]. `None` keeps the stated uncertainties.
 /// * `settings` - See [`SearchSettings`].
-/// * `window` - Time between the starts of consecutive windows, in days,
-///   half the length of each. Finite, and at least the larger of the
-///   `max_gap` of the confirmation rules and `run_span`. `None` searches the
-///   whole span as one window.
+/// * `window` - Time between the starts of consecutive windows, in days, half
+///   the length of each. Finite, and at least the larger of the `max_gap` of
+///   the confirmation rules and `tracklet_span`. `None` searches the whole span
+///   as one window.
 /// * `parallax_margin` - See [`crate::tiles()`], the same for every pass and
 ///   window.
 /// * `nside` - See [`crate::tiles()`], the same for every pass and window.
@@ -151,7 +151,7 @@ const MAX_WINDOWS: f64 = 1e5;
 ///
 /// [`Error::ValueError`] if `window` is not finite and positive, is less
 /// than the larger of the `max_gap` of the confirmation rules and
-/// `run_span`, or makes more than 100000 windows, and the errors of
+/// `tracklet_span`, or makes more than 100000 windows, and the errors of
 /// [`crate::tiles()`], for the tiles of the longest window, and of
 /// [`crate::search()`]. As there, fails if the loaded kernels do not cover
 /// the Sun at the epoch of an optical observation, or do not cover the Sun,
@@ -174,12 +174,12 @@ pub fn search_windows(
         )));
     }
     check_settings(observations, stations, settings)?;
-    let unit = settings.confirm.max_gap.max(settings.run_span);
+    let unit = settings.confirm.max_gap.max(settings.tracklet_span);
     if let Some(window) = window
         && window < unit
     {
         return Err(Error::ValueError(format!(
-            "Search windows: window must be at least the larger of max_gap and run_span, \
+            "Search windows: window must be at least the larger of max_gap and tracklet_span, \
              {unit}, got {window}"
         )));
     }

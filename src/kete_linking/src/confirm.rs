@@ -146,6 +146,12 @@ pub struct ConfirmRules {
     /// confirmation, in days, finite and not negative: detections closer in
     /// time than this are taken to measure only a direction and a motion on
     /// the sky. See [`confirm()`] for the time groups.
+    ///
+    /// It must be below the time between the revisits of a field by the
+    /// survey, such as the orbit of a spacecraft which revisits a field every
+    /// orbit: each revisit then starts a new time group. A span longer than
+    /// that chains the revisits of a whole visit into one time group, and an
+    /// object seen in one visit has one group however many times it was seen.
     pub group_span: f64,
 
     /// Largest time between the two time groups of a confirmation with only
@@ -348,8 +354,8 @@ const BATCH: usize = 512;
 /// through them fits: it confirms nothing. Two groups give four measurements
 /// for the two free numbers, two degrees of freedom, which is a weak test:
 /// the motion of each group is known only to its own noise, and the farther
-/// apart the groups, the more room that noise leaves for a run of another
-/// object to line up by chance, so chance links of two runs grow with the
+/// apart the groups, the more room that noise leaves for a tracklet of another
+/// object to line up by chance, so chance links of two tracklets grow with the
 /// time between them. A confirmation of two groups is therefore held to the
 /// time between them that a pair may span, `max_gap`, the largest gap the
 /// search links across without a third group to check it. Three or more

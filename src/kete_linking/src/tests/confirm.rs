@@ -535,7 +535,7 @@ fn confirm_needs_two_time_groups() {
         "no gap limit"
     );
 
-    // Four observations of one night, a single run, are one group, and
+    // Four observations of one night, a single tracklet, are one group, and
     // confirm nothing. As four groups of their own, they are confirmed.
     let night = [0.0, 0.01, 0.02, 0.03];
     let scene = Sky::new(Population::MainBelt, 1, &night).on_earth().scene();
@@ -558,7 +558,7 @@ fn confirm_needs_two_time_groups() {
         );
         found.unwrap().len()
     };
-    assert_eq!(count(SPAN), 0, "a lone run");
+    assert_eq!(count(SPAN), 0, "a lone tracklet");
     assert_eq!(count(0.0), 1, "four groups");
 }
 

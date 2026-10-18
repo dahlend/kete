@@ -10,15 +10,15 @@
 //! `cargo test -p kete_linking --release -- --ignored --nocapture
 //! --test-threads 1 matrix_cadence`
 //!
-//! The columns of most tables are described at
-//! [`super::harness::Run::print`] and [`super::harness::Score`]. Unless a
-//! row says otherwise, objects are seen by the ground site with 0.1
-//! arcseconds of noise, the grid has the default steps and is aimed at the
-//! objects, runs are up to the run span of `search` and time groups up to a
-//! tenth of a day, or the largest gap if shorter, and the settings of `link`
-//! are the defaults. Searches for close objects take runs and time groups
-//! of a hundredth of a day. The tables of confirmation are seen from the
-//! Earth of the test kernels, by objects moving under the n-body model.
+//! The columns of most tables are described at [`super::harness::Run::print`]
+//! and [`super::harness::Score`]. Unless a row says otherwise, objects are seen
+//! by the ground site with 0.1 arcseconds of noise, the grid has the default
+//! steps and is aimed at the objects, tracklets are up to the tracklet span of
+//! `search` and time groups up to a tenth of a day, or the largest gap if
+//! shorter, and the settings of `link` are the defaults. Searches for close
+//! objects take tracklets and time groups of a hundredth of a day. The tables
+//! of confirmation are seen from the Earth of the test kernels, by objects
+//! moving under the n-body model.
 
 use std::collections::HashSet;
 use std::hint::black_box;
@@ -231,7 +231,7 @@ fn matrix_geometry() {
 fn matrix_cadence() {
     print_header("Main belt, 30 objects, by cadence");
     let seconds = nightly(-1, 1, 4, 10.0 * SECOND);
-    let runs = nightly(-1, 1, 10, 3.0 * 60.0 * SECOND);
+    let tracklets = nightly(-1, 1, 10, 3.0 * 60.0 * SECOND);
     let mut rng = Rng(5);
     let mut irregular: Vec<f64> = (0..15).map(|_| rng.between(-5.0, 5.0)).collect();
     irregular.sort_by(f64::total_cmp);
@@ -259,12 +259,12 @@ fn matrix_cadence() {
         ),
         (
             "10 x 3 min, 3 nights, all pairs",
-            runs.clone(),
+            tracklets.clone(),
             Search::new((60.0 * SECOND, 0.1), 0.5),
         ),
         (
             "10 x 3 min, 3 nights, pairs over 20 min",
-            runs,
+            tracklets,
             Search::new((20.0 * 60.0 * SECOND, 0.1), 0.5),
         ),
         ("1 a night, 15 nights", daily(), next_night()),
@@ -489,16 +489,16 @@ fn matrix_gap() {
 
 #[test]
 #[ignore = "matrix, see the module documentation"]
-fn matrix_runs() {
-    print_header("runs of ten sights over 27 minutes, 30 main belt objects");
+fn matrix_tracklets() {
+    print_header("tracklets of ten sights over 27 minutes, 30 main belt objects");
     for noise in [0.1, 0.5, 1.0] {
         for nights in [2, 3] {
-            let runs = nightly(1 - nights, 0, 10, 3.0 * 60.0 * SECOND);
+            let tracklets = nightly(1 - nights, 0, 10, 3.0 * 60.0 * SECOND);
             let ends = nightly(1 - nights, 0, 2, 27.0 * 60.0 * SECOND);
             for (name, times, min_gap) in [
-                ("all pairs", &runs, 60.0 * SECOND),
-                ("pairs over 20 min", &runs, 20.0 * 60.0 * SECOND),
-                ("ends of runs only", &ends, 0.01),
+                ("all pairs", &tracklets, 60.0 * SECOND),
+                ("pairs over 20 min", &tracklets, 20.0 * 60.0 * SECOND),
+                ("ends of tracklets only", &ends, 0.01),
             ] {
                 let mut sky = Sky::new(Population::MainBelt, 30, times);
                 sky.noise = noise * ARCSEC;
@@ -1147,7 +1147,7 @@ fn hypothesis_cost() {
         .map(|k| epoch + (f64::from(k) * 1.93 - 7.0))
         .collect();
     let (sights, _) = observe(&observers, &objects, &times);
-    let (found, lost): (Vec<_>, Vec<_>) = form_units(&sights, 0.0, 3.0, 0.2, 0.0)
+    let (found, lost): (Vec<_>, Vec<_>) = form_units(&sights, 0.0, 3.0, 0.2, 0.0, 2, true)
         .unwrap()
         .into_iter()
         .map(|pair| {
@@ -1169,9 +1169,9 @@ fn hypothesis_cost() {
 #[ignore = "matrix, see the module documentation"]
 fn units_close_observers() {
     print_header(
-        "Close objects in runs of 5 sights 2 minutes apart, from the ground and from low orbit, 10 objects",
+        "Close objects in tracklets of 5 sights 2 minutes apart, from the ground and from low orbit, 10 objects",
     );
-    let runs = |every: f64, window: f64| -> Vec<f64> {
+    let tracklets = |every: f64, window: f64| -> Vec<f64> {
         let count = (window / every).round() as i32 + 1;
         (0..count)
             .flat_map(|r| {
@@ -1193,7 +1193,10 @@ fn units_close_observers() {
         ] {
             let mut sky = close(10, (near, far), window);
             sky.observers = vec![observer.clone()];
-            sky.exposures = runs(every, window).into_iter().map(|t| (0, t)).collect();
+            sky.exposures = tracklets(every, window)
+                .into_iter()
+                .map(|t| (0, t))
+                .collect();
             let rate = 0.02 / near;
             let coarse = 0.00375 / near;
             let search = Search::new((0.0, window / 3.5), rate.to_degrees())
@@ -1201,7 +1204,7 @@ fn units_close_observers() {
                 .span(CLOSE_SPAN);
             row(
                 &format!(
-                    "{who}, {near}-{far} AU, runs every {:.1} h over {:.0} h",
+                    "{who}, {near}-{far} AU, tracklets every {:.1} h over {:.0} h",
                     every / HOUR,
                     window / HOUR
                 ),

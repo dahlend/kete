@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Dar Dahlen
 // SPDX-License-Identifier: BSD-3-Clause
 
-//! Unit forming without runs, as pairs, against a brute-force search and on
-//! moving objects.
+//! Unit forming without tracklets, as pairs, against a brute-force search and
+//! on moving objects.
 
 use kete_core::frames::Vector;
 use kete_core::prelude::Error;
@@ -14,14 +14,14 @@ use crate::{Sight, form_units};
 use super::reference;
 use super::synthetic::{ARCSEC, EXACT, Observer, Population, Rng, observe};
 
-/// The units without runs, which are pairs, as index pairs.
+/// The units without tracklets, which are pairs, as index pairs.
 fn pairs_only(
     sights: &[Sight],
     min_gap: f64,
     max_gap: f64,
     max_rate: f64,
 ) -> KeteResult<Vec<(usize, usize)>> {
-    let units = form_units(sights, min_gap, max_gap, max_rate, 0.0)?;
+    let units = form_units(sights, min_gap, max_gap, max_rate, 0.0, 2, true)?;
     Ok(units.iter().map(|unit| (unit[0], unit[1])).collect())
 }
 

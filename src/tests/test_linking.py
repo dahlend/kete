@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: 2026 Dar Dahlen
 # SPDX-License-Identifier: BSD-3-Clause
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
@@ -63,10 +65,13 @@ class TestEndToEnd:
         assert len(obs) == 4 * 2 * len(NIGHTS)
         sights = linking.Sights.from_observations(obs)
         assert len(sights) == len(obs)
-        # The two detections of each night are a run, and the runs' ends pair.
+        # The two detections of each night are a tracklet, and the tracklets'
+        # ends pair.
         units = linking.form_units(sights, 0.0, 3.0, 1.0, 0.1)
-        runs = [u for u in units.indices if len(set(labels[u])) == 1 and len(u) == 2]
-        assert len(runs) > 0
+        tracklets = [
+            u for u in units.indices if len(set(labels[u])) == 1 and len(u) == 2
+        ]
+        assert len(tracklets) > 0
         origin = kete.spice.get_state("Earth", JD0 + 7)
         grid = linking.hypothesis_grid(origin, 0.8, 2.5)
         assert all(h.origin.jd == origin.jd for h in grid)
@@ -228,6 +233,17 @@ class TestSearch:
             obs, min_sights=8, max_rms=3.0, min_sights_per_side=1, **self.SETTINGS
         )
         assert [f.sights for f in off] == [f.sights for f in found]
+        # Every object is seen twice a night, in tracklets of two, so its units
+        # all hold a tracklet, and leaving out the pairs of lone detections
+        # changes nothing. Without tracklets of two there are no units.
+        tracklets_only = linking.search(
+            obs, lone_pairs=False, min_sights=8, max_rms=3.0, **self.SETTINGS
+        )
+        assert [f.sights for f in tracklets_only] == [f.sights for f in found]
+        none = linking.search(
+            obs, min_tracklet=3, lone_pairs=False, min_sights=8, **self.SETTINGS
+        )
+        assert none == []
 
     def test_search_stations(self, scene):
         obs, _ = scene
@@ -279,9 +295,13 @@ class TestSearch:
         assert linking.search(obs, min_sights=17, **self.SETTINGS) == []
         # Time groups longer than the whole span confirm nothing.
         assert linking.search(obs, group_span=20.0, **self.SETTINGS) == []
-        for name in ["run_span", "group_span"]:
+        for name in ["tracklet_span", "group_span"]:
             with pytest.raises(ValueError, match=name):
                 linking.search(obs, **{name: -1.0}, **self.SETTINGS)
+        with pytest.raises(ValueError, match="min_tracklet must be at least 2"):
+            linking.search(obs, min_tracklet=1, **self.SETTINGS)
+        with pytest.raises(ValueError, match="min_tracklet must not be negative"):
+            linking.search(obs, min_tracklet=-1, **self.SETTINGS)
         with pytest.raises(ValueError, match="at least 4"):
             linking.search(obs, min_sights=3, **self.SETTINGS)
         with pytest.raises(ValueError, match="max_rms"):
@@ -353,11 +373,15 @@ class TestTiles:
         for window in [0.0, -1.0, np.nan, np.inf, 2.9]:
             with pytest.raises(ValueError, match="window"):
                 linking.search_windows(obs, window=window, **settings)
-        short = dict(settings, max_gap=0.0, run_span=0.0)
+        short = dict(settings, max_gap=0.0, tracklet_span=0.0)
         with pytest.raises(ValueError, match="more than"):
             linking.search_windows(obs, window=1e-5, **short)
         with pytest.raises(ValueError, match="max_rms"):
             linking.search_windows(obs, window=4.0, **dict(settings, max_rms=-1.0))
+        with pytest.raises(ValueError, match="min_tracklet"):
+            linking.search_windows(obs, **dict(settings, min_tracklet=1))
+        tracklets_only = linking.search_windows(obs, lone_pairs=False, **settings)
+        assert sorted(f.sights for f in tracklets_only) == found
 
     def test_tiles_units(self, scene):
         obs, labels = scene
@@ -467,18 +491,20 @@ class TestValidation:
             assert np.isclose(sights.sigma[0], np.sqrt((0.3**2 + 0.4**2) / 2))
 
     def test_form_units(self):
-        # Three detections a day apart in one direction: without runs, the two
-        # pairs a day apart. With runs up to a day and a half, the first two
-        # are a run, and the second also pairs with the third.
+        # Three detections a day apart in one direction: without tracklets, the
+        # two pairs a day apart. With tracklets up to a day and a half, the
+        # first two are a tracklet, and the second also pairs with the third.
         sights = linking.Sights(*self._arrays())
-        assert sorted(linking.form_units(sights, 0.0, 1.5, 1.0, 0.0).indices) == [
+        assert sorted(
+            linking.form_units(sights, 0.0, 1.5, 1.0, 0.0, lone_pairs=True).indices
+        ) == [
             [0, 1],
             [1, 2],
         ]
-        units = linking.form_units(sights, 0.0, 1.5, 1.0, run_span=1.5)
+        units = linking.form_units(sights, 0.0, 1.5, 1.0, tracklet_span=1.5)
         assert len(units) == 2
         assert sorted(units.indices) == [[0, 1], [1, 2]]
-        assert linking.form_units(sights, 0.0, 0.5, 1.0, run_span=1.5).indices == [
+        assert linking.form_units(sights, 0.0, 0.5, 1.0, tracklet_span=1.5).indices == [
             [0, 1]
         ]
         with pytest.raises(ValueError):
@@ -489,15 +515,44 @@ class TestValidation:
         for max_rate in [0.0, np.nan, np.inf]:
             with pytest.raises(ValueError, match="max_rate"):
                 linking.form_units(sights, 0.0, 1.0, max_rate, 0.0)
-        for run_span in [-1.0, np.inf, np.nan]:
-            with pytest.raises(ValueError, match="run_span"):
-                linking.form_units(sights, 0.0, 1.0, 1.0, run_span)
+        for tracklet_span in [-1.0, np.inf, np.nan]:
+            with pytest.raises(ValueError, match="tracklet_span"):
+                linking.form_units(sights, 0.0, 1.0, 1.0, tracklet_span)
+
+    def test_form_units_min_tracklet_and_lone_pairs(self):
+        # The detections of test_form_units: with tracklets up to a day and a
+        # half, the first two are a tracklet, whose end pairs with the third.
+        sights = linking.Sights(*self._arrays())
+        default = sorted(linking.form_units(sights, 0.0, 1.5, 1.0, 1.5).indices)
+        assert default == [[0, 1], [1, 2]]
+        # Every pair holds the end of the tracklet, so leaving out the pairs of
+        # two lone detections changes nothing.
+        units = linking.form_units(sights, 0.0, 1.5, 1.0, 1.5, lone_pairs=False)
+        assert sorted(units.indices) == default
+        # Below min_tracklet the tracklet is two lone detections, which pair
+        # when lone_pairs allows.
+        units = linking.form_units(
+            sights, 0.0, 1.5, 1.0, 1.5, min_tracklet=3, lone_pairs=True
+        )
+        assert sorted(units.indices) == [[0, 1], [1, 2]]
+        # With no tracklet left, no two detections pair without lone_pairs.
+        units = linking.form_units(
+            sights, 0.0, 1.5, 1.0, 1.5, min_tracklet=3, lone_pairs=False
+        )
+        assert units.indices == []
+        for min_tracklet in [0, 1]:
+            with pytest.raises(ValueError, match="min_tracklet must be at least 2"):
+                linking.form_units(
+                    sights, 0.0, 1.5, 1.0, 1.5, min_tracklet=min_tracklet
+                )
+        with pytest.raises(ValueError, match="min_tracklet must not be negative"):
+            linking.form_units(sights, 0.0, 1.5, 1.0, 1.5, min_tracklet=-1)
 
     def test_form_units_track(self):
-        # A run of three detections moving a tenth of a degree a day, and a
-        # day later one detection on its track and one a quarter of a degree
-        # off it. The run's ends pair only with the first, and so do those of
-        # a run of two over the same span.
+        # A tracklet of three detections moving a tenth of a degree a day, and
+        # a day later one detection on its track and one a quarter of a degree
+        # off it. The tracklet's ends pair only with the first, and so do those
+        # of a tracklet of two over the same span.
         rate = np.radians(0.1)
         times = [0.0, 10 / 1440, 20 / 1440, 1.0, 1.0]
         directions = [[1.0, rate * t, 0.0] for t in times[:4]]
@@ -518,6 +573,18 @@ class TestValidation:
         )
         units = linking.form_units(sights, 0.5, 1.5, 1.0, 0.1)
         assert sorted(units.indices) == [[0, 1], [0, 2], [1, 2]]
+        # With the middle detection of the three 20 arcseconds off their line,
+        # within the rate limit of both neighbors, the third is off the track
+        # of the first two, so there is no tracklet of three.
+        bent = [list(d) for d in directions]
+        bent[1][2] = np.radians(20 / 3600)
+        bent = [list(np.array(d) / np.linalg.norm(d)) for d in bent]
+        sights = linking.Sights(
+            [JD0 + t for t in times], [[1.0, 0.0, 0.0]] * n, bent, [0.1] * n
+        )
+        units = linking.form_units(sights, 0.5, 1.5, 1.0, 0.1).indices
+        assert [0, 1] in units
+        assert all(len(u) < 3 for u in units)
 
     def test_units(self):
         units = linking.Units([[0, 1], [1, 2, 3]])
@@ -555,6 +622,7 @@ class TestValidation:
             origin, 1.0, 2.0, linking.DEPTH_STEP, linking.RATE_STEP
         )
         assert len(steps) == len(grid) < linking.MAX_HYPOTHESES
+        assert linking.MAX_UNITS > 0
         assert 0.0 < linking.MIN_ALIGNMENT < 1.0
 
     def test_link_validation(self):
@@ -697,8 +765,13 @@ class TestUnits:
             [[0.0, 1.0, 0.0], [np.sin(angle), np.cos(angle), 0.0]],
             [0.1] * 2,
         )
-        assert linking.form_units(sights, 0.0, 5.0, 1.49, 0.0).indices == []
-        assert linking.form_units(sights, 0.0, 5.0, 1.51, 0.0).indices == [[0, 1]]
+        assert (
+            linking.form_units(sights, 0.0, 5.0, 1.49, 0.0, lone_pairs=True).indices
+            == []
+        )
+        assert linking.form_units(
+            sights, 0.0, 5.0, 1.51, 0.0, lone_pairs=True
+        ).indices == [[0, 1]]
 
     def _one_pair(self, sigma):
         """The object seen at JD0 and a day later, with this sigma in arcsec."""
@@ -794,3 +867,197 @@ class TestUnits:
         listed = linking.link(sights, pairs, list(grid))
         assert [c.sights for c in held] == [c.sights for c in listed] == [[0, 1, 2, 3]]
         assert list(held[0].state.pos) == list(listed[0].state.pos)
+
+
+def _fields(times, radius=15.0, overlap=False):
+    """Cones from the geocenter at each time: one of this radius in degrees
+    around the direction away from the Sun, one towards the Sun, and optionally one of a
+    degree around the first object, inside the first cone."""
+    first = _objects()[0]
+    out = []
+    for jd in times:
+        earth = kete.spice.get_state("Earth", jd)
+        away = earth.pos
+        out.append(kete.fov.ConeFOV(away, radius, earth))
+        out.append(kete.fov.ConeFOV(-away, 5.0, earth))
+        if overlap:
+            at = kete.propagate_two_body([first], jd)[0]
+            out.append(kete.fov.ConeFOV(at.pos - earth.pos, 1.0, earth))
+    return out
+
+
+def _far_object():
+    """A main belt object a quarter turn ahead of the Earth, in none of the
+    fields."""
+    earth = kete.spice.get_state("Earth", JD0)
+    lon = np.arctan2(earth.pos[1], earth.pos[0]) + np.pi / 2
+    v = np.sqrt(kete.constants.SUN_GM / 2.5)
+    return kete.State(
+        "far",
+        JD0,
+        [2.5 * np.cos(lon), 2.5 * np.sin(lon), 0.0],
+        [-v * np.sin(lon), v * np.cos(lon), 0.0],
+    )
+
+
+def _separation(a, b):
+    """Angle in arcseconds between two directions given as RA and Dec."""
+    u = np.array(list(kete.Vector.from_ra_dec(*a).as_equatorial))
+    w = np.array(list(kete.Vector.from_ra_dec(*b).as_equatorial))
+    return np.degrees(np.arctan2(np.linalg.norm(np.cross(u, w)), u @ w)) * 3600
+
+
+class TestInject:
+    TIMES = [JD0 + n + dt for n in [0, 1, 3] for dt in (0.0, 0.02)]
+
+    def _expected(self, objects, fields):
+        """The field, object and true RA and Dec of each detection, from
+        fov_state_check one field at a time, an object seen in two fields of
+        one time from the first of them only."""
+        out, taken = [], set()
+        for i, fov in enumerate(fields):
+            for seen in kete.fov_state_check(objects, [fov]):
+                for state, vec in zip(seen.states, seen.obs_vecs):
+                    k = [s.desig for s in objects].index(state.desig)
+                    if (fov.observer.jd, k) in taken:
+                        continue
+                    taken.add((fov.observer.jd, k))
+                    vec = vec.as_equatorial
+                    out.append((i, k, vec.ra, vec.dec))
+        return sorted(out)
+
+    def test_directions_and_labels(self):
+        objects = _objects() + [_far_object()]
+        fields = _fields(self.TIMES, overlap=True)
+        expected = self._expected(objects, fields)
+        # The four objects at each time, the first once although two fields
+        # of that time hold it, and not the far one.
+        assert len(expected) == 4 * len(self.TIMES)
+        sigma = [0.1 + 0.01 * i for i in range(len(fields))]
+        obs, labels = linking.inject(objects, fields, sigma, seed=3)
+        assert labels.dtype.kind == "i"
+        assert list(labels) == [k for _, k, _, _ in expected]
+        offsets = []
+        for o, (i, _, ra, dec) in zip(obs, expected):
+            assert o.epoch.jd == fields[i].observer.jd
+            assert np.isclose(o.sigma_ra, sigma[i]) and np.isclose(
+                o.sigma_dec, sigma[i]
+            )
+            offsets.append(_separation((o.ra, o.dec), (ra, dec)) / sigma[i])
+        # Noise of sigma along each of two directions on the sky.
+        assert 0.0 < np.max(offsets) < 6.0
+        assert 0.5 < np.sqrt(np.mean(np.square(offsets)) / 2) < 1.5
+
+        # The same seed gives the same observations, another seed others.
+        again, again_labels = linking.inject(objects, fields, sigma, seed=3)
+        assert [(o.ra, o.dec) for o in again] == [(o.ra, o.dec) for o in obs]
+        assert list(again_labels) == list(labels)
+        other, _ = linking.inject(objects, fields, sigma, seed=4)
+        assert [o.ra for o in other] != [o.ra for o in obs]
+
+    def test_detect(self):
+        objects = _objects() + [_far_object()]
+        fields = _fields(self.TIMES)
+        obs, labels = linking.inject(objects, fields, 0.1, detect=0.0, seed=1)
+        assert obs == [] and len(labels) == 0 and labels.dtype.kind == "i"
+        every, _ = linking.inject(objects, fields, 0.1, seed=1)
+        assert len(every) == 4 * len(self.TIMES)
+        half, _ = linking.inject(objects, fields, 0.1, detect=0.5, seed=1)
+        assert 0 < len(half) < len(every)
+
+        called = []
+
+        def detect(fov, state):
+            assert any(fov is f for f in fields)
+            assert state.center_id == 10
+            # The state at the time light left the object, minutes before.
+            assert 0.0 < fov.observer.jd - state.jd < 0.02
+            called.append(state.desig)
+            return 1.0 if state.desig == "obj2" else 0.0
+
+        obs, labels = linking.inject(objects, fields, 0.1, detect=detect, seed=1)
+        assert sorted(set(called)) == ["obj0", "obj1", "obj2", "obj3"]
+        assert list(labels) == [2] * len(self.TIMES)
+        with pytest.raises(ValueError, match="detect must return"):
+            linking.inject(objects, fields, 0.1, detect=lambda fov, state: 2.0)
+
+    def test_validation(self):
+        objects, fields = _objects(), _fields(self.TIMES[:2])
+        for sigma in [0.0, -1.0, np.nan, np.inf, [0.1, 0.1, 0.1, -0.1]]:
+            with pytest.raises(ValueError, match="sigma must be positive"):
+                linking.inject(objects, fields, sigma)
+        with pytest.raises(ValueError, match="sigma has 3 values for 4"):
+            linking.inject(objects, fields, [0.1] * 3)
+        for detect in [-0.1, 1.1, np.nan]:
+            with pytest.raises(ValueError, match="detect must be from 0 to 1"):
+                linking.inject(objects, fields, 0.1, detect=detect)
+        with pytest.raises(ValueError, match="non_gravs"):
+            linking.inject(objects, fields, 0.1, non_gravs=[None])
+        for no_objects, no_fields in [([], fields), (objects, [])]:
+            obs, labels = linking.inject(no_objects, no_fields, 0.1)
+            assert obs == [] and len(labels) == 0
+
+    def test_search_and_score(self):
+        objects = _objects() + [_far_object()]
+        times = [JD0 + n + dt for n in NIGHTS for dt in (0.0, 0.02)]
+        injected, labels = linking.inject(objects, _fields(times, 30.0), SIGMA, seed=5)
+        # Other detections, scattered over the sky at the same times.
+        rng = np.random.default_rng(6)
+        others = [
+            Observation.optical(
+                kete.spice.get_state("Earth", jd),
+                rng.uniform(0, 360),
+                rng.uniform(-60, 60),
+                SIGMA,
+                SIGMA,
+            )
+            for jd in times
+        ]
+        obs = others + injected
+        labels = np.concatenate([np.full(len(others), -1), labels])
+        found = linking.search(obs, min_sights=8, max_rms=3.0, **TestSearch.SETTINGS)
+        table = linking.score(obs, found, labels)
+        assert list(table.object) == [0, 1, 2, 3]
+        assert list(table.detections) == [2 * len(NIGHTS)] * 4
+        assert np.allclose(table.span, times[-1] - times[0])
+        assert table.found.all()
+        assert list(table.pieces) == [1] * 4
+        assert list(table.largest) == [2 * len(NIGHTS)] * 4
+        assert list(table.in_mixed) == [0] * 4
+        assert table.attrs["mixed"] == 0
+        assert linking.score(obs, [], labels).found.sum() == 0
+
+
+class TestScore:
+    def test_pieces_and_mixed(self):
+        # Confirmed objects cannot be made by hand; score reads only sights.
+        labels = [0, 0, 0, 0, 1, 1, 1, -1, 2, -1]
+        days = [0, 1, 2, 3, 0, 1, 2, 5, 4, 6]
+        obs = [
+            Observation.optical(kete.spice.get_state("Earth", JD0 + d), 0, 0, 1, 1)
+            for d in days
+        ]
+        found = [
+            SimpleNamespace(sights=s)
+            for s in [[0, 1], [2], [3, 4, 7], [5, 6], [7, 9], [8, 9]]
+        ]
+        table = linking.score(obs, found, np.array(labels))
+        assert list(table.object) == [0, 1, 2]
+        assert list(table.detections) == [4, 3, 1]
+        assert np.allclose(table.span, [3, 2, 0])
+        assert list(table.found) == [True, True, False]
+        assert list(table.pieces) == [2, 1, 0]
+        assert list(table.largest) == [2, 2, 0]
+        assert list(table.in_mixed) == [1, 1, 1]
+        # [3, 4, 7] and [8, 9] mix labels with synthetic ones; [7, 9] holds
+        # other observations only.
+        assert table.attrs["mixed"] == 2
+
+        with pytest.raises(ValueError, match="one label per observation"):
+            linking.score(obs, found, labels[1:])
+        with pytest.raises(ValueError, match="integers"):
+            linking.score(obs, found, np.array(labels, dtype=float))
+        with pytest.raises(ValueError, match="confirmed object 1 indexes past"):
+            linking.score(obs, [found[0], SimpleNamespace(sights=[10])], labels)
+        empty = linking.score([], [], [])
+        assert len(empty) == 0 and empty.attrs["mixed"] == 0

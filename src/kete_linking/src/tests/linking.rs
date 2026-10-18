@@ -238,7 +238,7 @@ fn same_time_sights_conflict() {
     for sight in &mut sights {
         sight.sigma = 0.5 * ARCSEC;
     }
-    let units = form_units(&sights, 0.5, 1.1, 0.01, 0.0).unwrap();
+    let units = form_units(&sights, 0.5, 1.1, 0.01, 0.0, 2, true).unwrap();
     let hypothesis = true_hypothesis(&truth, &origin, nearest_axis(&(truth.pos - origin.pos)));
     let found = link(&sights, &units, &[hypothesis], 4, &LinkSettings::default()).unwrap();
     assert!(!found.is_empty());
@@ -386,12 +386,12 @@ fn link_rejects_bad_input() {
 }
 
 #[test]
-fn runs_across_two_objects_are_left_out() {
-    // A main belt object seen five times in an hour, linked as one run
+fn tracklets_across_two_objects_are_left_out() {
+    // A main belt object seen five times in an hour, linked as one tracklet
     // under the true hypothesis, is a candidate on its own. With its last two
-    // sights a minute of arc to one side, as when a run is joined across two
-    // objects, the run fits no orbit within its noise and the grid allowance,
-    // and is left out.
+    // sights a minute of arc to one side, as when a tracklet is joined across
+    // two objects, the tracklet fits no orbit within its noise and the grid
+    // allowance, and is left out.
     let epoch = reference();
     let planet = Observer::planet(epoch);
     let origin = planet.state(epoch);
@@ -403,11 +403,11 @@ fn runs_across_two_objects_are_left_out() {
     for sight in &mut sights {
         sight.sigma = 0.1 * ARCSEC;
     }
-    let run = [(0..5).collect::<Vec<usize>>()];
+    let tracklet = [(0..5).collect::<Vec<usize>>()];
     let linked = |sights: &[Sight]| {
         let found = link(
             sights,
-            &run,
+            &tracklet,
             std::slice::from_ref(&hypothesis),
             4,
             &LinkSettings::default(),
@@ -418,7 +418,7 @@ fn runs_across_two_objects_are_left_out() {
             .map(|c| c.sights)
             .collect::<Vec<_>>()
     };
-    assert_eq!(linked(&sights), vec![run[0].clone()]);
+    assert_eq!(linked(&sights), vec![tracklet[0].clone()]);
     let side = sights[0]
         .direction
         .cross(&Vector::new([0.0, 0.0, 1.0]))

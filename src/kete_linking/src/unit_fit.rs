@@ -250,17 +250,17 @@ mod tests {
     use crate::tests::synthetic::{Rng, circular, sights};
 
     #[test]
-    fn run_fit_finds_the_truth() {
-        // A main belt object near opposition, and an object 0.3 AU from the
-        // Sun moving fast, each seen from 1 AU in a run of nine sights over
+    fn tracklet_fit_finds_the_truth() {
+        // A main belt object near opposition, and an object 0.3 AU from the Sun
+        // moving fast, each seen from 1 AU in a tracklet of nine sights over
         // two hours with 0.1 arcseconds of noise, solved under the true
-        // hypothesis with the reference time in the run and up to fifteen
+        // hypothesis with the reference time in the tracklet and up to fifteen
         // days before it. The returned residuals are those of the returned
         // orbit. That orbit is on the plane of the hypothesis, fits the sights
-        // about as well as the truth and, with the reference time in the run,
-        // better than the orbit through the first and last sight alone, and
-        // has the truth within four sigma on each free number by its own
-        // covariance.
+        // about as well as the truth and, with the reference time in the
+        // tracklet, better than the orbit through the first and last sight
+        // alone, and has the truth within four sigma on each free number by its
+        // own covariance.
         let epoch = 2460000.5;
         let earth = circular(epoch.into(), 1.0, 0.0, 0.0);
         let speed = (1.9 * GMS / 0.3).sqrt();
@@ -307,8 +307,8 @@ mod tests {
                 let found = rows_chi2(&fit.rows);
                 let ends = solve_unit(&sights, &[0, 8], &hypothesis).unwrap();
                 let through_ends = rows_chi2(&unit_rows(&chosen, &ends.state).unwrap());
-                // Far from the run the steps can be spoiled, and the fit then
-                // keeps the orbit through the ends, however near the truth
+                // Far from the tracklet the steps can be spoiled, and the fit
+                // then keeps the orbit through the ends, however near the truth
                 // that is.
                 let near_truth = found < truth_chi2 + 1.0;
                 if ahead == 0.0 {

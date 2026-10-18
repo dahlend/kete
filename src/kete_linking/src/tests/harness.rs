@@ -371,8 +371,8 @@ pub(crate) struct Search {
     /// Largest apparent rate of motion, in radians per day.
     pub(crate) max_rate: f64,
 
-    /// Longest run, in days, see `form_units`.
-    pub(crate) run_span: f64,
+    /// Longest tracklet, in days, see `form_units`.
+    pub(crate) tracklet_span: f64,
 
     /// Largest time between consecutive sights of one time group of a
     /// confirmation, in days.
@@ -404,13 +404,14 @@ pub(crate) struct Search {
 impl Search {
     /// A search with the default grid steps and settings aimed at the
     /// objects, with these gaps in days and largest rate in degrees a day,
-    /// runs up to the run span of `search` and time groups up to [`SPAN`],
+    /// tracklets up to the tracklet span of `search` and time groups up to
+    /// [`SPAN`],
     /// or the largest gap if shorter.
     pub(crate) fn new(gaps: (f64, f64), max_rate: f64) -> Self {
         Self {
             gaps,
             max_rate: max_rate.to_radians(),
-            run_span: SearchSettings::default().run_span.min(gaps.1),
+            tracklet_span: SearchSettings::default().tracklet_span.min(gaps.1),
             group_span: SPAN.min(gaps.1),
             depths: None,
             rates: None,
@@ -421,9 +422,9 @@ impl Search {
         }
     }
 
-    /// This search with runs and time groups up to `span` days.
+    /// This search with tracklets and time groups up to `span` days.
     pub(crate) fn span(mut self, span: f64) -> Self {
-        self.run_span = span;
+        self.tracklet_span = span;
         self.group_span = span;
         self
     }
@@ -439,9 +440,9 @@ impl Search {
 /// unless it says otherwise, in days, as that of `search`.
 pub(crate) const SPAN: f64 = 0.1;
 
-/// Longest run and time group of a search aimed at objects within a few
-/// hundredths of an AU, in days. They move too much within a longer run for
-/// one orbit to fit it, and a window of a few hours of their sights is one
+/// Longest tracklet and time group of a search aimed at objects within a few
+/// hundredths of an AU, in days. They move too much within a longer tracklet
+/// for one orbit to fit it, and a window of a few hours of their sights is one
 /// time group at [`SPAN`].
 pub(crate) const CLOSE_SPAN: f64 = 0.01;
 
@@ -613,7 +614,9 @@ pub(crate) fn run(scene: &Scene, search: &Search) -> Run {
         search.gaps.0,
         search.gaps.1,
         search.max_rate,
-        search.run_span,
+        search.tracklet_span,
+        2,
+        true,
     )
     .unwrap();
     let hypotheses: Vec<_> =
