@@ -34,7 +34,7 @@ fn objects_across_windows_are_merged_whole() {
         },
         ..SearchSettings::default()
     };
-    let whole = search_windows(&scene.observations, None, &settings, None, 0.0, None).unwrap();
+    let whole = search_windows(&scene.observations, None, &settings, None, None).unwrap();
     let score = Score::new(
         whole.iter().map(|c| c.sights.as_slice()),
         &scene.labels,
@@ -45,7 +45,7 @@ fn objects_across_windows_are_merged_whole() {
     assert_eq!(score.whole, scene.objects.len(), "{score:?}");
     let on = |threads: usize| {
         on_threads(threads, || {
-            search_windows(&scene.observations, None, &settings, Some(2.0), 0.0, None)
+            search_windows(&scene.observations, None, &settings, Some(2.0), None)
         })
         .unwrap()
     };
@@ -98,7 +98,7 @@ fn objects_across_the_start_of_a_window_are_whole() {
     // fewer than all its detections confirm it. Windows holding only the
     // longest unit past their end would have cut every object.
     let (observations, labels, settings) = four_nights(3, &[-6.0, 8.0]);
-    let found = search_windows(&observations, None, &settings, Some(3.5), 0.0, None).unwrap();
+    let found = search_windows(&observations, None, &settings, Some(3.5), None).unwrap();
     let score = Score::new(found.iter().map(|c| c.sights.as_slice()), &labels, 3, 8);
     assert_eq!(score.false_groups, 0, "{score:?}");
     assert_eq!(score.whole, 3, "{score:?}");
@@ -112,7 +112,7 @@ fn last_observation_at_the_end_of_a_window_is_searched() {
     // detection. The last window holds everything from its start on, so the
     // objects, which confirm only with that detection, are found whole.
     let (observations, labels, settings) = four_nights(2, &[3.0 + 1.0 / 32.0 - 10.5]);
-    let found = search_windows(&observations, None, &settings, Some(3.5), 0.0, None).unwrap();
+    let found = search_windows(&observations, None, &settings, Some(3.5), None).unwrap();
     let score = Score::new(found.iter().map(|c| c.sights.as_slice()), &labels, 2, 8);
     assert_eq!(score.false_groups, 0, "{score:?}");
     assert_eq!(score.whole, 2, "{score:?}");
@@ -132,7 +132,7 @@ fn tiles_of_the_longest_window_are_checked_first() {
     let scene = Sky::new(Population::MainBelt, 4, &times).on_earth().scene();
     let settings = SearchSettings::default();
     let nside = Some(2048);
-    let message = search_windows(&scene.observations, None, &settings, Some(3.5), 0.0, nside)
+    let message = search_windows(&scene.observations, None, &settings, Some(3.5), nside)
         .unwrap_err()
         .to_string();
     assert!(message.contains("smaller nside"), "{message}");
@@ -142,7 +142,7 @@ fn tiles_of_the_longest_window_are_checked_first() {
         .filter(|o| o.epoch().jd() < reference().jd() + 7.0)
         .cloned()
         .collect();
-    assert!(search_windows(&first, None, &settings, None, 0.0, nside).is_ok());
+    assert!(search_windows(&first, None, &settings, None, nside).is_ok());
 }
 
 #[test]
@@ -155,7 +155,7 @@ fn search_windows_refuses_bad_settings() {
         .scene();
     let settings = SearchSettings::default();
     let message = |window: f64, settings: &SearchSettings| {
-        search_windows(&scene.observations, None, settings, Some(window), 0.0, None)
+        search_windows(&scene.observations, None, settings, Some(window), None)
             .unwrap_err()
             .to_string()
     };
@@ -166,7 +166,6 @@ fn search_windows_refuses_bad_settings() {
     assert!(message(1.0, &settings).contains("max_gap"));
     // A window so short that it would make more windows than are searched.
     let short = SearchSettings {
-        min_gap: 0.0,
         tracklet_span: 0.0,
         confirm: ConfirmRules {
             max_gap: 1e-5,
@@ -175,11 +174,11 @@ fn search_windows_refuses_bad_settings() {
         ..settings.clone()
     };
     assert!(message(1e-5, &short).contains("longer window"));
-    let one = search_windows(&scene.observations, None, &settings, Some(10.0), 0.0, None).unwrap();
-    let all = search_windows(&scene.observations, None, &settings, None, 0.0, None).unwrap();
+    let one = search_windows(&scene.observations, None, &settings, Some(10.0), None).unwrap();
+    let all = search_windows(&scene.observations, None, &settings, None, None).unwrap();
     assert_eq!(sorted(&one), sorted(&all));
     assert!(
-        search_windows(&[], None, &settings, Some(10.0), 0.0, None)
+        search_windows(&[], None, &settings, Some(10.0), None)
             .unwrap()
             .is_empty()
     );
@@ -197,7 +196,7 @@ fn search_windows_refuses_bad_settings() {
             .to_string()
             .contains("hypotheses")
     );
-    let message = search_windows(&[], None, &fine, None, 0.0, None)
+    let message = search_windows(&[], None, &fine, None, None)
         .unwrap_err()
         .to_string();
     assert!(message.contains("hypotheses"), "{message}");

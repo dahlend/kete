@@ -100,7 +100,7 @@ fn link_and_confirm() {
         let scene = sky.scene();
         let search = Search {
             confirm: Some(6),
-            ..Search::new((0.01, 0.1), 0.5)
+            ..Search::new(0.1, 0.5)
         };
         let run = run(&scene, &search);
         assert_eq!(run.linked.found, 4, "{spacing}: found by link");
@@ -162,7 +162,7 @@ fn confirm_rejects_fixed_sources() {
         let mut sky = Sky::new(Population::MainBelt, 8, &times).on_earth();
         sky.clutter = 8;
         sky.stationary = 6;
-        let mut search = Search::new((0.01, max_gap), 0.5).span(SPAN);
+        let mut search = Search::new(max_gap, 0.5).span(SPAN);
         search.depths = Some((0.5, 3.0));
         search.min_sights = min_sights;
         search.confirm = Some(min_sights);
@@ -423,11 +423,11 @@ fn confirm_needs_two_sights_across_the_gap() {
     // day later, and once two days after that. With one observation needed
     // on each side of the largest gap, every candidate of one object is
     // confirmed whole. With two, the observations on a side with fewer are
-    // dropped and the rest confirmed: the object without its single
-    // observation across the gap. Four observations of one object and one of
-    // the other are never confirmed together. Every distinct time is a time
-    // group of its own here, with no gap limit, so that this rule is the one
-    // tested.
+    // dropped and the rest confirmed if they still span two nights: the
+    // object without its single observation across the gap. Four
+    // observations of one object and one of the other are never confirmed
+    // together. Time groups are nights here, with no gap limit, so that this
+    // rule is the one tested.
     let times = [0.0, 0.01, 0.02, 0.03, 1.0, 1.01, 3.0];
     let scene = Sky::new(Population::MainBelt, 2, &times).on_earth().scene();
     // Observations `ks` of object `label`.
@@ -442,12 +442,14 @@ fn confirm_needs_two_sights_across_the_gap() {
             min_sights: 4,
             max_rms: MAX_RMS,
             min_sights_per_side: per_side,
-            group_span: 0.0,
+            group_span: SPAN,
             max_gap: f64::INFINITY,
         };
         let found = confirm(&scene.observations, &[candidate], &rules).unwrap();
         found.into_iter().map(|c| c.sights).collect::<Vec<_>>()
     };
+    // Without its single observation across the gap, the 4 and 1 is one
+    // night, one time group, and confirms nothing.
     let cases = [
         (
             "4 and 1",
@@ -455,7 +457,7 @@ fn confirm_needs_two_sights_across_the_gap() {
             of(0, &[0, 1, 2, 3, 4]),
             of(0, &[0, 1, 2, 3, 4]),
         ),
-        ("4 and 1", 2, of(0, &[0, 1, 2, 3, 4]), of(0, &[0, 1, 2, 3])),
+        ("4 and 1", 2, of(0, &[0, 1, 2, 3, 4]), vec![]),
         (
             "4, 2 and 1",
             1,
@@ -471,9 +473,10 @@ fn confirm_needs_two_sights_across_the_gap() {
         ("2 and 2", 2, of(0, &[2, 3, 4, 5]), of(0, &[2, 3, 4, 5])),
     ];
     for (name, per_side, sights, want) in cases {
+        let want: Vec<Vec<usize>> = [want].into_iter().filter(|w| !w.is_empty()).collect();
         assert_eq!(
             confirmed(sights, per_side),
-            vec![want],
+            want,
             "{name}, {per_side} per side"
         );
     }
@@ -536,18 +539,20 @@ fn confirm_needs_two_time_groups() {
     );
 
     // Four observations of one night, a single tracklet, are one group, and
-    // confirm nothing. As four groups of their own, they are confirmed.
+    // confirm nothing. As four groups of their own they are fewer than three
+    // groups of two, and confirm nothing either; with one per side they are
+    // confirmed.
     let night = [0.0, 0.01, 0.02, 0.03];
     let scene = Sky::new(Population::MainBelt, 1, &night).on_earth().scene();
     let candidate = Candidate {
         sights: vec![0, 1, 2, 3],
         state: scene.objects[0].clone(),
     };
-    let count = |group_span: f64| {
+    let count = |group_span: f64, per_side: usize| {
         let rules = ConfirmRules {
             min_sights: 4,
             max_rms: MAX_RMS,
-            min_sights_per_side: 2,
+            min_sights_per_side: per_side,
             group_span,
             max_gap: 1.5,
         };
@@ -558,8 +563,9 @@ fn confirm_needs_two_time_groups() {
         );
         found.unwrap().len()
     };
-    assert_eq!(count(SPAN), 0, "a lone tracklet");
-    assert_eq!(count(0.0), 1, "four groups");
+    assert_eq!(count(SPAN, 2), 0, "a lone tracklet");
+    assert_eq!(count(0.0, 2), 0, "four groups of one");
+    assert_eq!(count(0.0, 1), 1, "four groups, one per side");
 }
 
 #[test]
@@ -599,7 +605,6 @@ fn search_in_passes() {
         .collect();
     let observations = [belt.observations, near.observations].concat();
     let settings = SearchSettings {
-        min_gap: 0.01,
         min_depth: NEAR_DEPTH / 1.5,
         max_depth: 4.0,
         confirm: ConfirmRules {
@@ -717,7 +722,7 @@ fn confirm_is_the_same_on_any_threads() {
         .collect();
     candidates.extend((0..OUTER).map(|k| own(k % OBJECTS, &[0, 1, 2, 6, 7, 8])));
     for label in 0..OBJECTS {
-        candidates.push(own(label, &[0, 1, 4, 7, 8]));
+        candidates.push(own(label, &[0, 1, 4, 5, 7, 8]));
         if label < half {
             candidates.push(own(label, &[0, 2, 3, 6, 8]));
         }
@@ -773,7 +778,6 @@ fn each_pass_has_its_own_rate_limit() {
     };
     let whole = |passes: Vec<SearchPass>| {
         let settings = SearchSettings {
-            min_gap: 0.01,
             passes,
             confirm: ConfirmRules {
                 max_gap: 0.1,

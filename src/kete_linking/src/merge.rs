@@ -348,8 +348,8 @@ impl Index {
 /// twice in one, or an optical observation of a piece has a line of sight
 /// which is not [`Sight::is_usable`]. Fails if the loaded kernels do not
 /// cover the Sun at the epoch of an optical observation of a piece, or the
-/// planets and the Moon the orbit fit pulls with at the first and last epoch
-/// of the observations of the pieces, or if an orbit fit fails for want of
+/// planets and the Moon the orbit fit pulls with from a day before the first
+/// to the last epoch of the observations of the pieces, or if an orbit fit fails for want of
 /// data the kernels do not hold.
 pub fn merge_pieces(
     observations: &[AstrometricObservation],
@@ -499,6 +499,9 @@ pub(crate) fn merge(
                 let gains = found.sights.len() > first.sights.len().max(second.sights.len());
                 Ok((gains && kept(first) && kept(second)).then_some((a.min(b), a.max(b), found)))
             })
+            // The first error in the order of the pairs, on any threads.
+            .collect::<Vec<_>>()
+            .into_iter()
             .collect::<KeteResult<_>>()?;
         let mut merged: Vec<(usize, usize, Confirmed)> = merged.into_iter().flatten().collect();
         merged.sort_by(|(a, b, x), (c, d, y)| rank(x, y).then((a, b).cmp(&(c, d))));

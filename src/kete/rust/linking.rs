@@ -401,39 +401,56 @@ impl PyUnits {
 /// The units of linking: tracklets of detections close in time, and pairs
 /// across gaps, which could be one object.
 ///
-/// A tracklet is two or more detections up to ``tracklet_span`` days long
-/// which move steadily along a great circle on the sky, and could be one
-/// object. Detections are chained when each is the other's nearest neighbor:
-/// the nearest in time, then in direction, within ``tracklet_span`` days,
-/// ``max_rate`` times the time between them on the sky, and with observers no
-/// farther apart than one observer could move in that time. So each detection
-/// is in at most one chain, and detections of a crowd are left out of chains.
+/// A tracklet is two or more detections, within ``tracklet_span`` days, of one
+/// smooth motion on the sky that one observer could have seen. Two detections
+/// are neighbors when the later is more than zero and at most
+/// ``tracklet_span`` days after the earlier, their directions are within
+/// ``max_rate`` times the time between them, and their observers are no
+/// farther apart than one observer could move in that time.
 ///
-/// Each chain is cut into tracklets in time order. The first two detections of
-/// a tracklet need only be chained; each later one joins the tracklet only
-/// when it lies on the tracklet's track, defined below, carried on from its
-/// last detection, and the tracklet then spans at most ``tracklet_span``. A
-/// detection off the track is left out, as a lone detection, when the one
-/// after it is on the track, so one stray detection does not cut a tracklet;
-/// otherwise the tracklet ends there and a new one starts at that detection.
-/// A tracklet measures a direction and a rate, and detections which do not
-/// share one are not the tracklet of one object. False detections chained by
-/// chance seldom line up within their noise, so a chain of them breaks into
-/// short pieces, and a chain of one object seen from two places whose
-/// parallax is larger than the track allows breaks where the place changes.
-/// The cost is an object whose motion on the sky curves beyond the track
-/// within ``tracklet_span``, such as a very close object seen from the ground:
-/// it is cut into shorter tracklets, which still link.
+/// Every two neighbors at most ``tracklet_span / (min_tracklet - 1)`` days
+/// apart seed a tracklet: a tracklet of ``min_tracklet`` detections within
+/// ``tracklet_span`` has two in a row at most that far apart, so a larger
+/// ``min_tracklet`` means fewer seeds. A tracklet grows from its seed along
+/// its track, defined below, from its first to its last detection as it
+/// grows: of the neighbors of its last detection which are later and within
+/// ``tracklet_span`` of its first, it takes the earliest on its track, of
+/// those at one time the one which misses it least for what the track
+/// allows, then the lowest index, until none is on the track. It then grows
+/// back in time the same way from its first detection. Detections off the
+/// track between those it takes are passed over. Within a tracklet the
+/// track allows the noise of the detections and of the rate the tracklet
+/// measures, with no allowance for a change of rate, so false detections
+/// seldom line up by chance. Every seed grows a tracklet; those of at least
+/// ``min_tracklet`` detections are taken most detections first, then least
+/// summed miss, then lowest first index, and each keeps its detections no
+/// earlier tracklet holds, when at least ``min_tracklet`` of them remain.
+///
+/// A false detection seldom lies on the track of an object, so it neither
+/// takes the place of the object's own detection nor ends its tracklet, even
+/// when nearer in direction, and a missed detection does not end a tracklet
+/// either. Detections of one object from two places whose parallax is larger
+/// than the track allows form a tracklet for each place. The costs: an object
+/// whose motion on the sky curves beyond the track within ``tracklet_span``,
+/// such as a very close object seen from the ground, is cut into several
+/// shorter tracklets, which still link; two objects whose tracks cross can
+/// swap detections where they meet, and of two tracklets which share a
+/// detection the rule of most detections first keeps one; and a few
+/// detections of an object seen over longer than ``tracklet_span`` can be
+/// left lone between its tracklets.
 ///
 /// Pairs are formed among the lone detections, those in no tracklet, and the
 /// first and last detection of each tracklet, except two of the same
 /// tracklet: detections ``i`` and ``j`` are paired when ``j`` is later than
-/// ``i`` by between ``min_gap`` and ``max_gap`` days, and the angle between
-/// their directions is at most ``max_rate`` times that gap. Pairing the ends
+/// ``i`` by at most ``max_gap`` days, and the angle between their directions
+/// is at most ``max_rate`` times that gap plus ``parallax_margin``. Pairs have
+/// no least gap, so a detection is paired however soon after a tracklet it
+/// falls. Pairing the ends
 /// of tracklets keeps objects which move too much within a tracklet for one
 /// orbit to fit it, such as objects close to the observer. With
 /// ``tracklet_span`` zero there are no tracklets, and the units are the pairs
-/// of all the detections. The order of the units is not specified.
+/// of all the detections with ``lone_pairs``, and none without. The order of
+/// the units is not specified.
 ///
 /// The track of a tracklet is its motion along the great circle from its
 /// first to its last detection, carried on at the same rate. The end of a
@@ -442,42 +459,47 @@ impl PyUnits {
 /// plus the time between the two times an allowed error of rate: four times
 /// ``sqrt(2)`` times the larger uncertainty of the first and last detection of
 /// the tracklet over its span, plus a twentieth of ``max_rate``, and no more
-/// than ``max_rate``. Tracklets of two are held to their track too.
+/// than ``max_rate``, plus ``parallax_margin``. Tracklets of two are held to
+/// their track too. Of the pairs on its track, each end of a tracklet keeps the
+/// two nearest it on each side in time, by the miss over what the track
+/// allows, and a pair of two tracklet ends has to be kept by both: among many
+/// false detections the track admits many detections of nothing, and the
+/// detection of the object is nearly always the nearest.
 ///
 /// The observers are not compared for pairs. Two observers at different places
-/// see one object in different directions at the same time, so ``max_rate``
-/// has to be large enough to cover that parallax if such pairs are wanted, and
-/// a parallax larger than a track allows keeps a detection off the track of a
+/// see one object in different directions at the same time, by up to
+/// ``parallax_margin``, see :func:`parallax_margin`; a parallax larger than
+/// the margin and the track allow keeps a detection off the track of a
 /// tracklet seen from another place.
 ///
 /// Where most detections are false, few of them form tracklets, and the pairs
 /// of two lone detections, which are not held to any track, grow as the
 /// square of their density and outnumber every other unit. Two false
-/// detections close in time also form a tracklet of two. ``min_tracklet`` and
-/// ``lone_pairs`` trade the objects found only through such units for fewer
-/// units. Neither changes the tracklets of ``min_tracklet`` or more
-/// detections, or the pairs of their ends with each other.
+/// detections close in time also form a tracklet of two, and since every seed
+/// is grown, chance alignments of three or more grow about as the cube of the
+/// density of false detections where each has many neighbors. ``min_tracklet``
+/// and ``lone_pairs`` trade the objects found only through such units for
+/// fewer units. ``lone_pairs`` changes neither the tracklets nor the pairs of
+/// the ends of two tracklets.
 ///
 /// Parameters
 /// ----------
 /// sights : Sights
 ///     The detections.
-/// min_gap : float
-///     Smallest time between the detections of a pair, in days.
 /// max_gap : float
 ///     Largest time between the detections of a pair, in days.
 /// max_rate : float
 ///     Largest apparent rate of motion, in degrees per day.
 /// tracklet_span : float
-///     Longest tracklet, in days. Zero forms pairs only.
+///     Longest tracklet, in days. Zero forms no tracklets.
 /// min_tracklet : int
 ///     Fewest detections of a tracklet, at least 2. Shorter tracklets are left
 ///     out, and their detections are lone. Default is 2, which keeps every
 ///     tracklet. Three or more suits a survey which sees each object three or
 ///     more times in a visit, such as a spacecraft which revisits a field every
 ///     orbit, and leaves out the tracklets of two that false detections form,
-///     and the short pieces a chain of them breaks into. An object seen fewer
-///     times in a visit has no tracklet there.
+///     and seeds only detections closer in time. An object seen fewer times
+///     in a visit has no tracklet there.
 /// lone_pairs : bool
 ///     Whether two lone detections may be paired. Default is False: every
 ///     pair holds the end of a tracklet and lies on its track, so the pairs
@@ -492,6 +514,10 @@ impl PyUnits {
 ///     detections, which a survey that sees most objects once per visit
 ///     needs, at a cost that grows as the square of the density of false
 ///     detections.
+/// parallax_margin : float
+///     Largest angle between the directions of one object seen at one time by
+///     two of the observers, in degrees, see :func:`parallax_margin`. Default
+///     is 0.
 ///
 /// Returns
 /// -------
@@ -500,20 +526,20 @@ impl PyUnits {
 /// Raises
 /// ------
 /// ValueError
-///     Unless ``0 <= min_gap <= max_gap``, ``max_rate`` is finite and
-///     positive, ``tracklet_span`` is finite and not negative, and
-///     ``min_tracklet`` is at least 2.
+///     Unless ``max_gap`` is not negative, ``max_rate`` is finite and
+///     positive, ``tracklet_span`` and ``parallax_margin`` are finite and not
+///     negative, and ``min_tracklet`` is at least 2.
 #[pyfunction]
 #[pyo3(
     name = "form_units",
     signature = (
         sights,
-        min_gap,
         max_gap,
         max_rate,
         tracklet_span,
         min_tracklet=default_count(SearchSettings::default().min_tracklet),
         lone_pairs=SearchSettings::default().lone_pairs,
+        parallax_margin=0.0,
     )
 )]
 #[allow(
@@ -523,25 +549,26 @@ impl PyUnits {
 pub fn form_units_py(
     py: Python<'_>,
     sights: PyRef<'_, PySights>,
-    min_gap: f64,
     max_gap: f64,
     max_rate: f64,
     tracklet_span: f64,
     min_tracklet: i64,
     lone_pairs: bool,
+    parallax_margin: f64,
 ) -> PyResult<PyUnits> {
     let max_rate = radians("Form units: max_rate", max_rate, true, false)?;
+    let margin = radians("Form units: parallax_margin", parallax_margin, false, true)?;
     let min_tracklet = count("Form units: min_tracklet", min_tracklet)?;
     let sights = &sights.sights;
     let units = py.detach(|| {
         form_units(
             sights,
-            min_gap,
             max_gap,
             max_rate,
             tracklet_span,
             min_tracklet,
             lone_pairs,
+            margin,
         )
     })?;
     Ok(PyUnits(units))
@@ -682,9 +709,10 @@ impl PyHypotheses {
 ///
 /// The default steps are coarse, for speed. They find main belt and more
 /// distant objects seen on several nights, sometimes split into several
-/// candidates, and lose more objects seen once a night, near-Earth objects
-/// and close objects, which :func:`search` recovers with a second, finer pass
-/// over the detections the first did not confirm.
+/// candidates, and lose more near-Earth objects and close objects, which
+/// :func:`search` recovers with a second, finer pass over the detections the
+/// first did not confirm. Objects seen once a night are found only with
+/// ``lone_pairs=True``, and more often split.
 ///
 /// Parameters
 /// ----------
@@ -983,10 +1011,14 @@ fn confirmed_py(confirmed: Vec<Confirmed>) -> Vec<PyConfirmed> {
 ///   than five times their combined uncertainty;
 /// - keeps at least ``min_sights_per_side`` observations on each side of the
 ///   largest time between two consecutive ones it keeps;
-/// - keeps observations in at least two time groups, and in exactly two only
-///   when they are at most ``max_gap`` days apart. The time groups are the
-///   clusters of the kept observations in time, parted wherever two
-///   consecutive ones are more than ``group_span`` days apart.
+/// - keeps observations in at least two time groups: in exactly two only when
+///   they are at most ``max_gap`` days apart, and in three or more only when
+///   two of the groups hold at least ``min_sights_per_side`` observations
+///   each, or all of them together at least three times that, so that a few
+///   single detections, each its own group under a close cadence, do not
+///   confirm a link. The time groups are the clusters of the kept
+///   observations in time, parted wherever two consecutive ones are more
+///   than ``group_span`` days apart.
 ///
 /// When a side of the largest gap has too few observations, those are
 /// dropped and the rest fit again from the same start under all the rules,
@@ -1018,8 +1050,9 @@ fn confirmed_py(confirmed: Vec<Confirmed>) -> Vec<PyConfirmed> {
 ///     :func:`search`.
 /// min_sights_per_side : int
 ///     Fewest observations a confirmed fit keeps on each side of its largest
-///     time gap, at least 1. Default is 2, that of :func:`search`; 1 turns the
-///     rule off.
+///     time gap, and the count of observations a fit of three or more time
+///     groups needs, see above; at least 1. Default is 2, that of
+///     :func:`search`; 1 turns both rules off.
 /// group_span : float
 ///     Largest time between consecutive detections of one time group, in
 ///     days. Default is 0.1, that of :func:`search`. It must be below the time
@@ -1045,8 +1078,8 @@ fn confirmed_py(confirmed: Vec<Confirmed>) -> Vec<PyConfirmed> {
 ///     which :class:`Sights` would refuse, the loaded kernels do not cover the
 ///     Sun at the epoch of a candidate or of one of its optical observations,
 ///     or they do not cover the Sun, the planets and the Moon, which the orbit
-///     fit pulls with, at the first and the last of the epochs of the
-///     candidates and of their observations, or if an orbit fit fails for
+///     fit pulls with, from a day before the first to the last of the epochs
+///     of the candidates and of their observations, or if an orbit fit fails for
 ///     want of data the kernels do not hold.
 #[pyfunction]
 #[pyo3(
@@ -1118,8 +1151,9 @@ pub fn confirm_py(
 /// With ``stations``, confirmation scales the stated uncertainties of each
 /// station to the scatter of its detections. The factor of each station is
 /// estimated once, from the objects the first pass confirms: the square root
-/// of the sum of the squares of the residuals over the stated uncertainties
-/// of the detections their fits keep, over the sum expected, ``2 (1 - 3 / n)``
+/// of the sum of the chi-squares of the residuals over the stated
+/// uncertainties and their correlation of the detections their fits keep,
+/// over the sum expected, ``2 (1 - 3 / n)``
 /// for each detection of a fit which keeps ``n``. It applies to a station
 /// with at least 100 detections kept by the fits of at least 20 objects, and
 /// is at least 1; every other station keeps its stated uncertainties. The
@@ -1149,9 +1183,14 @@ pub fn confirm_py(
 ///     observations it returns rather than from the records, such as
 ///     ``[o.observer.desig for o in observations]``, which is the
 ///     observatory code of each.
-/// min_gap : float
-///     Smallest time between the detections of a pair, in days. Default is
-///     0.5.
+/// parallax_margin : float
+///     Largest angle between the directions of one object seen at one time by
+///     two of the observers, in degrees, see :func:`parallax_margin`: it widens
+///     the pairs, see :func:`form_units`, and in :func:`search_windows` the
+///     halos of the tiles. Default is 0, which suits observers no farther apart
+///     than the sites of the Earth, for objects past a few tenths of an AU.
+///     Observers farther apart, such as one on the ground and one in space,
+///     need the margin of their separation and ``min_depth``.
 /// max_gap : float
 ///     Largest time between the detections of a pair, in days, and between the
 ///     two time groups of a confirmation with only two. Default is 1.5.
@@ -1206,8 +1245,8 @@ pub fn confirm_py(
 ///     ``max_rms`` of :func:`confirm`, in units of the observation
 ///     uncertainties. Default is 2.
 /// min_sights_per_side : int
-///     ``min_sights_per_side`` of :func:`confirm`. Default is 2; 1 turns the
-///     rule off.
+///     ``min_sights_per_side`` of :func:`confirm`. Default is 2; 1 turns its
+///     rules off.
 ///
 /// Returns
 /// -------
@@ -1234,7 +1273,7 @@ pub fn confirm_py(
     signature = (
         observations,
         stations=None,
-        min_gap=SearchSettings::default().min_gap,
+        parallax_margin=SearchSettings::default().parallax_margin.to_degrees(),
         max_gap=ConfirmRules::default().max_gap,
         tracklet_span=SearchSettings::default().tracklet_span,
         min_tracklet=default_count(SearchSettings::default().min_tracklet),
@@ -1259,7 +1298,7 @@ pub fn search_py(
     py: Python<'_>,
     observations: Vec<PyObservation>,
     stations: Option<Bound<'_, PyAny>>,
-    min_gap: f64,
+    parallax_margin: f64,
     max_gap: f64,
     tracklet_span: f64,
     min_tracklet: i64,
@@ -1276,7 +1315,7 @@ pub fn search_py(
     min_sights_per_side: i64,
 ) -> PyResult<Vec<PyConfirmed>> {
     let settings = search_settings(
-        (min_gap, max_gap),
+        (parallax_margin, max_gap),
         (tracklet_span, group_span),
         (min_tracklet, lone_pairs),
         (min_depth, max_depth, passes),
@@ -1301,10 +1340,10 @@ fn default_passes() -> Vec<(f64, f64)> {
 }
 
 /// The settings of a search from the keyword arguments of :func:`search`, in
-/// their Python units, grouped as units, spans, tracklets, grid, link and
+/// their Python units, grouped as pairs, spans, tracklets, grid, link and
 /// confirm settings.
 fn search_settings(
-    (min_gap, max_gap): (f64, f64),
+    (parallax_margin, max_gap): (f64, f64),
     (tracklet_span, group_span): (f64, f64),
     (min_tracklet, lone_pairs): (i64, bool),
     (min_depth, max_depth, passes): (f64, f64, Vec<(f64, f64)>),
@@ -1329,7 +1368,7 @@ fn search_settings(
         })
         .collect::<PyResult<_>>()?;
     Ok(SearchSettings {
-        min_gap,
+        parallax_margin: radians("Search: parallax_margin", parallax_margin, false, true)?,
         tracklet_span,
         min_tracklet: count("Search: min_tracklet", min_tracklet)?,
         lone_pairs,
@@ -1353,13 +1392,19 @@ fn search_settings(
 /// For observers ``separation`` AU apart and an object at least
 /// ``min_distance`` AU from them it is ``asin(separation / min_distance)``, or
 /// 180 when the separation is as large as the distance. This is the
-/// ``parallax_margin`` of :func:`tiles` and :func:`search_windows` for
-/// observers at most that far apart at one time, searched down to that
-/// distance, such as ``min_depth`` of the search. For sites on the Earth the
-/// separation is at most the Earth's diameter; for a spacecraft and a site on
-/// the Earth it is their largest distance apart during the observations.
-/// Observers seen at different times need no margin, as the rate limit covers
-/// the motion between times.
+/// ``parallax_margin`` of :func:`search`, :func:`search_windows`,
+/// :func:`form_units` and :func:`tiles` for observers at most that far apart
+/// at one time, searched down to that distance, such as ``min_depth`` of the
+/// search. For sites on the Earth the separation is at most the Earth's
+/// diameter; for a spacecraft and a site on the Earth it is their largest
+/// distance apart during the observations. The pairs of :func:`form_units`
+/// allow for the parallax of sites on the Earth for objects past a few tenths
+/// of an AU without a margin. The tiles of :func:`tiles` hold close objects
+/// whole only with a margin even for one observer: the turning of the Earth,
+/// or the orbit of a spacecraft about it, moves the direction of a close
+/// object back and forth by more than its rate shows over a window, so one
+/// observer there needs the margin of the diameter of the Earth, or of that
+/// orbit.
 ///
 /// Parameters
 /// ----------
@@ -1423,9 +1468,11 @@ pub fn parallax_margin_py(separation: f64, min_distance: f64) -> PyResult<f64> {
 ///     rate limit of a pass of the search.
 /// parallax_margin : float
 ///     Largest angle between the directions of an object at one time from two
-///     observers of the detections, in degrees: 0 for one observer, otherwise
-///     :func:`parallax_margin` of the largest separation of two observers at
-///     one time and the smallest depth searched. Default is 0.
+///     observers of the detections, in degrees: :func:`parallax_margin` of
+///     the largest separation of two observers at one time and the smallest
+///     depth searched. One observer needs that of its own excursion about a
+///     smooth path, see :func:`parallax_margin`; 0 suits one on a smooth
+///     path, such as a spacecraft far from the Earth. Default is 0.
 /// nside : int, optional
 ///     HEALPix resolution of the cores, a power of two. Default is taken from
 ///     the halo as above.
@@ -1511,13 +1558,11 @@ pub fn tiles_py(
 ///     Time between the starts of consecutive windows, in days, half the length
 ///     of each. Finite, and at least the larger of ``max_gap`` and
 ///     ``tracklet_span``. Default is None, one window over the whole span.
-/// parallax_margin : float
-///     See :func:`tiles`, in degrees. Default is 0, for one observer.
 /// nside : int, optional
 ///     See :func:`tiles`, the same for every pass and window. Default is taken
 ///     for each pass from its halo.
-/// min_gap : float
-///     See :func:`search`, in days. Default is 0.5.
+/// parallax_margin : float
+///     See :func:`search`, in degrees. Default is 0.
 /// max_gap : float
 ///     See :func:`search`, in days. Default is 1.5.
 /// tracklet_span : float
@@ -1574,9 +1619,8 @@ pub fn tiles_py(
         observations,
         stations=None,
         window=None,
-        parallax_margin=0.0,
         nside=None,
-        min_gap=SearchSettings::default().min_gap,
+        parallax_margin=SearchSettings::default().parallax_margin.to_degrees(),
         max_gap=ConfirmRules::default().max_gap,
         tracklet_span=SearchSettings::default().tracklet_span,
         min_tracklet=default_count(SearchSettings::default().min_tracklet),
@@ -1602,9 +1646,8 @@ pub fn search_windows_py(
     observations: Vec<PyObservation>,
     stations: Option<Bound<'_, PyAny>>,
     window: Option<f64>,
-    parallax_margin: f64,
     nside: Option<i64>,
-    min_gap: f64,
+    parallax_margin: f64,
     max_gap: f64,
     tracklet_span: f64,
     min_tracklet: i64,
@@ -1621,7 +1664,7 @@ pub fn search_windows_py(
     min_sights_per_side: i64,
 ) -> PyResult<Vec<PyConfirmed>> {
     let settings = search_settings(
-        (min_gap, max_gap),
+        (parallax_margin, max_gap),
         (tracklet_span, group_span),
         (min_tracklet, lone_pairs),
         (min_depth, max_depth, passes),
@@ -1630,24 +1673,10 @@ pub fn search_windows_py(
     )?;
     let observations: Vec<AstrometricObservation> =
         observations.into_iter().map(|o| o.obs).collect();
-    let margin = radians(
-        "Search windows: parallax_margin",
-        parallax_margin,
-        false,
-        true,
-    )?;
     let nside = checked_nside(nside)?;
     let stations = station_indices(py, stations)?;
-    let confirmed = py.detach(|| {
-        search_windows(
-            &observations,
-            stations.as_deref(),
-            &settings,
-            window,
-            margin,
-            nside,
-        )
-    })?;
+    let confirmed =
+        py.detach(|| search_windows(&observations, stations.as_deref(), &settings, window, nside))?;
     Ok(confirmed_py(confirmed))
 }
 
@@ -1706,8 +1735,8 @@ pub fn search_windows_py(
 ///     an optical observation of a piece whose line of
 ///     sight :class:`Sights` would refuse, or if the loaded kernels do not
 ///     cover the Sun at the epoch of one, or the planets and the Moon, which
-///     the orbit fit pulls with, at the first and last epoch of the
-///     observations of the pieces.
+///     the orbit fit pulls with, from a day before the first to the last
+///     epoch of the observations of the pieces.
 #[pyfunction]
 #[pyo3(
     name = "merge_pieces",

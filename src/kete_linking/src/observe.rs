@@ -154,9 +154,8 @@ pub(crate) fn seen(state: &State<Equatorial, SunCenter>, sight: &Sight) -> Optio
 ///
 /// The derivative is the chain of three. The state transition matrix of
 /// [`propagate_two_body_with_stm`] takes a change of `state` to one of the
-/// position `x` and
-/// velocity `v` at `time`. [`emitted`] moves the object back by the light
-/// travel time `tau`, which solves `|x - v tau - o| = c tau` for the
+/// position `x` and velocity `v` at `time`. [`emitted`] moves the object back
+/// by the light travel time `tau`, which solves `|x - v tau - o| = c tau` for the
 /// observer `o`, so it changes by `n.(dx - tau dv) / (c + n.v)` with `n` the
 /// unit vector of `x - v tau - o`. The point the light left then changes by
 /// `(I + A tau^2 / 2) dx - tau (I + A tau^2 / 6) dv - w dtau`, with `A` the

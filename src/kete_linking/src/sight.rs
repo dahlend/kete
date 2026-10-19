@@ -36,7 +36,7 @@ pub struct Sight {
 pub(crate) const MAX_DAYS: f64 = 9e15;
 
 /// What makes a sight not [`Sight::is_usable`], for error messages.
-pub(crate) const UNUSABLE: &str = "a time more than 9e15 days from JD 0, an observer which is not \
+pub(crate) const UNUSABLE: &str = "a time 9e15 days or more from JD 0, an observer which is not \
                                    finite, a direction which is not a unit vector, or an \
                                    uncertainty which is not finite and positive";
 

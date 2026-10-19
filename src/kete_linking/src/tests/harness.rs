@@ -365,8 +365,8 @@ pub(crate) struct Scene {
 /// How a scene's sights are searched.
 #[derive(Debug, Clone)]
 pub(crate) struct Search {
-    /// Smallest and largest time between the sights of a pair, in days.
-    pub(crate) gaps: (f64, f64),
+    /// Largest time between the sights of a pair, in days.
+    pub(crate) max_gap: f64,
 
     /// Largest apparent rate of motion, in radians per day.
     pub(crate) max_rate: f64,
@@ -403,16 +403,16 @@ pub(crate) struct Search {
 
 impl Search {
     /// A search with the default grid steps and settings aimed at the
-    /// objects, with these gaps in days and largest rate in degrees a day,
+    /// objects, with this largest gap in days and rate in degrees a day,
     /// tracklets up to the tracklet span of `search` and time groups up to
     /// [`SPAN`],
     /// or the largest gap if shorter.
-    pub(crate) fn new(gaps: (f64, f64), max_rate: f64) -> Self {
+    pub(crate) fn new(max_gap: f64, max_rate: f64) -> Self {
         Self {
-            gaps,
+            max_gap,
             max_rate: max_rate.to_radians(),
-            tracklet_span: SearchSettings::default().tracklet_span.min(gaps.1),
-            group_span: SPAN.min(gaps.1),
+            tracklet_span: SearchSettings::default().tracklet_span.min(max_gap),
+            group_span: SPAN.min(max_gap),
             depths: None,
             rates: None,
             steps: (DEPTH_STEP, RATE_STEP),
@@ -611,12 +611,12 @@ pub(crate) fn run(scene: &Scene, search: &Search) -> Run {
     let start = Instant::now();
     let units = form_units(
         &scene.sights,
-        search.gaps.0,
-        search.gaps.1,
+        search.max_gap,
         search.max_rate,
         search.tracklet_span,
         2,
         true,
+        0.0,
     )
     .unwrap();
     let hypotheses: Vec<_> =
@@ -647,7 +647,7 @@ pub(crate) fn run(scene: &Scene, search: &Search) -> Run {
                     max_rms: MAX_RMS,
                     min_sights_per_side: 2,
                     group_span: search.group_span,
-                    max_gap: search.gaps.1,
+                    max_gap: search.max_gap,
                 },
             )
             .unwrap(),

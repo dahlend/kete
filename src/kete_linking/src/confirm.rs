@@ -38,6 +38,11 @@ const MIN_MOTION: f64 = 5.0;
 /// NAIF id of the Sun.
 const SUN: i32 = 10;
 
+/// Time before the first epoch over which the planets must be known, in
+/// days, as the orbit fit propagates to the time the light left the object.
+/// A day is the light time from about 170 AU.
+const LIGHT_TIME: f64 = 1.0;
+
 /// A state moved from the Solar System Barycenter to the Sun, with the
 /// loaded ephemeris. An observer's state this way is an origin for
 /// hypotheses.
@@ -136,10 +141,11 @@ pub struct ConfirmRules {
     pub max_rms: f64,
 
     /// Fewest observations a confirmed fit keeps on each side of its largest
-    /// time gap, at least 1. 2 favors purity, as a search for unknown objects
-    /// needs; 1 turns the rule off and favors completeness. Above half of
-    /// `min_sights` it also raises the fewest observations of a confirmation
-    /// to twice its value.
+    /// time gap, at least 1, and the count of the observations a fit of three
+    /// or more time groups needs, see [`confirm()`]. 2 favors purity, as a
+    /// search for unknown objects needs; 1 turns both rules off and favors
+    /// completeness. Above half of `min_sights` it also raises the fewest
+    /// observations of a confirmation to twice its value.
     pub min_sights_per_side: usize,
 
     /// Largest time between consecutive observations of one time group of a
@@ -281,8 +287,10 @@ const BATCH: usize = 512;
 ///   all of the kept sights together show no motion, or when no subset of
 ///   them can form passing time groups: no two of them are more than
 ///   `group_span` and at most `max_gap` days apart, which alone would form
-///   two groups, and no three are each more than `group_span` days after
-///   the one before, which alone would form three.
+///   two groups, and either no three are each more than `group_span` days
+///   after the one before, which alone would form three, or there are no
+///   more than twice `min_sights_per_side` of them, fewer than three or more
+///   groups need.
 ///
 /// The second test looks at subsets rather than at all of the kept sights,
 /// as the orbit fit keeps only some of them, and dropping one which bridges
@@ -316,11 +324,13 @@ const BATCH: usize = 512;
 ///   observations, a distant one through the motion of the observer;
 /// * keeps at least `min_sights_per_side` observations on each side of the
 ///   largest time between two consecutive ones it keeps;
-/// * keeps observations in at least two time groups, and in exactly two only
-///   when they are at most `max_gap` days apart. The time groups are the
-///   clusters of the kept observations in time, parted wherever two
-///   consecutive ones are more than `group_span` days apart. The gap
-///   between two groups is from the last observation of the first to the
+/// * keeps observations in at least two time groups: in exactly two only
+///   when they are at most `max_gap` days apart, and in three or more only
+///   when two of the groups hold at least `min_sights_per_side` observations
+///   each, or all of them together at least three times that. The time
+///   groups are the clusters of the kept observations in time, parted
+///   wherever two consecutive ones are more than `group_span` days apart. The
+///   gap between two groups is from the last observation of the first to the
 ///   first of the second.
 ///
 /// The last two rules are against links of two objects. Observations close in
@@ -359,11 +369,17 @@ const BATCH: usize = 512;
 /// time between them. A confirmation of two groups is therefore held to the
 /// time between them that a pair may span, `max_gap`, the largest gap the
 /// search links across without a third group to check it. Three or more
-/// groups test the orbit at a third time, and have no gap limit. A fit which
-/// fails these rules is turned down. The test `confirm_needs_two_time_groups`
-/// covers both. A candidate whose observations all lie within `group_span`
-/// days is one time group whatever the fit keeps, and is turned down without
-/// a fit.
+/// groups test the orbit at a third time, and have no gap limit, but only
+/// when they hold as many observations as two groups across a gap are asked
+/// for: two groups of `min_sights_per_side` among them, or three times that
+/// in all. Where the cadence is close against `group_span`, as for
+/// continuous coverage, every observation can be its own group, and among
+/// many false detections a few single ones line up with a false tracklet by
+/// chance; the count turns those down whatever the cadence. A fit which
+/// fails these rules is turned down. The tests `confirm_needs_two_time_groups`
+/// and `groups_need_their_observations` cover them. A candidate whose
+/// observations all lie within `group_span` days is one time group whatever
+/// the fit keeps, and is turned down without a fit.
 ///
 /// Of confirmed candidates which share an observation, the one which keeps
 /// more observations wins, then the one with the lower residual, then the
@@ -391,9 +407,9 @@ const BATCH: usize = 512;
 /// a candidate has a line of sight which is not [`Sight::is_usable`]. Fails if
 /// the loaded kernels do not cover the Sun at the epoch of a candidate or of
 /// one of its optical observations, or do not cover the Sun, the planets and
-/// the Moon, which the orbit fit pulls with, at the first and the last of
-/// the epochs of the candidates and of their observations, or if an orbit fit
-/// fails for want of data the kernels do not hold. A candidate whose fit
+/// the Moon, which the orbit fit pulls with, from a day before the first to
+/// the last of the epochs of the candidates and of their observations, or if
+/// an orbit fit fails for want of data the kernels do not hold. A candidate whose fit
 /// otherwise fails is not confirmed, and is not an error.
 pub fn confirm(
     observations: &[AstrometricObservation],
@@ -506,6 +522,9 @@ pub(crate) fn confirm_with(
         let found: Vec<Option<(usize, Confirmed)>> = chosen
             .into_par_iter()
             .map(confirms)
+            // The first error in the order of the candidates, on any threads.
+            .collect::<Vec<_>>()
+            .into_iter()
             .collect::<KeteResult<_>>()?;
         waiting.extend(found.into_iter().flatten());
         waiting.sort_by(|(i, a), (j, b)| rank(a, b).then(i.cmp(j)));
@@ -522,17 +541,21 @@ pub(crate) fn confirm_with(
 }
 
 /// Fails unless the loaded kernels hold every body the orbit fit pulls with,
-/// with respect to the Solar System Barycenter, at the first and last of
-/// `times`, Julian dates. The orbit fit propagates within that span, and
-/// fails on a body the kernels do not hold, which [`confirm()`] would take for
-/// a candidate which is not confirmed. The ephemerides of the planets are
-/// continuous over their span, so its ends stand for the time between.
+/// with respect to the Solar System Barycenter, from [`LIGHT_TIME`] before
+/// the first of `times`, Julian dates, to the last. The orbit fit propagates
+/// within that span, and a body the kernels do not hold makes it fail to
+/// converge, which [`confirm()`] would take for a candidate which is not
+/// confirmed. The ephemerides of the planets are continuous over their span,
+/// so its ends stand for the time between. No `times` need nothing.
 pub(crate) fn check_force_model(
     ephemeris: &SpiceEphemeris,
     times: impl IntoIterator<Item = f64>,
 ) -> KeteResult<()> {
     let (first, last) = first_and_last(times);
-    for time in [first, last] {
+    if first > last {
+        return Ok(());
+    }
+    for time in [first - LIGHT_TIME, last] {
         for body in GravParams::planets() {
             let _ = ephemeris.try_get_state_with_center(body.naif_id, time.into(), 0)?;
         }
@@ -570,7 +593,7 @@ pub(crate) fn confirm_one(
     let good = finite
         && is_bound(&found.fit)
         && moves(sights, &found.sights)
-        && time_groups_hold(observations, &found.sights, rules.group_span, rules.max_gap)
+        && time_groups_hold(observations, &found.sights, rules)
         && found.fit.rms <= rules.max_rms;
     Ok(good.then_some(found))
 }
@@ -638,15 +661,18 @@ fn moves(sights: Scaled<'_>, indices: &[usize]) -> bool {
 /// them fall in time groups which pass [`time_groups_hold`] exactly when two
 /// of them are more than `group_span` and at most `max_gap` days apart, which
 /// alone form two groups, or three of them are each more than `group_span`
-/// days after the one before, which alone form three. [`time_groups_hold`]
-/// on all of them is not such a test: dropping an observation which bridges
-/// a group can split it in two.
+/// days after the one before, which alone form three, and there are at least
+/// as many as two groups of `min_sights_per_side` and one more, the fewest
+/// either rule for three or more groups accepts. [`time_groups_hold`] on all
+/// of them is not such a test: dropping an observation which bridges a group
+/// can split it in two.
 fn may_hold(
     observations: &[AstrometricObservation],
     sights: Scaled<'_>,
     indices: &[usize],
-    (group_span, max_gap): (f64, f64),
+    rules: &ConfirmRules,
 ) -> bool {
+    let (group_span, max_gap) = (rules.group_span, rules.max_gap);
     let mut times: Vec<f64> = indices
         .iter()
         .map(|&i| observations[i].epoch().jd())
@@ -667,30 +693,42 @@ fn may_hold(
             start = time;
         }
     }
-    (two || groups >= 3) && moves(sights, indices)
+    let three = groups >= 3 && times.len() > 2 * rules.min_sights_per_side;
+    (two || three) && moves(sights, indices)
 }
 
-/// Whether these observations fall in at least two time groups, and in
-/// exactly two only at most `max_gap` days apart, see [`confirm()`].
+/// Whether these observations fall in time groups which pass the rules of
+/// [`confirm()`]: two groups of at least `min_sights_per_side` each at most
+/// `max_gap` days apart, or three or more groups of which two hold at least
+/// `min_sights_per_side` each or which hold three times that in all.
 fn time_groups_hold(
     observations: &[AstrometricObservation],
     indices: &[usize],
-    group_span: f64,
-    max_gap: f64,
+    rules: &ConfirmRules,
 ) -> bool {
+    let (group_span, max_gap) = (rules.group_span, rules.max_gap);
+    let per_side = rules.min_sights_per_side;
     let mut times: Vec<f64> = indices
         .iter()
         .map(|&i| observations[i].epoch().jd())
         .collect();
     times.sort_by(f64::total_cmp);
-    let mut between = times
-        .windows(2)
-        .map(|pair| pair[1] - pair[0])
-        .filter(|&gap| gap > group_span);
-    match (between.next(), between.next()) {
-        (None, _) => false,
-        (Some(gap), None) => gap <= max_gap,
-        (Some(_), Some(_)) => true,
+    // Each group as its first and last time and its count.
+    let mut groups: Vec<(f64, f64, usize)> = Vec::new();
+    for &time in &times {
+        match groups.last_mut() {
+            Some((_, last, count)) if time - *last <= group_span => {
+                *last = time;
+                *count += 1;
+            }
+            _ => groups.push((time, time, 1)),
+        }
+    }
+    let rich = groups.iter().filter(|group| group.2 >= per_side).count();
+    match groups.as_slice() {
+        [] | [_] => false,
+        [first, second] => rich == 2 && second.0 - first.1 <= max_gap,
+        _ => rich >= 2 || times.len() >= 3 * per_side,
     }
 }
 
@@ -736,15 +774,15 @@ fn short_side(
     )
 }
 
-/// The orbit fit of one candidate, with the observations it kept. `start`
-/// is the state of the candidate moved to the Solar System Barycenter, which
-/// starts the orbit fit only if the two-body fit fails, and `sights` the
-/// lines of sight of the observations. An error is a candidate which is not
-/// confirmed, such as one whose two-body fit is hopeless under `min_sights`
-/// and `max_rms` of the rules, see [`HOPELESS`]. The observations it keeps
-/// are at least `min_sights` and two thirds of those of the candidate, with
-/// at least `min_sights_per_side` on each side of their largest gap, see
-/// [`confirm()`].
+/// The orbit fit of one candidate, with the observations it kept. `start` is
+/// the state of the candidate moved to the Solar System Barycenter, which
+/// starts the orbit fit only if the two-body fit fails, and `sights` the lines
+/// of sight of the observations. An error is a candidate which is not
+/// confirmed, unless it is for want of data, see [`confirm_one`], such as one
+/// whose two-body fit is hopeless under `min_sights` and `max_rms` of the
+/// rules, see [`HOPELESS`]. The observations it keeps are at least
+/// `min_sights` and two thirds of those of the candidate, with at least
+/// `min_sights_per_side` on each side of their largest gap, see [`confirm()`].
 fn fit(
     observations: &[AstrometricObservation],
     sights: Scaled<'_>,
@@ -756,8 +794,7 @@ fn fit(
         min_sights,
         max_rms,
         min_sights_per_side: per_side,
-        group_span,
-        max_gap,
+        ..
     } = rules;
     // The two-body fit is about the Sun, at the middle of the optical
     // observations. It is moved to the barycenter there to start the orbit
@@ -784,7 +821,7 @@ fn fit(
         ),
         None => (start.clone(), candidate.sights.clone()),
     };
-    if !may_hold(observations, sights, &indices, (group_span, max_gap)) {
+    if !may_hold(observations, sights, &indices, rules) {
         return Err(Error::ValueError(
             "Confirm: the observations the two-body fit keeps cannot be confirmed".into(),
         ));
@@ -850,6 +887,7 @@ fn fit_kept(
     };
     let fit = match run(FIT_ITERATIONS) {
         Ok(fit) if is_bound(&fit) => fit,
+        Err(error) if is_missing_data(&error) => return Err(error),
         _ => run(0)?,
     };
     if fit.included.len() != indices.len() || fit.observations.len() != indices.len() {
@@ -910,7 +948,13 @@ mod tests {
         // bridge as an outlier may confirm, so the candidate is not turned
         // down before the fit. Without the first sight, no sights of them
         // form passing groups, and it is.
-        let (group_span, max_gap) = (0.1, 1.5);
+        // One per side, so that three single sights may be three groups.
+        let rules = ConfirmRules {
+            min_sights_per_side: 1,
+            group_span: 0.1,
+            max_gap: 1.5,
+            ..ConfirmRules::default()
+        };
         let observations: Vec<AstrometricObservation> = [0.0, 0.08, 0.16, 2.0]
             .iter()
             .enumerate()
@@ -951,13 +995,8 @@ mod tests {
             })
             .collect();
         let (all, unbridged) = ([0, 1, 2, 3], [0, 2, 3]);
-        assert!(!time_groups_hold(&observations, &all, group_span, max_gap));
-        assert!(time_groups_hold(
-            &observations,
-            &unbridged,
-            group_span,
-            max_gap
-        ));
+        assert!(!time_groups_hold(&observations, &all, &rules));
+        assert!(time_groups_hold(&observations, &unbridged, &rules));
         assert!(may_hold(
             &observations,
             Scaled {
@@ -965,14 +1004,9 @@ mod tests {
                 factors: &[1.0; 4],
             },
             &all,
-            (group_span, max_gap)
+            &rules
         ));
-        assert!(!time_groups_hold(
-            &observations,
-            &[1, 2, 3],
-            group_span,
-            max_gap
-        ));
+        assert!(!time_groups_hold(&observations, &[1, 2, 3], &rules));
         assert!(!may_hold(
             &observations,
             Scaled {
@@ -980,7 +1014,109 @@ mod tests {
                 factors: &[1.0; 4],
             },
             &[1, 2, 3],
-            (group_span, max_gap)
+            &rules
         ));
+    }
+
+    #[test]
+    fn groups_need_their_observations() {
+        // Sights at the given days, each a group of its own unless less than
+        // `group_span` 0.03 days apart, moving steadily.
+        let rules = ConfirmRules {
+            group_span: 0.03,
+            ..ConfirmRules::default()
+        };
+        let observations = |days: &[f64]| -> Vec<AstrometricObservation> {
+            days.iter()
+                .enumerate()
+                .map(|(k, &day)| AstrometricObservation::Optical {
+                    observer: State::new(
+                        Desig::Empty,
+                        Time::<TDB>::new(2460000.5 + day),
+                        Vector::new([1.0, 0.0, 0.0]),
+                        Vector::new([0.0, 0.017, 0.0]),
+                        SSB,
+                    ),
+                    ra: 1e-3 * k as f64,
+                    dec: 0.0,
+                    sigma_ra: 1e-6,
+                    sigma_dec: 1e-6,
+                    sigma_corr: 0.0,
+                    time_sigma: 0.0,
+                    is_occultation: false,
+                    band: Band::Unknown([0; 8]),
+                    mag: f64::NAN,
+                })
+                .collect()
+        };
+        let holds = |days: &[f64], rules: &ConfirmRules| {
+            let all: Vec<usize> = (0..days.len()).collect();
+            time_groups_hold(&observations(days), &all, rules)
+        };
+        let pair = |day: f64| [day, day + 0.02];
+        // A sight every 95 minutes: five single groups are fewer than three
+        // groups of two, six are enough, and with one per side three are.
+        let orbits: Vec<f64> = (0..6).map(|k| f64::from(k) * 95.0 / 1440.0).collect();
+        assert!(!holds(&orbits[..5], &rules));
+        assert!(holds(&orbits, &rules));
+        let one = ConfirmRules {
+            min_sights_per_side: 1,
+            ..rules
+        };
+        assert!(holds(&orbits[..3], &one));
+        // Two pairs and a single sight between them or after them: two
+        // groups of two among three or more, at any time apart.
+        assert!(holds(
+            &[&pair(0.0)[..], &[1.0], &pair(2.0)].concat(),
+            &rules
+        ));
+        assert!(holds(
+            &[&pair(0.0)[..], &[2.0], &pair(4.0)].concat(),
+            &rules
+        ));
+        assert!(holds(
+            &[&pair(0.0)[..], &pair(7.0), &[7.1]].concat(),
+            &rules
+        ));
+        // One pair and two single sights are not enough.
+        assert!(!holds(&[&pair(0.0)[..], &[1.0, 2.0]].concat(), &rules));
+        // Two pairs alone are held to `max_gap`.
+        assert!(holds(&[pair(0.0), pair(1.0)].concat(), &rules));
+        assert!(!holds(&[pair(0.0), pair(2.0)].concat(), &rules));
+
+        // Before a fit, sights which no subset of could pass are turned
+        // down: three spaced single sights and one more are too few for
+        // either rule of three groups, five are enough.
+        let sights = |days: &[f64]| -> Vec<Option<Sight>> {
+            observations(days)
+                .iter()
+                .map(|observation| {
+                    let AstrometricObservation::Optical {
+                        observer, ra, dec, ..
+                    } = observation
+                    else {
+                        unreachable!()
+                    };
+                    Some(Sight {
+                        time: observer.epoch,
+                        observer: observer.pos,
+                        direction: Vector::from_ra_dec(*ra, *dec),
+                        sigma: 1e-6,
+                    })
+                })
+                .collect()
+        };
+        let may = |days: &[f64]| {
+            let all: Vec<usize> = (0..days.len()).collect();
+            let lines = sights(days);
+            let factors = vec![1.0; days.len()];
+            let scaled = Scaled {
+                sights: &lines,
+                factors: &factors,
+            };
+            may_hold(&observations(days), scaled, &all, &rules)
+        };
+        assert!(!may(&[0.0, 2.0, 4.0, 4.02]));
+        assert!(may(&[0.0, 0.02, 2.0, 4.0, 4.02]));
     }
 }

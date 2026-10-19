@@ -37,25 +37,15 @@ pub struct SearchPass {
     /// Largest apparent rate of motion within a tracklet and of a pair, in
     /// radians per day, finite and positive, see [`form_units`].
     ///
-    /// Pairing does not compare observers, so for the pairs of sights from
-    /// observers at different places to form, the rate has to cover the
-    /// parallax between those observers over the time between the sights of
-    /// a pair.
-    ///
-    /// In [`crate::search_windows`] the rate is also how fast the halo of a
-    /// tile grows. The parallax between observers is not added to the rate
-    /// for the tiles: it goes in the `parallax_margin` of
-    /// [`crate::search_windows`].
+    /// The parallax between observers at different places is not a rate: it
+    /// goes in [`SearchSettings::parallax_margin`], for both the pairs and,
+    /// in [`crate::search_windows`], the tiles, whose halos grow at this rate.
     pub max_rate: f64,
 }
 
 /// Settings of [`search()`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchSettings {
-    /// Smallest time between the sights of a pair, in days, see
-    /// [`form_units`]. The largest is the `max_gap` of [`Self::confirm`].
-    pub min_gap: f64,
-
     /// Longest tracklet, in days, see [`form_units`]. A little longer than
     /// the time between the revisits of a field within a night, so that the
     /// detections of one object in a night form a tracklet, see
@@ -67,19 +57,19 @@ pub struct SearchSettings {
     /// keeps every tracklet.
     ///
     /// Two false detections within `tracklet_span` and the rate limit of each
-    /// other form a tracklet of two as readily as an object does, and a chain
-    /// of them breaks into such short pieces. Three or more leaves those out,
-    /// for a survey which sees each object three or more times in a visit,
-    /// such as a spacecraft which revisits a field every orbit, in data with
-    /// many false detections. An object seen fewer times than this in a visit
-    /// has no tracklet there, and is found only through the pairs of those
-    /// sights, see [`Self::lone_pairs`].
+    /// other form a tracklet of two as readily as an object does. Three or
+    /// more leaves those out, and seeds tracklets only from sights closer in
+    /// time, for a survey which sees each object three or more times in a
+    /// visit, such as a spacecraft which revisits a field every orbit, in
+    /// data with many false detections. An object seen fewer times than this
+    /// in a visit has no tracklet there, and is found only through the pairs
+    /// of those sights, see [`Self::lone_pairs`].
     pub min_tracklet: usize,
 
     /// Whether two lone sights, those in no tracklet, may be paired, see
     /// [`form_units`]. False, the default, does not pair them.
     ///
-    /// A lone sight pairs with every sight within the rate limit, not only
+    /// Two lone sights pair whenever they are within the rate limit, not
     /// along the track of a tracklet, so where most sights are false
     /// detections, which seldom form tracklets, those pairs grow as the square
     /// of their density and outnumber every other unit, see
@@ -93,6 +83,17 @@ pub struct SearchSettings {
     /// object with no tracklet is not found. True suits a survey which sees
     /// most objects once per visit, in data with few false detections.
     pub lone_pairs: bool,
+
+    /// Largest angle between the directions of one object seen at one time
+    /// by two of the observers, in radians, finite and not negative, see
+    /// [`crate::parallax_margin`]. It widens the pairs of [`form_units`] and
+    /// the halos of the tiles of [`crate::search_windows`]. Zero, the
+    /// default, suits observers no farther apart than the parallax the pair
+    /// gates allow for the curvature of the motion, such as sites on the
+    /// ground for objects past a few tenths of an AU; observers farther
+    /// apart, such as one on the ground and one in space, need the margin of
+    /// their separation and [`Self::min_depth`].
+    pub parallax_margin: f64,
 
     /// Smallest depth of the hypotheses, in AU, see [`hypothesis_grid`].
     pub min_depth: f64,
@@ -115,7 +116,7 @@ pub struct SearchSettings {
 
 impl Default for SearchSettings {
     /// Tracklets up to an eighth of a day long, time groups parted at gaps of
-    /// more than a tenth of a day, pairs half a day to a day and a half apart,
+    /// more than a tenth of a day, pairs up to a day and a half apart,
     /// motion up to 0.6 degrees a day in the first pass and a degree a day in
     /// the second, and depths from 0.5 to 4.5 AU. These suit main belt objects
     /// seen by surveys on the ground in tracklets within a night; other
@@ -123,18 +124,19 @@ impl Default for SearchSettings {
     ///
     /// A degree a day is about twice the rate of the fastest main belt
     /// objects, the Hungarias, near opposition. A larger one finds no more
-    /// main belt objects; it costs little, as the ends of tracklets are paired
-    /// only along their tracks, but the pairs of lone sights grow as its
-    /// square.
+    /// main belt objects; it costs little, as every pair holds the end of a
+    /// tracklet and lies on its track, but with [`Self::lone_pairs`] the
+    /// pairs of two lone sights grow as its square.
     ///
     /// A tracklet of an eighth of a day holds the detections of one object
     /// from one site in a night as one unit, for surveys which revisit a
     /// field minutes apart and for those which revisit it two to three hours
     /// apart, and its first and last detection are also paired across nights
     /// along its track. A sight whose revisit falls just past the tracklet
-    /// span is lone and pairs with every sight in reach, so a span shorter
-    /// than a survey's revisits costs time and objects in that survey's
-    /// fields. A longer span also chains the visits of two sites a few hours
+    /// span is lone, and pairs only along the tracks of tracklets, or with
+    /// [`Self::lone_pairs`] with every lone sight in reach, so a span shorter
+    /// than a survey's revisits costs time or objects in that survey's
+    /// fields. A longer span also joins the visits of two sites a few hours
     /// apart in one night, which part into two tracklets where their parallax
     /// is larger than the track allows, and otherwise join into one, which
     /// leaves the link fewer units of those objects. So the span is chosen for
@@ -187,10 +189,10 @@ impl Default for SearchSettings {
     /// confirmation keeps.
     fn default() -> Self {
         Self {
-            min_gap: 0.5,
             tracklet_span: 0.125,
             min_tracklet: 2,
             lone_pairs: false,
+            parallax_margin: 0.0,
             min_depth: 0.5,
             max_depth: 4.5,
             passes: vec![
@@ -253,16 +255,17 @@ impl Default for SearchSettings {
 /// uncertainties of each station to the scatter its observations show.
 ///
 /// The factor of each station is estimated once, from the objects the first
-/// pass confirms: each optical observation their fits keep adds the squares
-/// of its residuals over its stated uncertainties on the two axes of the
-/// sky, and `2 (1 - 3 / n)` to what is expected, for a fit which keeps `n`,
+/// pass confirms: each optical observation their fits keep adds the
+/// chi-square of its residuals on the two axes of the sky over its stated
+/// uncertainties and their correlation, and `2 (1 - 3 / n)` to what is
+/// expected, for a fit which keeps `n`,
 /// as the six parameters of the orbit absorb six of its `2 n` residuals. The
 /// factor is the square root of their ratio, for a station with at least 100
 /// observations kept by the fits of at least 20 objects, and at least one,
 /// so that uncertainties only grow. Each other station keeps its stated
 /// uncertainties. The residuals are those of the fits over the stated
-/// uncertainties of the observations. The
-/// candidates of the first pass are then confirmed again with both axes of
+/// uncertainties of the observations. The candidates of the first pass are
+/// then confirmed again with both axes of
 /// the sky of every observation of each station scaled by its factor,
 /// without linking again, and those confirmations replace the first. The
 /// later passes confirm with the scaled uncertainties, and so does the merge
@@ -295,13 +298,14 @@ impl Default for SearchSettings {
 /// # Errors
 ///
 /// [`Error::ValueError`] for settings which [`form_units`],
-/// [`hypothesis_grid`], [`link()`] or [`crate::confirm()`] refuse, if there are
-/// no passes, if a pass forms more than [`crate::MAX_UNITS`] units, if `stations` does not hold one label per observation, or
-/// naming the first optical observation whose line of sight is not
-/// [`Sight::is_usable`]. Fails if the loaded kernels do not cover the Sun at
-/// the epoch of an optical observation, or do not cover the Sun, the planets
-/// and the Moon, which the orbit fit pulls with, at the first and the last of
-/// the epochs of the candidates of a pass and of their observations, see
+/// [`hypothesis_grid`], [`link()`] or [`crate::confirm()`] refuse, if there
+/// are no passes, if a pass forms more than [`crate::MAX_UNITS`] units, if
+/// `stations` does not hold one label per observation, or naming the first
+/// optical observation whose line of sight is not [`Sight::is_usable`]. Fails
+/// if the loaded kernels do not cover the Sun at the epoch of an optical
+/// observation, or do not cover the Sun, the planets and the Moon, which the
+/// orbit fit pulls with, from a day before the first to the last of the epochs
+/// of the candidates of a pass and of their observations, see
 /// [`crate::confirm()`].
 pub fn search(
     observations: &[AstrometricObservation],
@@ -313,7 +317,15 @@ pub fn search(
     let members = (0..observations.len())
         .filter(|&i| sights[i].is_some())
         .collect();
-    let (found, factors) = in_passes(observations, &sights, stations, members, settings, None)?;
+    let (found, factors) = in_passes(
+        observations,
+        &sights,
+        stations,
+        members,
+        settings,
+        false,
+        None,
+    )?;
     let scaled = Scaled {
         sights: &sights,
         factors: &factors,
@@ -366,11 +378,11 @@ pub(crate) fn check_settings(
     };
     for pass in &settings.passes {
         check_limits(
-            settings.min_gap,
             settings.confirm.max_gap,
             pass.max_rate,
             settings.tracklet_span,
             settings.min_tracklet,
+            settings.parallax_margin,
         )?;
         let (depth_step, rate_step) = (DEPTH_STEP * pass.grid_factor, RATE_STEP * pass.grid_factor);
         let (min_depth, max_depth) = (settings.min_depth, settings.max_depth);
@@ -385,10 +397,11 @@ pub(crate) fn check_settings(
 /// `sights` holds the line of sight of every optical observation, and every
 /// member is optical.
 ///
-/// Each pass is searched in tiles of the sky: with `tiling`, its parallax
-/// margin and `nside`, the [`tiles()`] of the members with the rate limit of
-/// the pass, whose hypotheses all aim at the middle of the time the members
-/// span, see [`crate::search_windows`]; without it, one tile of every member.
+/// Each pass is searched in tiles of the sky: when `tiled`, the [`tiles()`]
+/// of the members with the rate limit of the pass, the parallax margin of the
+/// settings and `nside`, whose hypotheses all aim at the middle of the time
+/// the members span, see [`crate::search_windows`]; otherwise one tile of
+/// every member.
 /// A tile with fewer members than a confirmation keeps is skipped. The
 /// objects confirmed in the tiles of a pass are gathered, and of objects
 /// which share an observation one is kept by the overlap rule of
@@ -404,24 +417,25 @@ pub(crate) fn in_passes(
     stations: Option<&[usize]>,
     mut members: Vec<usize>,
     settings: &SearchSettings,
-    tiling: Option<(f64, Option<u32>)>,
+    tiled: bool,
+    nside: Option<u32>,
 ) -> KeteResult<(Vec<Confirmed>, Vec<f64>)> {
     let rules = &settings.confirm;
     let mut factors = vec![1.0; observations.len()];
     let mut found = Vec::new();
     for (n, pass) in settings.passes.iter().enumerate() {
         let calibrating = if n == 0 { stations } else { None };
-        let (tiles, target) = match tiling {
-            None => (vec![members.clone()], None),
-            Some((parallax_margin, nside)) => {
-                let own: Vec<Sight> = members.iter().filter_map(|&i| sights[i]).collect();
-                let (first, last) = first_and_last(own.iter().map(|sight| sight.time.jd()));
-                let tiles = tiles(&own, pass.max_rate, parallax_margin, nside, None)?
-                    .into_iter()
-                    .map(|tile| tile.into_iter().map(|k| members[k]).collect())
-                    .collect();
-                (tiles, Some(f64::midpoint(first, last)))
-            }
+        let (tiles, target) = if tiled {
+            let own: Vec<Sight> = members.iter().filter_map(|&i| sights[i]).collect();
+            let (first, last) = first_and_last(own.iter().map(|sight| sight.time.jd()));
+            let margin = settings.parallax_margin;
+            let tiles = tiles(&own, pass.max_rate, margin, nside, None)?
+                .into_iter()
+                .map(|tile| tile.into_iter().map(|k| members[k]).collect())
+                .collect();
+            (tiles, Some(f64::midpoint(first, last)))
+        } else {
+            (vec![members.clone()], None)
         };
         // The candidates of the tiles are kept only to confirm them again
         // with the factors the pass estimates.
@@ -489,12 +503,12 @@ fn pass_candidates(
     debug_assert_eq!(own.len(), members.len(), "every member is optical");
     let units = form_units(
         &own,
-        settings.min_gap,
         settings.confirm.max_gap,
         pass.max_rate,
         settings.tracklet_span,
         settings.min_tracklet,
         settings.lone_pairs,
+        settings.parallax_margin,
     )?;
     check_unit_count("Search", units.len())?;
     let target = target.unwrap_or_else(|| {

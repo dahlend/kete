@@ -30,8 +30,9 @@ const MIN_CALIBRATION_OBJECTS: usize = 20;
 /// stated uncertainty of each observation times the factor of its station.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Scaled<'a> {
-    /// The line of sight of every optical observation, with its stated
-    /// uncertainty, and `None` for each radar observation.
+    /// The line of sight of every optical observation of the candidates,
+    /// with its stated uncertainty, and `None` for every other observation,
+    /// see [`crate::confirm::sights_of`].
     pub(crate) sights: &'a [Option<Sight>],
 
     /// The factor on the uncertainties of each observation, one where they
@@ -40,13 +41,14 @@ pub(crate) struct Scaled<'a> {
 }
 
 impl Scaled<'_> {
-    /// Whether observation `index` is optical, with a line of sight.
+    /// Whether observation `index` has a line of sight, as an optical
+    /// observation of the candidates does.
     pub(crate) fn is_optical(&self, index: usize) -> bool {
         self.sights[index].is_some()
     }
 
     /// The line of sight of observation `index` with its scaled uncertainty,
-    /// `None` for a radar observation.
+    /// `None` without one.
     pub(crate) fn sight(&self, index: usize) -> Option<Sight> {
         let sight = self.sights[index]?;
         Some(Sight {
@@ -127,17 +129,14 @@ fn kept_chi_squares(
             return None;
         }
         // Residuals and uncertainties in right ascension are both along the
-        // coordinate, not the sky, so their ratio is that on the sky.
-        if let AstrometricObservation::Optical {
-            sigma_ra,
-            sigma_dec,
-            ..
-        } = &observations[index]
-        {
+        // coordinate, not the sky, so their ratio is that on the sky. The
+        // weights hold the correlation of the two axes.
+        let stated = &observations[index];
+        if !stated.is_radar() {
             if residual.len() != 2 {
                 return None;
             }
-            let chi2 = (residual[0] / sigma_ra).powi(2) + (residual[1] / sigma_dec).powi(2);
+            let chi2 = residual.dot(&(stated.base_weight_matrix() * residual));
             found.push((index, chi2));
         }
     }
@@ -181,9 +180,7 @@ fn factors_by_station(
         seen.sort_unstable();
         seen.dedup();
         for station in seen {
-            if let Some(sum) = sums.get_mut(&station) {
-                sum.objects += 1;
-            }
+            sums.entry(station).or_default().objects += 1;
         }
     }
     sums.into_iter()

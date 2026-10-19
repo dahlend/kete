@@ -75,12 +75,12 @@ fn nine_over(window: f64) -> Vec<f64> {
 
 /// Pairs within a night only, for main belt rates.
 fn within_night() -> Search {
-    Search::new((0.01, 0.1), 0.5)
+    Search::new(0.1, 0.5)
 }
 
 /// Pairs on neighboring nights, for main belt rates.
 fn next_night() -> Search {
-    Search::new((0.5, 1.1), 0.5)
+    Search::new(1.1, 0.5)
 }
 
 /// `times` for each observer, offset by `offset` days per observer.
@@ -220,7 +220,7 @@ fn matrix_geometry() {
             row(
                 &format!("{population:?} elong {elong} lat {lat}"),
                 &sky,
-                &Search::new((0.01, 0.1), rate),
+                &Search::new(0.1, rate),
             );
         }
     }
@@ -236,15 +236,11 @@ fn matrix_cadence() {
     let mut irregular: Vec<f64> = (0..15).map(|_| rng.between(-5.0, 5.0)).collect();
     irregular.sort_by(f64::total_cmp);
     let cases: Vec<(&str, Vec<f64>, Search)> = vec![
-        (
-            "4 x 10 s, 3 nights",
-            seconds.clone(),
-            Search::new((5.0 * SECOND, 0.1), 0.5),
-        ),
+        ("4 x 10 s, 3 nights", seconds.clone(), Search::new(0.1, 0.5)),
         (
             "4 x 3 min, 3 nights",
             nightly(-1, 1, 4, 3.0 * 60.0 * SECOND),
-            Search::new((60.0 * SECOND, 0.1), 0.5),
+            Search::new(0.1, 0.5),
         ),
         ("paired 40 min, 5 nights", paired(), within_night()),
         (
@@ -253,30 +249,21 @@ fn matrix_cadence() {
             within_night(),
         ),
         (
-            "paired 40 min, 5 nights, all pairs",
+            "paired 40 min, 5 nights, gaps to 1.1 d",
             paired(),
-            Search::new((0.01, 1.1), 0.5),
+            Search::new(1.1, 0.5),
         ),
-        (
-            "10 x 3 min, 3 nights, all pairs",
-            tracklets.clone(),
-            Search::new((60.0 * SECOND, 0.1), 0.5),
-        ),
-        (
-            "10 x 3 min, 3 nights, pairs over 20 min",
-            tracklets,
-            Search::new((20.0 * 60.0 * SECOND, 0.1), 0.5),
-        ),
+        ("10 x 3 min, 3 nights", tracklets, Search::new(0.1, 0.5)),
         ("1 a night, 15 nights", daily(), next_night()),
         (
             "1 every 2 nights, 15 nights",
             (-7..=7).step_by(2).map(f64::from).collect(),
-            Search::new((1.5, 2.1), 0.5),
+            Search::new(2.1, 0.5),
         ),
         (
             "15 at random over 10 days",
             irregular,
-            Search::new((0.0, 2.0), 0.5),
+            Search::new(2.0, 0.5),
         ),
         (
             "paired, nights -6..-4 and 4..6",
@@ -286,12 +273,12 @@ fn matrix_cadence() {
         (
             "1 a night, nights -6..-4 and 4..6",
             [-6, -5, -4, 4, 5, 6].map(f64::from).to_vec(),
-            Search::new((0.5, 8.1), 0.5),
+            Search::new(8.1, 0.5),
         ),
         (
             "10 over 2 hours, one night",
             nightly(0, 0, 10, 12.0 * 60.0 * SECOND),
-            Search::new((0.0, 0.1), 0.5),
+            Search::new(0.1, 0.5),
         ),
         (
             "paired, two nights",
@@ -305,7 +292,7 @@ fn matrix_cadence() {
     for noise in [0.5, 1.0] {
         let mut sky = Sky::new(Population::MainBelt, 30, &seconds);
         sky.noise = noise * ARCSEC;
-        let search = Search::new((5.0 * SECOND, 0.1), 0.5);
+        let search = Search::new(0.1, 0.5);
         row(
             &format!("4 x 10 s, 3 nights, {noise} arcsec"),
             &sky,
@@ -317,10 +304,7 @@ fn matrix_cadence() {
     // degrees a day covers their parallax in 30 seconds.
     for (name, search) in [
         ("two sites 30 s apart, no cross pairs", within_night()),
-        (
-            "two sites 30 s apart, cross pairs",
-            Search::new((10.0 * SECOND, 0.1), 6.0),
-        ),
+        ("two sites 30 s apart, cross pairs", Search::new(0.1, 6.0)),
     ] {
         let mut sky = Sky::new(Population::MainBelt, 30, &[]);
         sky.observers = vec![
@@ -348,7 +332,7 @@ fn matrix_populations() {
         &Sky::new(MainBelt, 30, &daily()),
         &next_night(),
     );
-    let search = Search::new((0.01, 0.1), 20.0);
+    let search = Search::new(0.1, 20.0);
     row(
         "near-Earth 0.05-0.5, paired 3 nights",
         &near_earth(30, &short),
@@ -364,15 +348,15 @@ fn matrix_populations() {
     row(
         "close 0.02-0.05, 9 over 8 h, steps x1/2",
         &close(15, (0.02, 0.05), 8.0 * HOUR),
-        &Search::new((0.0, 0.1), 100.0).coarse(0.5).span(CLOSE_SPAN),
+        &Search::new(0.1, 100.0).coarse(0.5).span(CLOSE_SPAN),
     );
     row(
         "close 0.003-0.01, 9 over 2 h, steps x1.25",
         &close(15, (0.003, 0.01), 2.0 * HOUR),
-        &Search::new((0.0, 0.1), 400.0).coarse(1.25).span(CLOSE_SPAN),
+        &Search::new(0.1, 400.0).coarse(1.25).span(CLOSE_SPAN),
     );
     let interior = sky(Interior, 30, None, 45.0, &short);
-    let search = Search::new((0.01, 0.1), 5.0);
+    let search = Search::new(0.1, 5.0);
     row("interior, elong 45, paired 3 nights", &interior, &search);
     row(
         "interior, elong 45, paired 3 nights, steps x1/8",
@@ -403,12 +387,12 @@ fn matrix_populations() {
     row(
         "high incl and retrograde, paired",
         &sky(Tilted, 30, None, 150.0, &paired()),
-        &Search::new((0.01, 0.1), 3.0),
+        &Search::new(0.1, 3.0),
     );
     row(
         "high incl and retrograde, daily",
         &sky(Tilted, 30, None, 150.0, &daily()),
-        &Search::new((0.5, 1.1), 3.0),
+        &Search::new(1.1, 3.0),
     );
 }
 
@@ -482,7 +466,7 @@ fn matrix_gap() {
         row(
             &format!("every {every} nights, gaps up to {max_gap} d"),
             &sky,
-            &Search::new((0.5, max_gap), 0.5),
+            &Search::new(max_gap, 0.5),
         );
     }
 }
@@ -495,17 +479,13 @@ fn matrix_tracklets() {
         for nights in [2, 3] {
             let tracklets = nightly(1 - nights, 0, 10, 3.0 * 60.0 * SECOND);
             let ends = nightly(1 - nights, 0, 2, 27.0 * 60.0 * SECOND);
-            for (name, times, min_gap) in [
-                ("all pairs", &tracklets, 60.0 * SECOND),
-                ("pairs over 20 min", &tracklets, 20.0 * 60.0 * SECOND),
-                ("ends of tracklets only", &ends, 0.01),
-            ] {
+            for (name, times) in [("tracklets", &tracklets), ("ends of tracklets only", &ends)] {
                 let mut sky = Sky::new(Population::MainBelt, 30, times);
                 sky.noise = noise * ARCSEC;
                 row(
                     &format!("{noise} arcsec, {nights} nights, {name}"),
                     &sky,
-                    &Search::new((min_gap, 0.1), 0.5),
+                    &Search::new(0.1, 0.5),
                 );
             }
         }
@@ -520,7 +500,7 @@ fn matrix_close_objects() {
         for window in [1.0 * HOUR, 3.0 * HOUR, 8.0 * HOUR, 1.0, 2.0] {
             let rate = 0.02 / near;
             let coarse = 0.00375 / near;
-            let search = Search::new((0.0, window / 3.5), rate.to_degrees())
+            let search = Search::new(window / 3.5, rate.to_degrees())
                 .coarse(coarse)
                 .span(CLOSE_SPAN);
             let name = format!(
@@ -547,12 +527,12 @@ fn matrix_grid_allowance() {
         (
             "main belt, every 2 nights over 28",
             Sky::new(MainBelt, 30, &month),
-            Search::new((1.5, 2.1), 0.5),
+            Search::new(2.1, 0.5),
         ),
         (
             "near-Earth, paired 3 nights",
             near_earth(30, &nightly(-1, 1, 2, 0.028)),
-            Search::new((0.01, 0.1), 20.0),
+            Search::new(0.1, 20.0),
         ),
         (
             "trojan, daily 15 nights",
@@ -612,7 +592,7 @@ fn matrix_hash_cells() {
             scene.sights.push(twin);
             scene.labels.push(scene.labels[i]);
         }
-        let search = Search::new((1.0 * SECOND, 1.1), 0.5);
+        let search = Search::new(1.1, 0.5);
         run(&scene, &search).print(&format!("{count} objects daily, {burst} with 5 s pairs"));
     }
 }
@@ -654,13 +634,13 @@ fn matrix_grid_steps() {
         (
             "near-Earth, paired 3 nights",
             near_earth(30, &short),
-            Search::new((0.01, 0.1), 20.0),
+            Search::new(0.1, 20.0),
             fine,
         ),
         (
             "close 0.02-0.05, 9 over 8 h",
             close(10, (0.02, 0.05), 8.0 * HOUR),
-            Search::new((0.0, 0.1), 100.0).span(CLOSE_SPAN),
+            Search::new(0.1, 100.0).span(CLOSE_SPAN),
             [0.5, 1.0, 2.0, 4.0, 8.0],
         ),
         (
@@ -699,7 +679,7 @@ fn matrix_grid_steps() {
     // Near-Earth objects over every bound rate, not only theirs.
     let whole = Search {
         rates: Some(f64::INFINITY),
-        ..Search::new((0.01, 0.1), 20.0).coarse(0.5)
+        ..Search::new(0.1, 20.0).coarse(0.5)
     };
     row(
         "near-Earth, paired 3 nights, all rates, both x0.5",
@@ -747,7 +727,7 @@ fn why_lost(
         max_rms: f64::MAX,
         min_sights_per_side: 2,
         group_span: search.group_span,
-        max_gap: search.gaps.1,
+        max_gap: search.max_gap,
     };
     let alone = confirm(observations, std::slice::from_ref(candidate), &rules).unwrap();
     match alone.first() {
@@ -833,7 +813,7 @@ fn matrix_confirm() {
     confirm_row(
         "main belt, 2 nights 4 days apart",
         &main_belt(&four_days),
-        &Search::new((0.01, 4.1), 0.5).span(SPAN),
+        &Search::new(4.1, 0.5).span(SPAN),
         4,
     );
     confirm_row(
@@ -851,27 +831,25 @@ fn matrix_confirm() {
     confirm_row(
         "near-Earth 0.05-0.5, paired 3 nights",
         &earth(near_earth(30, &short)),
-        &Search::new((0.01, 0.1), 20.0),
+        &Search::new(0.1, 20.0),
         6,
     );
     confirm_row(
         "close 0.02-0.05, 9 over 8 h, steps x1/2",
         &earth(close(30, (0.02, 0.05), 8.0 * HOUR)),
-        &Search::new((0.0, 0.1), 100.0).coarse(0.5).span(CLOSE_SPAN),
+        &Search::new(0.1, 100.0).coarse(0.5).span(CLOSE_SPAN),
         6,
     );
     confirm_row(
         "close 0.003-0.01, 9 over 3 h, steps x1.25",
         &earth(close(30, (0.003, 0.01), 3.0 * HOUR)),
-        &Search::new((0.0, 0.05), 400.0)
-            .coarse(1.25)
-            .span(CLOSE_SPAN),
+        &Search::new(0.05, 400.0).coarse(1.25).span(CLOSE_SPAN),
         6,
     );
     confirm_row(
         "interior, elong 45, paired 3 nights",
         &earth(sky(Interior, 30, None, 45.0, &short)),
-        &Search::new((0.01, 0.1), 5.0),
+        &Search::new(0.1, 5.0),
         6,
     );
     confirm_row(
@@ -889,7 +867,7 @@ fn matrix_confirm() {
     confirm_row(
         "high incl and retrograde, paired 5 nights",
         &earth(sky(Tilted, 30, None, 150.0, &paired())),
-        &Search::new((0.01, 0.1), 2.0),
+        &Search::new(0.1, 2.0),
         6,
     );
 }
@@ -979,7 +957,7 @@ fn diagnose_confirm_losses() {
     let searches = [
         within_night(),
         within_night(),
-        Search::new((0.0, 0.1), 100.0).coarse(0.5).span(CLOSE_SPAN),
+        Search::new(0.1, 100.0).coarse(0.5).span(CLOSE_SPAN),
     ];
     let eph = SpiceEphemeris::loaded().unwrap();
     for ((name, sky), search) in cases.into_iter().zip(searches) {
@@ -1147,7 +1125,7 @@ fn hypothesis_cost() {
         .map(|k| epoch + (f64::from(k) * 1.93 - 7.0))
         .collect();
     let (sights, _) = observe(&observers, &objects, &times);
-    let (found, lost): (Vec<_>, Vec<_>) = form_units(&sights, 0.0, 3.0, 0.2, 0.0, 2, true)
+    let (found, lost): (Vec<_>, Vec<_>) = form_units(&sights, 3.0, 0.2, 0.0, 2, true, 0.0)
         .unwrap()
         .into_iter()
         .map(|pair| {
@@ -1199,7 +1177,7 @@ fn units_close_observers() {
                 .collect();
             let rate = 0.02 / near;
             let coarse = 0.00375 / near;
-            let search = Search::new((0.0, window / 3.5), rate.to_degrees())
+            let search = Search::new(window / 3.5, rate.to_degrees())
                 .coarse(coarse)
                 .span(CLOSE_SPAN);
             row(

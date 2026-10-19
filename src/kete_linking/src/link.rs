@@ -55,8 +55,8 @@ pub(crate) fn check_unit_count(caller: &str, count: usize) -> KeteResult<()> {
         return Err(Error::ValueError(format!(
             "{caller}: {count} units are more than MAX_UNITS ({MAX_UNITS}), too many to link in \
              memory; most are likely pairs of false detections. Use fewer false detections, a \
-             smaller max_rate, lone_pairs false, a larger min_tracklet, or smaller tiles of the sky \
-             with search_windows"
+             smaller max_rate, a larger min_tracklet, or smaller tiles of the sky with \
+             search_windows, and keep lone_pairs false"
         )));
     }
     Ok(())
@@ -149,7 +149,7 @@ pub struct LinkSettings {
 
 impl Default for LinkSettings {
     /// A threshold of four loses a true match to noise at most about once in
-    /// eight hundred, by the relation of [`LinkSettings::threshold`], which
+    /// seven hundred and fifty, by the relation of [`LinkSettings::threshold`], which
     /// the test `match_noise_calibration` checks at lower thresholds where
     /// losses can be counted. The grid allowance of about twenty arcseconds
     /// keeps groups tight at the steps [`crate::DEPTH_STEP`] and
@@ -754,7 +754,7 @@ struct Found {
     /// State of the object at the reference time, from the seed.
     state: State<Equatorial, SunCenter>,
 
-    /// Mean score of the units matched to the seed, infinite if there are
+    /// Mean score of the units kept with the seed, infinite if there are
     /// none, so that a lone seed is the worst match.
     score: f64,
 
@@ -857,8 +857,8 @@ fn groups(
 /// by its sights.
 ///
 /// A group within a larger one is never a candidate. Such groups are dropped
-/// each time the count of groups has doubled since the last time, so the
-/// groups held are never more than twice those which survived that.
+/// when the count of groups has doubled since the last time, checked each
+/// time the groups of another are absorbed.
 #[derive(Debug, Default)]
 struct Merged {
     /// The groups, with their sights taken out into the key.
@@ -1273,7 +1273,7 @@ mod tests {
                 }
             }
         }
-        let units = form_units(&sights, 0.5, 1.1, 0.01, 0.05, 2, true).unwrap();
+        let units = form_units(&sights, 1.1, 0.01, 0.05, 2, true, 0.0).unwrap();
         assert!(units.iter().any(|unit| unit.len() == 4), "no tracklets");
         assert!(units.iter().any(|unit| unit.len() == 2), "no pairs");
         let every: Vec<usize> = (0..units.len()).collect();

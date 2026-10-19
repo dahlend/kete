@@ -51,7 +51,8 @@ const ROUNDING: f64 = 1e-9;
 /// Largest angle between the directions of an object seen at one time from
 /// two observers `separation` AU apart, when it is at least `min_distance` AU
 /// from them: `asin(separation / min_distance)`, or pi when the separation is
-/// as large as the distance. This is the `parallax_margin` of [`tiles()`] for
+/// as large as the distance. This is the `parallax_margin` of
+/// [`crate::SearchSettings`], [`crate::form_units`] and [`tiles()`] for
 /// observers that far apart and objects searched down to that distance, such
 /// as the smallest depth of a search.
 ///

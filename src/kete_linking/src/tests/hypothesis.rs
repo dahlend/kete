@@ -499,7 +499,7 @@ fn hypothesis_fuzz() {
         .map(|k| epoch + (f64::from(k) * 1.93 - 7.0))
         .collect();
     let (sights, labels) = observe(&observers, &objects, &times);
-    let pairs = form_units(&sights, 0.0, 3.0, 0.2, 0.0, 2, true).unwrap();
+    let pairs = form_units(&sights, 3.0, 0.2, 0.0, 2, true, 0.0).unwrap();
     let origin = observers[0].state(epoch);
 
     // Orbits, failures to converge, and other errors, for pairs of two
@@ -618,6 +618,6 @@ fn bad_input_returns() {
         {
             assert!(state.is_finite(), "an answer which is not finite");
         }
-        let _ = form_units(&sights, draw(), draw(), draw(), draw(), 2, true);
+        let _ = form_units(&sights, draw(), draw(), draw(), 2, true, draw());
     }
 }

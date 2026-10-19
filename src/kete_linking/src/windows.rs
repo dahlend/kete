@@ -25,7 +25,7 @@ const MAX_WINDOWS: f64 = 1e5;
 ///
 /// Each pass of the settings runs over the optical observations no earlier pass
 /// confirmed, cut into [`crate::tiles()`] with the `max_rate` of that pass,
-/// `parallax_margin` and `nside`, about the middle of the time those
+/// the `parallax_margin` of the settings and `nside`, about the middle of the time those
 /// observations span. Each tile with at least as many observations as a
 /// confirmation keeps is searched in turn with that pass alone. Memory so holds
 /// the lines of sight of the observations, made once, the search of one tile,
@@ -135,8 +135,6 @@ const MAX_WINDOWS: f64 = 1e5;
 ///   the length of each. Finite, and at least the larger of the `max_gap` of
 ///   the confirmation rules and `tracklet_span`. `None` searches the whole span
 ///   as one window.
-/// * `parallax_margin` - See [`crate::tiles()`], the same for every pass and
-///   window.
 /// * `nside` - See [`crate::tiles()`], the same for every pass and window.
 ///   `None` takes it for each pass from the halo of that pass.
 ///
@@ -155,15 +153,14 @@ const MAX_WINDOWS: f64 = 1e5;
 /// [`crate::tiles()`], for the tiles of the longest window, and of
 /// [`crate::search()`]. As there, fails if the loaded kernels do not cover
 /// the Sun at the epoch of an optical observation, or do not cover the Sun,
-/// the planets and the Moon, which the orbit fit pulls with, at the first
-/// and the last of the epochs of the candidates of a tile and of their
+/// the planets and the Moon, which the orbit fit pulls with, from a day
+/// before the first to the last of the epochs of the candidates of a tile and of their
 /// observations, see [`crate::confirm()`].
 pub fn search_windows(
     observations: &[AstrometricObservation],
     stations: Option<&[usize]>,
     settings: &SearchSettings,
     window: Option<f64>,
-    parallax_margin: f64,
     nside: Option<u32>,
 ) -> KeteResult<Vec<Confirmed>> {
     if let Some(window) = window
@@ -243,7 +240,8 @@ pub fn search_windows(
             ..start
         };
         for pass in &settings.passes {
-            let _ = tiles(&[start, end], pass.max_rate, parallax_margin, nside, None)?;
+            let margin = settings.parallax_margin;
+            let _ = tiles(&[start, end], pass.max_rate, margin, nside, None)?;
         }
     }
     let mut taken = vec![false; observations.len()];
@@ -261,9 +259,15 @@ pub fn search_windows(
             continue;
         }
         inside.sort_unstable();
-        let tiling = Some((parallax_margin, nside));
-        let (confirmed, own) =
-            in_passes(observations, &sights, stations, inside, settings, tiling)?;
+        let (confirmed, own) = in_passes(
+            observations,
+            &sights,
+            stations,
+            inside,
+            settings,
+            true,
+            nside,
+        )?;
         for &i in confirmed.iter().flat_map(|object| &object.sights) {
             taken[i] = true;
             factors[i] = own[i];

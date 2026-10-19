@@ -67,7 +67,7 @@ class TestEndToEnd:
         assert len(sights) == len(obs)
         # The two detections of each night are a tracklet, and the tracklets'
         # ends pair.
-        units = linking.form_units(sights, 0.0, 3.0, 1.0, 0.1)
+        units = linking.form_units(sights, 3.0, 1.0, 0.1)
         tracklets = [
             u for u in units.indices if len(set(labels[u])) == 1 and len(u) == 2
         ]
@@ -110,7 +110,7 @@ class TestEndToEnd:
         # the grid, but seen from the origin it points at the object.
         obs, labels = scene
         sights = linking.Sights.from_observations(obs)
-        units = linking.form_units(sights, 0.0, 3.0, 1.0, 0.1)
+        units = linking.form_units(sights, 3.0, 1.0, 0.1)
         origin = kete.spice.get_state("Earth", JD0 + 7).change_center(10)
         grid = linking.hypothesis_grid(origin, 0.8, 2.5)
         objects = _objects()
@@ -172,7 +172,7 @@ class TestEndToEnd:
     def test_merge_pieces(self, scene):
         obs, labels = scene
         sights = linking.Sights.from_observations(obs)
-        units = linking.form_units(sights, 0.0, 3.0, 1.0, 0.1)
+        units = linking.form_units(sights, 3.0, 1.0, 0.1)
         grid = linking.hypothesis_grid(kete.spice.get_state("Earth", JD0 + 7), 0.8, 2.5)
         nights = np.array([o.epoch.jd for o in obs]) - JD0
 
@@ -207,10 +207,11 @@ class TestEndToEnd:
             linking.merge_pieces(obs, pieces, min_sights=3)
         with pytest.raises(ValueError, match="past"):
             linking.merge_pieces(obs[:5], pieces)
+        assert linking.merge_pieces(obs, []) == []
 
 
 class TestSearch:
-    SETTINGS = dict(min_gap=0.0, max_gap=3.0, min_depth=0.8, max_depth=2.5)
+    SETTINGS = dict(max_gap=3.0, min_depth=0.8, max_depth=2.5)
 
     def test_search(self, scene):
         obs, labels = scene
@@ -234,12 +235,12 @@ class TestSearch:
         )
         assert [f.sights for f in off] == [f.sights for f in found]
         # Every object is seen twice a night, in tracklets of two, so its units
-        # all hold a tracklet, and leaving out the pairs of lone detections
+        # all hold a tracklet, and allowing the pairs of lone detections
         # changes nothing. Without tracklets of two there are no units.
-        tracklets_only = linking.search(
-            obs, lone_pairs=False, min_sights=8, max_rms=3.0, **self.SETTINGS
+        lone = linking.search(
+            obs, lone_pairs=True, min_sights=8, max_rms=3.0, **self.SETTINGS
         )
-        assert [f.sights for f in tracklets_only] == [f.sights for f in found]
+        assert [f.sights for f in lone] == [f.sights for f in found]
         none = linking.search(
             obs, min_tracklet=3, lone_pairs=False, min_sights=8, **self.SETTINGS
         )
@@ -317,8 +318,8 @@ class TestSearch:
                 linking.search(obs, **{name: -1}, **self.SETTINGS)
         with pytest.raises(ValueError, match="settings"):
             linking.search(obs, threshold=-1.0, **self.SETTINGS)
-        with pytest.raises(ValueError, match="min_gap"):
-            linking.search(obs, **dict(self.SETTINGS, min_gap=4.0))
+        with pytest.raises(ValueError, match="parallax_margin"):
+            linking.search(obs, parallax_margin=-1.0, **self.SETTINGS)
 
 
 class TestTiles:
@@ -380,8 +381,8 @@ class TestTiles:
             linking.search_windows(obs, window=4.0, **dict(settings, max_rms=-1.0))
         with pytest.raises(ValueError, match="min_tracklet"):
             linking.search_windows(obs, **dict(settings, min_tracklet=1))
-        tracklets_only = linking.search_windows(obs, lone_pairs=False, **settings)
-        assert sorted(f.sights for f in tracklets_only) == found
+        lone = linking.search_windows(obs, lone_pairs=True, **settings)
+        assert sorted(f.sights for f in lone) == found
 
     def test_tiles_units(self, scene):
         obs, labels = scene
@@ -496,57 +497,57 @@ class TestValidation:
         # first two are a tracklet, and the second also pairs with the third.
         sights = linking.Sights(*self._arrays())
         assert sorted(
-            linking.form_units(sights, 0.0, 1.5, 1.0, 0.0, lone_pairs=True).indices
+            linking.form_units(sights, 1.5, 1.0, 0.0, lone_pairs=True).indices
         ) == [
             [0, 1],
             [1, 2],
         ]
-        units = linking.form_units(sights, 0.0, 1.5, 1.0, tracklet_span=1.5)
+        units = linking.form_units(sights, 1.5, 1.0, tracklet_span=1.5)
         assert len(units) == 2
         assert sorted(units.indices) == [[0, 1], [1, 2]]
-        assert linking.form_units(sights, 0.0, 0.5, 1.0, tracklet_span=1.5).indices == [
+        assert linking.form_units(sights, 0.5, 1.0, tracklet_span=1.5).indices == [
             [0, 1]
         ]
-        with pytest.raises(ValueError):
-            linking.form_units(sights, 2.0, 1.0, 1.0, 0.0)
+        with pytest.raises(ValueError, match="max_gap"):
+            linking.form_units(sights, -1.0, 1.0, 0.0)
+        with pytest.raises(ValueError, match="parallax_margin"):
+            linking.form_units(sights, 1.0, 1.0, 0.0, parallax_margin=-1.0)
         # The rate is reported in degrees per day, as given.
         with pytest.raises(ValueError, match="max_rate.*got -1.5$"):
-            linking.form_units(sights, 0.0, 1.0, -1.5, 0.0)
+            linking.form_units(sights, 1.0, -1.5, 0.0)
         for max_rate in [0.0, np.nan, np.inf]:
             with pytest.raises(ValueError, match="max_rate"):
-                linking.form_units(sights, 0.0, 1.0, max_rate, 0.0)
+                linking.form_units(sights, 1.0, max_rate, 0.0)
         for tracklet_span in [-1.0, np.inf, np.nan]:
             with pytest.raises(ValueError, match="tracklet_span"):
-                linking.form_units(sights, 0.0, 1.0, 1.0, tracklet_span)
+                linking.form_units(sights, 1.0, 1.0, tracklet_span)
 
     def test_form_units_min_tracklet_and_lone_pairs(self):
         # The detections of test_form_units: with tracklets up to a day and a
         # half, the first two are a tracklet, whose end pairs with the third.
         sights = linking.Sights(*self._arrays())
-        default = sorted(linking.form_units(sights, 0.0, 1.5, 1.0, 1.5).indices)
+        default = sorted(linking.form_units(sights, 1.5, 1.0, 1.5).indices)
         assert default == [[0, 1], [1, 2]]
-        # Every pair holds the end of the tracklet, so leaving out the pairs of
+        # Every pair holds the end of the tracklet, so allowing the pairs of
         # two lone detections changes nothing.
-        units = linking.form_units(sights, 0.0, 1.5, 1.0, 1.5, lone_pairs=False)
+        units = linking.form_units(sights, 1.5, 1.0, 1.5, lone_pairs=True)
         assert sorted(units.indices) == default
         # Below min_tracklet the tracklet is two lone detections, which pair
         # when lone_pairs allows.
         units = linking.form_units(
-            sights, 0.0, 1.5, 1.0, 1.5, min_tracklet=3, lone_pairs=True
+            sights, 1.5, 1.0, 1.5, min_tracklet=3, lone_pairs=True
         )
         assert sorted(units.indices) == [[0, 1], [1, 2]]
         # With no tracklet left, no two detections pair without lone_pairs.
         units = linking.form_units(
-            sights, 0.0, 1.5, 1.0, 1.5, min_tracklet=3, lone_pairs=False
+            sights, 1.5, 1.0, 1.5, min_tracklet=3, lone_pairs=False
         )
         assert units.indices == []
         for min_tracklet in [0, 1]:
             with pytest.raises(ValueError, match="min_tracklet must be at least 2"):
-                linking.form_units(
-                    sights, 0.0, 1.5, 1.0, 1.5, min_tracklet=min_tracklet
-                )
+                linking.form_units(sights, 1.5, 1.0, 1.5, min_tracklet=min_tracklet)
         with pytest.raises(ValueError, match="min_tracklet must not be negative"):
-            linking.form_units(sights, 0.0, 1.5, 1.0, 1.5, min_tracklet=-1)
+            linking.form_units(sights, 1.5, 1.0, 1.5, min_tracklet=-1)
 
     def test_form_units_track(self):
         # A tracklet of three detections moving a tenth of a degree a day, and
@@ -562,7 +563,13 @@ class TestValidation:
         sights = linking.Sights(
             [JD0 + t for t in times], [[1.0, 0.0, 0.0]] * n, directions, [0.1] * n
         )
-        units = linking.form_units(sights, 0.5, 1.5, 1.0, 0.1)
+        units = linking.form_units(sights, 1.5, 1.0, 0.1)
+        assert sorted(units.indices) == [[0, 1, 2], [0, 3], [2, 3]]
+        # A parallax margin, in degrees, of 0.3 takes in the detection off the
+        # track; one of 0.1 does not.
+        units = linking.form_units(sights, 1.5, 1.0, 0.1, parallax_margin=0.3)
+        assert sorted(units.indices) == [[0, 1, 2], [0, 3], [0, 4], [2, 3], [2, 4]]
+        units = linking.form_units(sights, 1.5, 1.0, 0.1, parallax_margin=0.1)
         assert sorted(units.indices) == [[0, 1, 2], [0, 3], [2, 3]]
         keep = [0, 2, 3, 4]
         sights = linking.Sights(
@@ -571,7 +578,7 @@ class TestValidation:
             [directions[k] for k in keep],
             [0.1] * 4,
         )
-        units = linking.form_units(sights, 0.5, 1.5, 1.0, 0.1)
+        units = linking.form_units(sights, 1.5, 1.0, 0.1)
         assert sorted(units.indices) == [[0, 1], [0, 2], [1, 2]]
         # With the middle detection of the three 20 arcseconds off their line,
         # within the rate limit of both neighbors, the third is off the track
@@ -582,7 +589,7 @@ class TestValidation:
         sights = linking.Sights(
             [JD0 + t for t in times], [[1.0, 0.0, 0.0]] * n, bent, [0.1] * n
         )
-        units = linking.form_units(sights, 0.5, 1.5, 1.0, 0.1).indices
+        units = linking.form_units(sights, 1.5, 1.0, 0.1).indices
         assert [0, 1] in units
         assert all(len(u) < 3 for u in units)
 
@@ -660,7 +667,7 @@ class TestValidation:
     def test_confirm_validation(self, scene):
         obs, _ = scene
         sights = linking.Sights.from_observations(obs)
-        units = linking.form_units(sights, 0.0, 3.0, 1.0, 0.1)
+        units = linking.form_units(sights, 3.0, 1.0, 0.1)
         grid = linking.hypothesis_grid(kete.spice.get_state("Earth", JD0 + 7), 0.8, 2.5)
         candidates = linking.link(sights, units, grid)
         with pytest.raises(ValueError, match="indexes past"):
@@ -765,13 +772,10 @@ class TestUnits:
             [[0.0, 1.0, 0.0], [np.sin(angle), np.cos(angle), 0.0]],
             [0.1] * 2,
         )
-        assert (
-            linking.form_units(sights, 0.0, 5.0, 1.49, 0.0, lone_pairs=True).indices
-            == []
-        )
-        assert linking.form_units(
-            sights, 0.0, 5.0, 1.51, 0.0, lone_pairs=True
-        ).indices == [[0, 1]]
+        assert linking.form_units(sights, 5.0, 1.49, 0.0, lone_pairs=True).indices == []
+        assert linking.form_units(sights, 5.0, 1.51, 0.0, lone_pairs=True).indices == [
+            [0, 1]
+        ]
 
     def _one_pair(self, sigma):
         """The object seen at JD0 and a day later, with this sigma in arcsec."""
@@ -993,6 +997,12 @@ class TestInject:
                 linking.inject(objects, fields, 0.1, detect=detect)
         with pytest.raises(ValueError, match="non_gravs"):
             linking.inject(objects, fields, 0.1, non_gravs=[None])
+        late = objects[0]
+        late = kete.State(
+            late.desig, late.jd + 1.0, list(late.pos), list(late.vel), late.frame
+        )
+        with pytest.raises(ValueError, match="one epoch"):
+            linking.inject([*objects, late], fields, 0.1)
         for no_objects, no_fields in [([], fields), (objects, [])]:
             obs, labels = linking.inject(no_objects, no_fields, 0.1)
             assert obs == [] and len(labels) == 0

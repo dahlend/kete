@@ -230,8 +230,8 @@ fn stations_too_small_change_nothing() {
     let searches = |stations: Option<&[usize]>| {
         [
             search(observations, stations, &settings).unwrap(),
-            search_windows(observations, stations, &settings, None, 0.0, None).unwrap(),
-            search_windows(observations, stations, &settings, Some(1.5), 0.0, None).unwrap(),
+            search_windows(observations, stations, &settings, None, None).unwrap(),
+            search_windows(observations, stations, &settings, Some(1.5), None).unwrap(),
         ]
         .map(|found| sorted_with_fits(&found))
     };
@@ -255,10 +255,9 @@ fn scaled_searches_are_the_same_on_any_threads() {
         on_threads(threads, || {
             [
                 search(observations, stations, &settings).unwrap(),
-                search_windows(observations, stations, &settings, None, 0.0, Some(8)).unwrap(),
-                search_windows(observations, stations, &settings, Some(1.5), 0.0, Some(8)).unwrap(),
-                search_windows(observations, stations, &settings, Some(10.0), 0.0, Some(8))
-                    .unwrap(),
+                search_windows(observations, stations, &settings, None, Some(8)).unwrap(),
+                search_windows(observations, stations, &settings, Some(1.5), Some(8)).unwrap(),
+                search_windows(observations, stations, &settings, Some(10.0), Some(8)).unwrap(),
             ]
         })
     };
@@ -295,8 +294,8 @@ fn stations_must_be_one_per_observation() {
     let short = &scene.station[1..];
     let messages = [
         search(observations, Some(short), &settings).unwrap_err(),
-        search_windows(observations, Some(short), &settings, None, 0.0, None).unwrap_err(),
-        search_windows(observations, Some(short), &settings, Some(1.5), 0.0, None).unwrap_err(),
+        search_windows(observations, Some(short), &settings, None, None).unwrap_err(),
+        search_windows(observations, Some(short), &settings, Some(1.5), None).unwrap_err(),
     ];
     for message in messages.map(|error| error.to_string()) {
         assert!(message.contains("stations"), "{message}");

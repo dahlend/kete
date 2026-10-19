@@ -17,8 +17,9 @@ use crate::hypothesis::axes;
 /// The cost of a search grows with the number of hypotheses, about the
 /// inverse of the product of the two steps. With the default grid allowance
 /// of [`crate::LinkSettings`], steps of this size find main belt and more
-/// distant objects, though one seen once a night may be split into several
-/// candidates, each confirmed on its own. Many near-Earth objects are lost at
+/// distant objects, though one seen once a night, found only with
+/// `lone_pairs`, may be split into several candidates, each confirmed on its
+/// own. Many near-Earth objects are lost at
 /// these steps, see the test `matrix_grid_steps`. The default passes search
 /// at multiples of these steps, a coarse pass and then a fine one, see
 /// [`crate::SearchSettings::default`]. Close objects need steps chosen for
@@ -106,10 +107,7 @@ pub fn hypothesis_grid(
         desig: Desig::Empty,
         ..origin.clone()
     };
-    let size = layers
-        .iter()
-        .map(|&(_, _, _, low, high)| high - low + 1)
-        .filter(|&n| n > 0);
+    let size = layers.iter().map(|&(_, _, _, low, high)| high - low + 1);
     let mut grid = Vec::with_capacity(size.sum::<i64>().try_into().unwrap_or(0));
     for (direction, depth, step, low, high) in layers {
         for k in low..=high {
@@ -188,10 +186,11 @@ pub(crate) fn grid_layers(
             if step <= 0.0 {
                 return Err(deep());
             }
-            // Half a step past each end, also when the range is under a step.
+            // Half a step past each end, also when the range is under a step,
+            // so that `high` is at least `low`.
             let low = ((-fastest - along) / depth / step - 0.5).ceil();
             let high = ((fastest - along) / depth / step + 0.5).floor();
-            total += (high - low + 1.0).max(0.0);
+            total += high - low + 1.0;
             let fits = total <= MAX_HYPOTHESES as f64;
             if !fits {
                 return Err(too_large());

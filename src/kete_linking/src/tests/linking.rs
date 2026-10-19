@@ -30,17 +30,17 @@ fn link_cadences() {
         (
             "paired 40 min, 5 nights",
             nightly(-2, 2, 2, 0.028),
-            Search::new((0.01, 0.1), 0.5),
+            Search::new(0.1, 0.5),
         ),
         (
             "4 a minute apart, 3 nights",
             nightly(-1, 1, 4, 60.0 * SECOND),
-            Search::new((30.0 * SECOND, 0.1), 0.5),
+            Search::new(0.1, 0.5),
         ),
         (
             "1 a night, 15 nights",
             nightly(-7, 7, 1, 0.0),
-            Search::new((0.5, 1.1), 0.5),
+            Search::new(1.1, 0.5),
         ),
     ];
     print_header("Main belt, 6 objects and 3 clutter per exposure");
@@ -90,7 +90,7 @@ fn link_observers() {
         sky.observers = observers;
         sky.elong = elong;
         sky.lat = lat;
-        let run = run(&sky.scene(), &Search::new((0.01, 0.1), 0.5));
+        let run = run(&sky.scene(), &Search::new(0.1, 0.5));
         run.print(name);
         assert_eq!(run.linked.found, run.linked.findable, "{name}");
         assert!(run.linked.purity() >= 90.0, "{name}");
@@ -106,7 +106,7 @@ fn link_false_detections() {
     sky.stationary = 10;
     sky.keep = 0.8;
     sky.noise = 0.3 * ARCSEC;
-    let score = run(&sky.scene(), &Search::new((0.01, 0.1), 0.5)).linked;
+    let score = run(&sky.scene(), &Search::new(0.1, 0.5)).linked;
     assert!(score.completeness() >= 90.0, "completeness {score:?}");
     assert!(score.purity() >= 50.0, "purity {score:?}");
 }
@@ -120,7 +120,7 @@ fn link_near_earth() {
     sky.distances = Some((0.05, 0.5));
     sky.elong = 120.0;
     sky.radius = 3.0;
-    let search = Search::new((0.01, 0.1), 20.0).coarse(0.125);
+    let search = Search::new(0.1, 20.0).coarse(0.125);
     let score = run(&sky.scene(), &search).linked;
     assert!(score.completeness() >= 90.0, "completeness {score:?}");
 }
@@ -238,7 +238,7 @@ fn same_time_sights_conflict() {
     for sight in &mut sights {
         sight.sigma = 0.5 * ARCSEC;
     }
-    let units = form_units(&sights, 0.5, 1.1, 0.01, 0.0, 2, true).unwrap();
+    let units = form_units(&sights, 1.1, 0.01, 0.0, 2, true, 0.0).unwrap();
     let hypothesis = true_hypothesis(&truth, &origin, nearest_axis(&(truth.pos - origin.pos)));
     let found = link(&sights, &units, &[hypothesis], 4, &LinkSettings::default()).unwrap();
     assert!(!found.is_empty());

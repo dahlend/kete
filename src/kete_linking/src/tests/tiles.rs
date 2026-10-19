@@ -48,7 +48,6 @@ fn with_rates(rates: &[f64]) -> Vec<SearchPass> {
 fn by_tile(
     observations: &[AstrometricObservation],
     settings: &SearchSettings,
-    margin: f64,
     nside: Option<u32>,
 ) -> (Vec<Confirmed>, usize, usize) {
     let sights: Vec<_> = observations
@@ -59,11 +58,12 @@ fn by_tile(
     let (mut merged, mut before, mut count) = (Vec::new(), 0, 0);
     for pass in &settings.passes {
         let own: Vec<_> = remaining.iter().map(|&i| sights[i]).collect();
-        let tiles: Vec<Vec<usize>> = tiles(&own, pass.max_rate, margin, nside, None)
-            .unwrap()
-            .into_iter()
-            .map(|tile| tile.into_iter().map(|k| remaining[k]).collect())
-            .collect();
+        let tiles: Vec<Vec<usize>> =
+            tiles(&own, pass.max_rate, settings.parallax_margin, nside, None)
+                .unwrap()
+                .into_iter()
+                .map(|tile| tile.into_iter().map(|k| remaining[k]).collect())
+                .collect();
         let alone = SearchSettings {
             passes: vec![*pass],
             ..settings.clone()
@@ -104,7 +104,8 @@ fn tiled_search_equals_untiled() {
     // The second pass has the larger rate limit, so its tiles have larger
     // halos than those of the first. With the parallax margin of two sites
     // on opposite sides of the Earth, for objects down to a tenth of an AU,
-    // the result is the same, on one thread and on eight.
+    // in both the pairs and the tiles, tiles find what a search finds with
+    // that margin, on one thread and on eight.
     let sky = Sky {
         radius: 15.0,
         clutter: 2,
@@ -113,7 +114,6 @@ fn tiled_search_equals_untiled() {
     };
     let scene = sky.scene();
     let settings = SearchSettings {
-        min_gap: 0.01,
         passes: with_rates(&[0.4, 0.5]),
         confirm: ConfirmRules {
             max_gap: 0.1,
@@ -131,20 +131,24 @@ fn tiled_search_equals_untiled() {
     );
     assert_eq!(score.false_groups, 0, "{score:?}");
     assert_eq!(score.whole, score.findable, "{score:?}");
-    let (merged, before, count) = by_tile(&scene.observations, &settings, 0.0, Some(8));
+    let (merged, before, count) = by_tile(&scene.observations, &settings, Some(8));
     assert!(count > 4, "{count} tiles");
     assert!(
         before > merged.len(),
         "no object was confirmed in two tiles"
     );
     assert_eq!(sorted(&merged), sorted(&all));
-    let direct = search_windows(&scene.observations, None, &settings, None, 0.0, Some(8)).unwrap();
+    let direct = search_windows(&scene.observations, None, &settings, None, Some(8)).unwrap();
     assert_eq!(sorted(&direct), sorted(&all));
-    let margin = parallax_margin(2.0 * EARTH_RADIUS, 0.1).unwrap();
-    assert!(margin > 0.0);
+    let wide = SearchSettings {
+        parallax_margin: parallax_margin(2.0 * EARTH_RADIUS, 0.1).unwrap(),
+        ..settings
+    };
+    assert!(wide.parallax_margin > 0.0);
+    let all = search(&scene.observations, None, &wide).unwrap();
     let on = |threads: usize| {
         let found = on_threads(threads, || {
-            search_windows(&scene.observations, None, &settings, None, margin, Some(8))
+            search_windows(&scene.observations, None, &wide, None, Some(8))
         })
         .unwrap();
         sorted(&found)
@@ -177,14 +181,14 @@ fn settings_of_every_pass_are_checked_first() {
     for observations in [&scene.observations[..], &scene.observations[..1], &[]] {
         for settings in [&flat, &still] {
             assert!(search(observations, None, settings).is_err());
-            assert!(search_windows(observations, None, settings, None, 0.0, None).is_err());
+            assert!(search_windows(observations, None, settings, None, None).is_err());
         }
     }
     let fast = bad(SearchPass {
         grid_factor: 1.0,
         max_rate: 1.0,
     });
-    let message = search_windows(&scene.observations, None, &fast, None, 0.0, Some(256))
+    let message = search_windows(&scene.observations, None, &fast, None, Some(256))
         .unwrap_err()
         .to_string();
     assert!(message.contains("smaller nside"), "{message}");
@@ -453,8 +457,7 @@ fn space_and_ground_survey() {
         start.elapsed().as_secs_f64()
     );
     let min_depth = 0.2;
-    let settings = SearchSettings {
-        min_gap: 0.4,
+    let base = SearchSettings {
         passes: with_rates(&[0.6, 2.0]),
         min_depth,
         max_depth: 4.5,
@@ -487,13 +490,16 @@ fn space_and_ground_survey() {
         ),
     ] {
         let (observations, labels) = survey.only(&sites);
-        let margin = parallax_margin(separation, min_depth).unwrap();
+        let settings = SearchSettings {
+            parallax_margin: parallax_margin(separation, min_depth).unwrap(),
+            ..base.clone()
+        };
         let at = Instant::now();
         let all = search(&observations, None, &settings).unwrap();
         let untiled = at.elapsed().as_secs_f64();
         println!("  {name}: searched at once in {untiled:.0} s");
         let at = Instant::now();
-        let (merged, before, count) = by_tile(&observations, &settings, margin, None);
+        let (merged, before, count) = by_tile(&observations, &settings, None);
         let tiled = at.elapsed().as_secs_f64();
         let score = |found: &[Confirmed]| {
             Score::new(

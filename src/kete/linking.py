@@ -57,11 +57,11 @@ The steps:
 Use :func:`search` when all the observations fit in memory at once. Use
 :func:`search_windows` for a whole survey, and give it ``window`` for a long
 span, so that each tile stays small. Observers far apart at the same time, such
-as sites an Earth diameter apart, see one object in directions which differ by a
-parallax. For :func:`search_windows` pass
-``parallax_margin=parallax_margin(separation, min_depth)``, with the largest
-separation of two observers at one time and the smallest depth searched. In
-:func:`search` the ``max_rate`` of each pass has to cover that parallax.
+as a site on the ground and a spacecraft, see one object in directions which
+differ by a parallax. Pass ``parallax_margin=parallax_margin(separation,
+min_depth)`` to :func:`search` or :func:`search_windows`, with the largest
+separation of two observers at one time and the smallest depth searched; it
+widens the pairs of detections and the halos of the tiles.
 
 Detections are referred to by their row index everywhere. Only
 :meth:`Sights.from_observations`, :func:`hypothesis_grid`, :func:`confirm`,
@@ -112,7 +112,7 @@ fields do without sharing their detections.
     found = linking.search(obs, stations=stations)
 
     # A whole survey, one tile of the sky at a time, in windows of 14 days
-    # starting every 7, with sites up to an Earth diameter apart:
+    # starting every 7, with observers up to an Earth diameter apart:
     margin = linking.parallax_margin(2 * kete.constants.EARTH_RADIUS_AU, 0.5)
     found = linking.search_windows(
         obs, stations=stations, window=7.0, parallax_margin=margin
@@ -122,7 +122,7 @@ fields do without sharing their detections.
     # epoch of the origin, and must lie within the span of the detections:
     sights = linking.Sights.from_observations(obs)
     units = linking.form_units(
-        sights, min_gap=0.5, max_gap=1.5, max_rate=1.5, tracklet_span=0.125
+        sights, max_gap=1.5, max_rate=1.5, tracklet_span=0.125
     )
     times = sorted(sights.time)
     reference_jd = times[len(times) // 2]
@@ -207,9 +207,9 @@ MAX_UNITS: int = _core.MAX_UNITS
 solved under its hypothesis at once, several hundred bytes each, so this keeps
 the memory of linking to a few gigabytes on a machine of eight to sixteen
 threads. More units than this mostly come from pairs of false detections; the
-remedies are fewer false detections, a smaller ``max_rate``,
-``lone_pairs=False``, a larger ``min_tracklet`` (see :func:`form_units`), or
-smaller tiles with :func:`search_windows`."""
+remedies are fewer false detections, a smaller ``max_rate``, a larger
+``min_tracklet`` (see :func:`form_units`), or smaller tiles with
+:func:`search_windows`, keeping ``lone_pairs=False``."""
 
 MIN_ALIGNMENT: float = _core.MIN_ALIGNMENT
 """Smallest cosine between a detection and the direction of a hypothesis it is
@@ -231,7 +231,9 @@ def inject(states, fovs, sigma, detect=1.0, seed=None, non_gravs=None):
     Parameters
     ----------
     states :
-        List of :class:`~kete.State`, the synthetic objects.
+        List of :class:`~kete.State`, the synthetic objects, all at one epoch
+        and about one center, such as states propagated together by
+        :func:`~kete.propagate_n_body`.
     fovs :
         List of fields of view, of any type :func:`~kete.fov_state_check` takes.
         Each holds its observer, which is the observer of its detections.
@@ -268,6 +270,11 @@ def inject(states, fovs, sigma, detect=1.0, seed=None, non_gravs=None):
         observation.
     """
     states, fovs = list(states), list(fovs)
+    if len({(s.jd, s.center_id) for s in states}) > 1:
+        raise ValueError(
+            "states must all be at one epoch and about one center, propagate them "
+            "to one epoch first."
+        )
     if np.ndim(sigma) == 0:
         sigmas = np.full(len(fovs), float(sigma))
     else:
