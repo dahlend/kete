@@ -616,11 +616,10 @@ impl PyHypothesis {
     }
 
     fn __repr__(&self) -> String {
-        let [x, y, z]: [f64; 3] = self.0.direction.into();
         format!(
-            "Hypothesis(epoch={:.6}, direction=[{x}, {y}, {z}] (Equatorial), depth={}, \
-             depth_rate={})",
+            "Hypothesis(epoch={:?}, direction={}, depth={:?}, depth_rate={:?})",
             self.0.origin.epoch.jd(),
+            self.direction().__repr__(),
             self.0.depth,
             self.0.depth_rate
         )

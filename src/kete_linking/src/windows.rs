@@ -44,19 +44,18 @@ const MAX_WINDOWS: f64 = 1e5;
 /// within the span of the units of the tile, as [`crate::link()`] needs. A
 /// tile with no units is skipped.
 ///
-/// Every object whose direction at that time lies in a core and whose
-/// apparent rate is at most the `max_rate` of a pass has all of its
-/// remaining observations in one tile of that pass, so the search of that
-/// tile can find it. Tiles find what a search of their own observations
-/// finds, which differs a little from what a search of all observations
-/// finds: the units, origin and grid of a tile are its own. The halo grows
-/// with the rate limit, so a first pass with a small one confirms the slow
-/// objects, most of a survey, in small tiles, and leaves a later pass with
-/// the full rate limit, and large tiles, only what it did not confirm.
-/// Tiling costs more than a search of all the observations at once, as a
-/// sight in the halos of several tiles is searched again in each of them;
-/// the test `space_and_ground_survey` prints the time of both. It is for
-/// surveys whose search does not fit in memory.
+/// Every object whose direction at that time lies in a core and whose apparent
+/// rate is at most the `max_rate` of a pass has all of its remaining
+/// observations in one tile of that pass, so the search of that tile can find
+/// it. Tiles find what a search of their own observations finds, which differs
+/// a little from what a search of all observations finds: the units, origin and
+/// grid of a tile are its own. The halo grows with the rate limit, so a first
+/// pass with a small one confirms the slow objects, most of a survey, in small
+/// tiles, and leaves a later pass with the full rate limit, and large tiles,
+/// only what it did not confirm. Tiling costs more than a search of all the
+/// observations at once, as a sight in the halos of several tiles is searched
+/// again in each of them. It is for surveys whose search does not fit in
+/// memory.
 ///
 /// With `stations`, the factors on the uncertainties of the stations are
 /// estimated as by [`crate::search()`], from the objects the first pass

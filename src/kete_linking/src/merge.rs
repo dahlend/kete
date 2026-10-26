@@ -12,6 +12,7 @@ use kete_core::time::{TDB, Time};
 use kete_fitting::AstrometricObservation;
 use kete_spice::prelude::SpiceEphemeris;
 use kete_stats::healpix::{ang_to_nested, max_pixel_radius, query_disc_nested};
+use nalgebra::Matrix6;
 use rayon::prelude::*;
 
 use crate::calibration::Scaled;
@@ -61,10 +62,10 @@ struct Orbit {
     /// Normal matrix of the residuals of its sights at that state, in units
     /// of their uncertainties, over the square of its reduced residual where
     /// that is above one: the inverse of the covariance of the state.
-    normal: [[f64; 6]; 6],
+    normal: Matrix6<f64>,
 
     /// Covariance of the state, `None` if the normal matrix is singular.
-    covariance: Option<[[f64; 6]; 6]>,
+    covariance: Option<Matrix6<f64>>,
 }
 
 impl Orbit {
@@ -77,7 +78,7 @@ impl Orbit {
         let (state, _, rms) = fit_two_body(&start, own, f64::INFINITY)?;
         let (_, normal, _) = normal_at(&state, own)?;
         let scale = rms.powi(2).max(1.0);
-        let normal = normal.map(|row| row.map(|x| x / scale));
+        let normal = normal / scale;
         Some(Self {
             state,
             normal,
@@ -92,12 +93,10 @@ impl Orbit {
         let Some((chi2, normal, gradient)) = normal_at(&self.state, sights) else {
             return false;
         };
-        let joint: [[f64; 6]; 6] =
-            std::array::from_fn(|i| std::array::from_fn(|j| self.normal[i][j] + normal[i][j]));
-        let Some(step) = scaled_solve(&joint, gradient, 0.0) else {
+        let Some(step) = scaled_solve(&(self.normal + normal), &gradient, 0.0) else {
             return false;
         };
-        let explained: f64 = (0..6).map(|i| step[i] * gradient[i]).sum();
+        let explained = step.dot(&gradient);
         chi2 - explained <= 2.0 * FIT_REJECT_THRESHOLD * sights.len() as f64
     }
 }
@@ -229,14 +228,7 @@ impl Index {
                 };
                 motion = motion.max(angle(&direction, &there));
             }
-            let mut variance = 0.0;
-            for row in &jacobian {
-                for i in 0..6 {
-                    for j in 0..6 {
-                        variance += row[i] * covariance[i][j] * row[j];
-                    }
-                }
-            }
+            let variance = (jacobian * covariance * jacobian.transpose()).trace();
             let spread = motion + (bin.spread / range).min(1.0).asin();
             let miss = (2.0 * FIT_REJECT_THRESHOLD * bin.sigma.mul_add(bin.sigma, variance)).sqrt();
             let reach = spread + miss;

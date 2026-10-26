@@ -11,9 +11,9 @@ use kete_core::frames::{Equatorial, SunCenter, Vector};
 use kete_core::kepler::{propagate_two_body, propagate_two_body_with_stm};
 use kete_core::prelude::State;
 use kete_core::time::{TDB, Time};
+use nalgebra::{Matrix3, Matrix3x6, Vector3};
 
 use crate::Sight;
-use crate::linalg::dot;
 
 /// Predicted less observed direction of one sight, over its sigma, and the
 /// state of the object when it sent the light the sight received.
@@ -26,7 +26,7 @@ use crate::linalg::dot;
 pub(crate) fn residual_at(
     state: &State<Equatorial, SunCenter>,
     sight: &Sight,
-) -> Option<([f64; 3], State<Equatorial, SunCenter>)> {
+) -> Option<(Vector3<f64>, State<Equatorial, SunCenter>)> {
     let sent = sent_at(state, sight.time, &sight.observer)?;
     Some((miss(&sent, sight)?, sent))
 }
@@ -47,13 +47,12 @@ pub(crate) fn direction_at(
 /// The direction in which an observer at `observer` sees the two-body orbit
 /// of `state` at `time`, with light time, its distance from the observer,
 /// and the derivative of the direction over the position and velocity of
-/// `state`, as three rows of six, see [`seen`]. `None` if it cannot be
-/// evaluated.
+/// `state`, see [`seen`]. `None` if it cannot be evaluated.
 pub(crate) fn predicted(
     state: &State<Equatorial, SunCenter>,
     time: Time<TDB>,
     observer: Vector<Equatorial>,
-) -> Option<(Vector<Equatorial>, f64, [[f64; 6]; 3])> {
+) -> Option<(Vector<Equatorial>, f64, Matrix3x6<f64>)> {
     let (sent, jacobian) = sent_and_jacobian(state, time, &observer, 1.0)?;
     let offset = sent.pos - observer;
     let direction = offset.normalize();
@@ -116,9 +115,9 @@ fn emitted(
 
 /// Predicted less observed direction of a sight, over its sigma, for the
 /// state `sent` of the object when it sent the light. `None` if not finite.
-fn miss(sent: &State<Equatorial, SunCenter>, sight: &Sight) -> Option<[f64; 3]> {
-    let miss = ((sent.pos - sight.observer).normalize() - sight.direction) / sight.sigma;
-    let miss = <[f64; 3]>::from(miss);
+fn miss(sent: &State<Equatorial, SunCenter>, sight: &Sight) -> Option<Vector3<f64>> {
+    let miss: Vector3<f64> =
+        (((sent.pos - sight.observer).normalize() - sight.direction) / sight.sigma).into();
     miss.iter().all(|x| x.is_finite()).then_some(miss)
 }
 
@@ -126,11 +125,11 @@ fn miss(sent: &State<Equatorial, SunCenter>, sight: &Sight) -> Option<[f64; 3]> 
 pub(crate) struct Seen {
     /// Predicted less observed direction, over the sigma of the sight, as
     /// [`residual_at`] evaluates it.
-    pub(crate) residual: [f64; 3],
+    pub(crate) residual: Vector3<f64>,
 
     /// The derivative of the residual over the position and velocity of the
-    /// orbit's state, as three rows of six.
-    pub(crate) jacobian: [[f64; 6]; 3],
+    /// orbit's state.
+    pub(crate) jacobian: Matrix3x6<f64>,
 }
 
 /// One sight under the orbit of `state`: its residual, as [`residual_at`]
@@ -149,8 +148,7 @@ pub(crate) fn seen(state: &State<Equatorial, SunCenter>, sight: &Sight) -> Optio
 /// The state of the object when it sent the light an observer at `observer`
 /// received at `time`, on the two-body orbit of `state`, and the exact
 /// derivative of the direction the observer sees over the position and
-/// velocity of `state`, over `sigma`, as three rows of six. `None` if they
-/// cannot be evaluated.
+/// velocity of `state`, over `sigma`. `None` if they cannot be evaluated.
 ///
 /// The derivative is the chain of three. The state transition matrix of
 /// [`propagate_two_body_with_stm`] takes a change of `state` to one of the
@@ -169,49 +167,31 @@ fn sent_and_jacobian(
     time: Time<TDB>,
     observer: &Vector<Equatorial>,
     sigma: f64,
-) -> Option<(State<Equatorial, SunCenter>, [[f64; 6]; 3])> {
+) -> Option<(State<Equatorial, SunCenter>, Matrix3x6<f64>)> {
     let (at, stm) = propagate_two_body_with_stm(state, time).ok()?;
-    let matrix: [[f64; 6]; 6] = std::array::from_fn(|i| std::array::from_fn(|j| stm[(i, j)]));
     let (sent, tau) = emitted(&at, observer)?;
 
-    let identity = |i: usize, j: usize| if i == j { 1.0 } else { 0.0 };
-    let line = <[f64; 3]>::from((at.pos - at.vel * tau - observer).normalize());
-    let (pos, vel) = (<[f64; 3]>::from(at.pos), <[f64; 3]>::from(at.vel));
-    let sent_vel = <[f64; 3]>::from(sent.vel);
-    let speed = C_AU_PER_DAY + dot(&line, &vel);
+    let line: Vector3<f64> = (at.pos - at.vel * tau - observer).normalize().into();
+    let speed = C_AU_PER_DAY + line.dot(&Vector3::from(at.vel));
     let distance = at.pos.norm();
-    let strength = GMS / distance.powi(3);
-    let unit = pos.map(|x| x / distance);
+    let unit: Vector3<f64> = (at.pos / distance).into();
+    let gradient = (unit * unit.transpose() * 3.0 - Matrix3::identity()) * (GMS / distance.powi(3));
+    let delay = Vector3::from(sent.vel) * line.transpose() / speed;
     // The derivative of the point the light left over `x` and `v`.
-    let leaves: [[f64; 6]; 3] = std::array::from_fn(|i| {
-        std::array::from_fn(|j| {
-            let k = j % 3;
-            let gradient = strength * (3.0 * unit[i] * unit[k] - identity(i, k));
-            let delay = sent_vel[i] * line[k] / speed;
-            if j < 3 {
-                identity(i, k) + gradient * (0.5 * tau * tau) - delay
-            } else {
-                -tau * (identity(i, k) + gradient * (tau * tau / 6.0)) + tau * delay
-            }
-        })
-    });
+    let mut leaves = Matrix3x6::zeros();
+    leaves
+        .fixed_view_mut::<3, 3>(0, 0)
+        .copy_from(&(Matrix3::identity() + gradient * (0.5 * tau * tau) - delay));
+    leaves
+        .fixed_view_mut::<3, 3>(0, 3)
+        .copy_from(&((Matrix3::identity() + gradient * (tau * tau / 6.0)) * -tau + delay * tau));
     let offset = sent.pos - observer;
     let range = offset.norm();
-    let dir = <[f64; 3]>::from(offset / range);
-    let weight = 1.0 / (range * sigma);
-    let across: [[f64; 6]; 3] = std::array::from_fn(|i| {
-        std::array::from_fn(|j| {
-            (0..3)
-                .map(|k| (identity(i, k) - dir[i] * dir[k]) * weight * leaves[k][j])
-                .sum()
-        })
-    });
-    let jacobian: [[f64; 6]; 3] = std::array::from_fn(|i| {
-        std::array::from_fn(|j| (0..6).map(|k| across[i][k] * matrix[k][j]).sum())
-    });
+    let dir: Vector3<f64> = (offset / range).into();
+    let across = (Matrix3::identity() - dir * dir.transpose()) * (1.0 / (range * sigma));
+    let jacobian = across * leaves * stm;
     jacobian
         .iter()
-        .flatten()
         .all(|x| x.is_finite())
         .then_some((sent, jacobian))
 }
@@ -314,8 +294,8 @@ mod tests {
                 for ((a, b), seen) in up.iter().zip(&down).zip(&base) {
                     for i in 0..3 {
                         let differences = (a.residual[i] - b.residual[i]) / (2.0 * h);
-                        worst = worst.max((differences - seen.jacobian[i][k]).abs());
-                        size = size.max(seen.jacobian[i][k].abs());
+                        worst = worst.max((differences - seen.jacobian[(i, k)]).abs());
+                        size = size.max(seen.jacobian[(i, k)].abs());
                     }
                 }
                 println!("{name}, column {k}: {:.1e}", worst / size);
@@ -347,7 +327,7 @@ mod tests {
             let (miss, at) = residual_at(&object, &sight).unwrap();
             let range = (iterated.pos - seen_from).norm();
             assert!((at.pos - iterated.pos).norm() < 1e-12 * range, "{radius}");
-            assert!(dot(&miss, &miss).sqrt() * sight.sigma < 1e-12, "{radius}");
+            assert!(miss.norm() * sight.sigma < 1e-12, "{radius}");
         }
     }
 

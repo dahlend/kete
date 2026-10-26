@@ -3,7 +3,7 @@
 
 //! The grid of hypotheses a search runs over.
 
-use kete_core::constants::GMS;
+use kete_core::constants::{AU_KM, GMS, SUN_DIAMETER};
 use kete_core::desigs::Desig;
 use kete_core::frames::{Equatorial, SunCenter, Vector};
 use kete_core::prelude::{Error, KeteResult, State};
@@ -14,16 +14,15 @@ use crate::hypothesis::axes;
 /// Step of the grid in the natural log of the depth which the `grid_factor`
 /// of a [`crate::SearchPass`] multiplies.
 ///
-/// The cost of a search grows with the number of hypotheses, about the
-/// inverse of the product of the two steps. With the default grid allowance
-/// of [`crate::LinkSettings`], steps of this size find main belt and more
-/// distant objects, though one seen once a night, found only with
-/// `lone_pairs`, may be split into several candidates, each confirmed on its
-/// own. Many near-Earth objects are lost at
-/// these steps, see the test `matrix_grid_steps`. The default passes search
-/// at multiples of these steps, a coarse pass and then a fine one, see
+/// The cost of a search grows with the number of hypotheses, about the inverse
+/// of the product of the two steps. With the default grid allowance of
+/// [`crate::LinkSettings`], steps of this size find main belt and more distant
+/// objects, though one seen once a night, found only with `lone_pairs`, may be
+/// split into several candidates, each confirmed on its own. Many near-Earth
+/// objects are lost at these steps. The default passes search at multiples of
+/// these steps, a coarse pass and then a fine one, see
 /// [`crate::SearchSettings::default`]. Close objects need steps chosen for
-/// their distance, see `matrix_close_objects`.
+/// their distance.
 pub const DEPTH_STEP: f64 = 0.4;
 
 /// Step of the grid in depth rate over depth, per day, which the
@@ -51,7 +50,7 @@ pub const RATE_STEP: f64 = 4e-3;
 const ESCAPE_FRACTION: f64 = 0.25;
 
 /// Radius of the Sun in AU. No bound orbit passes inside it.
-const SUN_RADIUS: f64 = 0.00465;
+const SUN_RADIUS: f64 = SUN_DIAMETER / (2.0 * AU_KM);
 
 /// Largest integer below which every integer is exactly a float, `2^53`.
 const MAX_EXACT: f64 = 9_007_199_254_740_992.0;

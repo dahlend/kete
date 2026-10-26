@@ -15,9 +15,10 @@ use kete_core::constants::GMS;
 use kete_core::frames::{Equatorial, SunCenter, Vector};
 use kete_core::kepler::propagate_two_body;
 use kete_core::prelude::State;
+use nalgebra::{Matrix6, Vector3, Vector6};
 
 use crate::Sight;
-use crate::linalg::{chi2, dot, inverse, scaled_solve};
+use crate::linalg::{chi2, inverse, scaled_solve};
 use crate::observe::{Seen, seen};
 use crate::sight::first_and_last;
 
@@ -136,7 +137,7 @@ pub(crate) fn fit_two_body(
         let scores = current
             .iter()
             .zip(&leverage)
-            .map(|(seen, h)| dot(&seen.residual, &seen.residual) / (2.0 - h).max(0.5));
+            .map(|(seen, h)| seen.residual.norm_squared() / (2.0 - h).max(0.5));
         let (worst, largest) = scores.enumerate().max_by(|a, b| a.1.total_cmp(&b.1))?;
         if largest <= reject {
             return Some((state, kept, rms));
@@ -146,20 +147,23 @@ pub(crate) fn fit_two_body(
 }
 
 /// Whether a state is on a bound orbit about the Sun.
-fn is_bound(params: &[f64; 6]) -> bool {
-    let r = Vector::<Equatorial>::new([params[0], params[1], params[2]]).norm();
-    let v = Vector::<Equatorial>::new([params[3], params[4], params[5]]).norm();
+fn is_bound(params: &Vector6<f64>) -> bool {
+    let r = params.fixed_rows::<3>(0).norm();
+    let v = params.fixed_rows::<3>(3).norm();
     0.5 * v * v < GMS / r
 }
 
 /// Position and velocity of a state as six numbers.
-fn to_params(state: &State<Equatorial, SunCenter>) -> [f64; 6] {
-    let (pos, vel) = (<[f64; 3]>::from(state.pos), <[f64; 3]>::from(state.vel));
-    [pos[0], pos[1], pos[2], vel[0], vel[1], vel[2]]
+fn to_params(state: &State<Equatorial, SunCenter>) -> Vector6<f64> {
+    let (pos, vel) = (Vector3::from(state.pos), Vector3::from(state.vel));
+    Vector6::new(pos[0], pos[1], pos[2], vel[0], vel[1], vel[2])
 }
 
 /// The state at the epoch of `like` with these six numbers.
-fn from_params(like: &State<Equatorial, SunCenter>, p: &[f64; 6]) -> State<Equatorial, SunCenter> {
+fn from_params(
+    like: &State<Equatorial, SunCenter>,
+    p: &Vector6<f64>,
+) -> State<Equatorial, SunCenter> {
     State {
         pos: Vector::new([p[0], p[1], p[2]]),
         vel: Vector::new([p[3], p[4], p[5]]),
@@ -171,7 +175,7 @@ fn from_params(like: &State<Equatorial, SunCenter>, p: &[f64; 6]) -> State<Equat
 /// residual and its derivative can be evaluated.
 fn evaluate(
     like: &State<Equatorial, SunCenter>,
-    params: &[f64; 6],
+    params: &Vector6<f64>,
     sights: &[&Sight],
 ) -> Option<Vec<Seen>> {
     let state = from_params(like, params);
@@ -203,7 +207,10 @@ fn reduced_rms(seen: &[Seen]) -> f64 {
 /// gains that little: where the sights fix one direction weakly, as the
 /// distance on a short arc, a damped step barely moves along it while the
 /// minimum is still far along it.
-fn settle(like: &State<Equatorial, SunCenter>, sights: &[&Sight]) -> Option<([f64; 6], Vec<Seen>)> {
+fn settle(
+    like: &State<Equatorial, SunCenter>,
+    sights: &[&Sight],
+) -> Option<(Vector6<f64>, Vec<Seen>)> {
     let mut params = to_params(like);
     let mut current = evaluate(like, &params, sights)?;
     let mut current_chi2 = chi2(current.iter().map(|seen| &seen.residual));
@@ -214,20 +221,13 @@ fn settle(like: &State<Equatorial, SunCenter>, sights: &[&Sight]) -> Option<([f6
         // Damped on the scaled unit diagonal, so that the damping is the same
         // for every parameter whatever its units.
         let (matrix, gradient) = &normal;
-        let step = scaled_solve(matrix, *gradient, damping);
+        let step = scaled_solve(matrix, gradient, damping);
         // The gain of the linear model, `2 d.g - d.N.d` for the step `d`.
         let predicted = step.map_or(f64::INFINITY, |step| {
-            let mut predicted = 0.0;
-            for i in 0..6 {
-                predicted += 2.0 * step[i] * gradient[i];
-                for j in 0..6 {
-                    predicted -= step[i] * matrix[i][j] * step[j];
-                }
-            }
-            predicted
+            2.0 * step.dot(gradient) - step.dot(&(matrix * step))
         });
         let better = step.and_then(|step| {
-            let trial: [f64; 6] = std::array::from_fn(|i| params[i] - step[i]);
+            let trial = params - step;
             if is_bound(&params) && !is_bound(&trial) {
                 return None;
             }
@@ -256,9 +256,8 @@ fn settle(like: &State<Equatorial, SunCenter>, sights: &[&Sight]) -> Option<([f6
         normal = normal_equations(&current);
         // The gain of the linear model of the undamped step, `g.N^-1.g`.
         let (matrix, gradient) = &normal;
-        let left = scaled_solve(matrix, *gradient, 0.0).map_or(f64::INFINITY, |step| {
-            (0..6).map(|i| step[i] * gradient[i]).sum()
-        });
+        let left =
+            scaled_solve(matrix, gradient, 0.0).map_or(f64::INFINITY, |step| step.dot(gradient));
         if left < CHI2_TOLERANCE {
             break;
         }
@@ -275,7 +274,7 @@ fn settle(like: &State<Equatorial, SunCenter>, sights: &[&Sight]) -> Option<([f6
 pub(crate) fn normal_at(
     state: &State<Equatorial, SunCenter>,
     sights: &[Sight],
-) -> Option<(f64, [[f64; 6]; 6], [f64; 6])> {
+) -> Option<(f64, Matrix6<f64>, Vector6<f64>)> {
     let seen: Vec<Seen> = sights
         .iter()
         .map(|sight| seen(state, sight))
@@ -290,18 +289,12 @@ pub(crate) fn normal_at(
 
 /// The normal matrix `J^T J` and the gradient `J^T r` of the residuals `r`
 /// of the sights, with their Jacobian `J`.
-fn normal_equations(seen: &[Seen]) -> ([[f64; 6]; 6], [f64; 6]) {
-    let mut matrix = [[0.0; 6]; 6];
-    let mut gradient = [0.0; 6];
+fn normal_equations(seen: &[Seen]) -> (Matrix6<f64>, Vector6<f64>) {
+    let mut matrix = Matrix6::zeros();
+    let mut gradient = Vector6::zeros();
     for Seen { residual, jacobian } in seen {
-        for i in 0..6 {
-            for k in 0..3 {
-                gradient[i] += jacobian[k][i] * residual[k];
-            }
-            for j in 0..6 {
-                matrix[i][j] += (0..3).map(|k| jacobian[k][i] * jacobian[k][j]).sum::<f64>();
-            }
-        }
+        matrix += jacobian.tr_mul(jacobian);
+        gradient += jacobian.tr_mul(residual);
     }
     (matrix, gradient)
 }
@@ -312,17 +305,7 @@ fn leverages(seen: &[Seen]) -> Option<Vec<f64>> {
     let inverse = inverse(&normal_equations(seen).0)?;
     Some(
         seen.iter()
-            .map(|Seen { jacobian, .. }| {
-                let mut sum = 0.0;
-                for row in jacobian {
-                    for i in 0..6 {
-                        for j in 0..6 {
-                            sum += inverse[i][j] * row[i] * row[j];
-                        }
-                    }
-                }
-                sum
-            })
+            .map(|Seen { jacobian, .. }| (jacobian * inverse * jacobian.transpose()).trace())
             .collect(),
     )
 }
@@ -391,8 +374,8 @@ mod tests {
                 let mut minimum = evaluate(&truth, &params, &chosen).unwrap();
                 for _ in 0..20 {
                     let (matrix, gradient) = normal_equations(&minimum);
-                    let step = scaled_solve(&matrix, gradient, 0.0).unwrap();
-                    let moved = std::array::from_fn(|i| params[i] - step[i]);
+                    let step = scaled_solve(&matrix, &gradient, 0.0).unwrap();
+                    let moved = params - step;
                     let found = evaluate(&truth, &moved, &chosen).unwrap();
                     let chi2_of = |seen: &[Seen]| chi2(seen.iter().map(|seen| &seen.residual));
                     if chi2_of(&found) >= chi2_of(&minimum) {

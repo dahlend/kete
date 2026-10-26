@@ -146,11 +146,10 @@ impl Default for SearchSettings {
     /// mix of surveys, which changes from field to field, and their tail is
     /// set by chance neighbors, which grow with the density.
     ///
-    /// An object close to the observer can move too much within a tracklet
-    /// for one orbit to fit it, and is then found through the pairs of its
-    /// ends alone; a search aimed at objects within a few hundredths of an AU
-    /// takes tracklets and time groups of a hundredth of a day or less, see
-    /// the tests `units_close_observers` and `matrix_close_objects`.
+    /// An object close to the observer can move too much within a tracklet for
+    /// one orbit to fit it, and is then found through the pairs of its ends
+    /// alone; a search aimed at objects within a few hundredths of an AU takes
+    /// tracklets and time groups of a hundredth of a day or less.
     ///
     /// Detections no more than a tenth of a day after the one before are in one
     /// time group of confirmation, a span set apart from that of tracklets:
@@ -171,8 +170,7 @@ impl Default for SearchSettings {
     /// near-Earth objects and objects the coarse grid split. Its grid has many
     /// times the hypotheses of the first, so it can take the larger part of the
     /// time to link even over fewer observations, and a finer second pass
-    /// multiplies that time again. The test `search_in_passes` shows the second
-    /// pass recovering what the first misses.
+    /// multiplies that time again.
     ///
     /// The rate limit of the first pass is what keeps the halos of the tiles
     /// of [`crate::search_windows`] small in the pass which confirms most

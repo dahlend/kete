@@ -1872,6 +1872,7 @@ dependencies = [
  "kete_fitting",
  "kete_spice",
  "kete_stats",
+ "nalgebra",
  "rayon",
 ]
 

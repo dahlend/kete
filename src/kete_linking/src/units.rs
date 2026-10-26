@@ -76,21 +76,17 @@ const PAIRS_PER_SIDE: usize = 2;
 /// [`crate::LinkSettings`].
 ///
 /// The ends of a tracklet are paired only along its track. In a crowded field
-/// pairs of two objects far outnumber pairs of one, and nearly all of them
-/// join ends of tracklets, so the track leaves out most pairs and few of one
-/// object. The test `tracklet_ends_pair_along_their_track` shows a sight off
-/// the track left out, for tracklets of three and of two.
+/// pairs of two objects far outnumber pairs of one, and nearly all of them join
+/// ends of tracklets, so the track leaves out most pairs and few of one object.
 ///
-/// Of the pairs on its track, each end of a tracklet keeps the two nearest
-/// it on each side in time, nearest by the miss over what the track allows,
-/// ties to the pair found first; a pair of two tracklet ends has to be kept
-/// by both. The track allows for the curvature of every motion up to
-/// `max_rate`, which among many false detections admits many sights of
-/// nothing; the true sight of the object is nearly always the nearest, and
-/// the other units of the object join it in [`crate::link()`] at any time
-/// apart. This bounds the pairs at four for each tracklet end however dense
-/// the false detections. The test `crowded_ends_keep_their_nearest_pairs`
-/// shows it.
+/// Of the pairs on its track, each end of a tracklet keeps the two nearest it
+/// on each side in time, nearest by the miss over what the track allows, ties
+/// to the pair found first; a pair of two tracklet ends has to be kept by both.
+/// The track allows for the curvature of every motion up to `max_rate`, which
+/// among many false detections admits many sights of nothing; the true sight of
+/// the object is nearly always the nearest, and the other units of the object
+/// join it in [`crate::link()`] at any time apart. This bounds the pairs at
+/// four for each tracklet end however dense the false detections.
 ///
 /// # Tracklets
 ///
@@ -152,11 +148,6 @@ const PAIRS_PER_SIDE: usize = 2;
 /// * A few sights of an object seen over longer than `tracklet_span` can be
 ///   left lone between its tracklets, when fewer than `min_tracklet` of them
 ///   remain.
-///
-/// The tests `tracklets_grow_along_their_track`,
-/// `missed_sights_do_not_cut_tracklets`,
-/// `crossing_tracklets_share_out_their_sights` and
-/// `tracklets_split_where_the_place_changes` show these.
 ///
 /// Two sights always lie on one track, so a tracklet of two across two
 /// objects nearby looks like one object, and a tracklet of two from two

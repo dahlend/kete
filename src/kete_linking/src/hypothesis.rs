@@ -22,8 +22,7 @@ use crate::sight::{MAX_DAYS, is_unit};
 /// one of the six coordinate axes of the Equatorial frame, both ways, the
 /// directions of the hypotheses of [`crate::hypothesis_grid`], and the margin
 /// below that lets an object which moves on the sky keep one axis for all of
-/// its sights. The tests `alignment_cost` and `axis_coverage` print the
-/// trade.
+/// its sights.
 pub const MIN_ALIGNMENT: f64 = 0.45;
 
 /// The six hypothesis directions which together cover the sky: both ways

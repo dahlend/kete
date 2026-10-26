@@ -13,10 +13,10 @@ use kete_core::frames::{Equatorial, SunCenter, Vector};
 use kete_core::kepler::propagate_two_body;
 use kete_core::prelude::{Error, KeteResult, State};
 use kete_core::time::{TDB, Time};
+use nalgebra::Matrix2;
 use rayon::prelude::*;
 
 use crate::hypothesis::check_hypothesis;
-use crate::linalg::dot;
 use crate::sight::{UNUSABLE, first_and_last};
 use crate::unit_fit::{Fit, plane_axes, solve_unit};
 use crate::{Hypothesis, MIN_ALIGNMENT, Sight};
@@ -149,18 +149,15 @@ pub struct LinkSettings {
 
 impl Default for LinkSettings {
     /// A threshold of four loses a true match to noise at most about once in
-    /// seven hundred and fifty, by the relation of [`LinkSettings::threshold`], which
-    /// the test `match_noise_calibration` checks at lower thresholds where
-    /// losses can be counted. The grid allowance of about twenty arcseconds
-    /// keeps groups tight at the steps [`crate::DEPTH_STEP`] and
-    /// [`crate::RATE_STEP`]: a main belt or more distant object which a step
-    /// leaves outside it is split into several candidates rather than lost.
-    /// The test `matrix_grid_allowance` prints how whole it keeps main belt
-    /// objects seen nightly for a month. A larger allowance splits fewer
-    /// objects but lets more units of different objects match, which costs
-    /// purity where a search forms many of them, see `matrix_cadence`. The
-    /// largest uncertainty of 0.05 is under [`crate::DEPTH_STEP`] over the
-    /// default threshold, see [`LinkSettings::max_uncertainty`].
+    /// seven hundred and fifty, by the relation of [`LinkSettings::threshold`].
+    /// The grid allowance of about twenty arcseconds keeps groups tight at the
+    /// steps [`crate::DEPTH_STEP`] and [`crate::RATE_STEP`]: a main belt or
+    /// more distant object which a step leaves outside it is split into several
+    /// candidates rather than lost. A larger allowance splits fewer objects but
+    /// lets more units of different objects match, which costs purity where a
+    /// search forms many of them. The largest uncertainty of 0.05 is under
+    /// [`crate::DEPTH_STEP`] over the default threshold, see
+    /// [`LinkSettings::max_uncertainty`].
     fn default() -> Self {
         Self {
             threshold: 4.0,
@@ -226,23 +223,21 @@ pub struct Candidate {
 /// sights of its unit. The tolerance so follows from the data, and a short
 /// unit is not held to the standard of a long one.
 ///
-/// Units to compare are found by hashing their positions at the reference
-/// time. Each unit has a reach there: `threshold` times the sum of its
-/// position error and its velocity error carried to the reference time, plus
-/// the grid allowance at its range. Every two units whose positions at the
-/// reference time are within the sum of their reaches are compared, and no
-/// others. Reaches differ by orders of magnitude between units minutes long
-/// and units days long, so the hash has levels of cell width, each four
-/// times as wide as the one below. Each unit is hashed at the first level
-/// whose cells are at least as wide as its reach, and each two units are
-/// found from the side with the smaller reach, which looks through the
-/// cells near it at its own level and every level above. Two units which
-/// would match but are farther apart than that are not compared.
-/// That happens when the reference time is outside the span of the sights:
-/// carried past their sights, the orbits of a wrong hypothesis drift apart.
-/// The test `hashed_matches_equal_brute_force` measures it. A reference time
-/// farther outside the span of the sights of the units than that span is
-/// refused.
+/// Units to compare are found by hashing their positions at the reference time.
+/// Each unit has a reach there: `threshold` times the sum of its position error
+/// and its velocity error carried to the reference time, plus the grid
+/// allowance at its range. Every two units whose positions at the reference
+/// time are within the sum of their reaches are compared, and no others.
+/// Reaches differ by orders of magnitude between units minutes long and units
+/// days long, so the hash has levels of cell width, each four times as wide as
+/// the one below. Each unit is hashed at the first level whose cells are at
+/// least as wide as its reach, and each two units are found from the side with
+/// the smaller reach, which looks through the cells near it at its own level
+/// and every level above. Two units which would match but are farther apart
+/// than that are not compared. That happens when the reference time is outside
+/// the span of the sights: carried past their sights, the orbits of a wrong
+/// hypothesis drift apart. A reference time farther outside the span of the
+/// sights of the units than that span is refused.
 ///
 /// A group is the sights of its units. Two sights at the same time from the
 /// same place cannot both be one object, and the one of the better matching
@@ -588,10 +583,10 @@ fn solve_units(
 }
 
 /// Largest eigenvalue of a symmetric two by two matrix.
-fn largest(m: [[f64; 2]; 2]) -> f64 {
-    let half = f64::midpoint(m[0][0], m[1][1]);
-    let diff = 0.5 * (m[0][0] - m[1][1]);
-    half + diff.hypot(m[0][1])
+fn largest(m: &Matrix2<f64>) -> f64 {
+    let half = f64::midpoint(m[(0, 0)], m[(1, 1)]);
+    let diff = 0.5 * (m[(0, 0)] - m[(1, 1)]);
+    half + diff.hypot(m[(0, 1)])
 }
 
 /// A unit solved under a hypothesis, unless its position at the reference
@@ -609,7 +604,7 @@ fn solved(
     // The residuals are over the sigma of each sight, so this is the miss as
     // an angle against `threshold` sigma plus the allowance.
     let consistent = unit.iter().zip(&fit.rows).all(|(&i, row)| {
-        let miss = dot(&row.residual, &row.residual).sqrt();
+        let miss = row.residual.norm();
         miss * sights[i].sigma <= settings.threshold * sights[i].sigma + settings.grid_allowance
     });
     if !consistent {
@@ -632,21 +627,19 @@ fn solved(
     // would make the unit look certain, and the unit is left out. So is one
     // whose position error at that time is not real.
     let c = &fit.covariance;
-    let block = |r: usize, k: usize| [[c[r][k], c[r][k + 1]], [c[r + 1][k], c[r + 1][k + 1]]];
-    let (pp, pv, vv) = (block(0, 0), block(0, 2), block(2, 2));
-    let positive = [pp[0][0], pp[1][1], vv[0][0], vv[1][1]]
+    let pp: Matrix2<f64> = c.fixed_view::<2, 2>(0, 0).into();
+    let pv: Matrix2<f64> = c.fixed_view::<2, 2>(0, 2).into();
+    let vv: Matrix2<f64> = c.fixed_view::<2, 2>(2, 2).into();
+    let positive = pp
+        .diagonal()
         .iter()
+        .chain(vv.diagonal().iter())
         .all(|&v| v > 0.0);
     if !positive {
         return None;
     }
-    let ahead = -(pv[0][0] + pv[1][1]) / (vv[0][0] + vv[1][1]);
-    let mut at = pp;
-    for i in 0..2 {
-        for j in 0..2 {
-            at[i][j] += ahead * (pv[i][j] + pv[j][i]) + ahead * ahead * vv[i][j];
-        }
-    }
+    let ahead = -pv.trace() / vv.trace();
+    let at = pp + (pv + pv.transpose()) * ahead + vv * (ahead * ahead);
     let (accel, jerk) = accel_and_jerk(&fit.state);
     let solved = Solved {
         unit: u,
@@ -655,8 +648,8 @@ fn solved(
         state: fit.state,
         sigma: stretched(sights, unit, hypothesis),
         ahead,
-        pos_error: largest(at).sqrt(),
-        vel_error: largest(vv).sqrt(),
+        pos_error: largest(&at).sqrt(),
+        vel_error: largest(&vv).sqrt(),
         points,
     };
     let uncertainty = solved.uncertainty();

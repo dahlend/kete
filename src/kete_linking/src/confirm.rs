@@ -6,7 +6,7 @@
 
 use kete_core::ephemeris::EphemerisSource;
 use kete_core::forces::GravParams;
-use kete_core::frames::{Equatorial, SSB, SunCenter, Vector};
+use kete_core::frames::{CenterBody, Equatorial, SSB, SunCenter, Vector};
 use kete_core::prelude::{Error, KeteResult, State};
 use kete_fitting::{AstrometricObservation, OrbitFit, fit_orbit};
 use kete_spice::prelude::SpiceEphemeris;
@@ -35,9 +35,6 @@ const FIT_REJECT_PASSES: usize = 3;
 /// `exp(-12.5)`, four in a million, for each two of its observations.
 const MIN_MOTION: f64 = 5.0;
 
-/// NAIF id of the Sun.
-const SUN: i32 = 10;
-
 /// Time before the first epoch over which the planets must be known, in
 /// days, as the orbit fit propagates to the time the light left the object.
 /// A day is the light time from about 170 AU.
@@ -57,9 +54,7 @@ const LIGHT_TIME: f64 = 1.0;
 pub(crate) fn sun_centered(
     state: &State<Equatorial, SSB>,
 ) -> KeteResult<State<Equatorial, SunCenter>> {
-    let mut state: State<Equatorial> = state.clone().into();
-    SpiceEphemeris::loaded()?.try_change_center(&mut state, SUN)?;
-    State::try_from(state)
+    SpiceEphemeris::loaded()?.try_to_sun(state.clone().into())
 }
 
 /// The line of sight of an optical observation.
@@ -253,21 +248,19 @@ const BATCH: usize = 512;
 
 /// The candidates an orbit fit confirms, without overlaps.
 ///
-/// The state a candidate carries is that of one unit under one hypothesis.
-/// On a short arc, hypotheses far from the truth group the same sights, so
-/// the state can be far off along the line of sight, often outside the reach
-/// of the orbit fit. Each candidate is therefore first fit with a damped
-/// least-squares two-body orbit about the Sun to its own sights, kept bound
-/// once bound, at the middle of the time its sights span, and that orbit
-/// moved to the Solar System Barycenter there starts the fit. The reference
-/// time of a candidate's hypothesis can be days from its sights, and a start
-/// there would carry the two-body orbit's neglect of the planets over that
-/// time into the residuals of a start which the fit only scores, see below.
-/// The orbit of a confirmation is at the epoch of its start. The test
-/// `diagnose_confirm_losses` prints how far the states of candidates, and
-/// the orbits confirmed from them, are from the truth. The two-body orbit
-/// leaves out the planets, so for an object passing close to a planet it can
-/// start the fit too far from the solution for the fit to reach it.
+/// The state a candidate carries is that of one unit under one hypothesis. On a
+/// short arc, hypotheses far from the truth group the same sights, so the state
+/// can be far off along the line of sight, often outside the reach of the orbit
+/// fit. Each candidate is therefore first fit with a damped least-squares
+/// two-body orbit about the Sun to its own sights, kept bound once bound, at
+/// the middle of the time its sights span, and that orbit moved to the Solar
+/// System Barycenter there starts the fit. The reference time of a candidate's
+/// hypothesis can be days from its sights, and a start there would carry the
+/// two-body orbit's neglect of the planets over that time into the residuals of
+/// a start which the fit only scores, see below. The orbit of a confirmation is
+/// at the epoch of its start. The two-body orbit leaves out the planets, so for
+/// an object passing close to a planet it can start the fit too far from the
+/// solution for the fit to reach it.
 ///
 /// The two-body fit drops sights which do not fit, one at a time and the
 /// worst first, by the rule the orbit fit uses to reject observations and
@@ -337,15 +330,14 @@ const BATCH: usize = 512;
 /// time fix the direction and the motion on the sky of an orbit, four of its
 /// six numbers, and leave its distance and radial speed free. Those two can
 /// always be chosen to pass the orbit through one more direction at another
-/// time, so a single observation across a gap is fit whatever object it
-/// shows, and the fit tests nothing there. Two observations across the gap
-/// give four measurements for the two free numbers, which a mixture of two
-/// objects does not fit. The largest gap is where the kept observations are
-/// least tied together. Two per side favors purity, as a search for unknown
-/// objects needs, and turns down a real object seen once across its largest
-/// gap; one per side turns the rule off, and favors completeness, as the
-/// recovery of objects expected in the observations allows. The test
-/// `confirm_needs_two_sights_across_the_gap` covers both settings.
+/// time, so a single observation across a gap is fit whatever object it shows,
+/// and the fit tests nothing there. Two observations across the gap give four
+/// measurements for the two free numbers, which a mixture of two objects does
+/// not fit. The largest gap is where the kept observations are least tied
+/// together. Two per side favors purity, as a search for unknown objects needs,
+/// and turns down a real object seen once across its largest gap; one per side
+/// turns the rule off, and favors completeness, as the recovery of objects
+/// expected in the observations allows.
 ///
 /// A fit with too few observations on one side of its largest gap is not
 /// turned down at once. Those observations are dropped, and the rest are fit
@@ -362,24 +354,22 @@ const BATCH: usize = 512;
 /// group, observations so close in time that they measure no change of the
 /// motion, fixes only the direction and motion on the sky, and any orbit
 /// through them fits: it confirms nothing. Two groups give four measurements
-/// for the two free numbers, two degrees of freedom, which is a weak test:
-/// the motion of each group is known only to its own noise, and the farther
-/// apart the groups, the more room that noise leaves for a tracklet of another
-/// object to line up by chance, so chance links of two tracklets grow with the
-/// time between them. A confirmation of two groups is therefore held to the
-/// time between them that a pair may span, `max_gap`, the largest gap the
-/// search links across without a third group to check it. Three or more
-/// groups test the orbit at a third time, and have no gap limit, but only
-/// when they hold as many observations as two groups across a gap are asked
-/// for: two groups of `min_sights_per_side` among them, or three times that
-/// in all. Where the cadence is close against `group_span`, as for
-/// continuous coverage, every observation can be its own group, and among
-/// many false detections a few single ones line up with a false tracklet by
-/// chance; the count turns those down whatever the cadence. A fit which
-/// fails these rules is turned down. The tests `confirm_needs_two_time_groups`
-/// and `groups_need_their_observations` cover them. A candidate whose
-/// observations all lie within `group_span` days is one time group whatever
-/// the fit keeps, and is turned down without a fit.
+/// for the two free numbers, two degrees of freedom, which is a weak test: the
+/// motion of each group is known only to its own noise, and the farther apart
+/// the groups, the more room that noise leaves for a tracklet of another object
+/// to line up by chance, so chance links of two tracklets grow with the time
+/// between them. A confirmation of two groups is therefore held to the time
+/// between them that a pair may span, `max_gap`, the largest gap the search
+/// links across without a third group to check it. Three or more groups test
+/// the orbit at a third time, and have no gap limit, but only when they hold as
+/// many observations as two groups across a gap are asked for: two groups of
+/// `min_sights_per_side` among them, or three times that in all. Where the
+/// cadence is close against `group_span`, as for continuous coverage, every
+/// observation can be its own group, and among many false detections a few
+/// single ones line up with a false tracklet by chance; the count turns those
+/// down whatever the cadence. A fit which fails these rules is turned down. A
+/// candidate whose observations all lie within `group_span` days is one time
+/// group whatever the fit keeps, and is turned down without a fit.
 ///
 /// Of confirmed candidates which share an observation, the one which keeps
 /// more observations wins, then the one with the lower residual, then the
@@ -638,7 +628,7 @@ pub(crate) fn accept_disjoint(
 /// Whether the orbit of a fit is bound to the Sun.
 fn is_bound(fit: &OrbitFit) -> bool {
     let elements = &fit.uncertain_state.elements;
-    elements.center_id == SUN && elements.ecc_f.hypot(elements.ecc_g) < 1.0
+    elements.center_id == SunCenter::NAIF_ID && elements.eccentricity() < 1.0
 }
 
 /// Whether the lines of sight of these observations show motion: some two of

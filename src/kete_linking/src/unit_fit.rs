@@ -7,9 +7,10 @@ use kete_core::constants::GMS;
 use kete_core::frames::{Equatorial, SunCenter, Vector};
 use kete_core::prelude::{Error, KeteResult, State};
 use kete_core::time::{TDB, Time};
+use nalgebra::{Matrix3x4, Matrix4, Vector3, Vector4};
 
 use crate::hypothesis::{Solution, bound_within_noise, solve};
-use crate::linalg::{chi2, dot, inverse, scaled_solve};
+use crate::linalg::{chi2, inverse, scaled_solve};
 use crate::observe::residual_at;
 use crate::{Hypothesis, Sight};
 
@@ -47,14 +48,14 @@ pub(crate) struct Fit {
     /// Covariance of the four numbers the hypothesis leaves free, at the
     /// reference time: the position along the two [`plane_axes`] in AU, then
     /// the velocity along them in AU per day.
-    pub(crate) covariance: [[f64; 4]; 4],
+    pub(crate) covariance: Matrix4<f64>,
 }
 
 /// One sight of a unit under an orbit.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Row {
     /// Predicted less observed direction, over the sigma of the sight.
-    pub(crate) residual: [f64; 3],
+    pub(crate) residual: Vector3<f64>,
 
     /// Time light left the object.
     pub(crate) time: Time<TDB>,
@@ -109,7 +110,7 @@ pub(crate) fn solve_unit(
     // The normal matrix at the returned orbit, and its rows.
     let (normal, rows) = if unit.len() == 2 {
         let rows = [(first, ranges[0]), (last, ranges[1])].map(|(sight, range)| Row {
-            residual: [0.0; 3],
+            residual: Vector3::zeros(),
             time: sight.emission_time(range),
             range,
         });
@@ -120,16 +121,12 @@ pub(crate) fn solve_unit(
         let mut rows = unit_rows(&chosen, &state).ok_or_else(fail)?;
         for _ in 0..UNIT_STEPS {
             let (normal, gradient) = normal_equations(&chosen, &rows, &state, &axes);
-            let step = scaled_solve(&normal, gradient.map(|g| -g), 0.0).ok_or_else(fail)?;
+            let step = scaled_solve(&normal, &-gradient, 0.0).ok_or_else(fail)?;
             let predicted: f64 = chosen
                 .iter()
                 .zip(&rows)
                 .map(|(sight, row)| {
-                    let columns = columns(sight, row, &state, &axes);
-                    let residual: [f64; 3] = std::array::from_fn(|k| {
-                        row.residual[k] + (0..4).map(|i| columns[i][k] * step[i]).sum::<f64>()
-                    });
-                    dot(&residual, &residual)
+                    (row.residual + columns(sight, row, &state, &axes) * step).norm_squared()
                 })
                 .sum();
             let mut moved = state.clone();
@@ -185,8 +182,8 @@ pub(crate) fn unit_rows(
 }
 
 /// The Jacobian of the residual of one sight over the four free numbers of
-/// `state` within the hypothesis, see [`Fit`], as one column of three for
-/// each, at the time and range of its row.
+/// `state` within the hypothesis, see [`Fit`], one column for each, at the
+/// time and range of its row.
 ///
 /// The motion from `state` to the sight is taken to second order in the
 /// time: a change of position `dr` and velocity `dv` at the reference time
@@ -200,22 +197,21 @@ fn columns(
     row: &Row,
     state: &State<Equatorial, SunCenter>,
     axes: &[Vector<Equatorial>; 2],
-) -> [[f64; 3]; 4] {
+) -> Matrix3x4<f64> {
     let dt = (row.time - state.epoch).elapsed;
     let dir = sight.direction;
     let weight = 1.0 / (row.range * sight.sigma);
     let distance = state.pos.norm();
     let unit = state.pos / distance;
     let pull = |e: Vector<Equatorial>| (unit * (3.0 * unit.dot(&e)) - e) * (GMS / distance.powi(3));
-    let seen =
-        |moved: Vector<Equatorial>| <[f64; 3]>::from((moved - dir * dir.dot(&moved)) * weight);
+    let seen = |moved: Vector<Equatorial>| Vector3::from((moved - dir * dir.dot(&moved)) * weight);
     let [a, b] = axes.map(|e| {
         (
             seen(e + pull(e) * (0.5 * dt * dt)),
             seen((e + pull(e) * (dt * dt / 6.0)) * dt),
         )
     });
-    [a.0, b.0, a.1, b.1]
+    Matrix3x4::from_columns(&[a.0, b.0, a.1, b.1])
 }
 
 /// The normal matrix and the gradient of the residuals of `sights` over the
@@ -226,17 +222,13 @@ fn normal_equations(
     rows: &[Row],
     state: &State<Equatorial, SunCenter>,
     axes: &[Vector<Equatorial>; 2],
-) -> ([[f64; 4]; 4], [f64; 4]) {
-    let mut normal = [[0.0; 4]; 4];
-    let mut gradient = [0.0; 4];
+) -> (Matrix4<f64>, Vector4<f64>) {
+    let mut normal = Matrix4::zeros();
+    let mut gradient = Vector4::zeros();
     for (sight, row) in sights.iter().zip(rows) {
         let columns = columns(sight, row, state, axes);
-        for i in 0..4 {
-            gradient[i] += dot(&columns[i], &row.residual);
-            for j in 0..4 {
-                normal[i][j] += dot(&columns[i], &columns[j]);
-            }
-        }
+        normal += columns.tr_mul(&columns);
+        gradient += columns.tr_mul(&row.residual);
     }
     (normal, gradient)
 }
@@ -334,7 +326,7 @@ mod tests {
                     axes[1].dot(&(fit.state.vel - at.vel)),
                 ];
                 for (k, miss) in miss.iter().enumerate() {
-                    let error = fit.covariance[k][k].sqrt();
+                    let error = fit.covariance[(k, k)].sqrt();
                     assert!(error.is_finite() && error > 0.0, "{case}, number {k}");
                     assert!(
                         miss.abs() < 4.0 * error,
