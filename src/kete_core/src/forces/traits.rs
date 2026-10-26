@@ -1,15 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Dar Dahlen
 // SPDX-License-Identifier: BSD-3-Clause
 
-//! The force trait: stateless physics pieces that contribute acceleration.
+//! The force trait: defining stateless forces on objects.
 //!
 //! [`ParameterizedForce`] is a family of forces parameterized by an `&[f64]` slice.
 //! Fitted parameters are passed at every method call; fixed physical constants live as
 //! struct fields. It covers both forces with zero free parameters (gravity, or a fully
-//! fixed [`ParameterMask`](super::ParameterMask)) and parameterized non-gravitational
-//! templates (e.g. `DustNonGrav`, `JplCometNonGrav`).
+//! fixed [`ParameterMask`](super::ParameterMask)) or multiple free parameters
+//! (e.g. `DustNonGrav`, `JplCometNonGrav`).
 //!
-//! All forces speak AU/day at the API: positions in AU, velocities in
+//! All forces use AU/day at the API: positions in AU, velocities in
 //! AU/day, time in days (TDB), accelerations in AU/day^2.
 
 use nalgebra::{Matrix3, Matrix3xX, Vector3};

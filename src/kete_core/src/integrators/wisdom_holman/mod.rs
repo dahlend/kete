@@ -15,13 +15,15 @@ use crate::forces::{
     FarnocchiaNonGrav, GravParams, JplCometNonGrav, NonGravKind, NonGravMask, Shape,
     apply_gr_correction, j2_correction, radiation_accel,
 };
-use crate::frames::{Ecliptic, Equatorial, StaticFrame, SSB, Vector};
+use crate::frames::{Ecliptic, Equatorial, SSB, StaticFrame, Vector};
+use crate::integrators::RadauIntegrator;
 use crate::kepler::analytic_2_body_delta;
 use crate::kepler::{compute_peri_dist, compute_semi_major};
 use crate::state::State;
 use crate::time::{TDB, Time};
 use nalgebra::Vector3;
 use rayon::prelude::*;
+use std::cell::Cell;
 use std::f64::consts::TAU;
 use std::marker::PhantomData;
 
@@ -217,6 +219,17 @@ pub enum LostReason {
     /// The universal Kepler solver failed to converge, which indicates an
     /// extreme state such as a deep close encounter driven by too large a step.
     KeplerFailure,
+    /// The particle passed perihelion inside the perihelion bound set with
+    /// [`WisdomHolman::set_removal_bounds`].
+    PerihelionBound,
+    /// The particle moved beyond the distance bound set with
+    /// [`WisdomHolman::set_removal_bounds`].
+    DistanceBound,
+    /// The particle came within the radius of a planet during a resolved
+    /// close encounter (see [`WisdomHolman::with_close_encounters`]).
+    PlanetImpact,
+    /// The Radau integration of a resolved close encounter failed.
+    EncounterFailure,
 }
 
 /// Record of a test particle removed during integration.
@@ -224,7 +237,9 @@ pub enum LostReason {
 pub struct LostParticle {
     /// Designation of the removed particle.
     pub desig: Desig,
-    /// Epoch of the step during which the particle was removed.
+    /// When the particle was removed. In a resolved close encounter, the time
+    /// of the impact or perihelion passage; otherwise the start of the drift,
+    /// or of the resolved step, in which its removal was found.
     pub epoch: Time<TDB>,
     /// Why the particle was removed.
     pub reason: LostReason,
@@ -232,9 +247,11 @@ pub struct LostParticle {
 
 /// The closest approach between two bodies seen during a run.
 ///
-/// Only approaches within 3 Hill radii are recorded, since the map's accuracy
-/// degrades inside that region. If this is reported by a simulation, the
-/// trajectories of the involved bodies should be treated with suspicion.
+/// Only unresolved approaches within 3 Hill radii are recorded, since the
+/// map's accuracy degrades inside that region; test particle steps resolved
+/// as close encounters (see [`WisdomHolman::with_close_encounters`]) are not.
+/// If this is reported by a simulation, the trajectories of the involved
+/// bodies should be treated with suspicion.
 #[derive(Debug, Clone)]
 pub struct Encounter {
     /// Separation in units of the larger of the two bodies' Hill radii.
@@ -294,13 +311,17 @@ pub struct Encounter {
 ///   the orbit-averaged lunar quadrupole of Quinn, Tremaine & Duncan (1991):
 ///   the merged pair acts as an effective oblateness about the ecliptic pole,
 ///   restoring most of the solar interaction the point-mass merge loses.
-/// - There is no close-encounter regularization; the splitting assumes the
-///   interaction term is small compared to the Kepler term. The map tracks the
-///   closest approach seen, in Hill-radius units, via
+/// - The splitting assumes the interaction term is small compared to the
+///   Kepler term, which fails in a close encounter. Test particle encounters
+///   can be resolved with [`Self::with_close_encounters`], which integrates a
+///   particle's step with Radau whenever it passes near a massive body;
+///   encounters between massive bodies are never resolved. The map tracks
+///   the closest approach seen, in Hill-radius units, via
 ///   [`Self::closest_encounter`] so runs can be audited.
 /// - Test particles which fall into the Sun, or whose Kepler drift fails to
 ///   converge, are removed and recorded in [`Self::lost_particles`]. The same
-///   situations raise an error for a massive body.
+///   situations raise an error for a massive body. Resolved close encounters
+///   also record planet impacts and failed integrations there.
 /// - Test particles may carry a frozen non-gravitational force, using the
 ///   same per-object vocabulary as the Radau N-body propagation: the
 ///   Farnocchia radiation and thermal recoil (Yarkovsky) model, the dust
@@ -331,6 +352,9 @@ pub struct Encounter {
 /// - The optional order-17 symplectic corrector (Wisdom 2006) removes the
 ///   dominant oscillating error of the map at a fixed cost per integration
 ///   call.
+/// - Removal bounds ([`Self::set_removal_bounds`]) drop test particles that
+///   pass perihelion inside a distance or move beyond one, recording them in
+///   [`Self::lost_particles`].
 ///
 /// References:
 ///
@@ -372,6 +396,22 @@ pub struct WisdomHolman<T: StaticFrame> {
     solar_j2: Option<(f64, Vector3<f64>)>,
     /// Whether the order-17 symplectic corrector wraps each integration call.
     use_correctors: bool,
+    /// Test particles passing perihelion inside this distance (AU) are removed.
+    peri_bound: Option<f64>,
+    /// Test particles beyond this heliocentric distance (AU) are removed.
+    dist_bound: Option<f64>,
+    /// Encounter radius in Hill radii inside which a test particle's step is
+    /// integrated with Radau, when close encounters are resolved.
+    encounter_radius: Option<f64>,
+    /// Physical radius (AU) of each massive body (Sun excluded) from the mass
+    /// table, 0 where the body is not in it.
+    radii: Vec<f64>,
+    /// Number of test particle steps resolved as close encounters.
+    close_encounter_steps: u64,
+    /// Test particles the symplectic corrector leaves alone, each with the
+    /// massive body it is near, aligned with the test particle arrays while a
+    /// corrector is applied; empty otherwise.
+    corrector_skip: Vec<Option<usize>>,
     /// The ecliptic pole on the axes of the map's frame: the symmetry axis of
     /// the orbit-averaged lunar quadrupole.
     ecliptic_pole: Vector3<f64>,
@@ -401,6 +441,10 @@ pub struct WisdomHolman<T: StaticFrame> {
     /// particle has one, so the common gravity-only case streams nothing
     /// extra through the drift and kick.
     tp_forces: Vec<Option<NonGrav>>,
+    /// `q . v` of each test particle at the end of its last drift of a map
+    /// step, NaN where unknown. The perihelion bound compares it with the
+    /// next drift, since the jump and kick between drifts change it too.
+    tp_rv: Vec<f64>,
 
     /// Sum of all GMs including the Sun.
     total_gm: f64,
@@ -580,6 +624,16 @@ impl<T: StaticFrame> WisdomHolman<T> {
             v.push(CompVec3::new(Vector3::from(state.vel) - com_vel));
         }
         let gms = gms[1..].to_vec();
+        let selected = GravParams::selected_masses();
+        let radii = desigs
+            .iter()
+            .map(|desig| {
+                desig.clone().naif_id().map_or(0.0, |id| {
+                    impact_radius(id, &selected, GravParams::known_masses())
+                })
+            })
+            .collect();
+        drop(selected);
         // Hill radius per AU of heliocentric distance; scaled by the current
         // distance during each kick.
         let hill_fac = gms
@@ -613,6 +667,8 @@ impl<T: StaticFrame> WisdomHolman<T> {
             Vec::new()
         };
 
+        let tp_rv = vec![f64::NAN; test_particles.len()];
+
         let solar_j2 = if include_j2 {
             Some(sun_oblateness::<T>()?)
         } else {
@@ -630,6 +686,12 @@ impl<T: StaticFrame> WisdomHolman<T> {
             include_gr,
             solar_j2,
             use_correctors,
+            peri_bound: None,
+            dist_bound: None,
+            encounter_radius: None,
+            radii,
+            close_encounter_steps: 0,
+            corrector_skip: Vec::new(),
             ecliptic_pole: Vector::<Ecliptic>::new([0.0, 0.0, 1.0])
                 .into_frame::<T>()
                 .into(),
@@ -643,6 +705,7 @@ impl<T: StaticFrame> WisdomHolman<T> {
             tp_q,
             tp_v,
             tp_forces,
+            tp_rv,
             total_gm,
             com_pos0,
             com_vel,
@@ -654,6 +717,110 @@ impl<T: StaticFrame> WisdomHolman<T> {
             lost: Vec::new(),
             _frame: PhantomData,
         })
+    }
+
+    /// Resolve test particle close encounters from here on.
+    ///
+    /// At each step's kick, a test particle that passes within `hill_radii`
+    /// Hill radii of a massive body during the step is taken out of the map
+    /// for that step. The test takes the relative motion as a straight line
+    /// over half a step either side of the kick, with the radius widened by
+    /// how far the Sun's differential pull can bend it. The particle's state
+    /// at the start of the step is recovered by undoing the half drift and
+    /// jump already applied, and the whole step is integrated with the
+    /// adaptive Radau integrator: the Sun, every massive body, the indirect
+    /// term of the heliocentric frame, and the same GR, J2 and
+    /// non-gravitational terms as the map. A body the particle passes near
+    /// follows its two-body heliocentric orbit from the start of the step,
+    /// corrected by cubic Hermite interpolation onto the map's own state at
+    /// the end of the step; the others follow the cubic Hermite of their two
+    /// end states. The result is put back so that the map's next half drift
+    /// lands on it.
+    ///
+    /// During the integration a particle at an accepted state inside the
+    /// Sun is removed as [`LostReason::SunImpact`], inside a massive body as
+    /// [`LostReason::PlanetImpact`], and one crossing the removal bounds
+    /// ([`Self::set_removal_bounds`]) as for the map, except that a perihelion
+    /// passage is a turn of its integrated heliocentric path inside the bound,
+    /// so that a flyby's deflection is not one; one whose integration
+    /// fails is removed as [`LostReason::EncounterFailure`]. A body's impact
+    /// radius is found by NAIF id: its radius among the registered masses,
+    /// else in the mass table, the Earth's for the Earth-Moon barycenter. A
+    /// body with neither cannot be hit.
+    ///
+    /// The massive bodies are not affected: their own encounters stay
+    /// unresolved. Steps outside an encounter cost only the test. The
+    /// resolved steps are not symplectic. With the symplectic corrector
+    /// enabled, a particle the encounter test flags at the start or end of an
+    /// integration call is left out of the corrector there, whose own drifts
+    /// span several steps, and is moved instead with the body it passes
+    /// nearest, keeping its state relative to that body.
+    /// [`Self::close_encounter_steps`] counts the particle steps resolved.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `hill_radii` is not finite and positive.
+    pub fn with_close_encounters(mut self, hill_radii: f64) -> KeteResult<Self> {
+        if !(hill_radii.is_finite() && hill_radii > 0.0) {
+            Err(Error::ValueError(format!(
+                "The close encounter radius must be finite and positive, found {hill_radii}."
+            )))?;
+        }
+        self.encounter_radius = Some(hill_radii);
+        Ok(self)
+    }
+
+    /// Close encounter radius in Hill radii, when test particle encounters
+    /// are resolved (see [`Self::with_close_encounters`]).
+    #[must_use]
+    pub fn close_encounter_radius(&self) -> Option<f64> {
+        self.encounter_radius
+    }
+
+    /// Number of test particle steps resolved as close encounters so far,
+    /// including those ending in a removal.
+    #[must_use]
+    pub fn close_encounter_steps(&self) -> u64 {
+        self.close_encounter_steps
+    }
+
+    /// Remove test particles that pass perihelion inside `min_perihelion` AU
+    /// (an absorbing boundary, such as the planetary region for comets), or
+    /// that move beyond `max_distance` AU from the Sun. [`None`] disables a
+    /// bound. Removed particles are recorded in [`Self::lost_particles`].
+    ///
+    /// The perihelion test uses each particle's Kepler orbit: a particle is
+    /// removed when its radial velocity turns from inward to outward with
+    /// perihelion inside the bound, during a drift or between two, or when a
+    /// drift with perihelion inside the bound is long enough to have passed
+    /// it whatever its ends show: over half an orbit with both ends moving the
+    /// same way, or a whole orbit. Only the
+    /// drifts of the map's steps are tested, not those inside the symplectic
+    /// corrector.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a bound is non-positive or non-finite.
+    pub fn set_removal_bounds(
+        &mut self,
+        min_perihelion: Option<f64>,
+        max_distance: Option<f64>,
+    ) -> KeteResult<()> {
+        for (name, value) in [
+            ("min_perihelion", min_perihelion),
+            ("max_distance", max_distance),
+        ] {
+            if let Some(v) = value
+                && !(v.is_finite() && v > 0.0)
+            {
+                Err(Error::ValueError(format!(
+                    "{name} must be positive and finite, found {v}."
+                )))?;
+            }
+        }
+        self.peri_bound = min_perihelion;
+        self.dist_bound = max_distance;
+        Ok(())
     }
 
     /// Advance the simulation by a single step of `dt`.
@@ -688,24 +855,97 @@ impl<T: StaticFrame> WisdomHolman<T> {
         }
         let dt = self.dt;
         if self.use_correctors {
-            self.apply_corrector(1.0)?;
+            self.guarded_corrector(1.0)?;
         }
-        self.kepler(0.5 * dt)?;
+        self.kepler(0.5 * dt, Some(self.epoch()))?;
         for i in 0..n {
             self.jump(0.5 * dt);
-            self.kick(dt);
+            self.kick(dt, true)?;
             self.jump(0.5 * dt);
+            // Each later drift starts half a step into the current step.
+            let start = Some(self.epoch() + 0.5 * dt);
             if i + 1 < n {
-                self.kepler(dt)?;
+                self.kepler(dt, start)?;
             } else {
-                self.kepler(0.5 * dt)?;
+                self.kepler(0.5 * dt, start)?;
             }
             self.steps += 1;
         }
         if self.use_correctors {
-            self.apply_corrector(-1.0)?;
+            self.guarded_corrector(-1.0)?;
         }
         Ok(())
+    }
+
+    /// Refresh the instantaneous Hill radius of each massive body, and its
+    /// squared 3-Hill-radius encounter threshold, from the current positions.
+    fn update_hill_radii(&mut self) {
+        for ((r, thresh), (pos, fac)) in self
+            .hill_r
+            .iter_mut()
+            .zip(&mut self.hill_thresh)
+            .zip(self.q.iter().zip(&self.hill_fac))
+        {
+            *r = pos.val.norm() * fac;
+            *thresh = 9.0 * *r * *r;
+        }
+    }
+
+    /// Apply the corrector or its inverse, leaving out the test particles the
+    /// close encounter test flags when encounters are resolved: those that
+    /// would pass within the encounter radius of a body within half a step.
+    /// The corrector's transformation assumes the map's splitting holds, which
+    /// it does not there, and its own drifts span several steps. Each such
+    /// particle is instead moved with the body it passes nearest (in units of
+    /// that body's encounter radius), by the change the corrector makes to that
+    /// body's state, so its state relative to the body is kept.
+    fn guarded_corrector(&mut self, inv: f64) -> KeteResult<()> {
+        if let Some(k) = self.encounter_radius {
+            self.update_hill_radii();
+            let check = EncounterCheck::new(&self.q, &self.v, &self.hill_r, k, self.dt);
+            let skip: Vec<Option<usize>> = self
+                .tp_q
+                .par_iter()
+                .zip(&self.tp_v)
+                .map(|(pos, vel)| {
+                    let terms = check.particle(&pos.val, &vel.val);
+                    self.q
+                        .iter()
+                        .zip(&self.v)
+                        .enumerate()
+                        .filter_map(|(j, (bp, bv))| {
+                            let sep = bp.val - pos.val;
+                            let r2 = sep.norm_squared();
+                            check
+                                .flags(j, &sep, r2, &(bv.val - vel.val), &terms)
+                                .then(|| (j, r2 / check.radius[j].powi(2)))
+                        })
+                        .min_by(|a, b| a.1.total_cmp(&b.1))
+                        .map(|(j, _)| j)
+                })
+                .collect();
+            if skip.iter().any(Option::is_some) {
+                self.corrector_skip = skip;
+            }
+        }
+        if self.corrector_skip.is_empty() {
+            return self.apply_corrector(inv);
+        }
+        let before: Vec<(Vector3<f64>, Vector3<f64>)> = self
+            .q
+            .iter()
+            .zip(&self.v)
+            .map(|(q, v)| (q.val, v.val))
+            .collect();
+        let result = self.apply_corrector(inv);
+        let skip = std::mem::take(&mut self.corrector_skip);
+        for (idx, body) in skip.iter().enumerate() {
+            if let Some(j) = *body {
+                self.tp_q[idx].add(&(self.q[j].val - before[j].0));
+                self.tp_v[idx].add(&(self.v[j].val - before[j].1));
+            }
+        }
+        result
     }
 
     /// Number of whole steps from the current epoch to the step closest to `time`.
@@ -801,11 +1041,14 @@ impl<T: StaticFrame> WisdomHolman<T> {
         &self.lost
     }
 
-    /// The closest approach within 3 Hill radii seen so far, if any occurred.
+    /// The closest unresolved approach within 3 Hill radii seen so far, if any
+    /// occurred.
     ///
-    /// The map is not designed to resolve close encounters; if this returns
-    /// [`Some`], the subsequent trajectories of the involved bodies (and the
-    /// quantitative accuracy of the run) should be treated with suspicion.
+    /// The map does not resolve these; if this returns [`Some`], the
+    /// subsequent trajectories of the involved bodies (and the quantitative
+    /// accuracy of the run) should be treated with suspicion. Test particle
+    /// steps resolved as close encounters ([`Self::with_close_encounters`])
+    /// are not recorded.
     #[must_use]
     pub fn closest_encounter(&self) -> Option<&Encounter> {
         self.closest.as_ref()
@@ -945,6 +1188,164 @@ impl<T: StaticFrame> WisdomHolman<T> {
             .collect()
     }
 
+    /// Heliocentric positions (AU) and velocities (AU/day) of the active test
+    /// particles, on the axes of frame `T`, in the order of
+    /// [`Self::test_particle_states`].
+    #[must_use]
+    pub fn test_particle_heliocentric(&self) -> Vec<(Vector3<f64>, Vector3<f64>)> {
+        let sun_vel = self.sun_internal_vel();
+        self.tp_q
+            .iter()
+            .zip(&self.tp_v)
+            .map(|(pos, vel)| (pos.val, vel.val - sun_vel))
+            .collect()
+    }
+
+    /// Designations of the active test particles, in order.
+    #[must_use]
+    pub fn test_particle_desigs(&self) -> &[Desig] {
+        &self.tp_desigs
+    }
+
+    /// Remove the test particles at the given indices (into the current
+    /// order) and return their barycentric states, in the order the indices
+    /// were given. The remaining particles keep their relative order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an index is out of range or repeated.
+    pub fn remove_test_particles(&mut self, indices: &[usize]) -> KeteResult<Vec<State<T, SSB>>> {
+        let n = self.tp_q.len();
+        let mut remove = vec![false; n];
+        for &idx in indices {
+            if idx >= n {
+                Err(Error::ValueError(format!(
+                    "Test particle index {idx} is out of range for {n} particles."
+                )))?;
+            }
+            if remove[idx] {
+                Err(Error::ValueError(format!(
+                    "Test particle index {idx} is repeated."
+                )))?;
+            }
+            remove[idx] = true;
+        }
+        let epoch = self.epoch();
+        let (sun_pos, _) = self.sun_pos_vel();
+        let removed = indices
+            .iter()
+            .map(|&idx| {
+                State::new(
+                    self.tp_desigs[idx].clone(),
+                    epoch,
+                    self.tp_q[idx].val + sun_pos,
+                    self.tp_v[idx].val + self.com_vel,
+                    SSB,
+                )
+            })
+            .collect();
+        let flags: Vec<Option<()>> = remove.iter().map(|&r| r.then_some(())).collect();
+        retain_by_flags(&mut self.tp_desigs, &flags);
+        retain_by_flags(&mut self.tp_q, &flags);
+        retain_by_flags(&mut self.tp_v, &flags);
+        retain_by_flags(&mut self.tp_forces, &flags);
+        retain_by_flags(&mut self.tp_rv, &flags);
+        Ok(removed)
+    }
+
+    /// Append test particles, given as barycentric states at the current
+    /// epoch, with optional non-gravitational forces (empty, or one entry per
+    /// state, with the same meaning as in [`Self::new`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a state's epoch differs from the current epoch, a
+    /// state is non-finite, `non_gravs` has the wrong length, or a non-grav
+    /// entry fails the checks of [`Self::new`].
+    pub fn add_test_particles(
+        &mut self,
+        states: &[State<T, SSB>],
+        non_gravs: &[Option<NonGravMask>],
+    ) -> KeteResult<()> {
+        if !(non_gravs.is_empty() || non_gravs.len() == states.len()) {
+            Err(Error::ValueError(format!(
+                "non_gravs must be empty or have one entry per state, found {} entries for {} \
+                 states.",
+                non_gravs.len(),
+                states.len()
+            )))?;
+        }
+        let epoch = self.epoch();
+        for state in states {
+            if (state.epoch - epoch).elapsed.abs() > EPOCH_TOL {
+                Err(Error::ValueError(format!(
+                    "State {:?} has epoch {} which does not match the simulation epoch {}.",
+                    state.desig,
+                    state.epoch.jd(),
+                    epoch.jd()
+                )))?;
+            }
+            if !state.is_finite() {
+                Err(Error::ValueError(format!(
+                    "State {:?} contains non-finite position or velocity.",
+                    state.desig
+                )))?;
+            }
+        }
+        let forces = non_gravs
+            .iter()
+            .zip(states)
+            .map(|(frozen, state)| {
+                frozen
+                    .as_ref()
+                    .map(|frozen| bind_non_grav::<T>(frozen, &state.desig))
+                    .transpose()
+            })
+            .collect::<KeteResult<Vec<_>>>()?;
+        // `tp_forces` stays empty while no particle carries a force.
+        if forces.iter().any(Option::is_some) && self.tp_forces.is_empty() {
+            self.tp_forces = vec![None; self.tp_q.len()];
+        }
+        let (sun_pos, _) = self.sun_pos_vel();
+        for (k, state) in states.iter().enumerate() {
+            self.tp_desigs.push(state.desig.clone());
+            self.tp_q
+                .push(CompVec3::new(Vector3::from(state.pos) - sun_pos));
+            self.tp_v
+                .push(CompVec3::new(Vector3::from(state.vel) - self.com_vel));
+            if !self.tp_forces.is_empty() {
+                self.tp_forces.push(forces.get(k).cloned().flatten());
+            }
+            self.tp_rv.push(f64::NAN);
+        }
+        Ok(())
+    }
+
+    /// Add a velocity change (AU/day, on the axes of frame `T`) to every active
+    /// test particle, in order: an instantaneous impulse such as a passing
+    /// star's.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `dv` does not have one entry per particle or any
+    /// entry is non-finite.
+    pub fn kick_test_particles(&mut self, dv: &[Vector3<f64>]) -> KeteResult<()> {
+        if dv.len() != self.tp_v.len() {
+            Err(Error::ValueError(format!(
+                "dv has {} entries for {} test particles.",
+                dv.len(),
+                self.tp_v.len()
+            )))?;
+        }
+        if dv.iter().any(|d| !d.iter().all(|x| x.is_finite())) {
+            Err(Error::ValueError("dv contains non-finite values.".into()))?;
+        }
+        for (vel, d) in self.tp_v.iter_mut().zip(dv) {
+            vel.add(d);
+        }
+        Ok(())
+    }
+
     /// Apply the order-17 symplectic corrector (`inv = 1.0`) or its inverse
     /// (`inv = -1.0`). See Wisdom (2006); the stage structure and coefficients
     /// follow the `WHFast` reference implementation.
@@ -966,39 +1367,61 @@ impl<T: StaticFrame> WisdomHolman<T> {
     /// The elementary corrector operator `Z(a, b) = X(a) Y(-b) X(-2a) Y(b) X(a)`
     /// where `X` is the Kepler flow and `Y` the perturbation flow.
     fn corrector_z(&mut self, a: f64, b: f64) -> KeteResult<()> {
-        self.kepler(a)?;
-        self.perturbation(-b);
-        self.kepler(-2.0 * a)?;
-        self.perturbation(b);
-        self.kepler(a)
+        self.kepler(a, None)?;
+        self.perturbation(-b)?;
+        self.kepler(-2.0 * a, None)?;
+        self.perturbation(b)?;
+        self.kepler(a, None)
     }
 
     /// The full perturbation flow (everything except the Kepler part) for
     /// time `b`, as the symmetric split `jump(b/2) kick(b) jump(b/2)`. The
     /// jump/kick composition error is one order higher in the planet masses
-    /// than anything the corrector corrects.
-    fn perturbation(&mut self, b: f64) {
+    /// than anything the corrector corrects. This is not a step of the map, so
+    /// its kick neither resolves nor records encounters.
+    fn perturbation(&mut self, b: f64) -> KeteResult<()> {
         self.jump(0.5 * b);
-        self.kick(b);
+        self.kick(b, false)?;
         self.jump(0.5 * b);
+        Ok(())
     }
 
     /// Interaction kick: velocity updates from all non-solar pairwise gravity
-    /// (plus the optional GR term), positions unchanged. Also tracks
-    /// sub-3-Hill-radius approaches.
-    fn kick(&mut self, dt: f64) {
+    /// (plus the optional GR and J2 terms), positions unchanged.
+    ///
+    /// In a step of the map (`map_step`) it also tracks sub-3-Hill-radius
+    /// approaches, and with close encounters enabled, test particles that pass
+    /// within the encounter radius of a massive body during the step skip the
+    /// kick and have the whole step integrated by [`Self::resolve_encounters`].
+    /// The corrector's kicks act at positions the run never visits, so they do
+    /// neither.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the massive bodies' states at the ends of the step
+    /// cannot be reconstructed for a resolved encounter.
+    fn kick(&mut self, dt: f64, map_step: bool) -> KeteResult<()> {
         let epoch = self.epoch();
+        let encounter_radius = if map_step {
+            self.encounter_radius
+        } else {
+            None
+        };
         let n = self.gms.len();
+        // Velocities and total momentum before the kick, which a resolved
+        // encounter needs to rebuild the state at the start of the step.
+        let pre_kick = encounter_radius.map(|_| {
+            let vel: Vec<Vector3<f64>> = self.v.iter().map(|v| v.val).collect();
+            let momentum = vel.iter().zip(&self.gms).map(|(v, gm)| v * *gm).sum();
+            (vel, momentum)
+        });
 
         // Sun velocity frozen at the start of the kick, used to form the
         // heliocentric velocity the dust drag depends on. Captured before the
         // massive velocities are updated below.
         let sun_vel = self.sun_internal_vel();
 
-        for i in 0..n {
-            self.hill_r[i] = self.q[i].val.norm() * self.hill_fac[i];
-            self.hill_thresh[i] = 9.0 * self.hill_r[i] * self.hill_r[i];
-        }
+        self.update_hill_radii();
         for accel in &mut self.accel {
             *accel = Vector3::zeros();
         }
@@ -1087,83 +1510,342 @@ impl<T: StaticFrame> WisdomHolman<T> {
 
         // Test particles, in parallel.
         let (q, gms, hill_r, hill_thresh) = (&self.q, &self.gms, &self.hill_r, &self.hill_thresh);
+        let body_vel = &self.v;
         let include_gr = self.include_gr;
         let solar_j2 = self.solar_j2;
-        let sun_radius = *SUN_RADIUS_AU;
         let tp_forces = &self.tp_forces;
+        let skip = &self.corrector_skip;
+        let check = encounter_radius.map(|k| EncounterCheck::new(q, body_vel, hill_r, k, dt));
         let tp_min_chunk = tp_chunk(self.tp_q.len(), 32);
-        let tp_worst = self
+        // Closest unresolved approach, and the (particle, body) pairs whose
+        // step is resolved instead of kicked.
+        let (tp_worst, flagged) = self
             .tp_q
             .par_iter()
             .zip(self.tp_v.par_iter_mut())
             .enumerate()
             .with_min_len(tp_min_chunk)
-            .map(|(idx, (pos, vel))| {
-                let mut accel = Vector3::zeros();
-                let mut best = NO_ENCOUNTER;
-                for (j, (body_pos, gm)) in q.iter().zip(gms).enumerate() {
-                    let sep = body_pos.val - pos.val;
-                    let r2 = sep.norm_squared();
-                    let inv_r3 = (r2 * r2.sqrt()).recip();
-                    accel += sep * (*gm * inv_r3);
-                    if r2 < hill_thresh[j] {
-                        let ratio = r2.sqrt() / hill_r[j];
-                        if ratio < best.0 {
-                            best = (ratio, j, idx);
+            .fold(
+                || (NO_ENCOUNTER, Vec::new()),
+                |(mut worst, mut flagged), (idx, (pos, vel))| {
+                    // `get` covers the usual case, where `skip` is empty.
+                    if let Some(Some(_)) = skip.get(idx) {
+                        return (worst, flagged);
+                    }
+                    let mut accel = Vector3::zeros();
+                    let mut nearest = NO_ENCOUNTER;
+                    // The encounter test, when enabled, shares the gravity
+                    // loop's separations; only a pair inside its distance
+                    // bound gets the full test.
+                    let check = check
+                        .as_ref()
+                        .map(|check| (check, check.particle(&pos.val, &vel.val)));
+                    let before = flagged.len();
+                    for (j, (body_pos, gm)) in q.iter().zip(gms).enumerate() {
+                        let sep = body_pos.val - pos.val;
+                        let r2 = sep.norm_squared();
+                        let inv_r3 = (r2 * r2.sqrt()).recip();
+                        accel += sep * (*gm * inv_r3);
+                        if r2 < hill_thresh[j] {
+                            let ratio = r2.sqrt() / hill_r[j];
+                            if ratio < nearest.0 {
+                                nearest = (ratio, j, idx);
+                            }
+                        }
+                        if let Some((check, terms)) = &check
+                            && check.flags(j, &sep, r2, &(body_vel[j].val - vel.val), terms)
+                        {
+                            flagged.push((idx, j));
                         }
                     }
-                }
-                if include_gr {
-                    apply_gr_correction(&mut accel, &pos.val, &(vel.val - sun_vel), GMS);
-                }
-                if let Some((j2, pole)) = &solar_j2 {
-                    accel += j2_correction(&pos.val, pole, sun_radius, *j2, GMS);
-                }
-                // `get` covers the gravity-only case, where `tp_forces` is empty.
-                match tp_forces.get(idx) {
-                    // Radiation pressure and thermal recoil, evaluated directly
-                    // on the heliocentric position with the pole already in
-                    // this frame.
-                    Some(Some(NonGrav::Yarkovsky(yark))) => {
-                        accel += radiation_accel(
-                            &pos.val,
-                            &yark.spin_pole,
-                            yark.albedo,
-                            yark.absorptivity,
-                            yark.flattening,
-                            yark.a_over_m,
-                            yark.lambda_0,
-                        );
-                        vel.add(&(accel * dt));
+                    if flagged.len() > before {
+                        return (worst, flagged);
                     }
-                    // Dust: radiation pressure is folded into the reduced-mu
-                    // drift; the kick applies the exact Poynting-Robertson drag
-                    // flow, linear in the heliocentric velocity `vel - sun_vel`.
-                    Some(Some(NonGrav::Dust { beta })) => {
-                        let k = beta * GMS / (pos.val.norm_squared() * C_AU_PER_DAY);
-                        let delta = drag_flow(dt, k, &pos.val, &(vel.val - sun_vel), &accel);
-                        vel.add(&delta);
+                    if nearest.0 < worst.0 {
+                        worst = nearest;
                     }
-                    // A1/A2/A3 on the RTN axes of the instantaneous orbit,
-                    // evaluated with the pre-kick heliocentric velocity.
-                    Some(Some(NonGrav::JplComet { force, a1, a2, a3 })) => {
-                        accel += force.accel_no_lag(&pos.val, &(vel.val - sun_vel), *a1, *a2, *a3);
-                        vel.add(&(accel * dt));
+                    let u = vel.val - sun_vel;
+                    accel += field_accel(&pos.val, &u, include_gr, solar_j2.as_ref());
+                    // `get` covers the gravity-only case, where `tp_forces` is empty.
+                    match tp_forces.get(idx) {
+                        // Dust: radiation pressure is folded into the reduced-mu
+                        // drift; the kick applies the exact Poynting-Robertson
+                        // drag flow, linear in the heliocentric velocity.
+                        Some(Some(NonGrav::Dust { beta })) => {
+                            let k = beta * GMS / (pos.val.norm_squared() * C_AU_PER_DAY);
+                            vel.add(&drag_flow(dt, k, &pos.val, &u, &accel));
+                        }
+                        Some(Some(force)) => {
+                            accel += non_grav_accel(force, &pos.val, &u);
+                            vel.add(&(accel * dt));
+                        }
+                        _ => vel.add(&(accel * dt)),
                     }
-                    _ => vel.add(&(accel * dt)),
-                }
-                best
-            })
-            .reduce(|| NO_ENCOUNTER, |a, b| if a.0 <= b.0 { a } else { b });
+                    (worst, flagged)
+                },
+            )
+            .reduce(
+                || (NO_ENCOUNTER, Vec::new()),
+                |(worst_a, mut flagged_a), (worst_b, flagged_b)| {
+                    flagged_a.extend(flagged_b);
+                    (
+                        if worst_a.0 <= worst_b.0 {
+                            worst_a
+                        } else {
+                            worst_b
+                        },
+                        flagged_a,
+                    )
+                },
+            );
 
-        if worst.0.is_finite() {
+        if map_step && worst.0.is_finite() {
             let (ratio, i, j) = worst;
             self.record_encounter(ratio, i, self.desigs[j].clone(), epoch);
         }
-        if tp_worst.0.is_finite() {
+        if map_step && tp_worst.0.is_finite() {
             let (ratio, j, idx) = tp_worst;
             self.record_encounter(ratio, j, self.tp_desigs[idx].clone(), epoch);
         }
+        if let Some((pre_vel, pre_momentum)) = pre_kick
+            && !flagged.is_empty()
+        {
+            self.resolve_encounters(&flagged, dt, &pre_vel, &pre_momentum)?;
+        }
+        Ok(())
+    }
+
+    /// Integrate the step of each flagged test particle with Radau; see
+    /// [`Self::with_close_encounters`]. Called from the kick, after the
+    /// massive bodies' kick, with their velocities and total momentum from
+    /// before it; the flagged particles have not been kicked. `flagged` holds
+    /// `(particle, body)` pairs, grouped by particle in increasing order, for
+    /// every body the particle passes near.
+    ///
+    /// In the map the particle's state at the kick is
+    /// `jump(dt/2) kepler(dt/2)` of its state at the start of the step, the
+    /// jump using the momentum before the kick, and after the kick the map
+    /// applies `kepler(dt/2) jump(dt/2)` with the momentum after it. Both are
+    /// inverted exactly here, so the particle's end state is what the map
+    /// reaches at the end of the step.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a massive body's Kepler drift to either end of the
+    /// step fails.
+    fn resolve_encounters(
+        &mut self,
+        flagged: &[(usize, usize)],
+        dt: f64,
+        pre_vel: &[Vector3<f64>],
+        pre_momentum: &Vector3<f64>,
+    ) -> KeteResult<()> {
+        let start = self.epoch();
+        let post_momentum: Vector3<f64> = self
+            .v
+            .iter()
+            .zip(&self.gms)
+            .map(|(v, gm)| v.val * *gm)
+            .sum();
+        let shift_pre = pre_momentum * (0.5 * dt / GMS);
+        let shift_post = post_momentum * (0.5 * dt / GMS);
+
+        let mut ends = Vec::with_capacity(self.gms.len());
+        for (j, (pos, vel)) in self.q.iter().zip(&self.v).enumerate() {
+            let start_state = drift_vec(-0.5 * dt, &(pos.val - shift_pre), &pre_vel[j], GMS)?;
+            let end_state = drift_vec(0.5 * dt, &(pos.val + shift_post), &vel.val, GMS)?;
+            ends.push((start_state, end_state));
+        }
+        // Heliocentric velocity = barycentric velocity - Sun's velocity, the
+        // Sun's being -momentum / GMS with the momentum at that instant (the
+        // Kepler drifts change it, so it is not the momentum at the kick).
+        let sun_start = -ends
+            .iter()
+            .zip(&self.gms)
+            .map(|(((_, v0), _), gm)| v0 * *gm)
+            .sum::<Vector3<f64>>()
+            / GMS;
+        let sun_end = -ends
+            .iter()
+            .zip(&self.gms)
+            .map(|((_, (_, v1)), gm)| v1 * *gm)
+            .sum::<Vector3<f64>>()
+            / GMS;
+        let paths = ends
+            .iter()
+            .zip(&self.gms)
+            .map(|(((q0, v0), (q1, v1)), gm)| {
+                BodyPath::new(*q0, v0 - sun_start, *q1, v1 - sun_end, GMS + gm, dt)
+            })
+            .collect::<KeteResult<Vec<_>>>()?;
+
+        // One entry per particle, with the bodies it passes near.
+        let mut groups: Vec<(usize, Vec<usize>)> = Vec::new();
+        for &(idx, j) in flagged {
+            match groups.last_mut() {
+                Some((last, bodies)) if *last == idx => bodies.push(j),
+                _ => groups.push((idx, vec![j])),
+            }
+        }
+
+        let ids: Vec<i32> = self
+            .desigs
+            .iter()
+            .map(|d| d.clone().naif_id().unwrap_or(-1))
+            .collect();
+        let (include_gr, solar_j2) = (self.include_gr, self.solar_j2);
+        let (peri_bound, dist_bound) = (self.peri_bound, self.dist_bound);
+        let (gms, radii) = (&self.gms, &self.radii);
+        let (tp_q, tp_v, tp_forces) = (&self.tp_q, &self.tp_v, &self.tp_forces);
+        let sun_radius2 = SUN_RADIUS_AU.powi(2);
+        let outcomes: Vec<(usize, EncounterOutcome)> = groups
+            .par_iter()
+            .map(|(idx, near_bodies)| {
+                let idx = *idx;
+                let mut near = vec![false; paths.len()];
+                for &j in near_bodies {
+                    near[j] = true;
+                }
+                let force = tp_forces.get(idx).and_then(Option::as_ref);
+                let mu = match force {
+                    Some(NonGrav::Dust { beta }) => (1.0 - beta) * GMS,
+                    _ => GMS,
+                };
+                let Ok((q0, v0)) =
+                    drift_vec(-0.5 * dt, &(tp_q[idx].val - shift_pre), &tp_v[idx].val, mu)
+                else {
+                    return (
+                        idx,
+                        EncounterOutcome::Lost(LostReason::KeplerFailure, start),
+                    );
+                };
+                let u0 = v0 - sun_start;
+                let impact = Cell::new(None);
+                // The perihelion bound follows the integrated path: a passage
+                // is a turn from inward to outward in the heliocentric `r . u`
+                // between accepted states, inside the bound. A turn across
+                // the step's ends alone can be a flyby's deflection.
+                let sign = dt.signum();
+                let last_rv = Cell::new(f64::NAN);
+                let passage = Cell::new(None);
+                let func = |time: Time<TDB>,
+                            pos: &Vector3<f64>,
+                            u: &Vector3<f64>,
+                            (): &mut (),
+                            exact: bool|
+                 -> KeteResult<Vector3<f64>> {
+                    // Impacts are tested at accepted states only, as in the
+                    // Radau N-body propagation; a trial state inside a body
+                    // is not an impact.
+                    let r2 = pos.norm_squared();
+                    if exact && r2 < sun_radius2 {
+                        impact.set(Some((LostReason::SunImpact, time)));
+                        return Err(Error::Impact(10, time));
+                    }
+                    if exact {
+                        let rv = pos.dot(u);
+                        if let Some(bound) = peri_bound
+                            && passage.get().is_none()
+                            && sign * last_rv.get() < 0.0
+                            && sign * rv >= 0.0
+                            && r2 < bound * bound
+                        {
+                            passage.set(Some(time));
+                        }
+                        last_rv.set(rv);
+                    }
+                    let mut accel = -pos * (mu / (r2 * r2.sqrt()));
+                    let tau = (time - start).elapsed;
+                    for (j, path) in paths.iter().enumerate() {
+                        // The two-body path for the bodies the particle passes
+                        // near; the plain cubic for the rest, whose pull is
+                        // too weak for the difference to matter.
+                        let body = if near[j] {
+                            path.position(tau)?
+                        } else {
+                            path.cubic(tau)
+                        };
+                        let sep = body - pos;
+                        let d2 = sep.norm_squared();
+                        if exact && d2 < radii[j] * radii[j] {
+                            impact.set(Some((LostReason::PlanetImpact, time)));
+                            return Err(Error::Impact(ids[j], time));
+                        }
+                        let body_r2 = body.norm_squared();
+                        // Direct pull, minus the body's pull on the Sun (the
+                        // indirect term of the heliocentric frame).
+                        accel += sep * (gms[j] / (d2 * d2.sqrt()))
+                            - body * (gms[j] / (body_r2 * body_r2.sqrt()));
+                    }
+                    accel += field_accel(pos, u, include_gr, solar_j2.as_ref());
+                    match force {
+                        Some(NonGrav::Dust { beta }) => {
+                            // Poynting-Robertson drag, the force the map's
+                            // drag flow integrates exactly.
+                            let k = beta * GMS / (r2 * C_AU_PER_DAY);
+                            let r_hat = pos / r2.sqrt();
+                            accel -= (u + r_hat * u.dot(&r_hat)) * k;
+                        }
+                        Some(force) => accel += non_grav_accel(force, pos, u),
+                        None => {}
+                    }
+                    Ok(accel)
+                };
+                let result =
+                    RadauIntegrator::integrate(&func, q0, u0, start, start + dt, (), None, None);
+                let Ok((q1, u1, ())) = result else {
+                    let (reason, at) = impact
+                        .get()
+                        .unwrap_or((LostReason::EncounterFailure, start));
+                    return (idx, EncounterOutcome::Lost(reason, at));
+                };
+                // The removal bounds, over the step just integrated.
+                if let Some(at) = passage.get() {
+                    return (idx, EncounterOutcome::Lost(LostReason::PerihelionBound, at));
+                }
+                if let Some(bound) = dist_bound
+                    && q1.norm_squared() > bound * bound
+                {
+                    return (
+                        idx,
+                        EncounterOutcome::Lost(LostReason::DistanceBound, start),
+                    );
+                }
+                // Back to where the map's remaining jump and half drift land on it.
+                match drift_vec(-0.5 * dt, &q1, &(u1 + sun_end), mu) {
+                    Ok((q_back, v_back)) => (
+                        idx,
+                        EncounterOutcome::Done {
+                            pos: q_back - shift_post,
+                            vel: v_back,
+                        },
+                    ),
+                    Err(_) => (
+                        idx,
+                        EncounterOutcome::Lost(LostReason::KeplerFailure, start),
+                    ),
+                }
+            })
+            .collect();
+
+        let mut lost = vec![None; self.tp_q.len()];
+        for (idx, outcome) in outcomes {
+            self.close_encounter_steps += 1;
+            match outcome {
+                EncounterOutcome::Done { pos, vel } => {
+                    self.tp_q[idx] = CompVec3::new(pos);
+                    self.tp_v[idx] = CompVec3::new(vel);
+                    // The encounter tested its own step against the bounds,
+                    // and a flyby can turn the particle without a passage.
+                    self.tp_rv[idx] = f64::NAN;
+                }
+                EncounterOutcome::Lost(reason, at) => lost[idx] = Some((reason, at)),
+            }
+        }
+        if lost.iter().any(Option::is_some) {
+            self.remove_lost(&lost);
+        }
+        Ok(())
     }
 
     /// Record an approach as the closest seen so far, if it beats the current
@@ -1195,10 +1877,16 @@ impl<T: StaticFrame> WisdomHolman<T> {
             pos.add(&shift);
         }
         let chunk = tp_chunk(self.tp_q.len(), 256);
+        let skip = &self.corrector_skip;
         self.tp_q
             .par_iter_mut()
+            .enumerate()
             .with_min_len(chunk)
-            .for_each(|pos| pos.add(&shift));
+            .for_each(|(idx, pos)| {
+                if !matches!(skip.get(idx), Some(Some(_))) {
+                    pos.add(&shift);
+                }
+            });
     }
 
     /// Kepler drift: every body moves on its exact two-body orbit about the
@@ -1208,8 +1896,14 @@ impl<T: StaticFrame> WisdomHolman<T> {
     ///
     /// A massive body which is lost during the drift raises an error; test
     /// particles are moved to [`Self::lost_particles`] instead.
-    fn kepler(&mut self, dt: f64) -> KeteResult<()> {
-        let epoch = self.epoch();
+    ///
+    /// `map_start` is the time a drift of the map's steps starts, with which
+    /// its removals are recorded. It is `None` for the drifts inside the
+    /// symplectic corrector, which are not motion of the run: they skip the
+    /// removal bounds, and record their removals at the current epoch.
+    fn kepler(&mut self, dt: f64, map_start: Option<Time<TDB>>) -> KeteResult<()> {
+        let map_step = map_start.is_some();
+        let epoch = map_start.unwrap_or_else(|| self.epoch());
 
         let lost: Vec<Option<LostReason>> = if self.gms.len() > PARALLEL_THRESHOLD {
             self.q
@@ -1239,41 +1933,70 @@ impl<T: StaticFrame> WisdomHolman<T> {
                     self.desigs[idx],
                     epoch.jd()
                 )))?,
-                None => {}
+                // The removal bounds and encounter outcomes apply to test particles only.
+                Some(
+                    LostReason::PerihelionBound
+                    | LostReason::DistanceBound
+                    | LostReason::PlanetImpact
+                    | LostReason::EncounterFailure,
+                )
+                | None => {}
             }
         }
 
         let chunk = tp_chunk(self.tp_q.len(), 64);
         let tp_forces = &self.tp_forces;
+        let (peri_bound, dist_bound) = (self.peri_bound, self.dist_bound);
+        let skip = &self.corrector_skip;
         let tp_lost: Vec<Option<LostReason>> = self
             .tp_q
             .par_iter_mut()
             .zip(self.tp_v.par_iter_mut())
+            .zip(self.tp_rv.par_iter_mut())
             .enumerate()
             .with_min_len(chunk)
-            .map(|(idx, (pos, vel))| {
+            .map(|(idx, ((pos, vel), rv_end))| {
+                if let Some(Some(_)) = skip.get(idx) {
+                    return None;
+                }
                 // Dust drifts on its radiation-reduced orbit, mu = (1-beta) GMS;
                 // `get` covers the gravity-only case, where `tp_forces` is empty.
                 let mu = match tp_forces.get(idx) {
                     Some(Some(NonGrav::Dust { beta })) => (1.0 - beta) * GMS,
                     _ => GMS,
                 };
-                drift(dt, pos, vel, mu)
+                let rv_before = pos.val.dot(&vel.val);
+                let lost = drift(dt, pos, vel, mu);
+                if lost.is_some() || !map_step {
+                    return lost;
+                }
+                // A turn from inward to outward in the jump and kick since the
+                // last drift is a passage too: count this drift as starting
+                // inward if the last one ended inward.
+                let rv_start = if dt.signum() * *rv_end < 0.0 {
+                    *rv_end
+                } else {
+                    rv_before
+                };
+                *rv_end = pos.val.dot(&vel.val);
+                outside_bounds(dt, rv_start, &pos.val, &vel.val, mu, peri_bound, dist_bound)
             })
             .collect();
         if tp_lost.iter().any(Option::is_some) {
-            self.remove_lost(&tp_lost, epoch);
+            let lost: Vec<_> = tp_lost.iter().map(|r| r.map(|r| (r, epoch))).collect();
+            self.remove_lost(&lost);
         }
         Ok(())
     }
 
-    /// Record and remove the test particles marked in `lost`.
-    fn remove_lost(&mut self, lost: &[Option<LostReason>], epoch: Time<TDB>) {
-        for (idx, reason) in lost.iter().enumerate() {
-            if let Some(reason) = reason {
+    /// Record and remove the test particles marked in `lost`, each with the
+    /// reason and time of its removal.
+    fn remove_lost(&mut self, lost: &[Option<(LostReason, Time<TDB>)>]) {
+        for (idx, entry) in lost.iter().enumerate() {
+            if let Some((reason, epoch)) = entry {
                 self.lost.push(LostParticle {
                     desig: self.tp_desigs[idx].clone(),
-                    epoch,
+                    epoch: *epoch,
                     reason: *reason,
                 });
             }
@@ -1284,6 +2007,8 @@ impl<T: StaticFrame> WisdomHolman<T> {
         // Stays empty when unused; `retain` never calls the closure on an empty
         // vector, so the gravity-only case needs no special case here.
         retain_by_flags(&mut self.tp_forces, lost);
+        retain_by_flags(&mut self.corrector_skip, lost);
+        retain_by_flags(&mut self.tp_rv, lost);
     }
 
     /// Elapsed time in days since the initial epoch, computed from the step
@@ -1557,8 +2282,312 @@ fn hit_the_sun(dt: f64, rv_before: f64, pos: &Vector3<f64>, vel: &Vector3<f64>, 
     rv_in < 0.0 && rv_out > 0.0 && compute_peri_dist(pos, vel, mu) < sun_radius
 }
 
+/// The test of whether a test particle passes near a massive body during a
+/// step, made at one instant of the step with half a step either side.
+///
+/// The relative motion is taken as a straight line, and the encounter radius
+/// is widened by how far the Sun's differential pull on the pair can bend it
+/// in half a step, `|a_sun(body) - a_sun(particle)| (dt/2)^2 / 2`, which
+/// matters for fast passages near the inner planets. A bound on the distance
+/// the pair can close in half a step rejects most pairs before the full test.
+#[derive(Debug)]
+struct EncounterCheck {
+    /// Encounter radius per massive body, AU.
+    radius: Vec<f64>,
+    /// Per massive body, its share of the distance bound: the encounter
+    /// radius, the distance it moves in half a step, and how far the Sun can
+    /// bend its path, AU.
+    reach: Vec<f64>,
+    /// Solar acceleration of each massive body, AU/day^2.
+    sun_accel: Vec<Vector3<f64>>,
+    /// Half the step squared, over 2: the bending factor, day^2.
+    bend: f64,
+    /// Half the step, days.
+    half: f64,
+}
+
+/// Per-particle terms of an [`EncounterCheck`].
+#[derive(Debug)]
+struct ParticleTerms {
+    /// The particle's share of the distance bound, AU.
+    reach: f64,
+    /// Solar acceleration of the particle, AU/day^2.
+    sun_accel: Vector3<f64>,
+}
+
+impl EncounterCheck {
+    /// The test for encounters within `hill_radii` of each body's Hill radius
+    /// `hill_r`, with the bodies at the given positions and velocities.
+    fn new(q: &[CompVec3], v: &[CompVec3], hill_r: &[f64], hill_radii: f64, dt: f64) -> Self {
+        let half = 0.5 * dt.abs();
+        let bend = 0.5 * half * half;
+        let radius: Vec<f64> = hill_r.iter().map(|r| hill_radii * r).collect();
+        let sun_accel: Vec<Vector3<f64>> = q.iter().map(|pos| solar_accel(&pos.val)).collect();
+        let reach = radius
+            .iter()
+            .zip(v)
+            .zip(&sun_accel)
+            .map(|((r, vel), acc)| r + vel.val.norm() * half + bend * acc.norm())
+            .collect();
+        Self {
+            radius,
+            reach,
+            sun_accel,
+            bend,
+            half,
+        }
+    }
+
+    fn particle(&self, pos: &Vector3<f64>, vel: &Vector3<f64>) -> ParticleTerms {
+        let sun_accel = solar_accel(pos);
+        ParticleTerms {
+            reach: vel.norm() * self.half + self.bend * sun_accel.norm(),
+            sun_accel,
+        }
+    }
+
+    /// Whether a particle at squared distance `r2` from body `j` could come
+    /// within its encounter radius in half a step; necessary for
+    /// [`Self::close`].
+    fn within_reach(&self, j: usize, r2: f64, terms: &ParticleTerms) -> bool {
+        let bound = self.reach[j] + terms.reach;
+        r2 < bound * bound
+    }
+
+    /// Whether the particle passes within the encounter radius of body `j`
+    /// during the step, given the body's position `sep` relative to it, its
+    /// square `r2`, and the body's velocity `rel_vel` relative to it.
+    fn flags(
+        &self,
+        j: usize,
+        sep: &Vector3<f64>,
+        r2: f64,
+        rel_vel: &Vector3<f64>,
+        terms: &ParticleTerms,
+    ) -> bool {
+        self.within_reach(j, r2, terms) && self.close(j, sep, rel_vel, terms)
+    }
+
+    /// Whether the particle passes within the encounter radius of body `j`,
+    /// given the body's position `sep` and velocity `rel_vel` relative to it.
+    fn close(
+        &self,
+        j: usize,
+        sep: &Vector3<f64>,
+        rel_vel: &Vector3<f64>,
+        terms: &ParticleTerms,
+    ) -> bool {
+        let w2 = rel_vel.norm_squared();
+        let tau = if w2 > 0.0 {
+            (-sep.dot(rel_vel) / w2).clamp(-self.half, self.half)
+        } else {
+            0.0
+        };
+        let widened = self.radius[j] + self.bend * (self.sun_accel[j] - terms.sun_accel).norm();
+        (sep + rel_vel * tau).norm_squared() < widened * widened
+    }
+}
+
+/// Impact radius (AU) of the body with NAIF id `id`: its radius among the
+/// registered masses `selected`, else in the mass table `known`, or 0 if
+/// neither gives a positive one. The Earth-Moon barycenter's entry spans the
+/// lunar orbit, so it takes the Earth's radius.
+fn impact_radius(id: i32, selected: &[GravParams], known: &[GravParams]) -> f64 {
+    let id = if id == 3 { 399 } else { id };
+    selected
+        .iter()
+        .chain(known)
+        .find(|p| p.naif_id == id && p.radius > 0.0)
+        .map_or(0.0, |p| f64::from(p.radius))
+}
+
+/// Solar point-mass acceleration at heliocentric position `pos`.
+fn solar_accel(pos: &Vector3<f64>) -> Vector3<f64> {
+    -pos * (GMS / pos.norm().powi(3))
+}
+
+/// Kepler drift of a plain position and velocity about `mu` for `dt`.
+fn drift_vec(
+    dt: f64,
+    pos: &Vector3<f64>,
+    vel: &Vector3<f64>,
+    mu: f64,
+) -> KeteResult<(Vector3<f64>, Vector3<f64>)> {
+    let (d_pos, d_vel) = analytic_2_body_delta(dt, pos, vel, mu)?;
+    Ok((pos + d_pos, vel + d_vel))
+}
+
+/// Accelerations a test particle feels beyond point-mass gravity and its
+/// non-gravitational force: the optional solar GR and J2 terms. `u` is the
+/// heliocentric velocity.
+fn field_accel(
+    pos: &Vector3<f64>,
+    u: &Vector3<f64>,
+    include_gr: bool,
+    solar_j2: Option<&(f64, Vector3<f64>)>,
+) -> Vector3<f64> {
+    let mut accel = Vector3::zeros();
+    if include_gr {
+        apply_gr_correction(&mut accel, pos, u, GMS);
+    }
+    if let Some((j2, pole)) = solar_j2 {
+        accel += j2_correction(pos, pole, *SUN_RADIUS_AU, *j2, GMS);
+    }
+    accel
+}
+
+/// Acceleration of a particle's non-gravitational force at heliocentric
+/// position `pos` and velocity `u`. Zero for a dust grain, whose radiation
+/// pressure is in its reduced `mu` and whose drag each caller applies.
+fn non_grav_accel(force: &NonGrav, pos: &Vector3<f64>, u: &Vector3<f64>) -> Vector3<f64> {
+    match force {
+        // Evaluated directly on the heliocentric position, with the pole
+        // already in this frame.
+        NonGrav::Yarkovsky(yark) => radiation_accel(
+            pos,
+            &yark.spin_pole,
+            yark.albedo,
+            yark.absorptivity,
+            yark.flattening,
+            yark.a_over_m,
+            yark.lambda_0,
+        ),
+        // A1/A2/A3 on the RTN axes of the instantaneous orbit.
+        NonGrav::JplComet { force, a1, a2, a3 } => force.accel_no_lag(pos, u, *a1, *a2, *a3),
+        NonGrav::Dust { .. } => Vector3::zeros(),
+    }
+}
+
+/// Heliocentric path of a massive body across one step, which a resolved
+/// close encounter integrates against: the body's two-body orbit about
+/// `GMS + gm` from its state at the start of the step, plus the cubic
+/// Hermite blend that takes that orbit onto the body's state at the end of
+/// the step, position and velocity both. The blend is zero with zero slope
+/// at the start, so the path matches the map's states at both ends. Bodies
+/// the particle does not pass near use the plain cubic Hermite of the end
+/// states instead ([`Self::cubic`]), which needs no Kepler solve.
+#[derive(Debug)]
+struct BodyPath {
+    /// Heliocentric position at the start of the step, AU.
+    pos: Vector3<f64>,
+    /// Heliocentric velocity at the start of the step, AU/day.
+    vel: Vector3<f64>,
+    /// Two-body `GMS + gm`.
+    mu: f64,
+    /// Step, days.
+    dt: f64,
+    /// Heliocentric position at the end of the step, AU.
+    end_pos: Vector3<f64>,
+    /// Heliocentric velocity at the end of the step, AU/day.
+    end_vel: Vector3<f64>,
+    /// End-of-step position minus the two-body orbit's.
+    d_pos: Vector3<f64>,
+    /// End-of-step velocity minus the two-body orbit's.
+    d_vel: Vector3<f64>,
+}
+
+impl BodyPath {
+    fn new(
+        pos: Vector3<f64>,
+        vel: Vector3<f64>,
+        end_pos: Vector3<f64>,
+        end_vel: Vector3<f64>,
+        mu: f64,
+        dt: f64,
+    ) -> KeteResult<Self> {
+        let (kep_pos, kep_vel) = drift_vec(dt, &pos, &vel, mu)?;
+        Ok(Self {
+            pos,
+            vel,
+            mu,
+            dt,
+            end_pos,
+            end_vel,
+            d_pos: end_pos - kep_pos,
+            d_vel: end_vel - kep_vel,
+        })
+    }
+
+    /// Heliocentric position `tau` days after the start of the step from the
+    /// cubic Hermite interpolant of the two end states alone: no Kepler solve,
+    /// and an error of order the orbit's curvature times `(dt / P)^3`.
+    fn cubic(&self, tau: f64) -> Vector3<f64> {
+        let s = tau / self.dt;
+        let (s2, s3) = (s * s, s * s * s);
+        self.pos * (2.0 * s3 - 3.0 * s2 + 1.0)
+            + self.vel * (self.dt * (s3 - 2.0 * s2 + s))
+            + self.end_pos * (3.0 * s2 - 2.0 * s3)
+            + self.end_vel * (self.dt * (s3 - s2))
+    }
+
+    /// Heliocentric position `tau` days after the start of the step.
+    fn position(&self, tau: f64) -> KeteResult<Vector3<f64>> {
+        let (d_pos, _) = analytic_2_body_delta(tau, &self.pos, &self.vel, self.mu)?;
+        let s = tau / self.dt;
+        let (s2, s3) = (s * s, s * s * s);
+        Ok(self.pos
+            + d_pos
+            + self.d_pos * (3.0 * s2 - 2.0 * s3)
+            + self.d_vel * (self.dt * (s3 - s2)))
+    }
+}
+
+/// Result of a resolved close encounter for one test particle.
+#[derive(Debug)]
+enum EncounterOutcome {
+    /// The particle's state at the kick, to be put back in the map.
+    Done {
+        pos: Vector3<f64>,
+        vel: Vector3<f64>,
+    },
+    /// The particle is removed, for this reason at this time.
+    Lost(LostReason, Time<TDB>),
+}
+
+/// Whether a drifted test particle crossed a removal bound: beyond the
+/// distance bound, or past perihelion with its perihelion inside the
+/// perihelion bound. A drift has passed perihelion if its radial velocity
+/// turns from inward to outward, if it is longer than half an orbit with both
+/// ends moving the same way (it then passed aphelion and perihelion both), or
+/// if it spans a whole orbit.
+fn outside_bounds(
+    dt: f64,
+    rv_before: f64,
+    pos: &Vector3<f64>,
+    vel: &Vector3<f64>,
+    mu: f64,
+    peri_bound: Option<f64>,
+    dist_bound: Option<f64>,
+) -> Option<LostReason> {
+    if let Some(bound) = dist_bound
+        && pos.norm_squared() > bound * bound
+    {
+        return Some(LostReason::DistanceBound);
+    }
+    if let Some(bound) = peri_bound {
+        let peri = compute_peri_dist(pos, vel, mu);
+        if peri < bound {
+            let rv_after = pos.dot(vel);
+            let (rv_in, rv_out) = if dt > 0.0 {
+                (rv_before, rv_after)
+            } else {
+                (rv_after, rv_before)
+            };
+            let semi_major = compute_semi_major(pos, vel, mu);
+            let long_enough = semi_major > 0.0 && {
+                let period = TAU * (semi_major.powi(3) / mu).sqrt();
+                dt.abs() >= period || (dt.abs() > 0.5 * period && rv_in * rv_out > 0.0)
+            };
+            if (rv_in < 0.0 && rv_out > 0.0) || long_enough {
+                return Some(LostReason::PerihelionBound);
+            }
+        }
+    }
+    None
+}
+
 /// Keep only the entries of `values` where `flags` is [`None`].
-fn retain_by_flags<U>(values: &mut Vec<U>, flags: &[Option<LostReason>]) {
+fn retain_by_flags<U, F>(values: &mut Vec<U>, flags: &[Option<F>]) {
     let mut idx = 0;
     values.retain(|_| {
         let keep = flags[idx].is_none();

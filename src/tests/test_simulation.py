@@ -494,3 +494,72 @@ def test_registered_mass_flows_into_from_spice():
         "assert len(plain.massive_states) == 9\n"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_particles_in_place(jd0):
+    sim = SymplecticSim.from_spice(jd0, dt=10.0, include_registered=False)
+    sun = sim.massive_states[0]
+    particles = [
+        State(f"p{k}", jd0, [3.0 + k, 0.5, 0.1], [0.0, 0.009, 0.001], center_id=0)
+        for k in range(4)
+    ]
+    sim.add_test_particles(particles)
+    assert sim.test_particle_desigs == ["p0", "p1", "p2", "p3"]
+
+    pos, vel = sim.test_particle_heliocentric()
+    expected = np.array(particles[1].pos) - np.array(sun.pos)
+    assert np.allclose(pos[1], expected, atol=1e-12)
+
+    removed = sim.remove_test_particles([2, 0])
+    assert [s.desig for s in removed] == ["p2", "p0"]
+    assert sim.test_particle_desigs == ["p1", "p3"]
+    with pytest.raises(ValueError):
+        sim.remove_test_particles([5])
+
+    before = np.array(sim.test_particle_heliocentric()[1])
+    sim.kick_test_particles([[1e-4, 0.0, 0.0], [0.0, 1e-4, 0.0]])
+    after = np.array(sim.test_particle_heliocentric()[1])
+    assert np.allclose(after - before, [[1e-4, 0, 0], [0, 1e-4, 0]], atol=1e-15)
+    with pytest.raises(ValueError):
+        sim.kick_test_particles([[0.0, 0.0, 0.0]])
+
+    sim.integrate_n_steps(10)
+    with pytest.raises(ValueError):
+        sim.add_test_particles(removed)  # epoch is behind the simulation
+
+
+def test_removal_bounds(jd0):
+    sun = State("Sun", jd0, [0, 0, 0], [0, 0, 0], center_id=0)
+    far = State("far", jd0, [20_000.0, 0.0, 0.0], [0.0, 1e-5, 0.0], center_id=0)
+    fast = State("fast", jd0, [0.0, 29_990.0, 0.0], [0.0, 0.05, 0.0], center_id=0)
+    sim = SymplecticSim([sun], [1.0], [far, fast], dt=5.0)
+    sim.set_removal_bounds(max_distance=30_000.0)
+    sim.integrate_n_steps(150)
+    assert [r[2] for r in sim.lost_particles] == ["distance_bound"]
+    assert sim.test_particle_desigs == ["far"]
+
+    with pytest.raises(ValueError):
+        sim.set_removal_bounds(min_perihelion=-1.0)
+
+
+def test_close_encounters(jd0):
+    sun = State("Sun", jd0, [0, 0, 0], [0, 0, 0], center_id=0)
+    v_jup = (2.959122e-4 / 5.2) ** 0.5
+    jup = State("Jupiter", jd0, [5.2, 0, 0], [0, v_jup, 0], center_id=0)
+    # falls straight into Jupiter from 0.5 AU, and a particle far from it
+    falling = State("falling", jd0, [5.5, 0.4, 0], [-0.0048, v_jup - 0.0064, 0], center_id=0)
+    far = State("far", jd0, [-2.5, 0, 0], [0, -(2.959122e-4 / 2.5) ** 0.5, 0], center_id=0)
+    args = ([sun, jup], [1.0, 0.0009547919], [falling, far])
+    sim = SymplecticSim(*args, dt=20.0, close_encounters=3.0)
+    plain = SymplecticSim(*args, dt=20.0)
+    assert sim.close_encounters == 3.0
+    assert plain.close_encounters is None
+    sim.integrate_n_steps(5)
+    plain.integrate_n_steps(5)
+    assert sim.close_encounter_steps > 0
+    assert plain.close_encounter_steps == 0
+    assert [r[2] for r in sim.lost_particles] == ["planet_impact"]
+    assert sim.test_particle_desigs == ["far"]
+    assert plain.lost_particles == []
+    with pytest.raises(ValueError):
+        SymplecticSim(*args, dt=20.0, close_encounters=0.0)

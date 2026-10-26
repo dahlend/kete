@@ -11,9 +11,12 @@ use kete_core::state::State;
 use kete_spice::prelude::LOADED_SPK;
 use pyo3::prelude::*;
 
+use crate::frame::PyFrames;
 use crate::nongrav::PyNonGravModel;
 use crate::state::PyState;
 use crate::time::PyTime;
+use crate::vector::{PyVector, VectorLike};
+use nalgebra::Vector3;
 
 /// Convert optional per-particle `NonGravModel`s into the fully fixed forces the
 /// integrator accepts. NaN values become 0, as in every other propagation.
@@ -38,9 +41,10 @@ fn freeze_non_gravs(non_gravs: Option<Vec<Option<PyNonGravModel>>>) -> Vec<Optio
 ///
 /// Because the step size is fixed, it should be at most 1/20th of the
 /// shortest orbital period in the simulation (about 4 days when Mercury is
-/// included). Close encounters are not resolved by this method; the
-/// simulation records the closest approach seen so results can be audited
-/// (see :attr:`closest_encounter`).
+/// included). Close encounters of test particles with massive bodies are
+/// resolved when ``close_encounters`` is given; encounters between massive
+/// bodies never are. The simulation records the closest approach seen so
+/// results can be audited (see :attr:`closest_encounter`).
 ///
 /// Test particles which fall into the Sun are removed and recorded in
 /// :attr:`lost_particles`.
@@ -123,6 +127,20 @@ fn freeze_non_gravs(non_gravs: Option<Vec<Option<PyNonGravModel>>>) -> Vec<Optio
 ///     with ``None`` entries for particles which feel gravity alone. A
 ///     ``NaN`` parameter, left free for orbit fitting, is treated as 0, as in
 ///     every other propagation.
+/// close_encounters:
+///     Optional encounter radius in Hill radii (3 is typical). A test particle
+///     that passes inside this radius of a massive body during a step has that
+///     whole step integrated with the adaptive Radau integrator instead of the
+///     map, with the same forces and the massive bodies interpolated between
+///     the map's states at the two ends of the step; other steps are
+///     unchanged. A particle that reaches the radius of a body is removed as
+///     ``"planet_impact"``: its registered radius (see
+///     :func:`~kete.register_custom_mass`), else its radius in the mass table,
+///     the Earth's for the Earth-Moon barycenter. A body with neither cannot
+///     be hit. The resolved steps are not symplectic. With ``use_correctors``, a
+///     particle in an encounter at the start or end of an integration call is
+///     left out of the corrector and moved with the body it is near.
+///     :attr:`close_encounter_steps` counts the steps resolved.
 #[pyclass(module = "kete", name = "SymplecticSim")]
 #[derive(Debug)]
 pub struct PySymplecticSim {
@@ -151,7 +169,7 @@ impl PySymplecticSim {
     /// Construct the simulation from explicit states and masses.
     #[new]
     #[pyo3(signature = (massive_states, masses, test_particles=vec![], dt=4.0, include_gr=true,
-        include_j2=true, use_correctors=true, non_gravs=None))]
+        include_j2=true, use_correctors=true, non_gravs=None, close_encounters=None))]
     #[allow(
         clippy::too_many_arguments,
         reason = "keyword arguments with defaults on a Python constructor"
@@ -165,6 +183,7 @@ impl PySymplecticSim {
         include_j2: bool,
         use_correctors: bool,
         non_gravs: Option<Vec<Option<PyNonGravModel>>>,
+        close_encounters: Option<f64>,
     ) -> PyResult<Self> {
         if massive_states.len() != masses.len() {
             Err(Error::ValueError(
@@ -182,18 +201,20 @@ impl PySymplecticSim {
             .map(|state| spk.try_to_ssb(state.raw))
             .collect::<Result<_, Error>>()?;
         drop(spk);
-        Ok(Self {
-            sim: WisdomHolman::new(
-                &massive,
-                &gms,
-                &particles,
-                &freeze_non_gravs(non_gravs),
-                dt,
-                include_gr,
-                include_j2,
-                use_correctors,
-            )?,
-        })
+        let mut sim = WisdomHolman::new(
+            &massive,
+            &gms,
+            &particles,
+            &freeze_non_gravs(non_gravs),
+            dt,
+            include_gr,
+            include_j2,
+            use_correctors,
+        )?;
+        if let Some(radius) = close_encounters {
+            sim = sim.with_close_encounters(radius)?;
+        }
+        Ok(Self { sim })
     }
 
     /// Build a simulation from the loaded SPICE kernels.
@@ -228,9 +249,12 @@ impl PySymplecticSim {
     ///     Optional list of :class:`~kete.propagation.NonGravModel`, one per test
     ///     particle, with ``None`` entries for particles which feel gravity
     ///     alone; see the class documentation.
+    /// close_encounters:
+    ///     Optional encounter radius in Hill radii inside which test particle
+    ///     steps are integrated with Radau; see the class documentation.
     #[staticmethod]
     #[pyo3(signature = (jd, dt=4.0, include_registered=true, test_particles=vec![], include_gr=true,
-        include_j2=true, use_correctors=true, non_gravs=None))]
+        include_j2=true, use_correctors=true, non_gravs=None, close_encounters=None))]
     #[allow(
         clippy::too_many_arguments,
         reason = "keyword arguments with defaults on a Python constructor"
@@ -244,6 +268,7 @@ impl PySymplecticSim {
         include_j2: bool,
         use_correctors: bool,
         non_gravs: Option<Vec<Option<PyNonGravModel>>>,
+        close_encounters: Option<f64>,
     ) -> PyResult<Self> {
         let epoch = jd.0;
         let mut params: Vec<GravParams> = GravParams::simplified_planets().to_vec();
@@ -276,18 +301,20 @@ impl PySymplecticSim {
             .map(|state| spk.try_to_ssb(state.raw))
             .collect::<Result<_, Error>>()?;
         drop(spk);
-        Ok(Self {
-            sim: WisdomHolman::new(
-                &massive,
-                &gms,
-                &particles,
-                &freeze_non_gravs(non_gravs),
-                dt,
-                include_gr,
-                include_j2,
-                use_correctors,
-            )?,
-        })
+        let mut sim = WisdomHolman::new(
+            &massive,
+            &gms,
+            &particles,
+            &freeze_non_gravs(non_gravs),
+            dt,
+            include_gr,
+            include_j2,
+            use_correctors,
+        )?;
+        if let Some(radius) = close_encounters {
+            sim = sim.with_close_encounters(radius)?;
+        }
+        Ok(Self { sim })
     }
 
     /// Advance the simulation by a single step of ``dt``.
@@ -356,6 +383,20 @@ impl PySymplecticSim {
         self.sim.include_j2()
     }
 
+    /// The close encounter radius in Hill radii, or ``None`` when test
+    /// particle encounters are not resolved.
+    #[getter]
+    pub fn close_encounters(&self) -> Option<f64> {
+        self.sim.close_encounter_radius()
+    }
+
+    /// Number of test particle steps resolved as close encounters so far,
+    /// including those ending in a removal.
+    #[getter]
+    pub fn close_encounter_steps(&self) -> u64 {
+        self.sim.close_encounter_steps()
+    }
+
     /// Whether the order-17 symplectic corrector is enabled.
     #[getter]
     pub fn use_correctors(&self) -> bool {
@@ -384,6 +425,129 @@ impl PySymplecticSim {
             .collect()
     }
 
+    /// Designations of the active test particles, in the order of
+    /// :attr:`test_particle_states`.
+    #[getter]
+    pub fn test_particle_desigs(&self) -> Vec<String> {
+        self.sim
+            .test_particle_desigs()
+            .iter()
+            .map(|d| d.clone().try_naif_id_to_name().to_string())
+            .collect()
+    }
+
+    /// Heliocentric positions (AU) and velocities (AU/day) of the active test
+    /// particles, as two lists of ``[x, y, z]`` on the axes of ``frame``, in
+    /// the order of :attr:`test_particle_states`.
+    ///
+    /// This skips building a :class:`~kete.State` per particle, so it is the
+    /// fast way to read a large population.
+    ///
+    /// Parameters
+    /// ----------
+    /// frame:
+    ///     Frame of the returned vectors.
+    #[pyo3(signature = (frame=PyFrames::Ecliptic))]
+    pub fn test_particle_heliocentric(&self, frame: PyFrames) -> (Vec<[f64; 3]>, Vec<[f64; 3]>) {
+        self.sim
+            .test_particle_heliocentric()
+            .into_iter()
+            .map(|(pos, vel)| {
+                (
+                    PyVector::new(pos.into(), frame).raw(),
+                    PyVector::new(vel.into(), frame).raw(),
+                )
+            })
+            .unzip()
+    }
+
+    /// Remove the test particles at the given indices (into the order of
+    /// :attr:`test_particle_states`) and return their barycentric states, in
+    /// the order the indices were given. The remaining particles keep their
+    /// relative order.
+    ///
+    /// Parameters
+    /// ----------
+    /// indices:
+    ///     Indices of the particles to remove; each at most once.
+    pub fn remove_test_particles(&mut self, indices: Vec<usize>) -> PyResult<Vec<PyState>> {
+        Ok(self
+            .sim
+            .remove_test_particles(&indices)?
+            .into_iter()
+            .map(|s| State::<Equatorial>::from(s).into())
+            .collect())
+    }
+
+    /// Append test particles at the current epoch.
+    ///
+    /// Parameters
+    /// ----------
+    /// states:
+    ///     States of the new particles, at the simulation's current epoch.
+    /// non_gravs:
+    ///     Optional list of :class:`~kete.propagation.NonGravModel`, one per
+    ///     state, with ``None`` entries for particles which feel gravity alone.
+    #[pyo3(signature = (states, non_gravs=None))]
+    pub fn add_test_particles(
+        &mut self,
+        states: Vec<PyState>,
+        non_gravs: Option<Vec<Option<PyNonGravModel>>>,
+    ) -> PyResult<()> {
+        let spk = LOADED_SPK.try_read().map_err(Error::from)?;
+        let particles: Vec<State<Equatorial, SSB>> = states
+            .into_iter()
+            .map(|state| spk.try_to_ssb(state.raw))
+            .collect::<Result<_, Error>>()?;
+        drop(spk);
+        self.sim
+            .add_test_particles(&particles, &freeze_non_gravs(non_gravs))?;
+        Ok(())
+    }
+
+    /// Add a velocity change (AU/day) to every active test particle: an
+    /// instantaneous impulse, such as from a passing star.
+    ///
+    /// Parameters
+    /// ----------
+    /// dv:
+    ///     One ``[vx, vy, vz]`` per particle, in the order of
+    ///     :attr:`test_particle_states`, on the axes of ``frame``.
+    /// frame:
+    ///     Frame of ``dv``.
+    #[pyo3(signature = (dv, frame=PyFrames::Ecliptic))]
+    pub fn kick_test_particles(&mut self, dv: Vec<[f64; 3]>, frame: PyFrames) -> PyResult<()> {
+        let dv: Vec<Vector3<f64>> = dv
+            .into_iter()
+            .map(|d| VectorLike::Arr(d).into_vector(frame).into())
+            .collect();
+        self.sim.kick_test_particles(&dv)?;
+        Ok(())
+    }
+
+    /// Remove test particles that pass perihelion inside ``min_perihelion`` AU
+    /// (an absorbing boundary, such as the planetary region for comets), or
+    /// that move beyond ``max_distance`` AU from the Sun. ``None`` disables a
+    /// bound. Removed particles appear in :attr:`lost_particles` with reason
+    /// ``"perihelion_bound"`` or ``"distance_bound"``.
+    ///
+    /// Parameters
+    /// ----------
+    /// min_perihelion:
+    ///     Perihelion distance in AU below which a particle passing perihelion
+    ///     is removed.
+    /// max_distance:
+    ///     Heliocentric distance in AU beyond which a particle is removed.
+    #[pyo3(signature = (min_perihelion=None, max_distance=None))]
+    pub fn set_removal_bounds(
+        &mut self,
+        min_perihelion: Option<f64>,
+        max_distance: Option<f64>,
+    ) -> PyResult<()> {
+        self.sim.set_removal_bounds(min_perihelion, max_distance)?;
+        Ok(())
+    }
+
     /// Number of currently active test particles.
     #[getter]
     pub fn n_test_particles(&self) -> usize {
@@ -391,8 +555,11 @@ impl PySymplecticSim {
     }
 
     /// Test particles removed from the simulation, as a list of
-    /// ``(designation, jd, reason)`` tuples. ``reason`` is either
-    /// ``"sun_impact"`` or ``"kepler_failure"``.
+    /// ``(designation, jd, reason)`` tuples. ``reason`` is one of
+    /// ``"sun_impact"``, ``"kepler_failure"``, ``"perihelion_bound"``,
+    /// ``"distance_bound"`` (see :meth:`set_removal_bounds`),
+    /// ``"planet_impact"`` and ``"encounter_failure"`` (a resolved close
+    /// encounter whose integration failed; see ``close_encounters``).
     #[getter]
     pub fn lost_particles(&self) -> Vec<(String, f64, String)> {
         self.sim
@@ -402,6 +569,10 @@ impl PySymplecticSim {
                 let reason = match lost.reason {
                     LostReason::SunImpact => "sun_impact",
                     LostReason::KeplerFailure => "kepler_failure",
+                    LostReason::PerihelionBound => "perihelion_bound",
+                    LostReason::DistanceBound => "distance_bound",
+                    LostReason::PlanetImpact => "planet_impact",
+                    LostReason::EncounterFailure => "encounter_failure",
                 };
                 (
                     lost.desig.clone().try_naif_id_to_name().to_string(),
@@ -415,8 +586,9 @@ impl PySymplecticSim {
     /// The closest approach between two bodies seen so far, as a
     /// ``(designation, designation, hill_ratio, jd)`` tuple, or ``None``.
     ///
-    /// Only approaches within 3 Hill radii of a massive body are recorded.
-    /// If this is not ``None``, the trajectories of the involved bodies
+    /// Only unresolved approaches within 3 Hill radii of a massive body are
+    /// recorded; test particle steps resolved with ``close_encounters`` are
+    /// not. If this is not ``None``, the trajectories of the involved bodies
     /// should be treated with suspicion, since the fixed-step map does not
     /// resolve close encounters.
     #[getter]

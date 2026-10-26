@@ -15,7 +15,9 @@ use std::f64::consts::TAU;
 
 use nalgebra::{DVector, Rotation3, Vector3};
 
-use super::{EMB_QUAD_J2R2, LostReason, SUN_RADIUS_AU, WisdomHolman, sun_oblateness};
+use super::{
+    EMB_QUAD_J2R2, LostReason, SUN_RADIUS_AU, WisdomHolman, impact_radius, sun_oblateness,
+};
 use crate::analysis::hill_radius;
 use crate::constants::{F0_OVER_C_AU_DAY2, GMS, SUN_J2};
 use crate::desigs::Desig;
@@ -27,7 +29,7 @@ use crate::forces::{
 use crate::frames::{Ecliptic, Equatorial, SSB, Vector};
 use crate::integrators::RadauIntegrator;
 use crate::kepler::analytic_2_body;
-use crate::kepler::compute_semi_major;
+use crate::kepler::{compute_peri_dist, compute_semi_major};
 use crate::state::State;
 use crate::time::{TDB, Time};
 
@@ -2169,4 +2171,810 @@ fn profile_test_particle_scaling() {
         }
         prev = Some((f64::from(n_tp), us_per_step));
     }
+}
+
+// ---------------------------------------------------------------------------
+// Adding, removing, kicking and reading test particles in place
+// ---------------------------------------------------------------------------
+
+/// A few test particles on varied orbits among the outer planets.
+fn some_particles() -> Vec<State<Ecliptic, SSB>> {
+    (0..6_u32)
+        .map(|k| {
+            let (pos, vel) = peri_pos_vel(
+                6.0 + 4.0 * f64::from(k),
+                0.2,
+                10.0 * f64::from(k),
+                f64::from(k),
+            );
+            make_state(3000 + k, pos, vel)
+        })
+        .collect()
+}
+
+/// Removing particles and adding the returned states back changes nothing
+/// beyond roundoff: the run matches one that never removed them.
+#[test]
+fn remove_and_add_round_trip() {
+    let (states, gms) = outer_solar_system();
+    let tps = some_particles();
+    let build = || WisdomHolman::new(&states, &gms, &tps, &[], 40.0, false, false, false).unwrap();
+    let mut whole = build();
+    whole.integrate_n_steps(2000).unwrap();
+
+    let mut split = build();
+    split.integrate_n_steps(1000).unwrap();
+    let removed = split.remove_test_particles(&[4, 1]).unwrap();
+    assert_eq!(split.n_test_particles(), 4);
+    assert_eq!(removed[0].desig, tps[4].desig);
+    assert_eq!(removed[1].desig, tps[1].desig);
+    split.add_test_particles(&removed, &[]).unwrap();
+    split.integrate_n_steps(1000).unwrap();
+
+    let mut worst = 0.0_f64;
+    for a in whole.test_particle_states() {
+        let b = split
+            .test_particle_states()
+            .into_iter()
+            .find(|s| s.desig == a.desig)
+            .unwrap();
+        worst = worst.max((Vector3::from(a.pos) - Vector3::from(b.pos)).norm());
+    }
+    println!(
+        "remove_and_add_round_trip: worst position difference {worst:.3e} AU after 2000 steps"
+    );
+    assert!(
+        worst < 1e-10,
+        "round trip changed the trajectory by {worst:e} AU"
+    );
+
+    assert!(split.remove_test_particles(&[9]).is_err());
+    assert!(split.remove_test_particles(&[0, 0]).is_err());
+    let stale = make_state(
+        4000,
+        Vector3::new(10.0, 0.0, 0.0),
+        Vector3::new(0.0, 0.005, 0.0),
+    );
+    assert!(
+        split.add_test_particles(&[stale], &[]).is_err(),
+        "epoch mismatch accepted"
+    );
+}
+
+/// A kick equals starting from the kicked velocity, and the heliocentric
+/// accessor equals the barycentric states minus the Sun's.
+#[test]
+fn kick_and_heliocentric_accessor() {
+    let (states, gms) = outer_solar_system();
+    let tps = some_particles();
+    let dv: Vec<Vector3<f64>> = (0..tps.len())
+        .map(|k| Vector3::new(1e-5, -2e-5, 3e-6) * (1.0 + f64::from(u32::try_from(k).unwrap())))
+        .collect();
+    let mut kicked =
+        WisdomHolman::new(&states, &gms, &tps, &[], 40.0, false, false, false).unwrap();
+    kicked.kick_test_particles(&dv).unwrap();
+    let moved: Vec<_> = tps
+        .iter()
+        .zip(&dv)
+        .map(|(s, d)| {
+            State::new(
+                s.desig.clone(),
+                s.epoch,
+                Vector3::from(s.pos),
+                Vector3::from(s.vel) + d,
+                SSB,
+            )
+        })
+        .collect();
+    let mut direct =
+        WisdomHolman::new(&states, &gms, &moved, &[], 40.0, false, false, false).unwrap();
+    kicked.integrate_n_steps(1000).unwrap();
+    direct.integrate_n_steps(1000).unwrap();
+    let worst = kicked
+        .test_particle_states()
+        .iter()
+        .zip(direct.test_particle_states())
+        .map(|(a, b)| (Vector3::from(a.pos) - Vector3::from(b.pos)).norm())
+        .fold(0.0, f64::max);
+    println!("kick_and_heliocentric_accessor: kick vs direct start, worst {worst:.3e} AU");
+    assert!(
+        worst < 1e-10,
+        "kick differs from a direct start by {worst:e} AU"
+    );
+    assert!(kicked.kick_test_particles(&dv[..2]).is_err());
+
+    let sun = &kicked.massive_states()[0];
+    for ((pos, vel), state) in kicked
+        .test_particle_heliocentric()
+        .iter()
+        .zip(kicked.test_particle_states())
+    {
+        let (p, v) = heliocentric(&state, sun);
+        assert!((pos - p).norm() < 1e-12 && (vel - v).norm() < 1e-15);
+    }
+    assert_eq!(kicked.test_particle_desigs().len(), tps.len());
+}
+
+// ---------------------------------------------------------------------------
+// Removal bounds
+// ---------------------------------------------------------------------------
+
+/// The perihelion bound removes a particle passing perihelion inside it and
+/// keeps one outside it; the distance bound removes a particle moving past it;
+/// an orbit shorter than one step is caught without a sign change.
+#[test]
+fn removal_bounds() {
+    // Two inbound near-parabolic particles, perihelia 10 and 20 AU, a year out.
+    let inbound = |q: f64, id: u32| {
+        let (pos, vel) = peri_pos_vel(5000.0, 1.0 - q / 5000.0, 30.0, 0.0);
+        let mut s = make_state(id, pos, vel);
+        (s.pos, s.vel) =
+            analytic_2_body((-365.25).into(), &Vector3::from(pos), &Vector3::from(vel))
+                .map(|(p, v)| (p.into(), v.into()))
+                .unwrap();
+        s
+    };
+    let outbound = make_state(
+        6002,
+        Vector3::new(990.0, 0.0, 0.0),
+        Vector3::new(0.05, 0.0, 0.0),
+    );
+    // An inner orbit (a = 20 AU, q = 4 AU, period ~ 89 yr) and a step of 200 yr.
+    let (pi, vi) = peri_pos_vel(20.0, 0.8, 5.0, 0.0);
+    let short = make_state(6003, pi, vi);
+
+    let tps = vec![inbound(10.0, 6000), inbound(20.0, 6001), outbound];
+    let mut sim = WisdomHolman::new(&[sun()], &[GMS], &tps, &[], 5.0, false, false, false).unwrap();
+    sim.set_removal_bounds(Some(15.0), Some(1000.0)).unwrap();
+    sim.integrate_n_steps(150).unwrap();
+    let lost: Vec<_> = sim
+        .lost_particles()
+        .iter()
+        .map(|l| (l.desig.clone(), l.reason))
+        .collect();
+    println!("removal_bounds: lost {lost:?}");
+    assert!(lost.contains(&(Desig::Perm(6000), LostReason::PerihelionBound)));
+    assert!(lost.contains(&(Desig::Perm(6002), LostReason::DistanceBound)));
+    assert!(!lost.iter().any(|(d, _)| *d == Desig::Perm(6001)));
+    assert_eq!(sim.n_test_particles(), 1);
+
+    let mut coarse = WisdomHolman::new(
+        &[sun()],
+        &[GMS],
+        &[short],
+        &[],
+        200.0 * 365.25,
+        false,
+        false,
+        false,
+    )
+    .unwrap();
+    coarse.set_removal_bounds(Some(15.0), None).unwrap();
+    coarse.integrate_n_steps(1).unwrap();
+    assert_eq!(
+        coarse.lost_particles().len(),
+        1,
+        "an orbit shorter than the step was not caught"
+    );
+    assert!(sim.set_removal_bounds(Some(-1.0), None).is_err());
+}
+
+/// A particle on an orbit with perihelion 1.5 AU, `days` from perihelion
+/// (negative before it).
+fn near_perihelion(id: u32, days: f64) -> State<Ecliptic, SSB> {
+    let (pos, vel) = peri_pos_vel(3.0, 0.5, 10.0, 0.0);
+    let (pos, vel) = analytic_2_body(days.into(), &pos, &vel).unwrap();
+    make_state(id, pos, vel)
+}
+
+/// The symplectic corrector drifts every particle several steps backward and
+/// forward, which are not motion of the run: a particle that starts just past
+/// perihelion inside the perihelion bound passes no perihelion in the run,
+/// and is kept.
+#[test]
+fn removal_bounds_ignore_corrector_drifts() {
+    let tp = near_perihelion(6100, 1.5);
+    let mut sim = WisdomHolman::new(&[sun()], &[GMS], &[tp], &[], 1.0, false, false, true).unwrap();
+    sim.set_removal_bounds(Some(5.0), None).unwrap();
+    sim.integrate_n_steps(10).unwrap();
+    assert!(
+        sim.lost_particles().is_empty(),
+        "removed by a corrector drift: {:?}",
+        sim.lost_particles()
+    );
+}
+
+/// A perihelion passage whose radial velocity changes sign between two
+/// drifts, here in a radial kick between integration calls, is caught.
+#[test]
+fn removal_bounds_passage_between_drifts() {
+    let tp = near_perihelion(6101, -1.0001);
+    let mut sim =
+        WisdomHolman::new(&[sun()], &[GMS], &[tp], &[], 1.0, false, false, false).unwrap();
+    sim.set_removal_bounds(Some(5.0), None).unwrap();
+    // Ends 1e-4 days before perihelion, moving inward.
+    sim.integrate_n_steps(1).unwrap();
+    assert!(sim.lost_particles().is_empty());
+    let (pos, _) = sim.test_particle_heliocentric()[0];
+    sim.kick_test_particles(&[pos.normalize() * 1e-6]).unwrap();
+    sim.integrate_n_steps(1).unwrap();
+    let lost: Vec<_> = sim.lost_particles().iter().map(|l| l.reason).collect();
+    assert_eq!(lost, [LostReason::PerihelionBound]);
+}
+
+/// A drift longer than half an orbit whose ends both move outward has passed
+/// perihelion and aphelion; with a step of 0.97 orbits, the second drift of
+/// this run does so and the particle is removed there.
+#[test]
+fn removal_bounds_drift_over_half_an_orbit() {
+    let (pos, vel) = peri_pos_vel(1.0, 0.8, 10.0, 0.0);
+    let (pos, vel) = analytic_2_body(1.0.into(), &pos, &vel).unwrap();
+    let tp = make_state(6102, pos, vel);
+    let period = TAU / GMS.sqrt();
+    let mut sim = WisdomHolman::new(
+        &[sun()],
+        &[GMS],
+        &[tp],
+        &[],
+        0.97 * period,
+        false,
+        false,
+        false,
+    )
+    .unwrap();
+    sim.set_removal_bounds(Some(0.5), None).unwrap();
+    sim.integrate_n_steps(3).unwrap();
+    let lost: Vec<_> = sim.lost_particles().iter().map(|l| l.reason).collect();
+    assert_eq!(lost, [LostReason::PerihelionBound]);
+}
+
+/// A removal found in a drift is recorded at the start of that drift: the
+/// drifts of a call start at the call's epoch and then half a step into each
+/// step, so a passage 3.3 days in, with a step of a day, is in the drift that
+/// starts at 2.5 days.
+#[test]
+fn removal_recorded_at_drift_start() {
+    let tp = near_perihelion(6103, -3.3);
+    let mut sim =
+        WisdomHolman::new(&[sun()], &[GMS], &[tp], &[], 1.0, false, false, false).unwrap();
+    sim.set_removal_bounds(Some(5.0), None).unwrap();
+    sim.integrate_n_steps(10).unwrap();
+    let lost = sim.lost_particles();
+    assert_eq!(lost.len(), 1);
+    let days = lost[0].epoch.jd() - J2000;
+    assert!((days - 2.5).abs() < 1e-9, "recorded at {days} days");
+}
+
+/// Sun, Jupiter (as NAIF 5, so its radius is known) and a test particle
+/// passing Jupiter at `miss` AU, at closest approach at J2000 with relative
+/// speed `speed` AU/day. Returns the three states `before` days earlier, from
+/// a backward Radau integration of the full system.
+fn jupiter_flyby(miss: f64, speed: f64, before: f64) -> (Vec<State<Ecliptic, SSB>>, [f64; 3]) {
+    let gms = [GMS, gm(5), 0.0];
+    let jup = planet(5, 5.20260, 0.04849, 1.303, 3.3);
+    let (jpos, jvel) = (Vector3::from(jup.pos), Vector3::from(jup.vel));
+    // Relative velocity radial, offset along the ecliptic normal: the two are
+    // perpendicular, so J2000 is the planetocentric periapsis.
+    let tp = make_state(
+        7000,
+        jpos + Vector3::z() * miss,
+        jvel + jpos.normalize() * speed,
+    );
+    let jup = State::new(Desig::Naif(5), jup.epoch, jup.pos, jup.vel, SSB);
+    let start = radau_states(&[sun(), jup, tp], &gms, -before);
+    (start, gms)
+}
+
+/// Full-system Radau integration of `states` (all at the same epoch) for
+/// `span` days, returning the end states.
+fn radau_states(
+    states: &[State<Ecliptic, SSB>],
+    gms: &[f64],
+    span: f64,
+) -> Vec<State<Ecliptic, SSB>> {
+    let n = states.len();
+    let mut pos0 = DVector::<f64>::zeros(3 * n);
+    let mut vel0 = DVector::<f64>::zeros(3 * n);
+    for (i, state) in states.iter().enumerate() {
+        for k in 0..3 {
+            pos0[3 * i + k] = state.pos[k];
+            vel0[3 * i + k] = state.vel[k];
+        }
+    }
+    let gms = gms.to_vec();
+    let func = |_t: Time<TDB>,
+                pos: &DVector<f64>,
+                _vel: &DVector<f64>,
+                _meta: &mut (),
+                _exact: bool|
+     -> crate::errors::KeteResult<DVector<f64>> {
+        let mut accel = DVector::<f64>::zeros(pos.len());
+        for i in 0..n {
+            let ri = Vector3::new(pos[3 * i], pos[3 * i + 1], pos[3 * i + 2]);
+            for j in (i + 1)..n {
+                let rj = Vector3::new(pos[3 * j], pos[3 * j + 1], pos[3 * j + 2]);
+                let sep = rj - ri;
+                let inv_r3 = sep.norm().powi(-3);
+                for k in 0..3 {
+                    accel[3 * i + k] += sep[k] * gms[j] * inv_r3;
+                    accel[3 * j + k] -= sep[k] * gms[i] * inv_r3;
+                }
+            }
+        }
+        Ok(accel)
+    };
+    let epoch = states[0].epoch;
+    let (pos, vel, ()) =
+        RadauIntegrator::integrate(&func, pos0, vel0, epoch, epoch + span, (), None, None).unwrap();
+    states
+        .iter()
+        .enumerate()
+        .map(|(i, state)| {
+            let get = |v: &DVector<f64>| Vector3::new(v[3 * i], v[3 * i + 1], v[3 * i + 2]);
+            State::new(state.desig.clone(), epoch + span, get(&pos), get(&vel), SSB)
+        })
+        .collect()
+}
+
+/// Particle heliocentric position after a WH run through the flyby, and the
+/// number of steps resolved as encounters.
+fn wh_flyby(
+    start: &[State<Ecliptic, SSB>],
+    gms: &[f64; 3],
+    dt: f64,
+    span: f64,
+    encounters: Option<f64>,
+) -> (WisdomHolman<Ecliptic>, Vector3<f64>) {
+    let mut sim = WisdomHolman::new(
+        &start[..2],
+        &gms[..2],
+        &start[2..],
+        &[],
+        dt,
+        false,
+        false,
+        false,
+    )
+    .unwrap();
+    if let Some(k) = encounters {
+        sim = sim.with_close_encounters(k).unwrap();
+    }
+    sim.integrate_to(start[0].epoch + span).unwrap();
+    let helio = if sim.n_test_particles() == 1 {
+        heliocentric(&sim.test_particle_states()[0], &sim.massive_states()[0]).0
+    } else {
+        Vector3::repeat(f64::NAN)
+    };
+    (sim, helio)
+}
+
+/// A deep Jupiter flyby (0.02 AU, about 0.06 Hill radii) integrated through
+/// with resolved encounters matches a full Radau integration of the system,
+/// and is far better than the plain map, which cannot resolve it. The
+/// remaining difference is the map's own error, on Jupiter and on the
+/// particle outside the encounter radius, amplified by the encounter, so it
+/// falls at second order as the step shrinks. A first step resolved in full
+/// matches Radau to roundoff.
+#[test]
+fn close_encounter_matches_radau() {
+    let (start, gms) = jupiter_flyby(0.02, 0.008, 400.0);
+    let span = 800.0;
+    let end = radau_states(&start, &gms, span);
+    let reference = Vector3::from(end[2].pos) - Vector3::from(end[0].pos);
+
+    println!("close_encounter_matches_radau: miss 0.02 AU, {span} days");
+    let mut errors = Vec::new();
+    for dt in [40.0, 20.0, 10.0] {
+        let (sim, resolved) = wh_flyby(&start, &gms, dt, span, Some(3.0));
+        let (_, plain) = wh_flyby(&start, &gms, dt, span, None);
+        let err = (resolved - reference).norm();
+        let plain_err = (plain - reference).norm();
+        println!(
+            "  dt = {dt:4.1} d: resolved {err:.3e} AU over {} encounter steps; plain map {plain_err:.3e} AU",
+            sim.close_encounter_steps()
+        );
+        // Every approach within 3 Hill radii was resolved, so none is
+        // recorded as unresolved.
+        assert!(sim.closest_encounter().is_none());
+        assert!(sim.close_encounter_steps() > 0);
+        assert!(
+            err < 1e-2 * plain_err,
+            "resolved encounter is not far better than the plain map"
+        );
+        errors.push(err);
+    }
+    for pair in errors.windows(2) {
+        let order = (pair[0] / pair[1]).log2();
+        println!("  measured order: {order:.3}");
+        assert!((1.7..=2.3).contains(&order), "not second order: {order}");
+    }
+    assert!(
+        errors[2] < 2e-5,
+        "resolved flyby vs Radau too far: {:e}",
+        errors[2]
+    );
+
+    // One step, far from Jupiter, resolved in full: only the Radau tolerance.
+    let end = radau_states(&start, &gms, 20.0);
+    let reference = Vector3::from(end[2].pos) - Vector3::from(end[0].pos);
+    let (_, resolved) = wh_flyby(&start, &gms, 20.0, 20.0, Some(1e6));
+    let err = (resolved - reference).norm();
+    println!("  one step resolved in full: {err:.3e} AU");
+    assert!(
+        err < 1e-12,
+        "a fully resolved step does not match Radau: {err:e}"
+    );
+}
+
+/// With encounters enabled but none occurring, the map is unchanged to the bit.
+#[test]
+fn close_encounter_inactive_is_identical() {
+    let (states, gms) = outer_solar_system();
+    let run = |enc: Option<f64>| {
+        // Beyond Neptune, never within 3 of its Hill radii.
+        let particles: Vec<_> = (0..4_u32)
+            .map(|k| {
+                let (pos, vel) = peri_pos_vel(45.0 + 5.0 * f64::from(k), 0.05, 20.0, f64::from(k));
+                make_state(3100 + k, pos, vel)
+            })
+            .collect();
+        let mut sim =
+            WisdomHolman::new(&states, &gms, &particles, &[], 30.0, true, true, true).unwrap();
+        if let Some(k) = enc {
+            sim = sim.with_close_encounters(k).unwrap();
+        }
+        sim.integrate_n_steps(500).unwrap();
+        (
+            sim.close_encounter_steps(),
+            sim.test_particle_heliocentric(),
+        )
+    };
+    let (steps, with) = run(Some(3.0));
+    let (_, without) = run(None);
+    assert_eq!(steps, 0);
+    for (a, b) in with.iter().zip(&without) {
+        assert_eq!(a.0, b.0);
+        assert_eq!(a.1, b.1);
+    }
+}
+
+/// A particle falling straight into Jupiter from 0.5 AU is removed as a
+/// planet impact in the step it reaches the planet; a nonpositive radius is
+/// rejected.
+#[test]
+fn close_encounter_planet_impact() {
+    let jup = planet(5, 5.20260, 0.04849, 1.303, 3.3);
+    let (jpos, jvel) = (Vector3::from(jup.pos), Vector3::from(jup.vel));
+    let jup = State::new(Desig::Naif(5), jup.epoch, jup.pos, jup.vel, SSB);
+    let offset = Vector3::new(0.3, -0.4, 0.0);
+    let tp = make_state(7001, jpos + offset, jvel - offset * 0.016);
+    let (fpos, fvel) = peri_pos_vel(2.5, 0.1, 5.0, 1.0);
+    let far = make_state(7002, fpos, fvel);
+    let run = |particles: &[State<Ecliptic, SSB>]| {
+        let mut sim = WisdomHolman::new(
+            &[sun(), jup.clone()],
+            &[GMS, gm(5)],
+            particles,
+            &[],
+            20.0,
+            false,
+            false,
+            false,
+        )
+        .unwrap()
+        .with_close_encounters(3.0)
+        .unwrap();
+        sim.integrate_n_steps(5).unwrap();
+        sim
+    };
+    let sim = run(&[tp, far.clone()]);
+    let lost = sim.lost_particles();
+    println!("close_encounter_planet_impact: lost {lost:?}");
+    assert_eq!(lost.len(), 1);
+    assert_eq!(lost[0].reason, LostReason::PlanetImpact);
+    // Falls in at 0.008 AU/day plus Jupiter's pull: about two months. The
+    // impact is recorded when it happens, not at the start of its step.
+    let days = lost[0].epoch.jd() - J2000;
+    assert!((40.0..=80.0).contains(&days));
+    assert!(
+        (days / 20.0).fract().abs() > 1e-6,
+        "impact at a step start: {days}"
+    );
+    // The particle after it in the arrays is untouched by the removal.
+    assert_eq!(sim.test_particle_desigs(), &[Desig::Perm(7002)]);
+    let alone = run(&[far]);
+    assert_eq!(
+        sim.test_particle_heliocentric(),
+        alone.test_particle_heliocentric()
+    );
+
+    let (states, gms) = outer_solar_system();
+    let sim = WisdomHolman::new(&states, &gms, &[], &[], 30.0, false, false, false).unwrap();
+    assert!(sim.clone().with_close_encounters(0.0).is_err());
+    assert!(sim.with_close_encounters(f64::NAN).is_err());
+}
+
+/// Steps resolved in full carry the same physics as the map: with GR, J2 and
+/// each kind of non-gravitational force, particles whose every step goes through Radau follow a
+/// fine-step run of the plain map far more closely than a plain run at the
+/// same step does. A term missing or wrong in the encounter path would
+/// instead leave a difference of the size of that term.
+#[test]
+fn close_encounter_physics_matches_map() {
+    let gms = [GMS, gm(5)];
+    let bodies = to_com_frame(&[sun(), planet(5, 5.20260, 0.04849, 1.303, 3.3)], &gms);
+    let jpl = ParameterMask::all_fixed(
+        NonGravKind::JplComet(JplCometNonGrav::new(1.0, 1.0, 2.0, 1.0, 0.0, 0.0)),
+        vec![2e-8, -1e-8, 5e-9],
+    )
+    .unwrap();
+    let non_gravs = vec![
+        None,
+        Some(dust(0.05)),
+        Some(yark_raw(
+            1e-3,
+            0.5,
+            Vector3::new(0.3, -0.2, 0.9).normalize(),
+        )),
+        Some(jpl),
+    ];
+    let particles: Vec<_> = (0..4_u32)
+        .map(|k| {
+            let (pos, vel) = peri_pos_vel(2.5 + 0.3 * f64::from(k), 0.15, 8.0, 1.3 * f64::from(k));
+            make_state(7100 + k, pos, vel)
+        })
+        .collect();
+    let span = 400.0;
+    let run = |dt: f64, encounters: bool| {
+        let mut sim =
+            WisdomHolman::new(&bodies, &gms, &particles, &non_gravs, dt, true, true, false)
+                .unwrap();
+        if encounters {
+            sim = sim.with_close_encounters(1e6).unwrap();
+        }
+        sim.integrate_to(Time::new(J2000 + span)).unwrap();
+        assert_eq!(
+            sim.close_encounter_steps(),
+            if encounters { 4 * 50 } else { 0 }
+        );
+        let sun_end = sim.massive_states()[0].clone();
+        sim.test_particle_states()
+            .iter()
+            .map(|s| heliocentric(s, &sun_end).0)
+            .collect::<Vec<_>>()
+    };
+    let fine = run(0.25, false);
+    let plain = run(8.0, false);
+    let resolved = run(8.0, true);
+    println!("close_encounter_physics_matches_map: {span} days, dt = 8 d vs fine map");
+    for k in 0..4 {
+        let err_plain = (plain[k] - fine[k]).norm();
+        let err_resolved = (resolved[k] - fine[k]).norm();
+        println!("  particle {k}: plain {err_plain:.3e} AU, resolved {err_resolved:.3e} AU");
+        assert!(
+            err_resolved < 0.1 * err_plain,
+            "particle {k}: resolved steps do not follow the map's physics"
+        );
+    }
+}
+
+/// Integrating back through the flyby recovers the start: the resolved
+/// steps, the planet paths and the detection all hold for a negative step.
+#[test]
+fn close_encounter_backward() {
+    let (start, gms) = jupiter_flyby(0.02, 0.008, 400.0);
+    let span = 800.0;
+    let end = radau_states(&start, &gms, span);
+    let reference = Vector3::from(start[2].pos) - Vector3::from(start[0].pos);
+    let mut errors = Vec::new();
+    for dt in [-40.0, -20.0, -10.0] {
+        let (sim, back) = wh_flyby(&end, &gms, dt, -span, Some(3.0));
+        let err = (back - reference).norm();
+        println!("close_encounter_backward: dt = {dt}: {err:.3e} AU");
+        assert!(sim.close_encounter_steps() > 0);
+        errors.push(err);
+    }
+    for pair in errors.windows(2) {
+        let order = (pair[0] / pair[1]).log2();
+        assert!((1.7..=2.3).contains(&order), "not second order: {order}");
+    }
+}
+
+/// A particle temporarily captured by Jupiter (0.005 AU at 0.008 AU/day, so
+/// within the encounter radius at both ends of every call) is as accurate
+/// with the symplectic corrector enabled as without it, even with one step
+/// per call: the corrector leaves it out and moves it with Jupiter.
+#[test]
+fn close_encounter_with_correctors() {
+    let (start, gms) = jupiter_flyby(0.005, 0.008, 200.0);
+    let span = 400.0;
+    let end = radau_states(&start, &gms, span);
+    let reference = Vector3::from(end[2].pos) - Vector3::from(end[0].pos);
+    let error = |use_correctors: bool, per_call: u64| {
+        let mut sim = WisdomHolman::new(
+            &start[..2],
+            &gms[..2],
+            &start[2..],
+            &[],
+            10.0,
+            false,
+            false,
+            use_correctors,
+        )
+        .unwrap()
+        .with_close_encounters(3.0)
+        .unwrap();
+        for _ in 0..(40 / per_call) {
+            sim.integrate_n_steps(per_call).unwrap();
+        }
+        let helio = heliocentric(&sim.test_particle_states()[0], &sim.massive_states()[0]).0;
+        (helio - reference).norm()
+    };
+    let off = error(false, 40);
+    println!("close_encounter_with_correctors: corrector off {off:.3e} AU");
+    for per_call in [40, 1] {
+        let on = error(true, per_call);
+        println!("  corrector on, {per_call} steps per call: {on:.3e} AU");
+        assert!(
+            on < 2.0 * off,
+            "the corrector damages the captured particle"
+        );
+    }
+}
+
+/// The solar J2 term in a resolved step has the effect it has in the map:
+/// for a particle at 0.3 AU, the change J2 makes over 400 days is the same
+/// with every step resolved as in a fine-step run of the plain map.
+#[test]
+fn close_encounter_j2_matches_map() {
+    let gms = [GMS, gm(5)];
+    let bodies = to_com_frame(&[sun(), planet(5, 5.20260, 0.04849, 1.303, 3.3)], &gms);
+    let (pos, vel) = peri_pos_vel(0.3, 0.1, 20.0, 0.4);
+    let tp = [make_state(7200, pos, vel)];
+    let run = |dt: f64, include_j2: bool, resolve: bool| {
+        let mut sim =
+            WisdomHolman::new(&bodies, &gms, &tp, &[], dt, false, include_j2, false).unwrap();
+        if resolve {
+            sim = sim.with_close_encounters(1e6).unwrap();
+        }
+        sim.integrate_to(Time::new(J2000 + 400.0)).unwrap();
+        heliocentric(&sim.test_particle_states()[0], &sim.massive_states()[0]).0
+    };
+    let map_effect = run(0.05, true, false) - run(0.05, false, false);
+    let resolved_effect = run(2.0, true, true) - run(2.0, false, true);
+    let rel = (resolved_effect - map_effect).norm() / map_effect.norm();
+    println!(
+        "close_encounter_j2_matches_map: J2 moves the particle {:.3e} AU; resolved differs by {rel:.2e} of it",
+        map_effect.norm()
+    );
+    assert!(rel < 1e-2, "J2 in resolved steps differs from the map's");
+}
+
+/// A flyby that turns an inbound particle outward is not a perihelion
+/// passage: Jupiter turns this one onto an orbit with perihelion inside the
+/// bound (about 4 AU), but its distance from the Sun never drops below
+/// about 4.94 AU, so it is kept.
+#[test]
+fn close_encounter_flyby_is_not_a_perihelion() {
+    let gms = [GMS, gm(5), 0.0];
+    let jup = planet(5, 5.20260, 0.04849, 1.303, 3.3);
+    let (jpos, jvel) = (Vector3::from(jup.pos), Vector3::from(jup.vel));
+    // Planetocentric periapsis 0.01 AU sunward of Jupiter, moving along the
+    // ecliptic normal, on a hyperbola (e = 1.155) that turns the particle by
+    // 120 degrees: in toward the Sun before, out after.
+    let rp = 0.01;
+    let tp = make_state(
+        7300,
+        jpos - jpos.normalize() * rp,
+        jvel + Vector3::z() * (gm(5) * 2.155 / rp).sqrt(),
+    );
+    let jup = State::new(Desig::Naif(5), jup.epoch, jup.pos, jup.vel, SSB);
+    let start = radau_states(&[sun(), jup, tp], &gms, -40.0);
+    let mut sim = WisdomHolman::new(
+        &start[..2],
+        &gms[..2],
+        &start[2..],
+        &[],
+        20.0,
+        false,
+        false,
+        false,
+    )
+    .unwrap()
+    .with_close_encounters(3.0)
+    .unwrap();
+    sim.set_removal_bounds(Some(4.6), None).unwrap();
+    sim.integrate_n_steps(4).unwrap();
+    assert!(sim.close_encounter_steps() > 0);
+    assert!(
+        sim.lost_particles().is_empty(),
+        "the flyby was taken for a perihelion: {:?}",
+        sim.lost_particles()
+    );
+    let (pos, vel) = heliocentric(&sim.test_particle_states()[0], &sim.massive_states()[0]);
+    let peri = compute_peri_dist(&pos, &vel, GMS);
+    println!("close_encounter_flyby_is_not_a_perihelion: perihelion now {peri:.3} AU");
+    assert!(pos.dot(&vel) > 0.0 && peri < 4.6);
+}
+
+/// The corrector kicks bodies at positions along their orbits that the run
+/// never visits, so it records no approaches: with every encounter step of
+/// this flyby resolved, stepping one step per call with the corrector on
+/// reports none, as with it off.
+#[test]
+fn corrector_records_no_encounters() {
+    let (start, gms) = jupiter_flyby(0.02, 0.008, 400.0);
+    for (use_correctors, per_call) in [(false, 1), (true, 40), (true, 1)] {
+        let mut sim = WisdomHolman::new(
+            &start[..2],
+            &gms[..2],
+            &start[2..],
+            &[],
+            20.0,
+            false,
+            false,
+            use_correctors,
+        )
+        .unwrap()
+        .with_close_encounters(3.0)
+        .unwrap();
+        for _ in 0..(40 / per_call) {
+            sim.integrate_n_steps(per_call).unwrap();
+        }
+        assert!(sim.close_encounter_steps() > 0);
+        assert!(
+            sim.closest_encounter().is_none(),
+            "correctors {use_correctors}, {per_call} steps per call: {:?}",
+            sim.closest_encounter()
+        );
+    }
+}
+
+/// The Earth-Moon barycenter's impact radius is the Earth's, not the span of
+/// the lunar orbit its mass-table entry carries.
+#[test]
+fn close_encounter_emb_radius() {
+    let emb = State::new(
+        Desig::Naif(3),
+        Time::new(J2000),
+        Vector3::new(1.0, 0.0, 0.0),
+        Vector3::new(0.0, (GMS).sqrt(), 0.0),
+        SSB,
+    );
+    let sim = WisdomHolman::new(
+        &[sun(), emb],
+        &[GMS, gm(3)],
+        &[],
+        &[],
+        1.0,
+        false,
+        false,
+        false,
+    )
+    .unwrap();
+    let earth = GravParams::known_masses()
+        .iter()
+        .find(|p| p.naif_id == 399)
+        .unwrap()
+        .radius;
+    assert_eq!(sim.radii, vec![f64::from(earth)]);
+}
+
+/// A registered mass with a radius sets a body's impact radius, ahead of the
+/// mass table; one without a radius falls back to the table.
+#[test]
+fn impact_radius_prefers_registered_masses() {
+    let known = GravParams::known_masses();
+    let table = |id: i32| f64::from(known.iter().find(|p| p.naif_id == id).unwrap().radius);
+    let custom = GravParams::new(2_000_433, 1e-20, 1e-6);
+    assert_eq!(
+        impact_radius(2_000_433, std::slice::from_ref(&custom), known),
+        f64::from(1e-6_f32)
+    );
+    assert_eq!(impact_radius(2_000_433, &[], known), 0.0);
+    let no_radius = GravParams::new(5, gm(5), 0.0);
+    assert_eq!(impact_radius(5, &[no_radius], known), table(5));
+    let bigger = GravParams::new(5, gm(5), 1e-3);
+    assert_eq!(impact_radius(5, &[bigger], known), f64::from(1e-3_f32));
+    assert_eq!(impact_radius(3, &[], known), table(399));
 }
