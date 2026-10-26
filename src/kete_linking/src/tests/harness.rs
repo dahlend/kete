@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use kete_core::Band;
-use kete_core::ephemeris::Ephemeris;
+use kete_core::ephemeris::EphemerisSource;
 use kete_core::frames::{Equatorial, SSB, Vector};
 use kete_core::prelude::State;
 use kete_core::propagation::NBody;
@@ -26,7 +26,7 @@ use crate::{
     Candidate, ConfirmRules, Confirmed, DEPTH_STEP, LinkSettings, MIN_ALIGNMENT, RATE_STEP,
     SearchSettings, Sight, confirm, form_units, hypothesis_grid, link, sight_from_observation,
 };
-use kete_spice::prelude::SpiceEphemeris;
+use kete_spice::prelude::{SpiceEphemeris, SpiceFrames};
 use kete_spice::test_data::ensure_test_spk;
 use rayon::prelude::*;
 
@@ -223,6 +223,7 @@ impl Sky {
     /// Sun, indexed by object and then exposure.
     fn n_body(&self, objects: &[SunState]) -> Vec<Vec<SunState>> {
         let eph = SpiceEphemeris::loaded().unwrap();
+        let frames = SpiceFrames::loaded().unwrap();
         objects
             .par_iter()
             .map(|object| {
@@ -232,7 +233,7 @@ impl Sky {
                     .map(|&(_, days)| {
                         let moved = start
                             .clone()
-                            .propagate_with(&NBody::new(&eph, false), reference() + days)
+                            .propagate_with(&NBody::new(&eph, &frames, false), reference() + days)
                             .unwrap();
                         eph.spk().try_to_sun(moved).unwrap()
                     })

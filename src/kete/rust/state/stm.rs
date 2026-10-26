@@ -5,6 +5,7 @@
 use kete_core::prelude::*;
 use kete_core::propagation::compute_state_transition;
 use kete_spice::ephemeris::SpiceEphemeris;
+use kete_spice::frames::SpiceFrames;
 use kete_spice::spk::LOADED_SPK;
 use nalgebra::DMatrix;
 use pyo3::{PyResult, Python, pyfunction};
@@ -80,7 +81,8 @@ pub fn compute_stm_py(
 
     let (final_state_ssb, sens) = py.detach(|| {
         let eph = SpiceEphemeris::loaded()?;
-        compute_state_transition(&eph, &ssb_state, jd, include_asteroids, non_grav)
+        let frames = SpiceFrames::loaded()?;
+        compute_state_transition(&eph, &frames, &ssb_state, jd, include_asteroids, non_grav)
     })?;
 
     // Re-center back to original center
@@ -98,6 +100,7 @@ pub fn compute_stm_py(
         PyFrames::Ecliptic => Equatorial::rotation_to_frame::<Ecliptic>(),
         PyFrames::Galactic => Equatorial::rotation_to_frame::<Galactic>(),
         PyFrames::FK4 => Equatorial::rotation_to_frame::<FK4>(),
+        PyFrames::B1950 => Equatorial::rotation_to_frame::<B1950>(),
     };
     let mut block = DMatrix::<f64>::identity(6, 6);
     block.view_mut((0, 0), (3, 3)).copy_from(rot.matrix());

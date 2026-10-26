@@ -11,7 +11,6 @@ from functools import cache
 
 from .._core import DebiasTable, _get_observatory_stats
 from ..cache import download_file
-from ..vector import State
 
 # Default JPL distribution. EFCC18 (26 catalogs, Gaia-DR2 reference).
 _DEBIAS_URL = "https://ssd.jpl.nasa.gov/ftp/ssd/debias/debias_2018.tgz"
@@ -112,35 +111,6 @@ def _over_obs_reweight_factors(
         n = counts[(code, night)]
         factors.append(math.sqrt(n / n_max) if n > n_max else 1.0)
     return factors
-
-
-def _ground_observer(
-    jd: float, geodetic_lat: float, geodetic_lon: float, height_km: float, name: str
-) -> State:
-    """Return the SSB-centered equatorial state of a site on the Earth at ``jd``.
-
-    ``jd`` is TDB. The Earth orientation comes from the loaded PCK kernels. Where
-    they do not cover ``jd``, as before 1962 for the default kernel, it comes
-    from :func:`~kete.spice.approx_earth_pos_to_ecliptic`. That model has no
-    polar motion and uses a model of Delta T, so it is less accurate than the
-    kernels.
-
-    Raises
-    ------
-    ValueError
-        If the loaded planetary ephemeris does not cover ``jd``.
-    """
-    from .. import spice
-
-    try:
-        state = spice.earth_pos_to_ecliptic(
-            jd, geodetic_lat, geodetic_lon, height_km, name=name, center=0
-        )
-    except ValueError:
-        state = spice.approx_earth_pos_to_ecliptic(
-            jd, geodetic_lat, geodetic_lon, height_km, name=name
-        ).change_center(0)
-    return state.as_equatorial
 
 
 def _time_sigma_for_obs(note2: str, year: float) -> tuple[float, float]:

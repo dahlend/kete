@@ -12,18 +12,18 @@
 //!
 //! - [`vars`] parses a text kernel into its variables.
 //! - [`sclk`] builds the spacecraft clocks from the variables.
-//! - [`fk`] builds the frame definitions of frames kernels.
-//! - [`pck`] builds the body orientation models of text PCK kernels.
+//! - `fk` builds the frame definitions of frames kernels.
+//! - `pck` builds the body orientation models of text PCK kernels.
 //! - [`ik`] reads the field of view definitions of instrument kernels.
-//! - [`mk`] reads the list of kernels of a meta-kernel.
+//! - `mk` reads the list of kernels of a meta-kernel.
 //!
 //! [`TextKernels`] builds the clocks, frame definitions and body models when a
 //! kernel loads, from all variables loaded so far.
 
-pub mod fk;
+pub(crate) mod fk;
 pub mod ik;
-pub mod mk;
-pub mod pck;
+pub(crate) mod mk;
+pub(crate) mod pck;
 pub mod sclk;
 pub mod vars;
 
@@ -32,8 +32,9 @@ pub use vars::{TextKernelValue, TextKernelVars};
 use crate::frames::{self, FrameDef};
 use crossbeam::sync::ShardedLock;
 use kete_core::errors::{Error, KeteResult};
-use kete_core::frames::FrameId;
-use pck::{BodyRotation, body_rotations};
+use kete_core::frames::BodyRotation;
+use kete_core::frames::DynFrameId;
+use pck::body_rotations;
 use sclk::{ClockId, Sclk, clocks_from};
 use std::collections::HashMap;
 
@@ -45,14 +46,15 @@ use std::collections::HashMap;
 pub struct TextKernels {
     vars: TextKernelVars,
     clocks: HashMap<ClockId, KeteResult<Sclk>>,
-    frames: HashMap<FrameId, KeteResult<FrameDef>>,
+    frames: HashMap<DynFrameId, KeteResult<FrameDef>>,
     bodies: HashMap<i32, KeteResult<BodyRotation>>,
 }
 
 impl TextKernels {
     /// Load a text kernel, such as a frames or SCLK kernel.
     ///
-    /// The variables of a meta-kernel load, except [`mk::META_KERNEL_VARS`].
+    /// The variables of a meta-kernel load, except `KERNELS_TO_LOAD`,
+    /// `PATH_SYMBOLS` and `PATH_VALUES`.
     /// The kernels it lists do not; see [`crate::load_kernels`].
     ///
     /// Nothing from the file loads if this function fails. A malformed clock,
@@ -121,33 +123,22 @@ impl TextKernels {
             .collect()
     }
 
-    /// The definition of frame `id`, or `None` if it is neither built in nor
-    /// defined in a loaded frames kernel.
+    /// The ID of the frame called `name`, matched in upper case.
     ///
-    /// A built-in frame takes precedence over a frames kernel definition.
-    ///
-    /// # Errors
-    /// [`Error::ValueError`] if the frame is of a class kete does not support,
-    /// or its definition is incomplete or malformed.
-    pub fn frame_definition(&self, id: FrameId) -> KeteResult<Option<FrameDef>> {
-        frames::built_in(&self.vars, id)
-            .or_else(|| self.frames.get(&id).cloned())
-            .transpose()
-    }
-
-    /// The ID of the frame called `name`; see [`frames::id_from_name`].
+    /// A built-in frame takes precedence over a frames kernel definition with
+    /// the same name.
     ///
     /// # Errors
     /// [`Error::ValueError`] if no built-in frame or loaded frames kernel has
     /// the name.
-    pub fn frame_id(&self, name: &str) -> KeteResult<FrameId> {
+    pub fn frame_id(&self, name: &str) -> KeteResult<DynFrameId> {
         frames::id_from_name(&self.vars, name)
     }
 
     /// The name of frame `id`, if it is built in or defined in a loaded frames
     /// kernel.
     #[must_use]
-    pub fn frame_name(&self, id: FrameId) -> Option<String> {
+    pub fn frame_name(&self, id: DynFrameId) -> Option<String> {
         frames::frame_name(&self.vars, id)
     }
 
@@ -198,12 +189,31 @@ impl TextKernels {
             .next_back()
     }
 
+    /// The definition of frame `id`, or `None` if it is neither built in nor
+    /// defined in a loaded frames kernel.
+    ///
+    /// A built-in frame takes precedence over a frames kernel definition.
+    ///
+    /// # Errors
+    /// [`Error::ValueError`] if the frame is of a class kete does not support,
+    /// or its definition is incomplete or malformed.
+    pub(crate) fn frame_definition(&self, id: DynFrameId) -> KeteResult<Option<FrameDef>> {
+        // The static inertial frames are built in and have no definition; a frames
+        // kernel does not redefine them.
+        if id.static_rotation_to_equatorial().is_some() {
+            return Ok(None);
+        }
+        frames::built_in(&self.vars, id)
+            .or_else(|| self.frames.get(&id).cloned())
+            .transpose()
+    }
+
     /// The clock ID of the CK frame with class ID `ck_id`; see
     /// [`fk::ck_clock_id`].
     ///
     /// # Errors
     /// [`Error::ValueError`] if `CK_<ck_id>_SCLK` is not one integer.
-    pub fn ck_clock_id(&self, ck_id: i32) -> KeteResult<ClockId> {
+    pub(crate) fn ck_clock_id(&self, ck_id: i32) -> KeteResult<ClockId> {
         fk::ck_clock_id(&self.vars, ck_id)
     }
 
@@ -213,7 +223,7 @@ impl TextKernels {
     /// # Errors
     /// [`Error::ValueError`] if `CK_<ck_id>_SPK` is not one integer, or it is
     /// not set and `ck_id` is above -1000.
-    pub fn ck_spk_id(&self, ck_id: i32) -> KeteResult<i32> {
+    pub(crate) fn ck_spk_id(&self, ck_id: i32) -> KeteResult<i32> {
         fk::ck_spk_id(&self.vars, ck_id)
     }
 }
@@ -242,7 +252,11 @@ mod tests {
              SCLK_DATA_TYPE_88 = ( 1 )\n",
         )
         .unwrap();
-        assert!(text.frame_definition(FrameId(1_400_950)).unwrap().is_some());
+        assert!(
+            text.frame_definition(DynFrameId(1_400_950))
+                .unwrap()
+                .is_some()
+        );
         assert!(
             text.clock(ClockId(-88))
                 .unwrap_err()

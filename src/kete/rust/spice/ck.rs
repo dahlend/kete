@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Dar Dahlen
 // SPDX-License-Identifier: BSD-3-Clause
 
-use kete_spice::frames::try_frame_at;
+use kete_core::frames::FrameSource;
+use kete_spice::frames::SpiceFrames;
 use kete_spice::prelude::LOADED_CK;
 use pyo3::{PyResult, pyfunction};
 
@@ -58,9 +59,13 @@ pub fn ck_sc_frame_to_equatorial(
 ) -> PyResult<(PyTime, PyVector)> {
     // The frame comes back resolved through its chain of reference frames, such as a
     // camera mounted on its spacecraft.
-    let frame = try_frame_at(instrument_id.frame_id()?, jd.0)?;
-    let time = frame.time;
-    let rot = frame.rotation_to_equatorial()?;
+    let frame_id = instrument_id.frame_id()?;
+    let frames = SpiceFrames::loaded()?;
+    let frame = frames.try_frame(frame_id, jd.0)?;
+    let time = frames
+        .ck_pointing_time(frame_id, jd.0)?
+        .unwrap_or(frame.time);
+    let rot = frame.rotation_to_equatorial();
     let pos = rot.transform_vector(&vec.into());
 
     let vec = PyVector::new(pos.into(), PyFrames::Equatorial);
@@ -110,9 +115,13 @@ pub fn ck_sc_equatorial_to_frame(
     let vec = vec.into_vector(PyFrames::Equatorial);
     // The frame comes back resolved through its chain of reference frames, such as a
     // camera mounted on its spacecraft.
-    let frame = try_frame_at(instrument_id.frame_id()?, jd.0)?;
-    let time = frame.time;
-    let rot = frame.rotation_to_equatorial()?;
+    let frame_id = instrument_id.frame_id()?;
+    let frames = SpiceFrames::loaded()?;
+    let frame = frames.try_frame(frame_id, jd.0)?;
+    let time = frames
+        .ck_pointing_time(frame_id, jd.0)?
+        .unwrap_or(frame.time);
+    let rot = frame.rotation_to_equatorial();
     let pos = rot.inverse_transform_vector(&vec.into());
 
     Ok((time.into(), pos.into()))

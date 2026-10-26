@@ -17,7 +17,7 @@ use super::TextKernelVars;
 use super::sclk::ClockId;
 use crate::frames::{FrameDef, frame_name, id_from_name};
 use kete_core::errors::{Error, KeteResult};
-use kete_core::frames::FrameId;
+use kete_core::frames::{DynFrameId, OffsetFrame};
 use nalgebra::{Matrix3, Quaternion, Rotation3, UnitQuaternion, Vector3};
 use std::collections::HashMap;
 use std::f64::consts::PI;
@@ -27,7 +27,7 @@ use std::f64::consts::PI;
 /// # Errors
 /// [`Error::ValueError`] if the frame is of a class kete does not support, or
 /// its definition is incomplete or malformed.
-fn definition(vars: &TextKernelVars, id: FrameId) -> KeteResult<FrameDef> {
+fn definition(vars: &TextKernelVars, id: DynFrameId) -> KeteResult<FrameDef> {
     let class = vars
         .integer(&format!("FRAME_{id}_CLASS"))?
         .ok_or_else(|| Error::ValueError(format!("Frame {id} has no FRAME_{id}_CLASS.")))?;
@@ -72,7 +72,7 @@ fn definition(vars: &TextKernelVars, id: FrameId) -> KeteResult<FrameDef> {
 ///
 /// # Errors
 /// [`Error::ValueError`] if `CK_<ck_id>_SCLK` is not one integer.
-pub fn ck_clock_id(vars: &TextKernelVars, ck_id: i32) -> KeteResult<ClockId> {
+pub(crate) fn ck_clock_id(vars: &TextKernelVars, ck_id: i32) -> KeteResult<ClockId> {
     Ok(ClockId(
         vars.integer(&format!("CK_{ck_id}_SCLK"))?
             .unwrap_or(ck_id / 1000),
@@ -87,7 +87,7 @@ pub fn ck_clock_id(vars: &TextKernelVars, ck_id: i32) -> KeteResult<ClockId> {
 /// # Errors
 /// [`Error::ValueError`] if `CK_<ck_id>_SPK` is not one integer, or it is not
 /// set and `ck_id` is above -1000.
-pub fn ck_spk_id(vars: &TextKernelVars, ck_id: i32) -> KeteResult<i32> {
+pub(crate) fn ck_spk_id(vars: &TextKernelVars, ck_id: i32) -> KeteResult<i32> {
     match vars.integer(&format!("CK_{ck_id}_SPK"))? {
         Some(id) => Ok(id),
         None if ck_id <= -1000 => Ok(ck_id / 1000),
@@ -108,7 +108,7 @@ pub fn ck_spk_id(vars: &TextKernelVars, ck_id: i32) -> KeteResult<i32> {
 /// no ID.
 pub(crate) fn tk_definition(
     vars: &TextKernelVars,
-    id: FrameId,
+    id: DynFrameId,
     name: &str,
     frame_name: Option<&str>,
 ) -> KeteResult<FrameDef> {
@@ -207,7 +207,7 @@ pub(crate) fn tk_definition(
             )));
         }
     };
-    Ok(FrameDef::Tk { relative, rotation })
+    Ok(FrameDef::Tk(OffsetFrame::new(id, rotation, relative)))
 }
 
 /// The definitions of all frames that the frames kernels define.
@@ -215,7 +215,7 @@ pub(crate) fn tk_definition(
 /// There is one definition for each `FRAME_<id>_CLASS` variable. A frame whose
 /// definition is unsupported or malformed keeps its error. The error comes when
 /// the frame is used.
-pub(crate) fn definitions(vars: &TextKernelVars) -> HashMap<FrameId, KeteResult<FrameDef>> {
+pub(crate) fn definitions(vars: &TextKernelVars) -> HashMap<DynFrameId, KeteResult<FrameDef>> {
     vars.names()
         .filter_map(|name| {
             name.strip_prefix("FRAME_")?
@@ -223,7 +223,7 @@ pub(crate) fn definitions(vars: &TextKernelVars) -> HashMap<FrameId, KeteResult<
                 .parse::<i32>()
                 .ok()
         })
-        .map(|id| (FrameId(id), definition(vars, FrameId(id))))
+        .map(|id| (DynFrameId(id), definition(vars, DynFrameId(id))))
         .collect()
 }
 
@@ -262,8 +262,8 @@ pub(crate) mod tests {
     use super::*;
     use crate::text::TextKernels;
 
-    /// A chain of TK frames, one of each specification; the expected rotations
-    /// are from CSPICE `pxform(frame, 'J2000', 0)` for the same text.
+    /// A chain of TK frames, one of each specification, and reference rotations
+    /// for each frame, [`TK_CHAIN_EXPECTED`].
     pub(crate) const TK_CHAIN: &str = r"KPL/FK
 \begindata
 FRAME_TK_MAT = 1400201
@@ -307,8 +307,7 @@ TKFRAME_1400204_ANGLES = ( 3600.0, -7200.0, 360.0 )
 \begintext
 ";
 
-    /// `pxform(name, 'J2000', 0)` from CSPICE N0067 for the frames of
-    /// [`TK_CHAIN`].
+    /// The reference rotations from each frame of [`TK_CHAIN`] to J2000.
     pub(crate) const TK_CHAIN_EXPECTED: [(&str, [[f64; 3]; 3]); 4] = [
         (
             "TK_MAT",
@@ -399,12 +398,12 @@ TKFRAME_1400204_ANGLES = ( 3600.0, -7200.0, 360.0 )
     #[test]
     fn tk_definitions() {
         let frames = loaded(TK_CHAIN);
-        let Some(FrameDef::Tk { relative, rotation }) =
-            frames.frame_definition(FrameId(1_400_202)).unwrap()
-        else {
+        let Some(FrameDef::Tk(tk)) = frames.frame_definition(DynFrameId(1_400_202)).unwrap() else {
             panic!("not a TK frame");
         };
-        assert_eq!(relative, FrameId(1_400_201));
+        assert_eq!(tk.frame, DynFrameId(1_400_202));
+        assert_eq!(tk.reference, DynFrameId(1_400_201));
+        let rotation = tk.rotation;
         // SPICE rotates the axes: [a1]ax1 [a2]ax2 [a3]ax3, with [a]ax a rotation of the
         // axes by a, takes vectors from the TK frame to the relative frame.
         let a = [
@@ -428,7 +427,7 @@ TKFRAME_1400204_ANGLES = ( 3600.0, -7200.0, 360.0 )
              CK_-1000012000_SCLK = -1000012\n",
         );
         assert_eq!(
-            frames.frame_definition(FrameId(-1_000_012_000)).unwrap(),
+            frames.frame_definition(DynFrameId(-1_000_012_000)).unwrap(),
             Some(FrameDef::Ck {
                 class_id: -1_000_012_000,
                 clock_id: ClockId(-1_000_012)
@@ -465,10 +464,13 @@ TKFRAME_1400204_ANGLES = ( 3600.0, -7200.0, 360.0 )
              TKFRAME_1400304_AXES = ( 1 2 4 )\nTKFRAME_1400304_ANGLES = ( 0 0 0 )\n\
              FRAME_1400305_CLASS = 3\n",
         );
-        for id in [1_400_301, 1_400_302, 1_400_303, 1_400_304, 1_400_305, 2, 18] {
-            assert!(frames.frame_definition(FrameId(id)).is_err(), "{id}");
+        for id in [1_400_301, 1_400_302, 1_400_303, 1_400_304, 1_400_305, 4, 19] {
+            assert!(frames.frame_definition(DynFrameId(id)).is_err(), "{id}");
         }
-        assert_eq!(frames.frame_definition(FrameId(1_400_399)).unwrap(), None);
+        assert_eq!(
+            frames.frame_definition(DynFrameId(1_400_399)).unwrap(),
+            None
+        );
     }
 
     /// A missing UNITS means radians.
@@ -479,11 +481,9 @@ TKFRAME_1400204_ANGLES = ( 3600.0, -7200.0, 360.0 )
              TKFRAME_1400401_RELATIVE = 'J2000'\nTKFRAME_1400401_SPEC = 'ANGLES'\n\
              TKFRAME_1400401_AXES = ( 1 2 3 )\nTKFRAME_1400401_ANGLES = ( 0.1 0 0 )\n",
         );
-        let Some(FrameDef::Tk { rotation, .. }) =
-            frames.frame_definition(FrameId(1_400_401)).unwrap()
-        else {
+        let Some(FrameDef::Tk(tk)) = frames.frame_definition(DynFrameId(1_400_401)).unwrap() else {
             panic!("not a TK frame");
         };
-        assert!((rotation.angle() - 0.1).abs() < 1e-15);
+        assert!((tk.rotation.angle() - 0.1).abs() < 1e-15);
     }
 }

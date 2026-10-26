@@ -51,7 +51,7 @@ use crate::prepend_by_precedence;
 use kete_core::cache::cache_path;
 use kete_core::desigs::{NaifId, naif_ids_from_name, try_name_from_id};
 use kete_core::errors::Error;
-use kete_core::frames::{DynCenter, InertialFrame, SSB, SunCenter};
+use kete_core::frames::{DynCenter, SSB, StaticFrame, SunCenter};
 use kete_core::prelude::KeteResult;
 use kete_core::state::State;
 use kete_core::time::{TDB, Time};
@@ -99,7 +99,7 @@ impl SpkCollection {
     /// # Errors
     /// Fails when the id or jd is not found in the [`SpkCollection`].
     #[inline(always)]
-    pub fn try_get_state<T: InertialFrame>(&self, id: i32, jd: Time<TDB>) -> KeteResult<State<T>> {
+    pub fn try_get_state<T: StaticFrame>(&self, id: i32, jd: Time<TDB>) -> KeteResult<State<T>> {
         self.best_segment(id, jd)
             .ok_or_else(|| {
                 Error::Bounds(format!(
@@ -138,7 +138,7 @@ impl SpkCollection {
     /// # Errors
     /// Fails when the id or jd is not found in the [`SpkCollection`].
     #[inline(always)]
-    pub fn try_get_state_with_center<T: InertialFrame>(
+    pub fn try_get_state_with_center<T: StaticFrame>(
         &self,
         id: i32,
         jd: Time<TDB>,
@@ -164,7 +164,7 @@ impl SpkCollection {
     /// - `Error::ValueError` if the segments form a cycle, or if a chain does
     ///   not end within `MAX_CHAIN` bodies.
     /// - The error of a segment evaluation that fails on the path.
-    pub fn try_change_center<T: InertialFrame>(
+    pub fn try_change_center<T: StaticFrame>(
         &self,
         state: &mut State<T>,
         new_center: i32,
@@ -284,7 +284,7 @@ impl SpkCollection {
     ///
     /// # Errors
     /// Fails when the required NAIF lookups are not available in the loaded SPKs.
-    pub fn try_to_ssb<T: InertialFrame>(
+    pub fn try_to_ssb<T: StaticFrame>(
         &self,
         state: impl Into<State<T, DynCenter>>,
     ) -> KeteResult<State<T, SSB>> {
@@ -300,7 +300,7 @@ impl SpkCollection {
     ///
     /// # Errors
     /// Fails when the required NAIF lookups are not available in the loaded SPKs.
-    pub fn try_to_sun<T: InertialFrame>(
+    pub fn try_to_sun<T: StaticFrame>(
         &self,
         state: impl Into<State<T, DynCenter>>,
     ) -> KeteResult<State<T, SunCenter>> {

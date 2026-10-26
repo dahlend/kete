@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 use kete_core::errors::Error;
-use kete_core::frames::FrameId;
+use kete_core::frames::DynFrameId;
 use kete_spice::prelude::LOADED_TEXT_KERNELS;
 use pyo3::{FromPyObject, PyResult, pyfunction};
 
@@ -23,9 +23,9 @@ impl FrameLike {
     /// # Errors
     /// `ValueError` if no frame has the name, or the text kernels cannot be
     /// read.
-    pub fn frame_id(&self) -> PyResult<FrameId> {
+    pub fn frame_id(&self) -> PyResult<DynFrameId> {
         match self {
-            Self::Id(id) => Ok(FrameId(*id)),
+            Self::Id(id) => Ok(DynFrameId(*id)),
             Self::Name(name) => Ok(LOADED_TEXT_KERNELS
                 .try_read()
                 .map_err(|_| Error::LockFailed)?

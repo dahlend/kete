@@ -16,7 +16,7 @@ use crate::{
     Candidate, ConfirmRules, SearchPass, SearchSettings, Sight, confirm, search,
     sight_from_observation,
 };
-use kete_spice::prelude::SpiceEphemeris;
+use kete_spice::prelude::{SpiceEphemeris, SpiceFrames};
 
 use super::harness::{
     CLUTTER, MAX_RMS, SPAN, Score, Search, Sky, earth, nightly, on_threads, optical, run,
@@ -41,9 +41,10 @@ fn all_whole(score: &Score, objects: usize) -> bool {
 /// `days` from it, about the Sun.
 fn moved(object: &SunState, days: f64) -> SunState {
     let eph = SpiceEphemeris::loaded().unwrap();
+    let frames = SpiceFrames::loaded().unwrap();
     let start = eph.spk().try_to_ssb(object.clone()).unwrap();
     let state = start
-        .propagate_with(&NBody::new(&eph, false), reference() + days)
+        .propagate_with(&NBody::new(&eph, &frames, false), reference() + days)
         .unwrap();
     eph.spk().try_to_sun(state).unwrap()
 }

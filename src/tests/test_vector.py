@@ -48,6 +48,17 @@ class TestVector:
             assert x.rotate_around(z, theta).rotate_around(z, -theta) == x
             assert x.rotate_around(z, theta) == x.rotate_around(-z, -theta)
 
+    def test_b1950(self):
+        # The x axis of B1950 on equatorial axes.
+        x = Vector([1, 0, 0], Frames.B1950).as_equatorial
+        assert np.allclose(
+            x, [0.9999257079523629, 0.01117893812642769, 0.0048590038414544285]
+        )
+        v = Vector([0.3, -0.2, 0.9], Frames.Equatorial)
+        b1950 = v.change_frame(Frames.B1950)
+        assert b1950.frame == Frames.B1950
+        assert np.allclose(b1950.as_equatorial, v)
+
     @pytest.mark.parametrize("el", np.linspace(0.001, 90 - 0.001, 4))
     @pytest.mark.parametrize("az", np.linspace(0.001, 180 - 0.001, 4))
     def test_el_az_range(self, el, az):

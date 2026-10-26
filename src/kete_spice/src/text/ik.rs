@@ -35,7 +35,7 @@ use super::TextKernelVars;
 use super::fk::angle_unit;
 use crate::frames::id_from_name;
 use kete_core::errors::{Error, KeteResult};
-use kete_core::frames::FrameId;
+use kete_core::frames::DynFrameId;
 use nalgebra::Vector3;
 
 /// The shape of a field of view.
@@ -64,7 +64,7 @@ pub struct InstrumentFov {
     pub frame_name: String,
 
     /// The SPICE frame ID of the frame of the vectors.
-    pub frame: FrameId,
+    pub frame: DynFrameId,
 
     /// The boresight vector, as the kernel gives it.
     pub boresight: Vector3<f64>,
@@ -328,7 +328,7 @@ INS-9002_FOV_ANGLE_UNITS = 'ARCMINUTES'
         let vars = vars(ANGLES_IK);
         for (id, expected) in ANGLES_EXPECTED {
             let fov = instrument_fov(&vars, id).unwrap();
-            assert_eq!(fov.frame, FrameId::J2000);
+            assert_eq!(fov.frame, DynFrameId::J2000);
             assert_eq!(fov.bounds.len(), expected.len());
             for (got, want) in fov.bounds.iter().zip(expected) {
                 let err = (got - Vector3::from(*want)).abs().max();
@@ -348,7 +348,7 @@ INS-9002_FOV_ANGLE_UNITS = 'ARCMINUTES'
         );
         let fov = instrument_fov(&vars, -9010).unwrap();
         assert_eq!(fov.shape, FovShape::Polygon);
-        assert_eq!(fov.frame, FrameId::ECLIPJ2000);
+        assert_eq!(fov.frame, DynFrameId::ECLIPJ2000);
         assert_eq!(fov.bounds[1], Vector3::new(0.0, 1.0, 5.0));
     }
 

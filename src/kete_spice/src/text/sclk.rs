@@ -18,7 +18,7 @@ use kete_core::{
 ///
 /// The variables of a clock carry the absolute value of the ID in their names,
 /// such as `SCLK01_COEFFICIENTS_226`. A CK frame names its clock by
-/// `CK_<id>_SCLK` (see [`crate::text::fk::ck_clock_id`]).
+/// `CK_<id>_SCLK`, or else by its class ID divided by 1000.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ClockId(pub i32);
 

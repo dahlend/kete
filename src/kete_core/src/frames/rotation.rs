@@ -108,9 +108,9 @@ pub fn euler_rotation<const E1: char, const E2: char, const E3: char>(
     angles: &[f64; 3],
     rates: &[f64; 3],
 ) -> (Rotation3<f64>, Matrix3<f64>) {
-    let r_e1 = rotation::<E1>(angles[0]);
-    let r_e2 = rotation::<E2>(angles[1]);
-    let r_e3 = rotation::<E3>(angles[2]);
+    let r_e1 = axis_rotation::<E1>(angles[0]);
+    let r_e2 = axis_rotation::<E2>(angles[1]);
+    let r_e3 = axis_rotation::<E3>(angles[2]);
     let dr_e1 = rotation_derivative::<E1>(angles[0]);
     let dr_e2 = rotation_derivative::<E2>(angles[1]);
     let dr_e3 = rotation_derivative::<E3>(angles[2]);
@@ -170,7 +170,7 @@ fn rotation_derivative<const E: char>(angle: f64) -> Matrix3<f64> {
 
 /// Construct a rotation around the specified axis.
 #[inline(always)]
-fn rotation<const E: char>(angle: f64) -> Rotation3<f64> {
+pub(super) fn axis_rotation<const E: char>(angle: f64) -> Rotation3<f64> {
     let axis: [f64; 3] = const { char_to_vector::<E>() };
     Rotation3::from_axis_angle(&Unit::new_unchecked(Vector3::from(axis)), angle)
 }

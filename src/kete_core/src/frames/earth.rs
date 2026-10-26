@@ -11,35 +11,15 @@ use std::f64::consts::TAU;
 use crate::{
     constants::AU_KM,
     desigs::Desig,
-    errors::KeteResult,
+    errors::{Error, KeteResult},
     state::State,
     time::{TDB, Time, UTC},
 };
 
-use super::{Ecliptic, Equatorial, FrameId, NonInertialFrame};
+use super::{DynFrameId, Ecliptic, Equatorial, FrameSource, InstantFrame};
 
 /// Earth semi major axis in km as defined by WGS84
 pub const EARTH_A: f64 = 6378.1370;
-
-/// Earth semi minor axis in km as defined by WGS84
-const EARTH_B: f64 = 6356.7523142;
-
-// /// Earth inverse flattening as defined by WGS84
-const _EARTH_INV_FLAT: f64 = 298.2572235629972;
-
-/// Earth surface eccentricity squared, calculated from above.
-/// e^2 = (2 - flattening) * flattening
-const EARTH_E2: f64 = 0.0066943799901413165;
-
-/// Ecliptic obliquity angle in radians at the J2000 epoch. This is using the definition
-/// from the 1984 JPL DE Series. These constants allow the conversion between Ecliptic
-/// and Equatorial frames. Note that there are more modern definitions for these values,
-/// however these are used for compatibility with JPL Horizons and Spice.
-///
-/// See:
-///     - <https://en.wikipedia.org/wiki/Axial_tilt#Short_term>
-///     - <https://ssd.jpl.nasa.gov/horizons/manual.html#defs>
-pub(super) const OBLIQUITY: f64 = 0.40909280422232897;
 
 /// Prime vertical radius of curvature.
 /// This is the radius of curvature of the earth surface at the specific geodetic
@@ -156,7 +136,8 @@ pub fn earth_obliquity(jd: Time<TDB>) -> f64 {
 /// the mean equinox of date to the Greenwich meridian.
 ///
 /// The angle is the Earth Rotation Angle plus the accumulated precession in
-/// right ascension. The Earth Rotation Angle uses the UT1 of [`approx_ut1`].
+/// right ascension. The Earth Rotation Angle uses an approximate
+/// UT1: UTC from 1972, and TT minus [`approx_delta_t`] before.
 /// The precession term uses TDB, and it matches [`earth_precession_rotation`].
 /// The two expressions are equations (5.14) and (5.32) of Chapter 5 of:
 ///
@@ -179,37 +160,6 @@ pub fn greenwich_mean_sidereal_time(time: Time<TDB>) -> f64 {
     (era + (precession / 3600.0).to_radians()).rem_euclid(TAU)
 }
 
-/// Approximate UT1 as a Julian Date.
-///
-/// From 1972, when UTC began to track UT1 through leap seconds, UTC is used, as
-/// the two differ by less than a second. After the last leap second known to
-/// kete, UT1 is taken to follow UTC.
-///
-/// Before 1972, UT1 is TT minus the Delta T of [`approx_delta_t`]. TDB is used
-/// in place of TT, which it matches to within 2 milliseconds.
-///
-/// # Arguments
-/// * `time` - Time in TDB scaled Julian Days.
-///
-#[must_use]
-pub fn approx_ut1(time: Time<TDB>) -> f64 {
-    let (days, frac) = ut1_parts(time);
-    days + frac
-}
-
-/// [`approx_ut1`] as whole days and a fraction of a day, see [`Time::jd_parts`].
-fn ut1_parts(time: Time<TDB>) -> (f64, f64) {
-    // 1972-01-01 UTC, the start of UTC with leap seconds. The comparison is made in
-    // TDB, since UTC before 1972 is taken to equal TAI and its labels step back at
-    // that date.
-    const LEAP_SECOND_START_JD: f64 = 2441317.5;
-    if time >= Time::<UTC>::new(LEAP_SECOND_START_JD).tdb() {
-        time.utc().jd_parts()
-    } else {
-        (time - approx_delta_t(time) / 86400.0).jd_parts()
-    }
-}
-
 /// Approximate Delta T, TT - UT1, in seconds.
 ///
 /// These are the polynomial expressions of Espenak and Meeus (Five Millennium
@@ -218,8 +168,8 @@ fn ut1_parts(time: Time<TDB>) -> (f64, f64) {
 /// Delta T is poorly known before the telescopic era, and its uncertainty
 /// grows rapidly before 1600. From 2005 onward the expressions are the
 /// canon's predictions made in 2006, not observations, and they have since
-/// drifted from the measured Earth rotation; [`approx_ut1`] uses UTC instead
-/// of this from 1972.
+/// drifted from the measured Earth rotation, so
+/// [`greenwich_mean_sidereal_time`] uses UTC instead of this from 1972.
 ///
 /// # Arguments
 /// * `time` - Time in TDB scaled Julian Days.
@@ -315,8 +265,8 @@ pub fn approx_delta_t(time: Time<TDB>) -> f64 {
 ///
 /// The paper also gives corrections to the IAU 1976 precession and a frame
 /// bias. This function does not apply them. [`earth_precession_rotation`] is
-/// the IAU 2006 precession, which needs no correction. [`approx_earth_frame`]
-/// and [`teme_frame`] apply the frame bias.
+/// the IAU 2006 precession, which needs no correction. The approximate Earth
+/// frame of [`earth_frame`] and [`teme_frame`] apply the frame bias.
 #[must_use]
 pub fn earth_nutation(time: Time<TDB>) -> (f64, f64) {
     // Julian centuries from J2000.
@@ -355,22 +305,6 @@ pub fn earth_nutation(time: Time<TDB>) -> (f64, f64) {
     )
 }
 
-/// Compute the frame bias from the mean equator and equinox of J2000 to ICRF.
-///
-/// The ICRF is the Equatorial frame of the JPL ephemerides. The rotation is the
-/// inverse of the bias matrix B of equation (4) of the paper cited on
-/// [`earth_precession_rotation`]. The pole offsets are from its equation (15).
-/// The equinox offset is from its equation (12).
-fn frame_bias() -> Rotation3<f64> {
-    let mas = |x: f64| (x / 3.6e6).to_radians();
-    let (xi_0, eta_0, d_alpha_0) = (mas(-16.617), mas(-6.819), mas(-14.6));
-    // The paper gives B = R1(-eta_0) R2(xi_0) R3(d_alpha_0) as rotations of the
-    // frame. This is the inverse of B, as rotations of the vector.
-    Rotation3::from_axis_angle(&Vector3::z_axis(), d_alpha_0)
-        * Rotation3::from_axis_angle(&Vector3::y_axis(), xi_0)
-        * Rotation3::from_axis_angle(&Vector3::x_axis(), -eta_0)
-}
-
 /// Compute the True Equator, Mean Equinox (TEME) frame of date.
 ///
 /// `time` is the time in TDB scaled Julian Days. SGP4 states from two-line
@@ -381,93 +315,72 @@ fn frame_bias() -> Rotation3<f64> {
 /// - The x axis is the mean equinox of date, projected onto the true equator.
 ///
 /// The rotation takes TEME vectors to the Equatorial J2000 frame. It includes
-/// the frame bias to the ICRF. The frame rotates at less than 1e-11 rad/s, and
-/// the frame has no rotation rate.
-pub fn teme_frame(time: Time<TDB>) -> NonInertialFrame {
-    let obliquity = earth_obliquity(time);
-    let (dpsi, deps) = earth_nutation(time);
-    let x_axis = Vector3::x_axis();
-    let z_axis = Vector3::z_axis();
-
-    // True equator and equinox of date to mean equator and equinox of date, then
-    // mean of date to J2000.
-    let nutation = Rotation3::from_axis_angle(&x_axis, obliquity)
-        * Rotation3::from_axis_angle(&z_axis, -dpsi)
-        * Rotation3::from_axis_angle(&x_axis, -(obliquity + deps));
-    let precession = frame_bias() * earth_precession_rotation(time).rotation;
+/// the frame bias to the ICRF. The frame turns at less than 1e-11 rad/s, which
+/// is neglected: its rotation rate is zero, as is usual for SGP4 states.
+pub fn teme_frame(time: Time<TDB>) -> InstantFrame<Equatorial> {
+    let (mean_to_icrf, true_to_icrf, _) = of_date(time);
 
     // The true pole and the mean equinox of date, expressed in J2000.
-    let z = (precession * nutation * Vector3::z()).normalize();
-    let x = precession * Vector3::x();
+    let z = (true_to_icrf * Vector3::z()).normalize();
+    let x = mean_to_icrf * Vector3::x();
     let y = z.cross(&x).normalize();
     let x = y.cross(&z);
     let rotation = Rotation3::from_matrix_unchecked(Matrix3::from_columns(&[x, y, z]));
 
-    NonInertialFrame::from_rotations(time, rotation, None, FrameId::J2000)
+    InstantFrame::from_rotations(
+        time,
+        rotation,
+        Some(Matrix3::zeros()),
+        DynFrameId::UNNAMED,
+        Equatorial {},
+    )
 }
 
-/// Compute the approximate orientation of the Earth-fixed frame.
+/// The orientation of the Earth-fixed frame at `time`, as precise as available.
 ///
-/// `time` is the time in TDB scaled Julian Days. The rotation takes Earth-fixed
-/// vectors, as from [`geodetic_lat_lon_to_ecef`], to the Equatorial J2000
-/// frame. It applies these rotations in order:
+/// This is ITRF93 from `frames`, such as the Earth orientation PCK kernels of
+/// SPICE, where `frames` covers `time`. It includes precession, nutation, UT1 and
+/// polar motion from measured Earth orientation. Elsewhere, it falls back to
+/// an approximate Earth frame, good to about 400 m at the surface after 1972, set by
+/// the difference of UT1 and UTC, and to the accuracy of Delta T before. An empty
+/// [`FrameTable`](super::FrameTable) always gives the approximate frame.
 ///
-/// 1. Greenwich apparent sidereal time about the true pole of date.
-/// 2. The nutation of [`earth_nutation`].
-/// 3. The precession of [`earth_precession_rotation`].
-/// 4. The frame bias to the ICRF.
+/// The approximate frame applies, in order, Greenwich apparent sidereal time about
+/// the true pole of date, the nutation of [`earth_nutation`], the precession of
+/// [`earth_precession_rotation`], and the frame bias to the ICRF. It has no polar
+/// motion, and its rotation rate is the sidereal rotation only. It is
+/// [`teme_frame`] turned by the Greenwich mean sidereal time, up to the
+/// complementary terms of the equation of the equinoxes, a few milliarcseconds.
 ///
-/// The rotation does not include polar motion. The rotation rate includes only
-/// the sidereal rotation. It does not include the rates of precession and
-/// nutation.
-pub fn approx_earth_frame(time: Time<TDB>) -> NonInertialFrame {
-    // Sidereal rotation rate in radians per day. It is the rate of the Earth
-    // Rotation Angle plus the linear precession in right ascension.
-    const SIDEREAL_RATE: f64 =
-        TAU * (1.0 + 0.002_737_811_911_354_48) + 4_612.156_534 / 3600.0 / 36525.0 * (TAU / 360.0);
-
-    let obliquity = earth_obliquity(time);
-    let (dpsi, deps) = earth_nutation(time);
-
-    // Apparent sidereal time adds the equation of the equinoxes and its two
-    // largest complementary terms. The terms are from Table 5.2e of the IERS
-    // Conventions (2010), in arcseconds. The other terms are smaller than the
-    // error of the nutation model.
-    let t = (time - Time::j2000()).elapsed / 36525.0;
-    let node = ((450_160.398_036 - 6_962_890.543_1 * t) / 3600.0).to_radians();
-    let complementary = 0.002_640_96 * node.sin() + 0.000_063_52 * (2.0 * node).sin();
-    let sidereal = greenwich_mean_sidereal_time(time)
-        + dpsi * obliquity.cos()
-        + (complementary / 3600.0).to_radians();
-
-    let x_axis = Vector3::x_axis();
-    let z_axis = Vector3::z_axis();
-
-    // True equator and equinox of date to mean equator and equinox of date,
-    // then to J2000.
-    let nutation = Rotation3::from_axis_angle(&x_axis, obliquity)
-        * Rotation3::from_axis_angle(&z_axis, -dpsi)
-        * Rotation3::from_axis_angle(&x_axis, -(obliquity + deps));
-    let to_j2000 = frame_bias() * earth_precession_rotation(time).rotation * nutation;
-
-    let spin = Rotation3::from_axis_angle(&z_axis, sidereal);
-    let (sin, cos) = sidereal.sin_cos();
-    let spin_rate = Matrix3::new(-sin, -cos, 0.0, cos, -sin, 0.0, 0.0, 0.0, 0.0) * SIDEREAL_RATE;
-
-    NonInertialFrame::from_rotations(
-        time,
-        to_j2000 * spin,
-        Some(to_j2000.matrix() * spin_rate),
-        FrameId::J2000,
-    )
+/// The rotation takes Earth-fixed vectors, as from [`geodetic_lat_lon_to_ecef`], to
+/// the Equatorial frame. The frame has a rotation rate, so it transforms velocities.
+///
+/// # Errors
+/// The errors of `frames` other than [`Error::Bounds`], which reports that it has
+/// no Earth orientation at `time`, and is the case that falls back.
+pub fn earth_frame<S: FrameSource>(
+    time: Time<TDB>,
+    frames: &S,
+) -> KeteResult<InstantFrame<Equatorial>> {
+    match frames.try_frame(DynFrameId::ITRF93, time) {
+        // The approximation stands in for ITRF93, so it carries that frame's ID.
+        Err(Error::Bounds(_)) => Ok(InstantFrame {
+            frame: DynFrameId::ITRF93,
+            ..approx_earth_frame(time)
+        }),
+        frame => frame,
+    }
 }
 
 /// Compute the precession of the mean equator and equinox from J2000 to a date.
 ///
 /// `time` is the time in TDB scaled Julian Days. The rotation takes vectors in
-/// the mean equator and equinox of date to the J2000 Equatorial frame. The
-/// equinox precesses by about 50 arcseconds per year. The rotation does not
-/// include the frame bias.
+/// the mean equator and equinox of date to the mean equator and equinox of
+/// J2000. The equinox precesses by about 50 arcseconds per year.
+///
+/// The rotation does not include the frame bias, so it does not end in the
+/// Equatorial frame (the ICRF), which differs from the mean equator and equinox
+/// of J2000 by about 20 milliarcseconds.
 ///
 /// The angles are the P03 precession angles of equation (40). The IAU adopted
 /// them as the IAU 2006 precession. The source is:
@@ -483,7 +396,8 @@ pub fn approx_earth_frame(time: Time<TDB>) -> NonInertialFrame {
 /// > Lieske, J. H.\\
 /// > Astronomy and Astrophysics, vol. 73, no. 3, Mar. 1979, p. 282-284.
 #[inline(always)]
-pub fn earth_precession_rotation(time: Time<TDB>) -> NonInertialFrame {
+#[must_use]
+pub fn earth_precession_rotation(time: Time<TDB>) -> Rotation3<f64> {
     // centuries since 2000
     let t = (time - Time::j2000()).elapsed / 36525.0;
 
@@ -508,43 +422,40 @@ pub fn earth_precession_rotation(time: Time<TDB>) -> NonInertialFrame {
     let z_axis = Vector3::z_axis();
     // The J2000 to date matrix is R3(-z_A) R2(theta_A) R3(-zeta_A) as rotations
     // of the frame. This is its inverse, as rotations of the vector.
-    let rotation = Rotation3::from_axis_angle(&z_axis, angle_c)
+    Rotation3::from_axis_angle(&z_axis, angle_c)
         * Rotation3::from_axis_angle(&Vector3::y_axis(), angle_b)
-        * Rotation3::from_axis_angle(&z_axis, angle_a);
-
-    NonInertialFrame::from_rotations(time, rotation, None, FrameId::J2000)
+        * Rotation3::from_axis_angle(&z_axis, angle_a)
 }
 
-/// Compute the approximate state of a location on Earth in the Ecliptic frame.
-///
-/// Use this when SPICE is not available, or when the date is outside the Earth
-/// orientation PCK kernels.
+/// Compute the state of a location on Earth in the Ecliptic frame.
 ///
 /// - `time` is the time in TDB scaled Julian Days.
 /// - `geodetic_lat` and `geodetic_lon` are the geodetic latitude and longitude
 ///   in radians.
 /// - `height` is the height above the WGS84 ellipsoid in km.
 /// - `desig` is the designation of the resulting state.
+/// - `frames` is the source of the Earth orientation, see [`earth_frame`].
 ///
-/// The orientation is from [`approx_earth_frame`]. The velocity is the velocity
-/// of the Earth's rotation. Before 1972, the Delta T of [`approx_delta_t`] sets
-/// the accuracy. Delta T is poorly known before 1600.
+/// The orientation is [`earth_frame`]: ITRF93 from `frames` where it covers `time`,
+/// and the approximate Earth frame elsewhere. The velocity is the velocity of the
+/// Earth's rotation.
 ///
 /// The state is centered on the Earth. A Sun centered state also needs the
 /// position of the Earth.
 ///
 /// # Errors
-/// Returns the error of [`NonInertialFrame::to_equatorial`]. The frame of
-/// [`approx_earth_frame`] references the Equatorial frame directly.
-pub fn approx_earth_pos_to_ecliptic(
+/// As [`earth_frame`], and [`Error::ValueError`] if the frame of `frames` has no
+/// rotation rate.
+pub fn earth_pos_to_ecliptic<S: FrameSource>(
     time: Time<TDB>,
     geodetic_lat: f64,
     geodetic_lon: f64,
     height: f64,
     desig: Desig,
+    frames: &S,
 ) -> KeteResult<State<Ecliptic>> {
     let pos = Vector3::from(geodetic_lat_lon_to_ecef(geodetic_lat, geodetic_lon, height)) / AU_KM;
-    let (pos, vel) = approx_earth_frame(time).to_equatorial(pos, [0.0; 3])?;
+    let (pos, vel) = earth_frame(time, frames)?.to_equatorial(pos, Vector3::zeros())?;
     Ok(State::<Equatorial>::new(desig, time, pos, vel, 399).into_frame())
 }
 
@@ -654,6 +565,133 @@ pub fn approx_solar_noon(time: Time<UTC>, geodetic_lon: f64) -> Time<UTC> {
     noon
 }
 
+/// Ecliptic obliquity angle in radians at the J2000 epoch. This is using the definition
+/// from the 1984 JPL DE Series. These constants allow the conversion between Ecliptic
+/// and Equatorial frames. Note that there are more modern definitions for these values,
+/// however these are used for compatibility with JPL Horizons and Spice.
+///
+/// See:
+///     - <https://en.wikipedia.org/wiki/Axial_tilt#Short_term>
+///     - <https://ssd.jpl.nasa.gov/horizons/manual.html#defs>
+pub(super) const OBLIQUITY: f64 = 0.40909280422232897;
+
+/// Compute the approximate orientation of the Earth-fixed frame.
+///
+/// `time` is the time in TDB scaled Julian Days. The rotation takes Earth-fixed
+/// vectors, as from [`geodetic_lat_lon_to_ecef`], to the Equatorial J2000
+/// frame. It applies these rotations in order:
+///
+/// 1. Greenwich apparent sidereal time about the true pole of date.
+/// 2. The nutation of [`earth_nutation`].
+/// 3. The precession of [`earth_precession_rotation`].
+/// 4. The frame bias to the ICRF.
+///
+/// The rotation does not include polar motion. The rotation rate includes only
+/// the sidereal rotation. It does not include the rates of precession and
+/// nutation.
+///
+/// This is [`teme_frame`] turned by the Greenwich mean sidereal time, up to the
+/// complementary terms of the equation of the equinoxes, a few milliarcseconds.
+fn approx_earth_frame(time: Time<TDB>) -> InstantFrame<Equatorial> {
+    // Sidereal rotation rate in radians per day. It is the rate of the Earth
+    // Rotation Angle plus the linear precession in right ascension.
+    const SIDEREAL_RATE: f64 =
+        TAU * (1.0 + 0.002_737_811_911_354_48) + 4_612.156_534 / 3600.0 / 36525.0 * (TAU / 360.0);
+
+    let (_, true_to_icrf, equation_of_equinoxes) = of_date(time);
+
+    // Apparent sidereal time adds the equation of the equinoxes and its two
+    // largest complementary terms. The terms are from Table 5.2e of the IERS
+    // Conventions (2010), in arcseconds. The other terms are smaller than the
+    // error of the nutation model.
+    let t = (time - Time::j2000()).elapsed / 36525.0;
+    let node = ((450_160.398_036 - 6_962_890.543_1 * t) / 3600.0).to_radians();
+    let complementary = 0.002_640_96 * node.sin() + 0.000_063_52 * (2.0 * node).sin();
+    let sidereal = greenwich_mean_sidereal_time(time)
+        + equation_of_equinoxes
+        + (complementary / 3600.0).to_radians();
+
+    let spin = Rotation3::from_axis_angle(&Vector3::z_axis(), sidereal);
+    let (sin, cos) = sidereal.sin_cos();
+    let spin_rate = Matrix3::new(-sin, -cos, 0.0, cos, -sin, 0.0, 0.0, 0.0, 0.0) * SIDEREAL_RATE;
+
+    InstantFrame::from_rotations(
+        time,
+        true_to_icrf * spin,
+        Some(true_to_icrf.matrix() * spin_rate),
+        DynFrameId::UNNAMED,
+        Equatorial {},
+    )
+}
+
+/// Earth semi minor axis in km as defined by WGS84
+const EARTH_B: f64 = 6356.7523142;
+
+/// Earth inverse flattening as defined by WGS84
+const _EARTH_INV_FLAT: f64 = 298.2572235629972;
+
+/// Earth surface eccentricity squared, calculated from above.
+/// e^2 = (2 - flattening) * flattening
+const EARTH_E2: f64 = 0.0066943799901413165;
+
+/// Approximate UT1 as whole days and a fraction of a day, see [`Time::jd_parts`].
+///
+/// From 1972, when UTC began to track UT1 through leap seconds, UTC is used, as
+/// the two differ by less than a second. After the last leap second known to
+/// kete, UT1 is taken to follow UTC.
+///
+/// Before 1972, UT1 is TT minus the Delta T of [`approx_delta_t`]. TDB is used
+/// in place of TT, which it matches to within 2 milliseconds.
+fn ut1_parts(time: Time<TDB>) -> (f64, f64) {
+    // 1972-01-01 UTC, the start of UTC with leap seconds. The comparison is made in
+    // TDB, since UTC before 1972 is taken to equal TAI and its labels step back at
+    // that date.
+    const LEAP_SECOND_START_JD: f64 = 2441317.5;
+    if time >= Time::<UTC>::new(LEAP_SECOND_START_JD).tdb() {
+        time.utc().jd_parts()
+    } else {
+        (time - approx_delta_t(time) / 86400.0).jd_parts()
+    }
+}
+
+/// Compute the frame bias from the mean equator and equinox of J2000 to ICRF.
+///
+/// The ICRF is the Equatorial frame of the JPL ephemerides. The rotation is the
+/// inverse of the bias matrix B of equation (4) of the paper cited on
+/// [`earth_precession_rotation`]. The pole offsets are from its equation (15).
+/// The equinox offset is from its equation (12).
+fn frame_bias() -> Rotation3<f64> {
+    let xi_0 = (-16.617 / 3.6e6_f64).to_radians();
+    let eta_0 = (-6.819 / 3.6e6_f64).to_radians();
+    let d_alpha_0 = (-14.6 / 3.6e6_f64).to_radians();
+    // The paper gives B = R1(-eta_0) R2(xi_0) R3(d_alpha_0) as rotations of the
+    // frame. This is the inverse of B, as rotations of the vector.
+    Rotation3::from_axis_angle(&Vector3::z_axis(), d_alpha_0)
+        * Rotation3::from_axis_angle(&Vector3::y_axis(), xi_0)
+        * Rotation3::from_axis_angle(&Vector3::x_axis(), -eta_0)
+}
+
+/// The rotations from the mean and from the true equator and equinox of date to the
+/// ICRF, and the equation of the equinoxes in radians, at `time` in TDB.
+///
+/// The mean of date is precessed by [`earth_precession_rotation`], then turned by the
+/// frame bias. The true of date adds the nutation of [`earth_nutation`]. The equation
+/// of the equinoxes is the classical `dpsi cos(eps)`, without complementary terms.
+fn of_date(time: Time<TDB>) -> (Rotation3<f64>, Rotation3<f64>, f64) {
+    let obliquity = earth_obliquity(time);
+    let (dpsi, deps) = earth_nutation(time);
+    let x_axis = Vector3::x_axis();
+    let true_to_mean = Rotation3::from_axis_angle(&x_axis, obliquity)
+        * Rotation3::from_axis_angle(&Vector3::z_axis(), -dpsi)
+        * Rotation3::from_axis_angle(&x_axis, -(obliquity + deps));
+    let mean_to_icrf = frame_bias() * earth_precession_rotation(time);
+    (
+        mean_to_icrf,
+        mean_to_icrf * true_to_mean,
+        dpsi * obliquity.cos(),
+    )
+}
+
 /// Table II of the paper cited on [`earth_nutation`], the IAU 2000B series.
 ///
 /// Each term holds the integer multipliers of the five fundamental arguments.
@@ -753,7 +791,8 @@ mod tests {
     #[test]
     fn approx_earth_state_matches_erfa() {
         let time = Time::<TDB>::new(2_460_000.813_7);
-        let state = approx_earth_pos_to_ecliptic(time, 0.5, 0.2, 0.0, Desig::Empty).unwrap();
+        let frames = crate::frames::FrameTable::new();
+        let state = earth_pos_to_ecliptic(time, 0.5, 0.2, 0.0, Desig::Empty, &frames).unwrap();
         let state: State<Equatorial> = state.into_frame();
         let pos = Vector3::from(state.pos) * AU_KM;
         let vel = Vector3::from(state.vel) * AU_KM;
@@ -864,7 +903,7 @@ mod tests {
             ),
         ];
         for (jd, equinox, pole) in cases {
-            let rot = earth_precession_rotation(Time::new(jd)).rotation;
+            let rot = earth_precession_rotation(Time::new(jd));
             let equinox_err = (rot * Vector3::x() - Vector3::from(equinox)).norm();
             let pole_err = (rot * Vector3::z() - Vector3::from(pole)).norm();
             let mas = (1e-3 / 3600.0_f64).to_radians();
@@ -919,6 +958,22 @@ mod tests {
         assert!((rot.determinant() - 1.0).abs() < 1e-14);
     }
 
+    /// The Earth-fixed frame is TEME turned by the Greenwich mean sidereal time, up
+    /// to the complementary terms of the equation of the equinoxes and the second
+    /// order difference between the two constructions of the equinox, a few mas.
+    #[test]
+    fn earth_frame_is_teme_turned_by_gmst() {
+        let mas = (1e-3 / 3600.0_f64).to_radians();
+        for jd in [2_433_000.3, 2_451_545.0, 2_460_500.7, 2_470_000.2] {
+            let time = Time::<TDB>::new(jd);
+            let gmst =
+                Rotation3::from_axis_angle(&Vector3::z_axis(), greenwich_mean_sidereal_time(time));
+            let expected = teme_frame(time).rotation * gmst;
+            let err = (approx_earth_frame(time).rotation.inverse() * expected).angle();
+            assert!(err < 5.0 * mas, "{jd}: {:.2} mas", err / mas);
+        }
+    }
+
     /// The rotation rate is the time derivative of the rotation.
     #[test]
     fn approx_earth_frame_rate_is_derivative() {
@@ -969,8 +1024,56 @@ mod tests {
     #[test]
     fn ut1_is_continuous_at_1972() {
         let jd = 2_441_317.5 + 42.184 / 86400.0;
-        let jump =
-            (approx_ut1(Time::new(jd + 1e-4)) - approx_ut1(Time::new(jd - 1e-4)) - 2e-4) * 86400.0;
+        let ut1 = |jd: f64| {
+            let (days, frac) = ut1_parts(Time::new(jd));
+            days + frac
+        };
+        let jump = (ut1(jd + 1e-4) - ut1(jd - 1e-4) - 2e-4) * 86400.0;
         assert!(jump.abs() < 0.2, "jump of {jump} s");
+    }
+
+    /// A source of Earth frames for [`earth_frame`]: one that covers no time, one
+    /// that gives the identity, and one that fails.
+    enum EarthSource {
+        Uncovered,
+        Identity,
+        Broken,
+    }
+
+    impl FrameSource for EarthSource {
+        fn try_link(&self, frame_id: DynFrameId, time: Time<TDB>) -> KeteResult<InstantFrame> {
+            match self {
+                Self::Uncovered => Err(Error::Bounds(format!("No data for {frame_id}."))),
+                Self::Identity => Ok(InstantFrame::from_rotations(
+                    time,
+                    Rotation3::identity(),
+                    Some(Matrix3::zeros()),
+                    frame_id,
+                    DynFrameId::J2000,
+                )),
+                Self::Broken => Err(Error::ValueError("Malformed kernel.".into())),
+            }
+        }
+    }
+
+    /// The Earth frame comes from the source where it covers the time, falls back
+    /// to the approximate frame where it does not, and keeps any other error.
+    #[test]
+    fn earth_frame_falls_back_where_not_covered() {
+        let time = Time::<TDB>::new(2_460_000.5);
+        let from_source = earth_frame(time, &EarthSource::Identity).unwrap();
+        assert_eq!(from_source.rotation, Rotation3::identity());
+
+        let fallback = earth_frame(time, &EarthSource::Uncovered).unwrap();
+        assert_eq!(fallback.frame, DynFrameId::ITRF93);
+        assert_eq!(fallback.rotation, approx_earth_frame(time).rotation);
+        assert_eq!(
+            earth_frame(time, &crate::frames::FrameTable::new())
+                .unwrap()
+                .rotation,
+            approx_earth_frame(time).rotation
+        );
+
+        assert!(earth_frame(time, &EarthSource::Broken).is_err());
     }
 }

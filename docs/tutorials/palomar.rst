@@ -72,10 +72,10 @@ First we load a FITs file, and grab frame information from its header.
     # Taken from table A1 of the paper cited above.
     jd = kete.Time(2433622.977, scaling='utc').jd
     
-    # Here we use an approximation of the observer position, as we
-    # do not have a SPICE kernel for Earth's orientation before about 1970.
+    # The Earth orientation kernels begin in 1962, so the observer position
+    # uses the approximate Earth orientation that kete falls back to.
     site = kete.mpc.find_obs_code("Palomar Mountain")
-    observer = kete.spice.approx_earth_pos_to_ecliptic(jd, *site[:-1])
+    observer = kete.spice.earth_pos_to_ecliptic(jd, *site[:-1])
     fov = kete.fov.RectangleFOV.from_wcs(wcs, observer)
 
     # Plot the frame
@@ -164,7 +164,7 @@ how close the object came to the center of the FOV.
 
 ::
     
-    Total of 1148 asteroids less than 3 degrees from the FOV
+    Total of 1557 asteroids less than 3 degrees from the FOV
 
 Exact Calculation
 -----------------

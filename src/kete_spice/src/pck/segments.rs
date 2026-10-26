@@ -4,7 +4,7 @@
 use super::PckArray;
 use super::type2::PckSegmentType2;
 use kete_core::errors::Error;
-use kete_core::frames::NonInertialFrame;
+use kete_core::frames::InstantFrame;
 use kete_core::prelude::KeteResult;
 use kete_core::time::{TDB, Time};
 use std::fmt::Debug;
@@ -44,13 +44,13 @@ impl<'a> From<&'a PckSegment> for &'a PckArray {
 }
 
 impl PckSegment {
-    /// Return the [`NonInertialFrame`] at the specified JD. If the requested time is not within
+    /// Return the [`InstantFrame`] at the specified JD. If the requested time is not within
     /// the available range, this will fail.
     pub(in crate::pck) fn try_get_orientation(
         &self,
         center_id: i32,
         epoch: Time<TDB>,
-    ) -> KeteResult<NonInertialFrame> {
+    ) -> KeteResult<InstantFrame> {
         let arr_ref: &PckArray = self.into();
 
         if center_id != arr_ref.frame_id {

@@ -15,7 +15,7 @@
 
 use crate::errors::{Error, KeteResult};
 use crate::forces::GravParams;
-use crate::frames::{Ecliptic, InertialFrame};
+use crate::frames::{Ecliptic, StaticFrame};
 use crate::kepler::compute_peri_dist;
 use crate::state::State;
 use nalgebra::Vector3;
@@ -103,7 +103,7 @@ pub fn tisserand(semi_major: f64, eccentricity: f64, inclination: f64, a_planet:
 /// # Errors
 /// Returns an error if the center body's GM is unknown.
 ///
-pub fn specific_energy<T: InertialFrame>(state: &State<T>) -> KeteResult<f64> {
+pub fn specific_energy<T: StaticFrame>(state: &State<T>) -> KeteResult<f64> {
     let gm = GravParams::try_mass_from_naif_id(state.center_id())?;
     let r = state.pos.norm();
     let v2 = state.vel.norm_squared();
@@ -194,7 +194,7 @@ impl BPlane {
 /// # Errors
 /// Returns an error if the center body's GM is unknown, or if the orbit is
 /// not hyperbolic (energy <= 0 or non-finite, or eccentricity <= 1).
-pub fn compute_b_plane<T: InertialFrame>(state: &State<T>) -> KeteResult<BPlane> {
+pub fn compute_b_plane<T: StaticFrame>(state: &State<T>) -> KeteResult<BPlane> {
     let gm = GravParams::try_mass_from_naif_id(state.center_id())?;
     let state = state.clone().into_frame::<Ecliptic>();
     let pos: Vector3<f64> = state.pos.into();

@@ -6,7 +6,7 @@ use super::PckArray;
 use crate::interpolation::{ChebyshevLayout, chebyshev_evaluate_both};
 use crate::spk::type2::build_type2_data;
 use kete_core::errors::Error;
-use kete_core::frames::{FrameId, NonInertialFrame};
+use kete_core::frames::{DynFrameId, InstantFrame};
 use kete_core::prelude::KeteResult;
 use kete_core::time::{TDB, Time};
 
@@ -35,10 +35,7 @@ impl PckSegmentType2 {
     }
 
     /// Return the stored orientation, along with the rate of change of the orientation.
-    pub(in crate::pck) fn try_get_orientation(
-        &self,
-        time: Time<TDB>,
-    ) -> KeteResult<NonInertialFrame> {
+    pub(in crate::pck) fn try_get_orientation(&self, time: Time<TDB>) -> KeteResult<InstantFrame> {
         // Records in the segment contain information about the central position of the
         // north pole, as well as the position of the prime meridian. These values for
         // type 2 segments are stored as chebyshev polynomials of the first kind, in
@@ -68,7 +65,7 @@ impl PckSegmentType2 {
         // rem_euclid is equivalent to the modulo operator, so this maps w to [0, 2pi]
         let w = w.rem_euclid(std::f64::consts::TAU);
 
-        let frame = NonInertialFrame::from_euler::<'Z', 'X', 'Z'>(
+        let frame = InstantFrame::from_euler::<'Z', 'X', 'Z'>(
             time,
             [ra, dec, w],
             [
@@ -77,7 +74,8 @@ impl PckSegmentType2 {
                 dec_der / t_step * 86400.0,
                 w_der / t_step * 86400.0,
             ],
-            FrameId(self.array.reference_frame_id),
+            DynFrameId::UNNAMED,
+            DynFrameId(self.array.reference_frame_id),
         );
 
         Ok(frame)
@@ -222,11 +220,12 @@ mod tests {
         let frame = seg
             .try_get_orientation(Time::from_j2000_seconds(3.0 * intlen))
             .unwrap();
-        let expected = NonInertialFrame::from_euler::<'Z', 'X', 'Z'>(
+        let expected = InstantFrame::from_euler::<'Z', 'X', 'Z'>(
             0.0,
             [0.2, 0.25, 0.3],
             [0.0; 3],
-            FrameId::ECLIPJ2000,
+            DynFrameId::UNNAMED,
+            DynFrameId::ECLIPJ2000,
         );
         assert!((frame.rotation.matrix() - expected.rotation.matrix()).norm() < 1e-14);
     }
@@ -236,7 +235,7 @@ mod tests {
     #[test]
     fn pck_type2_reference_frame_is_kept() {
         use crate::pck::segments::PckSegment;
-        use kete_core::frames::{Ecliptic, InertialFrame};
+        use kete_core::frames::{Ecliptic, StaticFrame};
 
         let angles = [0.2, 0.25, 0.3];
         let cdata: Vec<f64> = angles.iter().flat_map(|&a| [a, 0.0]).collect();
@@ -260,17 +259,22 @@ mod tests {
                 .try_get_orientation(3000, time)
                 .unwrap()
         };
-        let stored =
-            NonInertialFrame::from_euler::<'Z', 'X', 'Z'>(0.0, angles, [0.0; 3], FrameId::J2000);
+        let stored = InstantFrame::from_euler::<'Z', 'X', 'Z'>(
+            0.0,
+            angles,
+            [0.0; 3],
+            DynFrameId::UNNAMED,
+            DynFrameId::J2000,
+        );
 
         let j2000 = frame_with_reference(1);
-        assert_eq!(j2000.reference_frame_id, FrameId::J2000);
-        let (rot, _) = j2000.rotations_to_equatorial().unwrap();
+        assert_eq!(j2000.reference, DynFrameId::J2000);
+        let rot = j2000.try_relative_to_equatorial().unwrap().rotation;
         assert!((rot.matrix() - stored.rotation.matrix()).norm() < 1e-14);
 
         let ecliptic = frame_with_reference(17);
-        assert_eq!(ecliptic.reference_frame_id, FrameId::ECLIPJ2000);
-        let (rot, _) = ecliptic.rotations_to_equatorial().unwrap();
+        assert_eq!(ecliptic.reference, DynFrameId::ECLIPJ2000);
+        let rot = ecliptic.try_relative_to_equatorial().unwrap().rotation;
         let expected = Ecliptic::rotation_to_equatorial() * stored.rotation;
         assert!((rot.matrix() - expected.matrix()).norm() < 1e-14);
     }

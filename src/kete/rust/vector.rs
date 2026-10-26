@@ -74,6 +74,7 @@ impl VectorLike {
                 PyFrames::Ecliptic => Vector::<Ecliptic>::new(arr).into_frame(),
                 PyFrames::Galactic => Vector::<Galactic>::new(arr).into_frame(),
                 PyFrames::FK4 => Vector::<FK4>::new(arr).into_frame(),
+                PyFrames::B1950 => Vector::<B1950>::new(arr).into_frame(),
             },
             VectorLike::Vec(vec) => vec.raw,
         }
@@ -163,6 +164,7 @@ impl PyVector {
             PyFrames::Ecliptic => self.raw.into_frame::<Ecliptic>().into(),
             PyFrames::Galactic => self.raw.into_frame::<Galactic>().into(),
             PyFrames::FK4 => self.raw.into_frame::<FK4>().into(),
+            PyFrames::B1950 => self.raw.into_frame::<B1950>().into(),
         }
     }
 

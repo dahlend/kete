@@ -2,9 +2,12 @@
 // SPDX-FileCopyrightText: 2025 California Institute of Technology
 // SPDX-License-Identifier: BSD-3-Clause
 
-use kete_core::frames::ecef_to_geodetic_lat_lon;
+use kete_core::ephemeris::EphemerisSource;
+use kete_core::frames::{earth_frame, ecef_to_geodetic_lat_lon};
 use kete_core::{constants, prelude::*};
-use kete_spice::prelude::{LOADED_PCK, LOADED_SPK};
+use kete_spice::ephemeris::SpiceEphemeris;
+use kete_spice::frames::SpiceFrames;
+use kete_spice::prelude::LOADED_PCK;
 use pyo3::{PyResult, pyfunction};
 
 use crate::frame::PyFrames;
@@ -28,9 +31,11 @@ pub fn pck_load_py(filenames: Vec<String>) -> PyResult<()> {
 /// Convert a position vector which is geocentered in the earth frame to a position
 /// vector in the sun centered ecliptic frame.
 ///
-/// This uses PCK files produces by the NAIF team at JPL. New files may be downloaded
-/// from the NAIF website if so desired, but the one provided is a highest accuracy
-/// copy available as of Jan 2025.
+/// The Earth orientation is ITRF93 from the loaded PCK files, produced by the NAIF
+/// team at JPL, where they cover ``jd``. Elsewhere it is an approximate Earth frame,
+/// good to about 400 m at the surface after 1972. New files may be downloaded from
+/// the NAIF website if so desired, but the one provided is a highest accuracy copy
+/// available as of Jan 2025.
 ///
 /// parameters
 /// ----------
@@ -57,16 +62,14 @@ pub fn pck_earth_frame_py(
             None => Desig::Empty,
         }
     };
-    let pcks = &LOADED_PCK.try_read().unwrap();
-    let spks = &LOADED_SPK.try_read().unwrap();
-
-    let frame = pcks.try_get_orientation(3000, jd)?;
+    let frame = earth_frame(jd, &SpiceFrames::loaded()?)?;
+    let eph = SpiceEphemeris::loaded()?;
 
     let (pos, vel) = frame.to_equatorial(pos, [0.0, 0.0, 0.0])?;
 
     let mut state: State<Equatorial> = State::new(desig, jd, pos, vel, 399);
 
-    spks.try_change_center(&mut state, new_center)?;
+    eph.try_change_center(&mut state, new_center)?;
 
     Ok(PyState {
         raw: state,
@@ -77,8 +80,9 @@ pub fn pck_earth_frame_py(
 
 /// Convert a [`State`] to the Earth's surface lat/lon/height on the WGS84 reference.
 ///
-/// This requires the `earth_000101_*.pck` file to be loaded which contains the
-/// instantaneous earth frame information. The one provided by kete has dates from
+/// The Earth orientation is ITRF93 from the loaded `earth_000101_*.pck` files where
+/// they cover the epoch of the state, and an approximate Earth frame elsewhere, good
+/// to about 400 m at the surface after 1972. The one provided by kete has dates from
 /// around 2000 to early 2024, along with predicts into the future. New files may be
 /// downloaded from the NAIF website for additional precision or years of epoch.
 ///
@@ -90,11 +94,10 @@ pub fn pck_earth_frame_py(
 #[pyfunction]
 #[pyo3(name = "state_to_earth_pos")]
 pub fn pck_state_to_earth(state: PyState) -> PyResult<(f64, f64, f64)> {
-    let pcks = LOADED_PCK.try_read().unwrap();
     let state = state
         .change_center(crate::desigs::NaifIDLike::Int(399))?
         .raw;
-    let frame = pcks.try_get_orientation(3000, state.epoch)?;
+    let frame = earth_frame(state.epoch, &SpiceFrames::loaded()?)?;
 
     let (pos, _) = frame.from_equatorial(state.pos, state.vel)?;
     let [x, y, z] = pos.into();

@@ -12,7 +12,7 @@
 //! states at `jd_final`.
 
 use crate::desigs::Desig;
-use crate::ephemeris::Ephemeris;
+use crate::ephemeris::EphemerisSource;
 use crate::errors::{Error, KeteResult};
 use crate::forces::{GravParams, ParameterMask, ParameterizedForce};
 use crate::frames::{Equatorial, SunCenter};
@@ -59,7 +59,7 @@ pub fn propagate_n_body_vec<E, F>(
     non_gravs: Vec<Option<ParameterMask<F>>>,
 ) -> KeteResult<(Vec<State<Equatorial>>, Vec<State<Equatorial>>)>
 where
-    E: Ephemeris,
+    E: EphemerisSource,
     F: ParameterizedForce<Frame = Equatorial, Center = SunCenter>,
 {
     if states.is_empty() {
@@ -284,10 +284,10 @@ where
             if exact_eval && (rel_pos.norm() as f32 <= radius) {
                 Err(Error::Impact(grav_params.naif_id, time))?;
             }
-            // No orientation is passed: the massive bodies here are the simplified
-            // planets, point masses or oblate, which need none. A body with a
-            // frame-oriented shaped field would give an error inside its switch
-            // radius, never a silent point mass.
+            // No rotation is passed: the massive bodies here are the simplified
+            // planets, point masses or oblate, which need none. A body with a shaped
+            // field in its body frame gives an error inside its switch radius, never
+            // a silent point mass.
             grav_params.add_acceleration(&mut accel_working, &rel_pos, &rel_vel, None)?;
             if (grav_params.naif_id == 10)
                 && (idx >= n_massive)
@@ -317,7 +317,7 @@ mod tests {
     use super::*;
     use crate::constants::GMS;
     use crate::ephemeris::test_ephemeris::SunAndOne;
-    use crate::frames::Vector;
+    use crate::frames::{FrameTable, Vector};
     use crate::propagation::NBody;
 
     /// The packed batch acceleration of a test particle equals the [`NBody`]
@@ -354,7 +354,8 @@ mod tests {
             false,
         )
         .unwrap();
-        let mut force = NBody::new(&eph, false);
+        let frames = FrameTable::new();
+        let mut force = NBody::new(&eph, &frames, false);
         force.massive_obj = massive.to_vec();
         let accel2 = force
             .accel(

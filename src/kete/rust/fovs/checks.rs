@@ -7,6 +7,7 @@ use kete_core::errors::Error;
 use kete_core::forces::NonGravMask;
 use kete_core::fov::{FOV, check_ephemeris, check_statics, check_visible};
 use kete_spice::ephemeris::SpiceEphemeris;
+use kete_spice::frames::SpiceFrames;
 use pyo3::exceptions::PyDeprecationWarning;
 use pyo3::prelude::*;
 use rayon::prelude::*;
@@ -76,7 +77,8 @@ pub fn fov_checks_py(
 
     let visible = py.detach(|| {
         let eph = SpiceEphemeris::loaded()?;
-        check_visible(&eph, &fovs, &states, &non_gravs, include_asteroids)
+        let frames = SpiceFrames::loaded()?;
+        check_visible(&eph, &frames, &fovs, &states, &non_gravs, include_asteroids)
     })?;
     Ok(visible
         .into_iter()

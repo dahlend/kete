@@ -1,25 +1,26 @@
 // SPDX-FileCopyrightText: 2026 Dar Dahlen
 // SPDX-License-Identifier: BSD-3-Clause
 
-//! Ephemeris providers: states of solar system bodies, and orientations of body
-//! frames.
+//! Ephemeris providers: states of solar system bodies.
 //!
 //! The propagation and visibility code in [`propagation`](crate::propagation)
 //! and [`fov`](crate::fov) needs the position of other bodies at arbitrary
-//! times. For a body with a shaped gravity field, it also needs the orientation
-//! of the body frame. It gets both from an [`Ephemeris`].
+//! times. It gets them from an [`EphemerisSource`].
+//!
+//! Orientations of body frames are separate: a
+//! [`FrameSource`](crate::frames::FrameSource) provides them, so states and
+//! frames can come from different providers.
 //!
 //! `kete_spice` implements the trait for its loaded kernels. Any other source
-//! of states and frames, such as a table or an analytic model, can implement it
-//! too.
+//! of states, such as a table or an analytic model, can implement it too.
 
-use crate::errors::{Error, KeteResult};
-use crate::frames::{Equatorial, FrameId, NonInertialFrame, SSB, SunCenter};
+use crate::errors::KeteResult;
+use crate::frames::{Equatorial, SSB, SunCenter};
 use crate::state::State;
 use crate::time::{TDB, Time};
 use nalgebra::Vector3;
 
-/// A source of body states and body-frame orientations.
+/// A source of body states.
 ///
 /// States are equatorial, with positions in AU and velocities in AU/day. A
 /// provider returns an error for a body, frame or time that it does not cover.
@@ -31,7 +32,7 @@ use nalgebra::Vector3;
 ///
 /// Threads share a provider by reference, so it is `Sync`. It need not be
 /// `Send`, so it can hold read guards.
-pub trait Ephemeris: Sync {
+pub trait EphemerisSource: Sync {
     /// State of body `id` relative to body `center` at `time`.
     ///
     /// A provider serves every body it covers relative to the Solar System
@@ -92,32 +93,13 @@ pub trait Ephemeris: Sync {
         self.try_change_center(&mut state, 10)?;
         State::<Equatorial, SunCenter>::try_from(state)
     }
-
-    /// The frame `frame_id` at `time`.
-    ///
-    /// The frame holds its rotation, and its rotation rate if known, relative
-    /// to an inertial frame that [`NonInertialFrame::to_equatorial`] accepts.
-    ///
-    /// Two uses need it: a massive body whose shaped gravity field such a frame
-    /// orients (see [`Orientation::Frame`](crate::forces::Orientation::Frame)),
-    /// and a position fixed on a rotating body, such as an observatory on the
-    /// Earth. The default has no orientation data and returns an error.
-    ///
-    /// # Errors
-    /// Fails when the provider has no orientation for `frame_id` at `time`.
-    fn try_frame(&self, frame_id: FrameId, time: Time<TDB>) -> KeteResult<NonInertialFrame> {
-        Err(Error::Bounds(format!(
-            "This ephemeris has no orientation for frame {frame_id} at JD {}.",
-            time.jd()
-        )))
-    }
 }
 
 #[cfg(test)]
 pub(crate) mod test_ephemeris {
     //! A small analytic ephemeris for tests that need no kernels.
 
-    use super::{Ephemeris, KeteResult};
+    use super::{EphemerisSource, KeteResult};
     use crate::desigs::Desig;
     use crate::errors::Error;
     use crate::frames::Equatorial;
@@ -151,7 +133,7 @@ pub(crate) mod test_ephemeris {
         }
     }
 
-    impl Ephemeris for SunAndOne {
+    impl EphemerisSource for SunAndOne {
         fn try_get_state_with_center(
             &self,
             id: i32,
@@ -198,19 +180,5 @@ mod tests {
         eph.try_change_center(&mut moved, 5).unwrap();
         assert!((Vector3::from(moved.pos) - Vector3::from(start.pos)).norm() < 1e-15);
         assert!((Vector3::from(moved.vel) - Vector3::from(start.vel)).norm() < 1e-15);
-    }
-
-    /// Without orientation data the default is an error, not an identity
-    /// rotation.
-    #[test]
-    fn default_orientation_is_an_error() {
-        let eph = SunAndOne {
-            radius: 1.0,
-            rate: 0.0,
-        };
-        assert!(
-            eph.try_frame(FrameId(-1), Time::<TDB>::new(2_451_545.0))
-                .is_err()
-        );
     }
 }

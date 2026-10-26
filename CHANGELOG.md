@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `Frames.B1950`, the mean equator and equinox of B1950.
+
+### Changed
+
+- Rewrote the rust representation of Frames to support more complex SPICE definitions.
+
+### Deprecated
+
+- `spice.approx_earth_pos_to_ecliptic`: it now calls `spice.earth_pos_to_ecliptic`,
+  which falls back to the approximate Earth orientation where the PCK kernels do not
+  cover the date.
+
 ## [v3.3.0]
 
 ### Added

@@ -14,6 +14,7 @@ use kete_core::frames::{Equatorial, Vector};
 use kete_core::state::State;
 use kete_core::time::{TDB, Time};
 use kete_spice::ephemeris::SpiceEphemeris;
+use kete_spice::frames::SpiceFrames;
 use kete_spice::spk::LOADED_SPK;
 
 use kete_core::propagation::NBody;
@@ -43,7 +44,8 @@ fn test_check_rectangle_visible() {
 
     for offset in [-10.0_f64, -5.0, 0.0, 5.0, 10.0] {
         let eph = SpiceEphemeris::loaded().unwrap();
-        let force = NBody::new(&eph, false);
+        let frames = SpiceFrames::loaded().unwrap();
+        let force = NBody::new(&eph, &frames, false);
         let off_state = circular_back_ssb
             .clone()
             .propagate_with(&force, circular_back_ssb.epoch - offset)
@@ -51,7 +53,7 @@ fn test_check_rectangle_visible() {
 
         let vec = circular_back.pos - circular.pos;
         let fov = GenericRectangle::new(vec, 0.0001, 0.01, 0.01, circular.clone()).unwrap();
-        let seen = check_visible(&eph, &[fov], &[off_state.into()], &[], false).unwrap();
+        let seen = check_visible(&eph, &frames, &[fov], &[off_state.into()], &[], false).unwrap();
         assert_eq!(seen.len(), 1);
     }
 }
@@ -83,6 +85,7 @@ fn linear_prefilter_matches_the_observer_center() {
     let fov = GenericRectangle::new([1.0, 0.0, 0.0].into(), 0.0, 0.01, 0.01, observer).unwrap();
     let seen = check_visible(
         &SpiceEphemeris::loaded().unwrap(),
+        &SpiceFrames::loaded().unwrap(),
         &[fov],
         &[object_ssb],
         &[],
@@ -100,6 +103,7 @@ fn test_check_omni_visible() {
     // offsets from the observer time.
     // this will exercise the position, velocity, and time offsets due to light delay.
     let eph = SpiceEphemeris::loaded().unwrap();
+    let frames = SpiceFrames::loaded().unwrap();
     let spk = eph.spk();
     let observer = State::new(
         Desig::Empty,
@@ -115,8 +119,15 @@ fn test_check_omni_visible() {
             .unwrap();
         let fov = OmniDirectional::new(observer.clone());
 
-        let seen =
-            check_visible(&eph, std::slice::from_ref(&fov), &[asteroid], &[], false).unwrap();
+        let seen = check_visible(
+            &eph,
+            &frames,
+            std::slice::from_ref(&fov),
+            &[asteroid],
+            &[],
+            false,
+        )
+        .unwrap();
         assert_eq!(seen.len(), 1);
         let n_body = &seen[0].2.states[0];
         let dist = (n_body.pos - observer.pos).norm();
@@ -189,7 +200,8 @@ fn check_ephemeris_accepts_any_observer_center() {
 fn prefilter_allows_for_curvature() {
     kete_spice::test_data::ensure_test_spk();
     let eph = SpiceEphemeris::loaded().unwrap();
-    let force = NBody::new(&eph, false);
+    let frames = SpiceFrames::loaded().unwrap();
+    let force = NBody::new(&eph, &frames, false);
     // An object on a circular orbit at 1 au. Each observer sits 0.005 au sunward of
     // it, looking out along the radius, across the direction of motion.
     let object = State::<Equatorial>::new(
@@ -216,7 +228,7 @@ fn prefilter_allows_for_curvature() {
             GenericRectangle::new(radial, 0.0, 0.01, 0.01, observer).unwrap()
         })
         .collect();
-    let seen = check_visible(&eph, &fovs, &[object], &[], false).unwrap();
+    let seen = check_visible(&eph, &frames, &fovs, &[object], &[], false).unwrap();
     assert_eq!(seen.len(), 2);
 }
 
@@ -226,6 +238,7 @@ fn prefilter_allows_for_curvature() {
 fn seen_until_impact() {
     kete_spice::test_data::ensure_test_spk();
     let eph = SpiceEphemeris::loaded().unwrap();
+    let frames = SpiceFrames::loaded().unwrap();
     let spk = eph.spk();
     let epoch = Time::<TDB>::new(2451545.0);
     // 0.01 au from the Earth, closing at 0.01 au/day, so it hits about a day later.
@@ -245,7 +258,7 @@ fn seen_until_impact() {
         .into_iter()
         .map(|dt| OmniDirectional::new(observer(2451545.0 + dt)))
         .collect();
-    let seen = check_visible(&eph, &fovs, &[impactor], &[], false).unwrap();
+    let seen = check_visible(&eph, &frames, &fovs, &[impactor], &[], false).unwrap();
     let fov_idx: Vec<usize> = seen.iter().map(|(idx, _, _)| *idx).collect();
     assert_eq!(fov_idx, vec![0, 1]);
 }
@@ -257,6 +270,7 @@ fn seen_until_impact() {
 fn seen_through_a_night() {
     kete_spice::test_data::ensure_test_spk();
     let eph = SpiceEphemeris::loaded().unwrap();
+    let frames = SpiceFrames::loaded().unwrap();
     let spk = eph.spk();
     let start = Time::<TDB>::new(2451545.0);
     let fovs: Vec<_> = (0..=10)
@@ -272,7 +286,7 @@ fn seen_through_a_night() {
         })
         .collect();
     let asteroid = spk.try_get_state_with_center(20000042, start, 10).unwrap();
-    let seen = check_visible(&eph, &fovs, &[asteroid], &[], false).unwrap();
+    let seen = check_visible(&eph, &frames, &fovs, &[asteroid], &[], false).unwrap();
     assert_eq!(seen.len(), fovs.len());
 }
 
@@ -283,6 +297,7 @@ fn seen_through_a_night() {
 fn seen_while_at_rest_relative_to_the_ssb() {
     kete_spice::test_data::ensure_test_spk();
     let eph = SpiceEphemeris::loaded().unwrap();
+    let frames = SpiceFrames::loaded().unwrap();
     let spk = eph.spk();
     let epoch = Time::<TDB>::new(2451545.0);
     let gm_jupiter = GMS / 1047.348644;
@@ -305,13 +320,20 @@ fn seen_while_at_rest_relative_to_the_ssb() {
                 .try_get_state_with_center(399, epoch + f64::from(step) * 0.05, 10)
                 .unwrap();
             let omni = OmniDirectional::new(earth.clone());
-            let exact =
-                check_visible(&eph, &[omni], std::slice::from_ref(&falling), &[], false).unwrap();
+            let exact = check_visible(
+                &eph,
+                &frames,
+                &[omni],
+                std::slice::from_ref(&falling),
+                &[],
+                false,
+            )
+            .unwrap();
             let pos = exact[0].2.states[0].pos;
             GenericRectangle::new(pos - earth.pos, 0.0, 1e-5, 1e-5, earth).unwrap()
         })
         .collect();
-    let seen = check_visible(&eph, &fovs, &[falling], &[], false).unwrap();
+    let seen = check_visible(&eph, &frames, &fovs, &[falling], &[], false).unwrap();
     assert_eq!(seen.len(), fovs.len());
 }
 
@@ -320,13 +342,14 @@ fn seen_while_at_rest_relative_to_the_ssb() {
 fn unknown_observer_center_is_an_error() {
     kete_spice::test_data::ensure_test_spk();
     let eph = SpiceEphemeris::loaded().unwrap();
+    let frames = SpiceFrames::loaded().unwrap();
     let observer = State::<Equatorial>::new(Desig::Empty, 2451545.0, [0.0; 3], [0.0; 3], 987_654);
     let asteroid = eph
         .spk()
         .try_get_state_with_center(20000042, Time::<TDB>::new(2451545.0), 10)
         .unwrap();
     let fov = [OmniDirectional::new(observer)];
-    assert!(check_visible(&eph, &fov, &[asteroid], &[], false).is_err());
+    assert!(check_visible(&eph, &frames, &fov, &[asteroid], &[], false).is_err());
 }
 
 /// States from several blocks of integration that land in one patch keep their
@@ -335,6 +358,7 @@ fn unknown_observer_center_is_an_error() {
 fn patch_keeps_input_order() {
     kete_spice::test_data::ensure_test_spk();
     let eph = SpiceEphemeris::loaded().unwrap();
+    let frames = SpiceFrames::loaded().unwrap();
     let spk = eph.spk();
     let asteroid = spk
         .try_get_state_with_center(20000042, Time::<TDB>::new(2451545.0), 10)
@@ -348,7 +372,7 @@ fn patch_keeps_input_order() {
         .collect();
     let observer = State::<Equatorial>::new(Desig::Empty, 2451546.0, [0.0, 1.0, 0.0], [0.0; 3], 10);
     let fov = [OmniDirectional::new(observer)];
-    let seen = check_visible(&eph, &fov, &states, &[], false).unwrap();
+    let seen = check_visible(&eph, &frames, &fov, &states, &[], false).unwrap();
     assert_eq!(seen.len(), 1);
     let desigs: Vec<_> = seen[0].2.states.iter().map(|s| s.desig.clone()).collect();
     let expected: Vec<_> = states.iter().map(|s| s.desig.clone()).collect();
@@ -361,6 +385,7 @@ fn patch_keeps_input_order() {
 fn many_fovs_from_one_trajectory() {
     kete_spice::test_data::ensure_test_spk();
     let eph = SpiceEphemeris::loaded().unwrap();
+    let frames = SpiceFrames::loaded().unwrap();
     let spk = eph.spk();
     let epoch = Time::<TDB>::new(2451545.0);
     let asteroid = spk.try_get_state_with_center(20000042, epoch, 10).unwrap();
@@ -382,7 +407,15 @@ fn many_fovs_from_one_trajectory() {
         fovs.push(GenericRectangle::new(pointing, 0.0, 0.01, 0.01, earth).unwrap());
     }
 
-    let seen = check_visible(&eph, &fovs, std::slice::from_ref(&asteroid), &[], false).unwrap();
+    let seen = check_visible(
+        &eph,
+        &frames,
+        &fovs,
+        std::slice::from_ref(&asteroid),
+        &[],
+        false,
+    )
+    .unwrap();
     let fov_idx: Vec<usize> = seen.iter().map(|(idx, _, _)| *idx).collect();
     assert_eq!(fov_idx, expected);
     for (idx, _, patch) in &seen {
@@ -423,14 +456,15 @@ fn test_check_visible_non_grav() {
     let dust = ParameterMask::all_fixed(NonGravKind::Dust(DustNonGrav), vec![0.5]).unwrap();
 
     let eph = SpiceEphemeris::loaded().unwrap();
+    let frames = SpiceFrames::loaded().unwrap();
     let states = [asteroid];
-    let grav_only = check_visible(&eph, &fov, &states, &[], false).unwrap();
-    let with_dust = check_visible(&eph, &fov, &states, &[Some(dust)], false).unwrap();
+    let grav_only = check_visible(&eph, &frames, &fov, &states, &[], false).unwrap();
+    let with_dust = check_visible(&eph, &frames, &fov, &states, &[Some(dust)], false).unwrap();
 
     let grav_pos = grav_only[0].2.states[0].pos;
     let dust_pos = with_dust[0].2.states[0].pos;
     assert!((grav_pos - dust_pos).norm() > 1e-6);
 
     // A non-empty non_gravs which does not cover every state is rejected.
-    assert!(check_visible(&eph, &fov, &states, &[None, None], false).is_err());
+    assert!(check_visible(&eph, &frames, &fov, &states, &[None, None], false).is_err());
 }

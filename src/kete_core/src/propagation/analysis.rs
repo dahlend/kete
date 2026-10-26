@@ -4,13 +4,13 @@
 //! Trajectory analysis that needs body states or N-body propagation.
 //!
 //! Complements [`analysis`](crate::analysis) (B-plane, orbital elements) with
-//! functions that query an [`Ephemeris`].
+//! functions that query an [`EphemerisSource`].
 
 use super::n_body::NBody;
 use crate::elements::CometElements;
-use crate::ephemeris::Ephemeris;
+use crate::ephemeris::EphemerisSource;
 use crate::errors::{Error, KeteResult};
-use crate::frames::{Ecliptic, Equatorial};
+use crate::frames::{Ecliptic, Equatorial, FrameSource};
 use crate::state::State;
 use crate::time::{TDB, Time};
 use nalgebra::Vector3;
@@ -18,7 +18,8 @@ use nalgebra::Vector3;
 /// Find the epoch and distance of closest approach between two objects.
 ///
 /// Both objects are propagated using full N-body mechanics over the search
-/// window, with body states from `ephem`. If either state's designation
+/// window, with body states from `ephem` and body frames from `frames`. If either
+/// state's designation
 /// corresponds to a body that `ephem` covers, its ephemeris is used directly
 /// instead of N-body propagation.
 ///
@@ -28,8 +29,9 @@ use nalgebra::Vector3;
 /// # Errors
 /// Returns an error if the states have different center IDs or the time
 /// window is non-positive.
-pub fn closest_approach<E: Ephemeris>(
+pub fn closest_approach<E: EphemerisSource, S: FrameSource>(
     ephem: &E,
+    frames: &S,
     state_a: &State<Equatorial>,
     state_b: &State<Equatorial>,
     jd_start: Time<TDB>,
@@ -67,8 +69,8 @@ pub fn closest_approach<E: Ephemeris>(
     };
     let dt = span / n_samples as f64;
 
-    let mut cur_a = state_at_time(state_a, jd_start, ephem, include_extended)?;
-    let mut cur_b = state_at_time(state_b, jd_start, ephem, include_extended)?;
+    let mut cur_a = state_at_time(state_a, jd_start, ephem, frames, include_extended)?;
+    let mut cur_b = state_at_time(state_b, jd_start, ephem, frames, include_extended)?;
 
     let mut best_idx = 0;
     let mut best_dist = (Vector3::from(cur_a.pos) - Vector3::from(cur_b.pos)).norm();
@@ -79,8 +81,8 @@ pub fn closest_approach<E: Ephemeris>(
         let t = jd_start + i as f64 * dt;
         let old_a = cur_a.clone();
         let old_b = cur_b.clone();
-        cur_a = state_at_time(&cur_a, t, ephem, include_extended)?;
-        cur_b = state_at_time(&cur_b, t, ephem, include_extended)?;
+        cur_a = state_at_time(&cur_a, t, ephem, frames, include_extended)?;
+        cur_b = state_at_time(&cur_b, t, ephem, frames, include_extended)?;
         let d = (Vector3::from(cur_a.pos) - Vector3::from(cur_b.pos)).norm();
         if d < best_dist {
             best_dist = d;
@@ -107,8 +109,8 @@ pub fn closest_approach<E: Ephemeris>(
         }
         let t = jd_start + off;
         let (sa, sb) = match (
-            state_at_time(ref_a, t, ephem, include_extended),
-            state_at_time(ref_b, t, ephem, include_extended),
+            state_at_time(ref_a, t, ephem, frames, include_extended),
+            state_at_time(ref_b, t, ephem, frames, include_extended),
         ) {
             (Ok(a), Ok(b)) => (a, b),
             (Err(e), _) | (_, Err(e)) => {
@@ -127,8 +129,8 @@ pub fn closest_approach<E: Ephemeris>(
         })?;
 
     let final_jd = jd_start + best_off;
-    let sa = state_at_time(ref_a, final_jd, ephem, include_extended)?;
-    let sb = state_at_time(ref_b, final_jd, ephem, include_extended)?;
+    let sa = state_at_time(ref_a, final_jd, ephem, frames, include_extended)?;
+    let sb = state_at_time(ref_b, final_jd, ephem, frames, include_extended)?;
     Ok((
         final_jd,
         (Vector3::from(sa.pos) - Vector3::from(sb.pos)).norm(),
@@ -141,10 +143,11 @@ pub fn closest_approach<E: Ephemeris>(
 /// If the state's designation maps to a NAIF ID that `ephem` covers at
 /// `time`, its ephemeris is used directly. Otherwise the state is propagated
 /// forward under N-body gravity.
-fn state_at_time<E: Ephemeris>(
+fn state_at_time<E: EphemerisSource, S: FrameSource>(
     state: &State<Equatorial>,
     time: Time<TDB>,
     ephem: &E,
+    frames: &S,
     include_extended: bool,
 ) -> KeteResult<State<Equatorial>> {
     let center = state.center_id();
@@ -154,7 +157,7 @@ fn state_at_time<E: Ephemeris>(
         return Ok(st);
     }
     let ssb = ephem.try_to_ssb(state.clone())?;
-    let ssb_result = ssb.propagate_with(&NBody::new(ephem, include_extended), time)?;
+    let ssb_result = ssb.propagate_with(&NBody::new(ephem, frames, include_extended), time)?;
     let mut result: State<Equatorial> = ssb_result.into();
     if center != 0 {
         ephem.try_change_center(&mut result, center)?;

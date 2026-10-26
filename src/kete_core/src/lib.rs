@@ -20,7 +20,7 @@
 //!
 //! - [`frames::Vector`] - Cartesian vectors in 3D space, typically used to
 //!   represent positions and velocities of objects in space.  
-//! - [`frames::InertialFrame`] - A coordinate system which defines the
+//! - [`frames::StaticFrame`] - A coordinate system which defines the
 //!   cartesian axis. There are several commonly used coordinate systems, and kete
 //!   contains conversion tools between them.
 //! - [`state::State`] - The 'state' of an object at an instant of time, which
@@ -69,8 +69,8 @@ pub mod prelude {
     pub use crate::elements::CometElements;
     pub use crate::errors::{Error, KeteResult};
     pub use crate::frames::{
-        CenterBody, DynCenter, EarthCenter, Ecliptic, Equatorial, FK4, Galactic, InertialFrame,
-        NonInertialFrame, SSB, SunCenter,
+        B1950, CenterBody, DynCenter, EarthCenter, Ecliptic, Equatorial, FK4, Galactic,
+        InstantFrame, SSB, StaticFrame, SunCenter,
     };
     pub use crate::kepler::propagate_two_body;
     pub use crate::state::{SimultaneousStates, State, UncertainState};

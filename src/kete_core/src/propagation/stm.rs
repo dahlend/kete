@@ -4,10 +4,10 @@
 //! State Transition matrix computation
 
 use super::n_body::NBody;
-use crate::ephemeris::Ephemeris;
+use crate::ephemeris::EphemerisSource;
 use crate::errors::KeteResult;
 use crate::forces::ParameterizedForce;
-use crate::frames::{Equatorial, SSB, SunCenter};
+use crate::frames::{Equatorial, FrameSource, SSB, SunCenter};
 use crate::state::{State, propagate_with_stm};
 use crate::time::{TDB, Time};
 use nalgebra::DMatrix;
@@ -37,22 +37,24 @@ use nalgebra::DMatrix;
 ///
 /// # Errors
 /// Returns an error if an ephemeris query fails or integration does not converge.
-pub fn compute_state_transition<E, F>(
+pub fn compute_state_transition<E, S, F>(
     ephem: &E,
+    frames: &S,
     state: &State<Equatorial, SSB>,
     jd: Time<TDB>,
     include_extended: bool,
     non_grav: Option<(&F, &[f64])>,
 ) -> KeteResult<(State<Equatorial, SSB>, DMatrix<f64>)>
 where
-    E: Ephemeris,
+    E: EphemerisSource,
+    S: FrameSource,
     F: ParameterizedForce<Frame = Equatorial, Center = SunCenter> + Clone,
 {
     let (non_grav, free_params) = non_grav.map_or((None, &[][..]), |(force, params)| {
         (Some(force.clone()), params)
     });
     let (pos_f, vel_f, sens) = propagate_with_stm(
-        &NBody::with_non_grav(ephem, include_extended, non_grav),
+        &NBody::with_non_grav(ephem, frames, include_extended, non_grav),
         state.pos.into(),
         state.vel.into(),
         free_params,

@@ -14,6 +14,7 @@ use kete_core::propagation::{NBody, compute_state_transition};
 use kete_core::state::State;
 use kete_core::time::{TDB, Time};
 use kete_spice::ephemeris::SpiceEphemeris;
+use kete_spice::frames::SpiceFrames;
 
 /// Test helper: propagate a heliocentric SSB-centered state with
 /// optional non-grav values frozen into the force.
@@ -23,10 +24,11 @@ fn propagate(
     non_grav: Option<&NonGravMask>,
 ) -> KeteResult<State<Equatorial, SSB>> {
     let eph = SpiceEphemeris::loaded()?;
+    let frames = SpiceFrames::loaded()?;
     match non_grav {
-        None => state.propagate_with(&NBody::new(&eph, false), jd_final),
+        None => state.propagate_with(&NBody::new(&eph, &frames, false), jd_final),
         Some(frozen) => {
-            let force = NBody::with_non_grav(&eph, false, Some(frozen.clone()));
+            let force = NBody::with_non_grav(&eph, &frames, false, Some(frozen.clone()));
             state.propagate_with(&force, jd_final)
         }
     }
@@ -63,8 +65,9 @@ fn stm_n_body_finite_difference_validation() {
     // 30 days
     let jd_final = (2451545.0 + 30.0).into();
 
-    let (_final_state, sens) = compute_state_transition::<_, NonGravKind>(
+    let (_final_state, sens) = compute_state_transition::<_, _, NonGravKind>(
         &SpiceEphemeris::loaded().unwrap(),
+        &SpiceFrames::loaded().unwrap(),
         &state,
         jd_final,
         false,
@@ -139,8 +142,9 @@ fn stm_determinant_conservative() {
     let state = test_state();
     let jd_final = (2451545.0 + 30.0).into();
 
-    let (_final_state, sens) = compute_state_transition::<_, NonGravKind>(
+    let (_final_state, sens) = compute_state_transition::<_, _, NonGravKind>(
         &SpiceEphemeris::loaded().unwrap(),
+        &SpiceFrames::loaded().unwrap(),
         &state,
         jd_final,
         false,
@@ -170,6 +174,7 @@ fn stm_jpl_comet_param_sensitivity() {
 
     let (_final_state, sens) = compute_state_transition(
         &SpiceEphemeris::loaded().unwrap(),
+        &SpiceFrames::loaded().unwrap(),
         &state,
         jd_final,
         false,
@@ -236,6 +241,7 @@ fn stm_dust_param_sensitivity() {
 
     let (_final_state, sens) = compute_state_transition(
         &SpiceEphemeris::loaded().unwrap(),
+        &SpiceFrames::loaded().unwrap(),
         &state,
         jd_final,
         false,
@@ -282,8 +288,9 @@ fn stm_long_arc_90_day() {
     // 90 days
     let jd_final = (2451545.0 + 90.0).into();
 
-    let (_final_state, sens) = compute_state_transition::<_, NonGravKind>(
+    let (_final_state, sens) = compute_state_transition::<_, _, NonGravKind>(
         &SpiceEphemeris::loaded().unwrap(),
+        &SpiceFrames::loaded().unwrap(),
         &state,
         jd_final,
         false,
@@ -376,6 +383,7 @@ fn stm_radiation_param_sensitivity() {
 
     let (_final_state, sens) = compute_state_transition(
         &SpiceEphemeris::loaded().unwrap(),
+        &SpiceFrames::loaded().unwrap(),
         &state,
         jd_final,
         false,

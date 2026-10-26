@@ -19,7 +19,7 @@
 use std::f64::consts::{PI, SQRT_2, TAU};
 
 use kete_core::constants::GMS;
-use kete_core::frames::{InertialFrame, Vector};
+use kete_core::frames::{StaticFrame, Vector};
 use kete_core::kepler::stumpff_c2_c3;
 use kete_core::prelude::{Error, KeteResult};
 
@@ -64,7 +64,7 @@ const ACCEPT: f64 = 1e-9;
 /// * Positions at the origin.
 /// * Positions along the same direction from the Sun.
 /// * The single-revolution solution does not converge, whatever `max_revs`.
-pub fn lambert<T: InertialFrame>(
+pub fn lambert<T: StaticFrame>(
     r1: &Vector<T>,
     r2: &Vector<T>,
     dt: f64,
@@ -131,7 +131,7 @@ fn find_root(
 /// Core Lambert solver for a specific revolution count N.
 ///
 /// Returns one solution for N=0 and two for N>0.
-fn lambert_core<T: InertialFrame>(
+fn lambert_core<T: StaticFrame>(
     r1: &Vector<T>,
     r2: &Vector<T>,
     dt: f64,

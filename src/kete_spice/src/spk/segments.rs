@@ -13,7 +13,7 @@ use super::type19::SpkSegmentType19;
 use super::type21::SpkSegmentType21;
 use crate::daf::DafArray;
 use kete_core::errors::Error;
-use kete_core::frames::{Ecliptic, Equatorial, FK4, Galactic, InertialFrame};
+use kete_core::frames::{Ecliptic, Equatorial, FK4, Galactic, StaticFrame};
 use kete_core::prelude::{Desig, KeteResult};
 use kete_core::state::State;
 use kete_core::time::{TDB, Time};
@@ -89,7 +89,7 @@ impl SpkSegment {
     /// Return the [`State`] object at the specified JD. If the requested time is
     /// not within the available range, this will fail.
     #[inline(always)]
-    pub(in crate::spk) fn try_get_state<T: InertialFrame>(
+    pub(in crate::spk) fn try_get_state<T: StaticFrame>(
         &self,
         jd: Time<TDB>,
     ) -> KeteResult<State<T>> {

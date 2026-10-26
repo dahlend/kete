@@ -8,7 +8,7 @@
 use std::f64::consts::TAU;
 use std::time::Instant;
 
-use kete_core::ephemeris::Ephemeris;
+use kete_core::ephemeris::EphemerisSource;
 use kete_core::frames::{Equatorial, SSB, Vector};
 use kete_core::prelude::State;
 use kete_core::propagation::NBody;
@@ -20,7 +20,7 @@ use crate::{
     ConfirmRules, Confirmed, SearchPass, SearchSettings, merge_pieces, parallax_margin, search,
     search_windows, sight_from_observation, tiles,
 };
-use kete_spice::prelude::SpiceEphemeris;
+use kete_spice::prelude::{SpiceEphemeris, SpiceFrames};
 use rayon::prelude::*;
 
 use super::harness::{CLUTTER, Score, Sky, earth, nightly, on_threads, optical, sorted};
@@ -319,6 +319,7 @@ impl Survey {
         // is released before the observers, which take it again, are placed.
         let _ = earth(reference());
         let eph = SpiceEphemeris::loaded().unwrap();
+        let frames = SpiceFrames::loaded().unwrap();
         let moved: Vec<Vec<SunState>> = objects
             .par_iter()
             .map(|object| {
@@ -328,7 +329,7 @@ impl Survey {
                     .map(|&(_, days)| {
                         let moved = start
                             .clone()
-                            .propagate_with(&NBody::new(&eph, false), reference() + days)
+                            .propagate_with(&NBody::new(&eph, &frames, false), reference() + days)
                             .unwrap();
                         eph.spk().try_to_sun(moved).unwrap()
                     })

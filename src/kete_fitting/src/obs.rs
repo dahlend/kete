@@ -6,11 +6,11 @@
 use kete_core::Band;
 use kete_core::constants::{AU_KM, C_AU_PER_DAY, C_AU_PER_DAY_INV, GMS};
 use kete_core::desigs::Desig;
-use kete_core::ephemeris::Ephemeris;
-use kete_core::frames::{Equatorial, SSB, Vector, geodetic_lat_lon_to_ecef};
+use kete_core::ephemeris::EphemerisSource;
+use kete_core::frames::{Equatorial, SSB, Vector, earth_frame, geodetic_lat_lon_to_ecef};
 use kete_core::prelude::{Error, KeteResult, State};
 use kete_core::time::{TDB, Time};
-use kete_spice::frames::ITRF93;
+use kete_spice::frames::SpiceFrames;
 use kete_spice::prelude::{LOADED_SPK, SpiceEphemeris};
 use nalgebra::{DVector, Matrix2x3, Matrix3x1, RowVector6, Vector3};
 
@@ -84,10 +84,10 @@ pub(crate) fn differential_light_deflect(
 /// Compute the SSB-centered Equatorial state of an Earth ground station at
 /// the given epoch.
 ///
-/// Uses the Earth frame (ITRF93, 3000) of the loaded kernels for Earth
-/// orientation (delivers position + inertial velocity, including Earth surface
-/// rotation) and their states to recenter from geocentric to SSB.  This is the
-/// same conversion used by `spice.earth_pos_to_ecliptic` on the Python side.
+/// The Earth orientation is [`earth_frame`]: ITRF93 from the loaded kernels where
+/// they cover the epoch, else the approximate Earth frame. It gives the position and
+/// the inertial velocity, including the Earth's rotation. The loaded kernels give the
+/// states that recenter it from geocentric to SSB.
 fn station_state_at(
     lat_rad: f64,
     lon_rad: f64,
@@ -98,12 +98,11 @@ fn station_state_at(
     let pos_ecef_au: Vector3<f64> =
         Vector3::new(pos_ecef_km[0], pos_ecef_km[1], pos_ecef_km[2]) / AU_KM;
 
-    let eph = SpiceEphemeris::loaded()?;
-    let frame = eph.try_frame(ITRF93, epoch)?;
+    let frame = earth_frame(epoch, &SpiceFrames::loaded()?)?;
     let (pos_eq, vel_eq) = frame.to_equatorial(pos_ecef_au, Vector3::zeros())?;
 
     let geocentric = State::<Equatorial>::new(Desig::Empty, epoch, pos_eq, vel_eq, 399);
-    eph.try_to_ssb(geocentric)
+    SpiceEphemeris::loaded()?.try_to_ssb(geocentric)
 }
 
 /// A single astrometric or radar observation.

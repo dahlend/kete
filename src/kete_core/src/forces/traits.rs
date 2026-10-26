@@ -15,7 +15,7 @@
 use nalgebra::{Matrix3, Matrix3xX, Vector3};
 
 use crate::errors::KeteResult;
-use crate::frames::{CenterBody, InertialFrame, Vector};
+use crate::frames::{CenterBody, StaticFrame, Vector};
 use crate::time::{TDB, Time};
 
 /// A single piece of physics contributing acceleration to a body.
@@ -27,7 +27,7 @@ use crate::time::{TDB, Time};
 /// during parallel batch propagation.
 pub trait ParameterizedForce: Send + Sync {
     /// Inertial frame the force expects positions and velocities in.
-    type Frame: InertialFrame;
+    type Frame: StaticFrame;
 
     /// Center body the position and velocity passed to `accel` are
     /// measured relative to.

@@ -6,14 +6,15 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use crossbeam::sync::ShardedLock;
-use nalgebra::{Matrix3, Vector3};
+use nalgebra::{Matrix3, Rotation3, Vector3};
 
 use super::{Polyhedron, SphericalHarmonics};
 use crate::{
     constants::{C_AU_PER_DAY_INV_SQUARED, EARTH_J2, GMS, JUPITER_J2, SUN_J2},
     desigs::Desig,
     errors::{Error, KeteResult},
-    frames::{Ecliptic, FrameId, InertialFrame},
+    frames::{Ecliptic, FrameSource, OffsetFrame, StaticFrame},
+    time::{TDB, Time},
 };
 
 #[cfg(feature = "pyo3")]
@@ -74,8 +75,8 @@ pub enum Shape {
     Polyhedron {
         /// The field model, in the body frame.
         model: Arc<Polyhedron>,
-        /// Orientation of the body frame.
-        orientation: Orientation,
+        /// The body frame.
+        frame: OffsetFrame,
         /// Distance from the body, in AU, inside which the polyhedron field is used.
         switch_radius: f64,
     },
@@ -91,8 +92,8 @@ pub enum Shape {
     SphericalHarmonics {
         /// The field model, in the body frame.
         model: Arc<SphericalHarmonics>,
-        /// Orientation of the body frame.
-        orientation: Orientation,
+        /// The body frame.
+        frame: OffsetFrame,
         /// Distance from the body, in AU, inside which the series is used.
         switch_radius: f64,
     },
@@ -124,22 +125,6 @@ impl ShapeField<'_> {
             Self::Harmonics(model) => model.field_and_gradient(pos),
         }
     }
-}
-
-/// Orientation of a body frame relative to equatorial axes.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Orientation {
-    /// A fixed rotation from the body frame to equatorial axes.
-    Fixed(Matrix3<f64>),
-
-    /// The rotation from the body frame to equatorial axes is the frame
-    /// `frame_id` of an [`Ephemeris`](crate::ephemeris::Ephemeris) at each
-    /// evaluation. The caller resolves it (see
-    /// [`GravParams::orientation_needed`]).
-    Frame {
-        /// SPICE frame ID of the body frame.
-        frame_id: FrameId,
-    },
 }
 
 impl FromStr for GravParams {
@@ -322,30 +307,39 @@ impl GravParams {
         }
     }
 
-    /// The frame whose rotation [`Self::add_acceleration`] and
-    /// [`Self::add_acceleration_and_jacobians`] need at relative position
-    /// `rel_pos`, if any.
+    /// The rotation from the body frame to equatorial axes that
+    /// [`Self::add_acceleration`], [`Self::add_acceleration_and_jacobians`] and
+    /// [`Self::is_inside`] need at relative position `rel_pos`, if any.
     ///
-    /// Only a shaped body with a frame orientation needs one, inside its switch
-    /// radius.
+    /// Only a shaped body needs one, inside its switch radius, so this costs nothing
+    /// on orbits that never approach such a body. A static body frame resolves
+    /// without consulting `frames`.
+    ///
+    /// # Errors
+    /// Fails when the body frame cannot be resolved at `time` from `frames`. A
+    /// missing orientation is an error, never a silent point mass.
     #[inline(always)]
-    #[must_use]
-    pub fn orientation_needed(&self, rel_pos: &Vector3<f64>) -> Option<FrameId> {
+    pub fn rotation_at<S: FrameSource>(
+        &self,
+        rel_pos: &Vector3<f64>,
+        time: Time<TDB>,
+        frames: &S,
+    ) -> KeteResult<Option<Rotation3<f64>>> {
         match &self.shape {
             Shape::Polyhedron {
-                orientation: Orientation::Frame { frame_id },
+                frame,
                 switch_radius,
                 ..
             }
             | Shape::SphericalHarmonics {
-                orientation: Orientation::Frame { frame_id },
+                frame,
                 switch_radius,
                 ..
-            } if rel_pos.norm() < *switch_radius => Some(*frame_id),
+            } if rel_pos.norm() < *switch_radius => Ok(Some(frame.try_at(time, frames)?.rotation)),
             Shape::Point
             | Shape::Oblate { .. }
             | Shape::Polyhedron { .. }
-            | Shape::SphericalHarmonics { .. } => None,
+            | Shape::SphericalHarmonics { .. } => Ok(None),
         }
     }
 
@@ -355,19 +349,19 @@ impl GravParams {
     fn shape_field_at(
         &self,
         rel_pos: &Vector3<f64>,
-        body_to_equatorial: Option<&Matrix3<f64>>,
+        body_to_equatorial: Option<&Rotation3<f64>>,
     ) -> KeteResult<Option<(ShapeField<'_>, Matrix3<f64>)>> {
-        let (model, orientation, switch_radius) = match &self.shape {
+        let (model, switch_radius) = match &self.shape {
             Shape::Polyhedron {
                 model,
-                orientation,
                 switch_radius,
-            } => (ShapeField::Polyhedron(model), orientation, switch_radius),
+                ..
+            } => (ShapeField::Polyhedron(model), switch_radius),
             Shape::SphericalHarmonics {
                 model,
-                orientation,
                 switch_radius,
-            } => (ShapeField::Harmonics(model), orientation, switch_radius),
+                ..
+            } => (ShapeField::Harmonics(model), switch_radius),
             Shape::Point | Shape::Oblate { .. } => return Ok(None),
         };
         if rel_pos.norm() >= *switch_radius {
@@ -383,16 +377,15 @@ impl GravParams {
         {
             return Ok(None);
         }
-        let rot = match orientation {
-            Orientation::Fixed(rot) => *rot,
-            Orientation::Frame { frame_id } => *body_to_equatorial.ok_or_else(|| {
+        let rot = *body_to_equatorial
+            .ok_or_else(|| {
                 Error::ValueError(format!(
-                    "Body {} has a gravity field model oriented by frame {frame_id}, \
-                     but no orientation was provided; this propagator cannot evaluate it.",
+                    "Body {} has a gravity field model in its body frame, but no rotation \
+                 was provided; see GravParams::rotation_at.",
                     self.naif_id
                 ))
-            })?,
-        };
+            })?
+            .matrix();
         Ok(Some((model, rot)))
     }
 
@@ -403,14 +396,15 @@ impl GravParams {
     /// larger of `radius` and the model's minimum radius, since the series is not
     /// valid inside the minimum radius. For every other shape it is
     /// `|rel_pos| <= radius`.
+    ///
     /// `body_to_equatorial` is as for [`Self::add_acceleration`].
     ///
     /// # Errors
-    /// Fails if a required orientation is not provided.
+    /// Fails if a required rotation is not provided.
     pub fn is_inside(
         &self,
         rel_pos: &Vector3<f64>,
-        body_to_equatorial: Option<&Matrix3<f64>>,
+        body_to_equatorial: Option<&Rotation3<f64>>,
     ) -> KeteResult<bool> {
         if let Shape::Polyhedron { model, .. } = &self.shape {
             // The mesh lies within its bounding radius, which is inside the switch
@@ -440,19 +434,19 @@ impl GravParams {
     /// Add acceleration to the provided accel vector.
     ///
     /// `rel_pos` and `rel_vel` are relative to the body, on equatorial axes.
-    /// `body_to_equatorial` is the body-frame rotation for a shaped body with a
-    /// frame orientation, required when [`Self::orientation_needed`] returns a frame,
-    /// ignored otherwise.
+    /// `body_to_equatorial` is the rotation from the body frame to equatorial axes
+    /// that [`Self::rotation_at`] gives, required for a shaped body inside its switch
+    /// radius, ignored otherwise.
     ///
     /// # Errors
-    /// Fails if a required orientation is not provided.
+    /// Fails if a required rotation is not provided.
     #[inline(always)]
     pub fn add_acceleration(
         &self,
         accel: &mut Vector3<f64>,
         rel_pos: &Vector3<f64>,
         rel_vel: &Vector3<f64>,
-        body_to_equatorial: Option<&Matrix3<f64>>,
+        body_to_equatorial: Option<&Rotation3<f64>>,
     ) -> KeteResult<()> {
         let mass = self.mass;
 
@@ -502,7 +496,7 @@ impl GravParams {
         da_dv: &mut Matrix3<f64>,
         rel_pos: &Vector3<f64>,
         rel_vel: &Vector3<f64>,
-        body_to_equatorial: Option<&Matrix3<f64>>,
+        body_to_equatorial: Option<&Rotation3<f64>>,
     ) -> KeteResult<()> {
         let d = *rel_pos;
         let v = *rel_vel;
@@ -655,23 +649,23 @@ pub(crate) fn j2_correction(
 
 /// Analytical Jacobian of the J2 oblateness acceleration `da_J2/dd`.
 ///
-/// The derivative of [`j2_correction`], with the same arguments: `d` is the position
-/// relative to the body and `pole` its unit spin axis, on the same axes.
+/// The derivative of [`j2_correction`], with the same arguments: `rel_pos` is the
+/// position relative to the body and `pole` its unit spin axis, on the same axes.
 ///
 /// - `radius`: equatorial radius of the body (AU)
 /// - `j2`: J2 coefficient
 /// - `mass`: GM of the body (AU^3/day^2)
 fn j2_jacobian(
-    d: &Vector3<f64>,
+    rel_pos: &Vector3<f64>,
     pole: &Vector3<f64>,
     radius: f64,
     j2: f64,
     mass: f64,
 ) -> Matrix3<f64> {
-    let d = *d;
-    let r = d.norm();
+    let d = *rel_pos;
+    let r = rel_pos.norm();
     let r2 = r * r;
-    let z = d.dot(pole);
+    let z = rel_pos.dot(pole);
 
     let lambda = 1.5 * j2 * mass * (radius / r).powi(2) / (r2 * r);
     let big_z = 5.0 * z * z / r2;
@@ -710,6 +704,8 @@ pub(crate) fn apply_gr_correction(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frames::{DynFrameId, FrameTable, InstantFrame};
+    use nalgebra::Rotation3;
 
     /// The ecliptic-pole rotation form of the Sun and Jupiter J2 jacobian: rotate into the
     /// frame whose z axis is the pole, differentiate there, rotate back.
@@ -788,8 +784,8 @@ mod tests {
         }
     }
     /// A polyhedron body: the test prism of `forces::polyhedron`, scaled to `size`,
-    /// with a fixed rotation or a frame orientation.
-    fn polyhedron_body(orientation: Orientation, switch_radius: f64) -> GravParams {
+    /// in the body frame `frame`.
+    fn polyhedron_body(frame: OffsetFrame, switch_radius: f64) -> GravParams {
         let size = 1e-3;
         let v = (0..8_u32)
             .map(|i| {
@@ -821,14 +817,54 @@ mod tests {
         let mut body = GravParams::new(-99, gm, 2e-3);
         body.shape = Shape::Polyhedron {
             model: Arc::new(model),
-            orientation,
+            frame,
             switch_radius,
         };
         body
     }
 
-    fn rotation() -> Matrix3<f64> {
-        *nalgebra::Rotation3::from_euler_angles(0.4, -0.9, 1.7).matrix()
+    fn rotation() -> Rotation3<f64> {
+        Rotation3::from_euler_angles(0.4, -0.9, 1.7)
+    }
+
+    /// A body frame at the fixed rotation `rot` from equatorial axes.
+    fn fixed(rot: Rotation3<f64>) -> OffsetFrame {
+        OffsetFrame::new(DynFrameId::UNNAMED, rot, DynFrameId::J2000)
+    }
+
+    /// The body frame `BODY_FRAME` itself.
+    fn body_frame() -> OffsetFrame {
+        OffsetFrame::new(DynFrameId::UNNAMED, Rotation3::identity(), BODY_FRAME)
+    }
+
+    fn epoch() -> Time<TDB> {
+        Time::new(2_451_545.0)
+    }
+
+    /// The rotation `body` needs at `p`, from a fixed frame.
+    fn rot_at(body: &GravParams, p: &Vector3<f64>) -> Option<Rotation3<f64>> {
+        body.rotation_at(p, epoch(), &FrameTable::new()).unwrap()
+    }
+
+    /// A source holding one body frame, `BODY_FRAME`, at a fixed rotation from
+    /// equatorial axes.
+    struct OneFrame(Rotation3<f64>);
+
+    const BODY_FRAME: DynFrameId = DynFrameId(-42);
+
+    impl FrameSource for OneFrame {
+        fn try_link(&self, frame_id: DynFrameId, time: Time<TDB>) -> KeteResult<InstantFrame> {
+            if frame_id != BODY_FRAME {
+                return FrameTable::new().try_link(frame_id, time);
+            }
+            Ok(InstantFrame::from_rotations(
+                time,
+                self.0,
+                None,
+                BODY_FRAME,
+                DynFrameId::J2000,
+            ))
+        }
     }
 
     /// A polyhedron body is tested against its surface, not its bounding sphere. The
@@ -837,7 +873,7 @@ mod tests {
     #[test]
     fn polyhedron_body_inside_is_the_surface() {
         let rot = rotation();
-        let body = polyhedron_body(Orientation::Fixed(rot), 0.05);
+        let body = polyhedron_body(fixed(rot), 0.05);
         let Shape::Polyhedron { model, .. } = &body.shape else {
             unreachable!("built as a polyhedron")
         };
@@ -845,9 +881,9 @@ mod tests {
         // Between the surface and the bounding sphere, along the body z axis.
         let outside = rot * Vector3::new(0.0, 0.0, 0.9e-3);
         assert!(outside.norm() < bounding);
-        assert!(!body.is_inside(&outside, None).unwrap());
+        assert!(!body.is_inside(&outside, Some(&rot)).unwrap());
         let inside = rot * Vector3::new(0.0, 0.0, 0.1e-3);
-        assert!(body.is_inside(&inside, None).unwrap());
+        assert!(body.is_inside(&inside, Some(&rot)).unwrap());
         // A point body keeps the radius test.
         let point = GravParams::new(-98, 3e-12, 2e-3);
         assert!(point.is_inside(&outside, None).unwrap());
@@ -859,16 +895,11 @@ mod tests {
     fn polyhedron_body_field_and_switch() {
         let rot = rotation();
         let switch = 0.05;
-        let body = polyhedron_body(Orientation::Fixed(rot), switch);
+        let body = polyhedron_body(fixed(rot), switch);
         let Shape::Polyhedron { model, .. } = &body.shape else {
             unreachable!("built as a polyhedron")
         };
-        let accel_at = |p: &Vector3<f64>| {
-            let mut a = Vector3::zeros();
-            body.add_acceleration(&mut a, p, &Vector3::zeros(), None)
-                .unwrap();
-            a
-        };
+        let accel_at = |p: &Vector3<f64>| accel_of(&body, p).unwrap();
         let near = Vector3::new(2.1e-3, -0.8e-3, 1.4e-3);
         let expect = rot * model.field(&(rot.transpose() * near)).0;
         assert!(
@@ -895,17 +926,26 @@ mod tests {
 
     #[test]
     fn polyhedron_body_jacobian_matches_finite_difference() {
-        let body = polyhedron_body(Orientation::Fixed(rotation()), 0.05);
+        let body = polyhedron_body(fixed(rotation()), 0.05);
         let p = Vector3::new(2.1e-3, -0.8e-3, 1.4e-3);
         let v = Vector3::new(1e-4, 2e-4, -1e-4);
         let mut accel = Vector3::zeros();
         let mut da_dr = Matrix3::zeros();
         let mut da_dv = Matrix3::zeros();
-        body.add_acceleration_and_jacobians(&mut accel, &mut da_dr, &mut da_dv, &p, &v, None)
-            .unwrap();
+        let rot = rot_at(&body, &p);
+        body.add_acceleration_and_jacobians(
+            &mut accel,
+            &mut da_dr,
+            &mut da_dv,
+            &p,
+            &v,
+            rot.as_ref(),
+        )
+        .unwrap();
         let accel_at = |q: &Vector3<f64>| {
             let mut a = Vector3::zeros();
-            body.add_acceleration(&mut a, q, &v, None).unwrap();
+            body.add_acceleration(&mut a, q, &v, rot_at(&body, q).as_ref())
+                .unwrap();
             a
         };
         assert_eq!(accel, accel_at(&p));
@@ -921,55 +961,58 @@ mod tests {
         assert_eq!(da_dv, Matrix3::zeros(), "no velocity dependence");
     }
 
+    /// A body frame named by ID is resolved by the source, inside the switch radius
+    /// only, and matches the same rotation held as a fixed frame.
     #[test]
-    fn polyhedron_body_ck_orientation_required_inside_only() {
-        let body = polyhedron_body(
-            Orientation::Frame {
-                frame_id: FrameId(-42),
-            },
-            0.05,
-        );
+    fn polyhedron_body_frame_id_resolved_inside_only() {
+        let rot = rotation();
+        let body = polyhedron_body(body_frame(), 0.05);
         let near = Vector3::new(2.1e-3, -0.8e-3, 1.4e-3);
         let far = Vector3::new(0.3, 0.0, 0.0);
-        assert_eq!(
-            body.orientation_needed(&near),
-            Some(FrameId(-42)),
-            "needed inside"
+        let source = OneFrame(rot);
+        let resolved = body.rotation_at(&near, epoch(), &source).unwrap().unwrap();
+        assert!(
+            (resolved.matrix() - rot.matrix()).norm() < 1e-15,
+            "resolved inside"
         );
-        assert_eq!(body.orientation_needed(&far), None, "not needed outside");
+        assert_eq!(
+            body.rotation_at(&far, epoch(), &FrameTable::new()).unwrap(),
+            None,
+            "not needed outside"
+        );
+        assert!(
+            body.rotation_at(&near, epoch(), &FrameTable::new())
+                .is_err(),
+            "a source without the frame is an error, not a point mass"
+        );
         let mut a = Vector3::zeros();
         assert!(
             body.add_acceleration(&mut a, &near, &Vector3::zeros(), None)
                 .is_err(),
-            "missing orientation is an error, not a point mass"
+            "a missing rotation is an error, not a point mass"
         );
         assert!(
             body.add_acceleration(&mut a, &far, &Vector3::zeros(), None)
                 .is_ok(),
-            "outside, the point mass needs no orientation"
+            "outside, the point mass needs no rotation"
         );
-        let rot = rotation();
-        let mut with_ck = Vector3::zeros();
-        body.add_acceleration(&mut with_ck, &near, &Vector3::zeros(), Some(&rot))
+        let mut by_id = Vector3::zeros();
+        body.add_acceleration(&mut by_id, &near, &Vector3::zeros(), Some(&resolved))
             .unwrap();
-        let fixed = polyhedron_body(Orientation::Fixed(rot), 0.05);
-        let mut with_fixed = Vector3::zeros();
-        fixed
-            .add_acceleration(&mut with_fixed, &near, &Vector3::zeros(), None)
-            .unwrap();
-        assert_eq!(with_ck, with_fixed, "a provided rotation is used as given");
+        let fixed_body = polyhedron_body(fixed(rot), 0.05);
+        assert_eq!(by_id, accel_of(&fixed_body, &near).unwrap());
     }
 
     /// A spherical harmonic body with its model in the body frame, in AU.
     fn harmonics_body(
         model: SphericalHarmonics,
-        orientation: Orientation,
+        frame: OffsetFrame,
         switch_radius: f64,
     ) -> GravParams {
         let mut body = GravParams::new(-98, model.gm(), 2e-3);
         body.shape = Shape::SphericalHarmonics {
             model: Arc::new(model),
-            orientation,
+            frame,
             switch_radius,
         };
         body
@@ -1006,9 +1049,10 @@ mod tests {
         SphericalHarmonics::new(gm, radius, &c, &s, Some(radius)).unwrap()
     }
 
+    /// The acceleration of `body` at `p`, with its body frame from a fixed frame.
     fn accel_of(body: &GravParams, p: &Vector3<f64>) -> KeteResult<Vector3<f64>> {
         let mut a = Vector3::zeros();
-        body.add_acceleration(&mut a, p, &Vector3::zeros(), None)?;
+        body.add_acceleration(&mut a, p, &Vector3::zeros(), rot_at(body, p).as_ref())?;
         Ok(a)
     }
 
@@ -1050,7 +1094,7 @@ mod tests {
         ];
         let s = [vec![0.0], vec![0.0; 2], vec![0.0; 3]];
         let model = SphericalHarmonics::new(gm, radius, &c, &s, Some(radius)).unwrap();
-        let body = harmonics_body(model, Orientation::Fixed(rot), 0.05);
+        let body = harmonics_body(model, fixed(rot), 0.05);
         let mut oblate = GravParams::new(-97, gm, radius as f32);
         oblate.shape = Shape::Oblate {
             j2,
@@ -1077,7 +1121,7 @@ mod tests {
                 &mut dv,
                 &p,
                 &Vector3::zeros(),
-                None,
+                rot_at(&body, &p).as_ref(),
             )
             .unwrap();
             oblate
@@ -1096,11 +1140,7 @@ mod tests {
 
     #[test]
     fn harmonics_body_jacobian_matches_finite_difference() {
-        let body = harmonics_body(
-            test_harmonics(3e-12, 1.5e-3),
-            Orientation::Fixed(rotation()),
-            0.05,
-        );
+        let body = harmonics_body(test_harmonics(3e-12, 1.5e-3), fixed(rotation()), 0.05);
         let p = Vector3::new(2.6e-3, -1.8e-3, 1.4e-3);
         let mut accel = Vector3::zeros();
         let mut da_dr = Matrix3::zeros();
@@ -1111,7 +1151,7 @@ mod tests {
             &mut da_dv,
             &p,
             &Vector3::zeros(),
-            None,
+            rot_at(&body, &p).as_ref(),
         )
         .unwrap();
         assert_eq!(accel, accel_of(&body, &p).unwrap());
@@ -1134,11 +1174,7 @@ mod tests {
     /// it is also the point mass.
     #[test]
     fn harmonics_body_inside_minimum_radius_is_the_point_mass() {
-        let body = harmonics_body(
-            test_harmonics(3e-12, 1.5e-3),
-            Orientation::Fixed(rotation()),
-            0.05,
-        );
+        let body = harmonics_body(test_harmonics(3e-12, 1.5e-3), fixed(rotation()), 0.05);
         let inside = Vector3::new(1.0e-3, 0.5e-3, -0.2e-3);
         let point = -inside * body.mass / inside.norm().powi(3);
         assert!((accel_of(&body, &inside).unwrap() - point).norm() <= 1e-15 * point.norm());
@@ -1164,29 +1200,28 @@ mod tests {
     }
 
     #[test]
-    fn harmonics_body_ck_orientation_required_inside_only() {
+    fn harmonics_body_frame_id_resolved_inside_only() {
         let rot = rotation();
-        let body = harmonics_body(
-            test_harmonics(3e-12, 1.5e-3),
-            Orientation::Frame {
-                frame_id: FrameId(-42),
-            },
-            0.05,
-        );
+        let body = harmonics_body(test_harmonics(3e-12, 1.5e-3), body_frame(), 0.05);
         let near = Vector3::new(2.6e-3, -1.8e-3, 1.4e-3);
         let far = Vector3::new(0.3, 0.0, 0.0);
-        assert_eq!(body.orientation_needed(&near), Some(FrameId(-42)));
-        assert_eq!(body.orientation_needed(&far), None);
+        let source = OneFrame(rot);
+        let resolved = body.rotation_at(&near, epoch(), &source).unwrap();
+        assert!(resolved.is_some());
+        assert_eq!(
+            body.rotation_at(&far, epoch(), &FrameTable::new()).unwrap(),
+            None
+        );
         assert!(
-            accel_of(&body, &near).is_err(),
-            "missing orientation is an error"
+            body.rotation_at(&near, epoch(), &FrameTable::new())
+                .is_err()
         );
         assert!(accel_of(&body, &far).is_ok());
-        let mut with_ck = Vector3::zeros();
-        body.add_acceleration(&mut with_ck, &near, &Vector3::zeros(), Some(&rot))
+        let mut by_id = Vector3::zeros();
+        body.add_acceleration(&mut by_id, &near, &Vector3::zeros(), resolved.as_ref())
             .unwrap();
-        let fixed = harmonics_body(test_harmonics(3e-12, 1.5e-3), Orientation::Fixed(rot), 0.05);
-        assert_eq!(with_ck, accel_of(&fixed, &near).unwrap());
+        let fixed_body = harmonics_body(test_harmonics(3e-12, 1.5e-3), fixed(rot), 0.05);
+        assert_eq!(by_id, accel_of(&fixed_body, &near).unwrap());
     }
 
     /// A harmonic body built from a polyhedron's exact coefficients matches the
@@ -1194,14 +1229,14 @@ mod tests {
     #[test]
     fn harmonics_body_matches_polyhedron_body() {
         let rot = rotation();
-        let poly_body = polyhedron_body(Orientation::Fixed(rot), 0.05);
+        let poly_body = polyhedron_body(fixed(rot), 0.05);
         let Shape::Polyhedron { model, .. } = &poly_body.shape else {
             unreachable!("built as a polyhedron")
         };
         let exact = (**model).clone().without_far_field();
         let harmonics = SphericalHarmonics::from_polyhedron(&exact, 20).unwrap();
         let rb = harmonics.radius();
-        let body = harmonics_body(harmonics, Orientation::Fixed(rot), 0.05);
+        let body = harmonics_body(harmonics, fixed(rot), 0.05);
         for (dir, scale) in [
             (Vector3::new(0.3, -0.8, 0.5), 2.5),
             (Vector3::new(-1.0, 0.2, 0.1), 4.0),

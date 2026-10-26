@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Dar Dahlen
 // SPDX-License-Identifier: BSD-3-Clause
 
-//! [`NBody`]: N-body gravity with body states from an [`Ephemeris`], with an optional
+//! [`NBody`]: N-body gravity with body states from an [`EphemerisSource`], with an optional
 //! non-gravitational force.
 //!
 //! Every term of the model is a function of the object's state relative to one massive
@@ -9,18 +9,20 @@
 //! each body, a non-gravitational force relative to the Sun. `NBody` looks up each body
 //! once per evaluation and hands the relative state to every term that needs it.
 
-use crate::ephemeris::Ephemeris;
+use crate::ephemeris::EphemerisSource;
 use crate::errors::{Error, KeteResult};
 use crate::forces::{GravParams, NonGravMask, ParameterizedForce};
-use crate::frames::{Equatorial, SSB, SunCenter, Vector};
+use crate::frames::{Equatorial, FrameSource, SSB, SunCenter, Vector};
 use crate::time::{TDB, Time};
 use nalgebra::{Matrix3, Matrix3xX, Vector3};
 
-/// NAIF id of the Sun, the body a non-gravitational force is evaluated relative to.
-const SUN: i32 = 10;
-
-/// N-body gravity [`ParameterizedForce`] with body states from the ephemeris `E`, and
-/// an optional Sun-centered non-gravitational force `F`.
+/// N-body gravity [`ParameterizedForce`] with body states from the ephemeris `E`, body
+/// frames from the frame source `S`, and an optional Sun-centered non-gravitational
+/// force `F`.
+///
+/// The orientations of the body frames of shaped massive bodies come from `S`. They are needed only inside the switch radius of such a body whose
+/// frame is not a static inertial frame; [`FrameTable::new`](crate::frames::FrameTable::new) suits a
+/// model without one.
 ///
 /// Borrows the ephemeris for the lifetime `'a`, so one provider (for the SPICE one, a
 /// read guard on the loaded SPK files) is shared across all parallel tasks of a
@@ -36,85 +38,52 @@ const SUN: i32 = 10;
 /// radius and the series' minimum radius, and any other body against its radius; see
 /// [`GravParams::is_inside`]. Trial evaluations inside a step are not checked, so an
 /// impact is reported only if an accepted state lies inside the body.
-pub struct NBody<'a, E, F = NonGravMask> {
-    /// Source of the massive body states, and of body-frame orientations.
+pub struct NBody<'a, E, S, F = NonGravMask>
+where
+    E: EphemerisSource,
+    S: FrameSource,
+{
+    /// Source of the massive body states.
     pub ephem: &'a E,
+    /// Source of the body-frame orientations of shaped massive bodies.
+    pub frames: &'a S,
     /// Massive bodies whose gravity is included.
     pub massive_obj: Vec<GravParams>,
     /// Non-gravitational force, evaluated relative to the Sun.
     non_grav: Option<F>,
 }
 
-/// Number of distinct times an [`EphemerisCache`] holds before it is cleared.
-///
-/// One Radau step evaluates the force at 7 node times plus the end of the step, and
-/// the next step uses none of them.
-const CACHE_SLOTS: usize = 8;
-
-/// Working storage of [`NBody`] for one integration: the massive body states,
-/// `(position, velocity)` relative to the SSB, stored by the exact time they were
-/// evaluated at.
-///
-/// Implicit integrators such as Radau evaluate the force several times at the same set
-/// of times while iterating a step toward convergence, and the body states at those times
-/// do not change between iterations. A lookup matches only an identical time value, so a
-/// hit returns exactly the states that evaluating the ephemeris again would produce.
-///
-/// The integrator creates one per integration, as part of the force's
-/// [`ParameterizedForce::Meta`]. The cache does not record which bodies it holds, so
-/// it belongs to the one force that filled it.
-#[derive(Debug, Default)]
-pub struct EphemerisCache {
-    entries: Vec<(Time<TDB>, Vec<(Vector3<f64>, Vector3<f64>)>)>,
-}
-
-impl EphemerisCache {
-    /// Return the states stored for `time`, or compute them with `fill` and store them.
-    ///
-    /// # Errors
-    /// Forwards the error from `fill`, in which case nothing is stored.
-    fn get_or_try_insert(
-        &mut self,
-        time: Time<TDB>,
-        fill: impl FnOnce() -> KeteResult<Vec<(Vector3<f64>, Vector3<f64>)>>,
-    ) -> KeteResult<&[(Vector3<f64>, Vector3<f64>)]> {
-        let idx = if let Some(idx) = self.entries.iter().position(|(t, _)| *t == time) {
-            idx
-        } else {
-            let states = fill()?;
-            if self.entries.len() == CACHE_SLOTS {
-                self.entries.clear();
-            }
-            self.entries.push((time, states));
-            self.entries.len() - 1
-        };
-        Ok(&self.entries[idx].1)
-    }
-}
-
-impl<'a, E: Ephemeris> NBody<'a, E> {
+impl<'a, E: EphemerisSource, S: FrameSource> NBody<'a, E, S> {
     /// Gravity only, from the planets and the Moon, plus the registered massive bodies
     /// when `include_extended`.
     #[must_use]
-    pub fn new(ephem: &'a E, include_extended: bool) -> Self {
+    pub fn new(ephem: &'a E, frames: &'a S, include_extended: bool) -> Self {
         Self {
             ephem,
+            frames,
             massive_obj: massive_objects(include_extended),
             non_grav: None,
         }
     }
 }
 
-impl<'a, E, F> NBody<'a, E, F>
+impl<'a, E, S, F> NBody<'a, E, S, F>
 where
-    E: Ephemeris,
+    E: EphemerisSource,
+    S: FrameSource,
     F: ParameterizedForce<Frame = Equatorial, Center = SunCenter>,
 {
     /// Gravity plus, when given, a non-gravitational force evaluated relative to the Sun.
     #[must_use]
-    pub fn with_non_grav(ephem: &'a E, include_extended: bool, non_grav: Option<F>) -> Self {
+    pub fn with_non_grav(
+        ephem: &'a E,
+        frames: &'a S,
+        include_extended: bool,
+        non_grav: Option<F>,
+    ) -> Self {
         Self {
             ephem,
+            frames,
             massive_obj: massive_objects(include_extended),
             non_grav,
         }
@@ -151,49 +120,11 @@ where
     }
 }
 
-/// A non-gravitational force is evaluated on the Sun-relative state, which the body loop
-/// produces only if the Sun is in the list. `massive_obj` is public, so this is checked on
-/// every evaluation rather than at construction.
-fn missing_sun() -> Error {
-    Error::ValueError(
-        "NBody has a non-gravitational force but the Sun (NAIF id 10) is not in its list \
-         of massive objects, so the force cannot be evaluated."
-            .into(),
-    )
-}
-
-/// The body-frame rotation a massive body needs at `rel_pos`, if any.
-///
-/// Only a shaped body with a frame orientation needs one, and only inside its switch
-/// radius, so this costs nothing on orbits that never approach such a body. A missing
-/// orientation is an error, never a silent point mass.
-#[inline(always)]
-fn orientation<E: Ephemeris>(
-    ephem: &E,
-    grav_params: &GravParams,
-    rel_pos: &Vector3<f64>,
-    time: Time<TDB>,
-) -> KeteResult<Option<Matrix3<f64>>> {
-    grav_params
-        .orientation_needed(rel_pos)
-        .map(|frame_id| {
-            let rot = ephem.try_frame(frame_id, time)?.rotation_to_equatorial()?;
-            Ok(*rot.matrix())
-        })
-        .transpose()
-}
-
-/// The massive bodies of the model: the planets and the Moon, plus the registered
-/// asteroids when `include_extended`.
-fn massive_objects(include_extended: bool) -> Vec<GravParams> {
-    if include_extended {
-        GravParams::selected_masses().clone()
-    } else {
-        GravParams::planets().to_vec()
-    }
-}
-
-impl<E, F> std::fmt::Debug for NBody<'_, E, F> {
+impl<E, S, F> std::fmt::Debug for NBody<'_, E, S, F>
+where
+    E: EphemerisSource,
+    S: FrameSource,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NBody")
             .field("n_massive_obj", &self.massive_obj.len())
@@ -202,9 +133,10 @@ impl<E, F> std::fmt::Debug for NBody<'_, E, F> {
     }
 }
 
-impl<E, F> ParameterizedForce for NBody<'_, E, F>
+impl<E, S, F> ParameterizedForce for NBody<'_, E, S, F>
 where
-    E: Ephemeris,
+    E: EphemerisSource,
+    S: FrameSource,
     F: ParameterizedForce<Frame = Equatorial, Center = SunCenter>,
 {
     type Frame = Equatorial;
@@ -248,7 +180,7 @@ where
         for (grav_params, (body_pos, body_vel)) in self.massive_obj.iter().zip(states) {
             let rel_pos = pos_v - body_pos;
             let rel_vel = vel_v - body_vel;
-            let rot = orientation(self.ephem, grav_params, &rel_pos, time)?;
+            let rot = grav_params.rotation_at(&rel_pos, time, self.frames)?;
             grav_params.add_acceleration(&mut accel, &rel_pos, &rel_vel, rot.as_ref())?;
             if exact_eval && grav_params.is_inside(&rel_pos, rot.as_ref())? {
                 return Err(Error::Impact(grav_params.naif_id, time));
@@ -330,7 +262,7 @@ where
         for (grav_params, (body_pos, body_vel)) in self.massive_obj.iter().zip(states) {
             let rel_pos = pos_v - body_pos;
             let rel_vel = vel_v - body_vel;
-            let rot = orientation(self.ephem, grav_params, &rel_pos, time)?;
+            let rot = grav_params.rotation_at(&rel_pos, time, self.frames)?;
             grav_params.add_acceleration_and_jacobians(
                 &mut accel,
                 &mut da_dr,
@@ -365,6 +297,77 @@ where
     }
 }
 
+/// Working storage of [`NBody`] for one integration: the massive body states,
+/// `(position, velocity)` relative to the SSB, stored by the exact time they were
+/// evaluated at.
+///
+/// Implicit integrators such as Radau evaluate the force several times at the same set
+/// of times while iterating a step toward convergence, and the body states at those times
+/// do not change between iterations. A lookup matches only an identical time value, so a
+/// hit returns exactly the states that evaluating the ephemeris again would produce.
+///
+/// The integrator creates one per integration, as part of the force's
+/// [`ParameterizedForce::Meta`]. The cache does not record which bodies it holds, so
+/// it belongs to the one force that filled it.
+#[derive(Debug, Default)]
+pub struct EphemerisCache {
+    entries: Vec<(Time<TDB>, Vec<(Vector3<f64>, Vector3<f64>)>)>,
+}
+
+impl EphemerisCache {
+    /// Return the states stored for `time`, or compute them with `fill` and store them.
+    ///
+    /// # Errors
+    /// Forwards the error from `fill`, in which case nothing is stored.
+    fn get_or_try_insert(
+        &mut self,
+        time: Time<TDB>,
+        fill: impl FnOnce() -> KeteResult<Vec<(Vector3<f64>, Vector3<f64>)>>,
+    ) -> KeteResult<&[(Vector3<f64>, Vector3<f64>)]> {
+        let idx = if let Some(idx) = self.entries.iter().position(|(t, _)| *t == time) {
+            idx
+        } else {
+            let states = fill()?;
+            if self.entries.len() == CACHE_SLOTS {
+                self.entries.clear();
+            }
+            self.entries.push((time, states));
+            self.entries.len() - 1
+        };
+        Ok(&self.entries[idx].1)
+    }
+}
+
+/// NAIF id of the Sun, the body a non-gravitational force is evaluated relative to.
+const SUN: i32 = 10;
+
+/// Number of distinct times an [`EphemerisCache`] holds before it is cleared.
+///
+/// One Radau step evaluates the force at 7 node times plus the end of the step, and
+/// the next step uses none of them.
+const CACHE_SLOTS: usize = 8;
+
+/// A non-gravitational force is evaluated on the Sun-relative state, which the body loop
+/// produces only if the Sun is in the list. `massive_obj` is public, so this is checked on
+/// every evaluation rather than at construction.
+fn missing_sun() -> Error {
+    Error::ValueError(
+        "NBody has a non-gravitational force but the Sun (NAIF id 10) is not in its list \
+         of massive objects, so the force cannot be evaluated."
+            .into(),
+    )
+}
+
+/// The massive bodies of the model: the planets and the Moon, plus the registered
+/// asteroids when `include_extended`.
+fn massive_objects(include_extended: bool) -> Vec<GravParams> {
+    if include_extended {
+        GravParams::selected_masses().clone()
+    } else {
+        GravParams::planets().to_vec()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -372,6 +375,7 @@ mod tests {
     use crate::desigs::Desig;
     use crate::ephemeris::test_ephemeris::SunAndOne;
     use crate::forces::Shape;
+    use crate::frames::FrameTable;
     use crate::kepler::propagate_two_body;
     use crate::state::State;
 
@@ -390,7 +394,8 @@ mod tests {
             radius: 5.2,
             rate: 0.0015,
         };
-        let mut force = NBody::new(&eph, false);
+        let frames = FrameTable::new();
+        let mut force = NBody::new(&eph, &frames, false);
         force.massive_obj = vec![point_sun()];
         let start = State::<Equatorial, SSB> {
             desig: Desig::Empty,
@@ -422,12 +427,14 @@ mod tests {
         };
         let time = Time::<TDB>::new(2_451_600.0);
         let gm = 1e-3 * GMS;
-        let mut sun_only = NBody::new(&eph, false);
+        let frames = FrameTable::new();
+        let mut sun_only = NBody::new(&eph, &frames, false);
         sun_only.massive_obj = vec![point_sun()];
         let mut body = GravParams::new(5, gm, 0.000_5);
         body.relativistic = false;
         body.shape = Shape::Point;
-        let mut both = NBody::new(&eph, false);
+        let frames = FrameTable::new();
+        let mut both = NBody::new(&eph, &frames, false);
         both.massive_obj = vec![point_sun(), body];
         let pos = Vector::<Equatorial>::new([4.0, 3.0, 0.2]);
         let vel = Vector::<Equatorial>::new([0.0, 0.0, 0.0]);

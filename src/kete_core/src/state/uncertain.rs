@@ -11,7 +11,7 @@
 
 use crate::elements::{CometElements, EquinoctialElements};
 use crate::forces::NonGravMask;
-use crate::frames::{CenterBody, DynCenter, Ecliptic, InertialFrame};
+use crate::frames::{CenterBody, DynCenter, Ecliptic, StaticFrame};
 use crate::prelude::{Error, KeteResult, State};
 use crate::time::{TDB, Time};
 use nalgebra::{DMatrix, Matrix6, Vector6};
@@ -107,7 +107,7 @@ impl UncertainState {
     /// Fails if the covariance is the wrong shape, if the state has no valid orbit about
     /// its center, or if the orbit is too close to the equinoctial seam to carry a
     /// covariance.
-    pub fn from_state<F: InertialFrame, C: CenterBody>(
+    pub fn from_state<F: StaticFrame, C: CenterBody>(
         state: &State<F, C>,
         cov_cartesian: &DMatrix<f64>,
         free_params: Vec<f64>,
@@ -125,7 +125,7 @@ impl UncertainState {
     ///
     /// # Errors
     /// Fails if the elements are outside their physical domain.
-    pub fn state<F: InertialFrame>(&self) -> KeteResult<State<F>> {
+    pub fn state<F: StaticFrame>(&self) -> KeteResult<State<F>> {
         Ok(self.elements.try_to_state()?.into_frame())
     }
 
@@ -137,7 +137,7 @@ impl UncertainState {
     ///
     /// # Errors
     /// Fails if the elements are outside their physical domain, or too close to the seam.
-    pub fn cartesian_covariance<F: InertialFrame>(&self) -> KeteResult<DMatrix<f64>> {
+    pub fn cartesian_covariance<F: StaticFrame>(&self) -> KeteResult<DMatrix<f64>> {
         covariance_from_equinoctial::<F>(&self.elements, &self.cov_matrix)
     }
 
@@ -253,7 +253,7 @@ impl UncertainState {
     /// # Errors
     /// Returns [`Error::ValueError`] if the covariance matrix is not finite, or
     /// if a drawn sample leaves the physical domain of the elements.
-    pub fn sample<F: InertialFrame>(
+    pub fn sample<F: StaticFrame>(
         &self,
         n_samples: usize,
         seed: Option<u64>,
@@ -327,7 +327,7 @@ impl UncertainState {
 /// Fails if the covariance is not `(6 + Np) x (6 + Np)`, if the elements are outside
 /// their physical domain, or if the orbit is close enough to the equinoctial seam that
 /// the result would not be representable, see [`equinoctial_covariance_domain`].
-pub fn covariance_to_equinoctial<F: InertialFrame>(
+pub fn covariance_to_equinoctial<F: StaticFrame>(
     elements: &EquinoctialElements,
     cov: &DMatrix<f64>,
 ) -> KeteResult<DMatrix<f64>> {
@@ -348,7 +348,7 @@ pub fn covariance_to_equinoctial<F: InertialFrame>(
 /// # Errors
 /// Fails if the covariance is not `(6 + Np) x (6 + Np)`, if the elements are outside
 /// their physical domain, or if the orbit is too close to the equinoctial seam.
-pub fn covariance_from_equinoctial<F: InertialFrame>(
+pub fn covariance_from_equinoctial<F: StaticFrame>(
     elements: &EquinoctialElements,
     cov: &DMatrix<f64>,
 ) -> KeteResult<DMatrix<f64>> {
@@ -516,7 +516,7 @@ fn perturb_element(elements: &CometElements, col: usize, delta: f64) -> CometEle
 mod tests {
     use super::*;
     use crate::constants::GMS_SQRT;
-    use crate::frames::{Ecliptic, Equatorial, InertialFrame};
+    use crate::frames::{Ecliptic, Equatorial, StaticFrame};
     use crate::prelude::Desig;
     use crate::time::Time;
 

@@ -15,7 +15,7 @@ use crate::forces::{
     FarnocchiaNonGrav, GravParams, JplCometNonGrav, NonGravKind, NonGravMask, Shape,
     apply_gr_correction, j2_correction, radiation_accel,
 };
-use crate::frames::{Ecliptic, Equatorial, InertialFrame, SSB, Vector};
+use crate::frames::{Ecliptic, Equatorial, StaticFrame, SSB, Vector};
 use crate::kepler::analytic_2_body_delta;
 use crate::kepler::{compute_peri_dist, compute_semi_major};
 use crate::state::State;
@@ -47,7 +47,7 @@ static SUN_RADIUS_AU: std::sync::LazyLock<f64> = std::sync::LazyLock::new(|| {
 /// # Errors
 /// Returns an error if the mass table has no Sun, or the Sun's entry is not
 /// [`Shape::Oblate`].
-fn sun_oblateness<T: InertialFrame>() -> KeteResult<(f64, Vector3<f64>)> {
+fn sun_oblateness<T: StaticFrame>() -> KeteResult<(f64, Vector3<f64>)> {
     let planets = GravParams::planets();
     let sun = planets.iter().find(|p| p.naif_id == 10).ok_or_else(|| {
         Error::ValueError("The Sun (NAIF id 10) is not in the table of massive objects.".into())
@@ -358,7 +358,7 @@ pub struct Encounter {
 /// Relativity in Celestial Mechanics and Astrometry (IAU Symposium 114),
 /// pp. 105-110
 #[derive(Debug, Clone)]
-pub struct WisdomHolman<T: InertialFrame> {
+pub struct WisdomHolman<T: StaticFrame> {
     /// Fixed step size in days, sign gives the direction of integration.
     dt: f64,
     /// Epoch of the initial conditions.
@@ -427,7 +427,7 @@ pub struct WisdomHolman<T: InertialFrame> {
     _frame: PhantomData<T>,
 }
 
-impl<T: InertialFrame> WisdomHolman<T> {
+impl<T: StaticFrame> WisdomHolman<T> {
     /// Construct the integrator from barycentric states.
     ///
     /// # Arguments
@@ -1372,7 +1372,7 @@ impl CompVec3 {
 /// Returns an error if any parameter is left free, any fixed value is non-finite or out of range (a NaN left free for orbit
 /// fitting cannot be simulated), the surface or `g(r)` description is
 /// invalid, or a [`NonGravKind::JplComet`] carries a nonzero time lag `dt`.
-fn bind_non_grav<T: InertialFrame>(frozen: &NonGravMask, desig: &Desig) -> KeteResult<NonGrav> {
+fn bind_non_grav<T: StaticFrame>(frozen: &NonGravMask, desig: &Desig) -> KeteResult<NonGrav> {
     let values = frozen
         .fixed_values()
         .map_err(|err| Error::ValueError(format!("Test particle {desig:?}: {err}")))?;

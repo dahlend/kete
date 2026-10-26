@@ -16,6 +16,7 @@ use kete_core::prelude::*;
 use kete_core::propagation::{NBody, propagate_n_body_vec};
 use kete_core::state::propagate_with_stm;
 use kete_spice::ephemeris::SpiceEphemeris;
+use kete_spice::frames::SpiceFrames;
 use pprof::criterion::{Output, PProfProfiler};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
@@ -59,10 +60,11 @@ static HYPERBOLIC: std::sync::LazyLock<State<Ecliptic>> = std::sync::LazyLock::n
 
 fn prop_n_body_radau(state: State<Ecliptic>, dt: f64) {
     let eph = SpiceEphemeris::loaded().unwrap();
+    let frames = SpiceFrames::loaded().unwrap();
     let jd = state.epoch + dt;
     let eq_state: State<Equatorial, SSB> = state.into_frame().try_into().unwrap();
     let _ = eq_state
-        .propagate_with(&NBody::new(&eph, false), jd)
+        .propagate_with(&NBody::new(&eph, &frames, false), jd)
         .unwrap();
 }
 
@@ -78,13 +80,15 @@ fn prop_n_body_vec_radau(state: State<Ecliptic>, dt: f64) {
 
 fn prop_n_body_radau_par(state: &State<Ecliptic>, dt: f64) {
     let eph = SpiceEphemeris::loaded().unwrap();
+    let frames = SpiceFrames::loaded().unwrap();
     let states: Vec<State<_>> = (0..100).map(|_| state.clone()).collect();
     let _tmp: Vec<_> = states
         .into_par_iter()
         .map(|s| {
             let jd = s.epoch + dt;
             let eq: State<Equatorial, SSB> = s.into_frame().try_into().unwrap();
-            eq.propagate_with(&NBody::new(&eph, false), jd).unwrap()
+            eq.propagate_with(&NBody::new(&eph, &frames, false), jd)
+                .unwrap()
         })
         .collect();
 }
@@ -94,9 +98,10 @@ const DUST_BETA: f64 = 1e-3;
 /// Variational propagation with a dust non-grav, its parameter free.
 fn prop_n_body_stm_dust(state: State<Ecliptic>, dt: f64) {
     let eph = SpiceEphemeris::loaded().unwrap();
+    let frames = SpiceFrames::loaded().unwrap();
     let jd = state.epoch + dt;
     let eq_state: State<Equatorial, SSB> = state.into_frame().try_into().unwrap();
-    let force = NBody::with_non_grav(&eph, false, Some(DustNonGrav));
+    let force = NBody::with_non_grav(&eph, &frames, false, Some(DustNonGrav));
     let _ = propagate_with_stm(
         &force,
         eq_state.pos.into(),
@@ -111,20 +116,22 @@ fn prop_n_body_stm_dust(state: State<Ecliptic>, dt: f64) {
 /// Plain propagation with a frozen non-grav, as used by `propagate_n_body`.
 fn prop_n_body_frozen_dust(state: State<Ecliptic>, dt: f64) {
     let eph = SpiceEphemeris::loaded().unwrap();
+    let frames = SpiceFrames::loaded().unwrap();
     let jd = state.epoch + dt;
     let eq_state: State<Equatorial, SSB> = state.into_frame().try_into().unwrap();
     let frozen = ParameterMask::all_fixed(NonGravKind::Dust(DustNonGrav), vec![DUST_BETA]).unwrap();
-    let force = NBody::with_non_grav(&eph, false, Some(frozen));
+    let force = NBody::with_non_grav(&eph, &frames, false, Some(frozen));
     let _ = eq_state.propagate_with(&force, jd).unwrap();
 }
 
 /// Variational propagation through an all-free mask, as used by the fitter.
 fn prop_n_body_stm_masked_dust(state: State<Ecliptic>, dt: f64) {
     let eph = SpiceEphemeris::loaded().unwrap();
+    let frames = SpiceFrames::loaded().unwrap();
     let jd = state.epoch + dt;
     let eq_state: State<Equatorial, SSB> = state.into_frame().try_into().unwrap();
     let mask = ParameterMask::all_free(NonGravKind::Dust(DustNonGrav));
-    let force = NBody::with_non_grav(&eph, false, Some(mask));
+    let force = NBody::with_non_grav(&eph, &frames, false, Some(mask));
     let _ = propagate_with_stm(
         &force,
         eq_state.pos.into(),
@@ -139,9 +146,10 @@ fn prop_n_body_stm_masked_dust(state: State<Ecliptic>, dt: f64) {
 /// Variational propagation under gravity alone.
 fn prop_n_body_stm(state: State<Ecliptic>, dt: f64) {
     let eph = SpiceEphemeris::loaded().unwrap();
+    let frames = SpiceFrames::loaded().unwrap();
     let jd = state.epoch + dt;
     let eq_state: State<Equatorial, SSB> = state.into_frame().try_into().unwrap();
-    let force = NBody::new(&eph, false);
+    let force = NBody::new(&eph, &frames, false);
     let _ = propagate_with_stm(
         &force,
         eq_state.pos.into(),

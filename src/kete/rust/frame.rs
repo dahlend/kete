@@ -4,13 +4,13 @@
 
 //! Python Frame of reference support
 use kete_core::frames::{
-    approx_earth_pos_to_ecliptic, approx_solar_noon, approx_sun_dec, earth_obliquity,
-    earth_precession_rotation, ecef_to_geodetic_lat_lon, equation_of_time,
-    geodetic_lat_lon_to_ecef, geodetic_lat_to_geocentric, next_sunset_sunrise,
+    approx_solar_noon, approx_sun_dec, earth_obliquity, earth_precession_rotation,
+    ecef_to_geodetic_lat_lon, equation_of_time, geodetic_lat_lon_to_ecef,
+    geodetic_lat_to_geocentric, next_sunset_sunrise,
 };
 use pyo3::prelude::*;
 
-use crate::{state::PyState, time::PyTime};
+use crate::time::PyTime;
 
 /// Defined inertial frames supported by the python side of kete.
 ///
@@ -30,6 +30,8 @@ pub enum PyFrames {
     Galactic,
     /// FK4 Frame
     FK4,
+    /// B1950 Frame
+    B1950,
 }
 
 /// Compute a ECEF position from WCS84 Geodetic latitude/longitude/height.
@@ -161,8 +163,6 @@ pub fn calc_obliquity_py(time: f64) -> f64 {
 #[pyo3(name = "earth_precession_rotation")]
 pub fn calc_earth_precession(time: PyTime) -> Vec<Vec<f64>> {
     earth_precession_rotation(time.into())
-        .rotation_to_equatorial()
-        .unwrap()
         .matrix()
         .column_iter()
         .map(|x| x.iter().cloned().collect())
@@ -222,54 +222,4 @@ pub fn next_sunset_sunrise_py(
         time.0.utc(),
     );
     (PyTime(set.tdb()), PyTime(rise.tdb()))
-}
-
-/// Compute the approximate state of a location on Earth in the Ecliptic frame.
-///
-/// :func:`kete.spice.earth_pos_to_ecliptic` should be preferred for all modern
-/// dates. *This function is only an approximation*.
-///
-/// This should be used when the desired date is outside the Earth orientation
-/// PCK kernels, which begin in 1962.
-///
-/// The Earth's orientation includes precession, the largest nutation terms, and
-/// the Earth's rotation, which also sets the velocity. Polar motion is not
-/// included. From 1972 the rotation uses UTC in place of UT1, which differ by
-/// less than a second. Before 1972 it uses a model of Delta T, the difference
-/// between TT and UT1, which is poorly known before 1600.
-///
-/// Parameters
-/// ----------
-/// jd:
-///     Julian time (TDB) of the desired state.
-/// geodetic_lat:
-///     Latitude on Earth's surface in degrees.
-/// geodetic_lon:
-///     Latitude on Earth's surface in degrees.
-/// height:
-///     Height of the observer above the surface of the Earth in km.
-/// name :
-///     Optional name of the position on Earth.
-#[pyfunction]
-#[pyo3(name = "approx_earth_pos_to_ecliptic", signature = (jd, geodetic_lat, geodetic_lon, height, name=None))]
-pub fn approx_earth_pos_to_ecliptic_py(
-    jd: PyTime,
-    geodetic_lat: f64,
-    geodetic_lon: f64,
-    height: f64,
-    name: Option<String>,
-) -> PyResult<PyState> {
-    let desig = name
-        .map(kete_core::desigs::Desig::Name)
-        .unwrap_or(kete_core::desigs::Desig::Empty);
-    let time = jd.0;
-    let state: PyState = approx_earth_pos_to_ecliptic(
-        time,
-        geodetic_lat.to_radians(),
-        geodetic_lon.to_radians(),
-        height,
-        desig,
-    )?
-    .into();
-    state.change_center(crate::desigs::NaifIDLike::Int(10))
 }

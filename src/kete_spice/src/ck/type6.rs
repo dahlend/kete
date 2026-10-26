@@ -14,7 +14,7 @@ use super::array::stored_count;
 use super::type5::{PacketSeries, check_window, packet_size};
 use super::{CkArray, instrument_frame};
 use kete_core::errors::{Error, KeteResult};
-use kete_core::frames::NonInertialFrame;
+use kete_core::frames::InstantFrame;
 use kete_core::time::{TDB, Time};
 use nalgebra::UnitQuaternion;
 
@@ -183,7 +183,7 @@ impl CkSegmentType6 {
         &self,
         time: Time<TDB>,
         tick: f64,
-    ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
+    ) -> KeteResult<InstantFrame> {
         let (quaternion, rates) = self.get_quaternion_at_tick(tick)?;
 
         let frame = instrument_frame(
@@ -193,7 +193,7 @@ impl CkSegmentType6 {
             self.array.reference_frame_id,
         );
 
-        Ok((time, frame))
+        Ok(frame)
     }
 
     /// Return the interpolated attitude and angular velocity (radians per second) at

@@ -43,7 +43,7 @@
 //!
 //! The complete model used for n-body orbit propagation is
 //! [`NBody`](crate::propagation::NBody): it looks up each massive body in an
-//! [`Ephemeris`](crate::ephemeris::Ephemeris), evaluates that body's gravity, and
+//! [`EphemerisSource`](crate::ephemeris::EphemerisSource), evaluates that body's gravity, and
 //! evaluates an optional non-grav force on the Sun-relative state.
 
 mod gravity;
@@ -54,8 +54,7 @@ mod spherical_harmonics;
 mod traits;
 
 pub use gravity::{
-    GravParams, Orientation, Shape, known_masses, register_custom_mass, register_mass,
-    registered_masses,
+    GravParams, Shape, known_masses, register_custom_mass, register_mass, registered_masses,
 };
 pub(crate) use gravity::{apply_gr_correction, j2_correction};
 pub(crate) use nongrav::radiation_accel;

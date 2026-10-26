@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 //! Visibility checks that need body states: N-body propagation across the observer
-//! epochs, or objects looked up by NAIF id, from an [`Ephemeris`].
+//! epochs, or objects looked up by NAIF id, from an [`EphemerisSource`].
 
 use super::FovLike;
 use crate::constants::C_AU_PER_DAY_INV;
-use crate::ephemeris::Ephemeris;
+use crate::ephemeris::EphemerisSource;
 use crate::errors::{Error, KeteResult};
 use crate::forces::NonGravMask;
-use crate::frames::{Equatorial, SunCenter, Vector};
+use crate::frames::{Equatorial, FrameSource, SunCenter, Vector};
 use crate::geometry::{Contains, SkyPatch, SphericalCone};
 use crate::integrators::RadauDense;
 use crate::propagation::NBody;
@@ -36,7 +36,7 @@ use std::f64::consts::FRAC_PI_2;
 /// # Panics
 /// Panics if `fov` is inconsistent: `contains` returns a patch index of
 /// `n_patches` or more, or `get_child` panics for an index below `n_patches`.
-pub fn check_ephemeris<E: Ephemeris, F: FovLike>(
+pub fn check_ephemeris<E: EphemerisSource, F: FovLike>(
     ephem: &E,
     fov: &F,
     obj_ids: &[i32],
@@ -96,8 +96,9 @@ pub fn check_ephemeris<E: Ephemeris, F: FovLike>(
 /// epochs, keeping the integrator's dense output. Its position at any time in the
 /// span then comes from that output without integrating again, so every check is
 /// exact, including the light-time correction and any non-gravitational model.
-/// `include_asteroids` adds the registered asteroid masses to the force model, and
-/// body states come from `ephem`.
+/// `include_asteroids` adds the registered asteroid masses to the force model, body
+/// states come from `ephem`, and the body frames of shaped massive bodies from
+/// `frames`.
 ///
 /// The FOVs are grouped into half days from the first FOV epoch, such as one night
 /// of a ground based survey. As a pre-filter, each state is evaluated once for each
@@ -123,8 +124,9 @@ pub fn check_ephemeris<E: Ephemeris, F: FovLike>(
 /// # Panics
 /// Panics if a FOV is inconsistent: `contains` returns a patch index of
 /// `n_patches` or more, or `get_child` panics for an index below `n_patches`.
-pub fn check_visible<E: Ephemeris, F: FovLike>(
+pub fn check_visible<E: EphemerisSource, S: FrameSource, F: FovLike>(
     ephem: &E,
+    frames: &S,
     fovs: &[F],
     states: &[State<Equatorial>],
     non_gravs: &[Option<NonGravMask>],
@@ -222,8 +224,12 @@ pub fn check_visible<E: Ephemeris, F: FovLike>(
                         let non_grav = non_gravs
                             .get(block_idx * STATE_BLOCK + idx)
                             .and_then(Option::as_ref);
-                        let force =
-                            NBody::with_non_grav(ephem, include_asteroids, non_grav.cloned());
+                        let force = NBody::with_non_grav(
+                            ephem,
+                            frames,
+                            include_asteroids,
+                            non_grav.cloned(),
+                        );
                         let at_first = ephem
                             .try_to_ssb(state.clone())
                             .ok()?

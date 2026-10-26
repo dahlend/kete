@@ -3,7 +3,7 @@
 
 //! Cartesian Vectors with frame information.
 
-use super::{Ecliptic, Equatorial, InertialFrame};
+use super::{Ecliptic, Equatorial, StaticFrame};
 use nalgebra::{Rotation3, UnitVector3, Vector3};
 use std::f64::consts::{PI, TAU};
 use std::fmt::Debug;
@@ -14,7 +14,7 @@ use std::ops::{Add, AddAssign, Div, Index, IndexMut, Mul, Neg, Sub, SubAssign};
 /// All vectors are 3D vectors in an inertial frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[must_use]
-pub struct Vector<T: InertialFrame> {
+pub struct Vector<T: StaticFrame> {
     /// Underlying vector data.
     raw: [f64; 3],
 
@@ -22,7 +22,7 @@ pub struct Vector<T: InertialFrame> {
     frame: PhantomData<T>,
 }
 
-impl<T: InertialFrame> Vector<T> {
+impl<T: StaticFrame> Vector<T> {
     /// New Vector
     #[inline(always)]
     pub fn new(vec: [f64; 3]) -> Self {
@@ -50,7 +50,7 @@ impl<T: InertialFrame> Vector<T> {
 
     /// Convert Vector from one frame to another.
     #[inline(always)]
-    pub fn into_frame<Target: InertialFrame>(self) -> Vector<Target> {
+    pub fn into_frame<Target: StaticFrame>(self) -> Vector<Target> {
         let vec = T::convert::<Target>(self.into());
         Vector::<Target>::new(vec.into())
     }
@@ -177,7 +177,7 @@ impl Vector<Equatorial> {
     }
 }
 
-impl<T: InertialFrame> Index<usize> for Vector<T> {
+impl<T: StaticFrame> Index<usize> for Vector<T> {
     type Output = f64;
     #[inline(always)]
     fn index(&self, index: usize) -> &Self::Output {
@@ -185,14 +185,14 @@ impl<T: InertialFrame> Index<usize> for Vector<T> {
     }
 }
 
-impl<T: InertialFrame> IndexMut<usize> for Vector<T> {
+impl<T: StaticFrame> IndexMut<usize> for Vector<T> {
     #[inline(always)]
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         self.raw.index_mut(index)
     }
 }
 
-impl<T: InertialFrame> IntoIterator for Vector<T> {
+impl<T: StaticFrame> IntoIterator for Vector<T> {
     type Item = f64;
     type IntoIter = std::array::IntoIter<Self::Item, 3>;
 
@@ -202,42 +202,42 @@ impl<T: InertialFrame> IntoIterator for Vector<T> {
     }
 }
 
-impl<T: InertialFrame> From<[f64; 3]> for Vector<T> {
+impl<T: StaticFrame> From<[f64; 3]> for Vector<T> {
     #[inline(always)]
     fn from(value: [f64; 3]) -> Self {
         Self::new(value)
     }
 }
 
-impl<T: InertialFrame> From<Vector<T>> for [f64; 3] {
+impl<T: StaticFrame> From<Vector<T>> for [f64; 3] {
     #[inline(always)]
     fn from(value: Vector<T>) -> Self {
         value.raw
     }
 }
 
-impl<T: InertialFrame> From<Vector3<f64>> for Vector<T> {
+impl<T: StaticFrame> From<Vector3<f64>> for Vector<T> {
     #[inline(always)]
     fn from(value: Vector3<f64>) -> Self {
         Self::new(value.into())
     }
 }
 
-impl<T: InertialFrame> From<Vector<T>> for Vector3<f64> {
+impl<T: StaticFrame> From<Vector<T>> for Vector3<f64> {
     #[inline(always)]
     fn from(value: Vector<T>) -> Self {
         value.raw.into()
     }
 }
 
-impl<T: InertialFrame> From<Vector<T>> for Vec<f64> {
+impl<T: StaticFrame> From<Vector<T>> for Vec<f64> {
     #[inline(always)]
     fn from(value: Vector<T>) -> Self {
         value.raw.into()
     }
 }
 
-impl<T: InertialFrame> AddAssign<&Self> for Vector<T> {
+impl<T: StaticFrame> AddAssign<&Self> for Vector<T> {
     #[inline(always)]
     fn add_assign(&mut self, rhs: &Self) {
         self.raw
@@ -247,7 +247,7 @@ impl<T: InertialFrame> AddAssign<&Self> for Vector<T> {
     }
 }
 
-impl<T: InertialFrame> SubAssign<&Self> for Vector<T> {
+impl<T: StaticFrame> SubAssign<&Self> for Vector<T> {
     #[inline(always)]
     fn sub_assign(&mut self, rhs: &Self) {
         self.raw
@@ -257,20 +257,20 @@ impl<T: InertialFrame> SubAssign<&Self> for Vector<T> {
     }
 }
 
-impl<T: InertialFrame> AddAssign for Vector<T> {
+impl<T: StaticFrame> AddAssign for Vector<T> {
     #[inline(always)]
     fn add_assign(&mut self, rhs: Self) {
         *self += &rhs;
     }
 }
 
-impl<T: InertialFrame> SubAssign for Vector<T> {
+impl<T: StaticFrame> SubAssign for Vector<T> {
     #[inline(always)]
     fn sub_assign(&mut self, rhs: Self) {
         *self -= &rhs;
     }
 }
-impl<T: InertialFrame> Sub<&Self> for Vector<T> {
+impl<T: StaticFrame> Sub<&Self> for Vector<T> {
     type Output = Self;
     #[inline(always)]
     fn sub(mut self, rhs: &Self) -> Self::Output {
@@ -279,7 +279,7 @@ impl<T: InertialFrame> Sub<&Self> for Vector<T> {
     }
 }
 
-impl<T: InertialFrame> Sub<&Vector<T>> for &Vector<T> {
+impl<T: StaticFrame> Sub<&Vector<T>> for &Vector<T> {
     type Output = Vector<T>;
     #[inline(always)]
     fn sub(self, rhs: &Vector<T>) -> Self::Output {
@@ -289,7 +289,7 @@ impl<T: InertialFrame> Sub<&Vector<T>> for &Vector<T> {
     }
 }
 
-impl<T: InertialFrame> Sub<Self> for Vector<T> {
+impl<T: StaticFrame> Sub<Self> for Vector<T> {
     type Output = Self;
     #[inline(always)]
     fn sub(mut self, rhs: Self) -> Self::Output {
@@ -298,7 +298,7 @@ impl<T: InertialFrame> Sub<Self> for Vector<T> {
     }
 }
 
-impl<T: InertialFrame> Sub<Vector<T>> for &Vector<T> {
+impl<T: StaticFrame> Sub<Vector<T>> for &Vector<T> {
     type Output = Vector<T>;
     #[inline(always)]
     fn sub(self, rhs: Vector<T>) -> Self::Output {
@@ -308,7 +308,7 @@ impl<T: InertialFrame> Sub<Vector<T>> for &Vector<T> {
     }
 }
 
-impl<T: InertialFrame> Add<Self> for Vector<T> {
+impl<T: StaticFrame> Add<Self> for Vector<T> {
     type Output = Self;
     #[inline(always)]
     fn add(mut self, rhs: Self) -> Self::Output {
@@ -317,7 +317,7 @@ impl<T: InertialFrame> Add<Self> for Vector<T> {
     }
 }
 
-impl<T: InertialFrame> Add<&Self> for Vector<T> {
+impl<T: StaticFrame> Add<&Self> for Vector<T> {
     type Output = Self;
     #[inline(always)]
     fn add(mut self, rhs: &Self) -> Self::Output {
@@ -326,7 +326,7 @@ impl<T: InertialFrame> Add<&Self> for Vector<T> {
     }
 }
 
-impl<T: InertialFrame> Add<&Vector<T>> for &Vector<T> {
+impl<T: StaticFrame> Add<&Vector<T>> for &Vector<T> {
     type Output = Vector<T>;
     #[inline(always)]
     fn add(self, rhs: &Vector<T>) -> Self::Output {
@@ -336,7 +336,7 @@ impl<T: InertialFrame> Add<&Vector<T>> for &Vector<T> {
     }
 }
 
-impl<T: InertialFrame> Add<Vector<T>> for &Vector<T> {
+impl<T: StaticFrame> Add<Vector<T>> for &Vector<T> {
     type Output = Vector<T>;
     #[inline(always)]
     fn add(self, rhs: Vector<T>) -> Self::Output {
@@ -346,7 +346,7 @@ impl<T: InertialFrame> Add<Vector<T>> for &Vector<T> {
     }
 }
 
-impl<T: InertialFrame> Div<f64> for Vector<T> {
+impl<T: StaticFrame> Div<f64> for Vector<T> {
     type Output = Self;
     #[inline(always)]
     fn div(mut self, rhs: f64) -> Self::Output {
@@ -355,7 +355,7 @@ impl<T: InertialFrame> Div<f64> for Vector<T> {
     }
 }
 
-impl<T: InertialFrame> Div<f64> for &Vector<T> {
+impl<T: StaticFrame> Div<f64> for &Vector<T> {
     type Output = Vector<T>;
     #[inline(always)]
     fn div(self, rhs: f64) -> Self::Output {
@@ -365,7 +365,7 @@ impl<T: InertialFrame> Div<f64> for &Vector<T> {
     }
 }
 
-impl<T: InertialFrame> Mul<f64> for Vector<T> {
+impl<T: StaticFrame> Mul<f64> for Vector<T> {
     type Output = Self;
     #[inline(always)]
     fn mul(mut self, rhs: f64) -> Self::Output {
@@ -374,7 +374,7 @@ impl<T: InertialFrame> Mul<f64> for Vector<T> {
     }
 }
 
-impl<T: InertialFrame> Mul<f64> for &Vector<T> {
+impl<T: StaticFrame> Mul<f64> for &Vector<T> {
     type Output = Vector<T>;
     #[inline(always)]
     fn mul(self, rhs: f64) -> Self::Output {
@@ -384,7 +384,7 @@ impl<T: InertialFrame> Mul<f64> for &Vector<T> {
     }
 }
 
-impl<T: InertialFrame> Mul<Vector<T>> for f64 {
+impl<T: StaticFrame> Mul<Vector<T>> for f64 {
     type Output = Vector<T>;
     #[inline(always)]
     fn mul(self, mut rhs: Vector<T>) -> Self::Output {
@@ -393,7 +393,7 @@ impl<T: InertialFrame> Mul<Vector<T>> for f64 {
     }
 }
 
-impl<T: InertialFrame> Mul<&Vector<T>> for f64 {
+impl<T: StaticFrame> Mul<&Vector<T>> for f64 {
     type Output = Vector<T>;
     #[inline(always)]
     fn mul(self, rhs: &Vector<T>) -> Self::Output {
@@ -403,7 +403,7 @@ impl<T: InertialFrame> Mul<&Vector<T>> for f64 {
     }
 }
 
-impl<T: InertialFrame> Neg for &Vector<T> {
+impl<T: StaticFrame> Neg for &Vector<T> {
     type Output = Vector<T>;
     #[inline(always)]
     fn neg(self) -> Self::Output {
@@ -413,7 +413,7 @@ impl<T: InertialFrame> Neg for &Vector<T> {
     }
 }
 
-impl<T: InertialFrame> Neg for Vector<T> {
+impl<T: StaticFrame> Neg for Vector<T> {
     type Output = Self;
     #[inline(always)]
     fn neg(self) -> Self::Output {

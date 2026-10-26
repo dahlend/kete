@@ -9,7 +9,7 @@ use kete_core::forces::{GravParams, Shape, SphericalHarmonics};
 use kete_core::prelude::Error;
 use pyo3::{PyResult, pyclass, pyfunction, pymethods};
 
-use crate::polyhedron::{PyPolyhedron, orientation};
+use crate::polyhedron::{PyPolyhedron, body_frame};
 
 /// Gravity field given by fully normalized spherical harmonic coefficients.
 ///
@@ -226,7 +226,7 @@ pub fn register_spherical_harmonics(
     frame_id: Option<crate::spice::FrameLike>,
     rotation: Option<[[f64; 3]; 3]>,
 ) -> PyResult<PySphericalHarmonics> {
-    let orientation = orientation(frame_id, rotation)?;
+    let frame = body_frame(frame_id, rotation)?;
     if !switch_radius.is_finite() || switch_radius < min_radius {
         Err(Error::ValueError(format!(
             "switch_radius must be finite and at least min_radius, found {switch_radius} km \
@@ -255,7 +255,7 @@ pub fn register_spherical_harmonics(
     let mut params = GravParams::new(naif_id, gm, (min_radius / AU_KM) as f32);
     params.shape = Shape::SphericalHarmonics {
         model: Arc::clone(&model),
-        orientation,
+        frame,
         switch_radius: switch_radius / AU_KM,
     };
     params.register();

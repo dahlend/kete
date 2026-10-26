@@ -18,7 +18,7 @@
 //!   frame.
 //! - [`instruments`]: the fields of view of instruments at a time.
 //! - [`ephemeris`]: the loaded kernels as a
-//!   [`kete_core::ephemeris::Ephemeris`], which the propagation and visibility
+//!   [`kete_core::ephemeris::EphemerisSource`], which the propagation and visibility
 //!   code in `kete_core` takes.
 //! - [`load_kernels`]: load files of any supported kernel type.
 
@@ -46,6 +46,7 @@ pub mod prelude {
     pub use crate::text::LOADED_TEXT_KERNELS;
 
     pub use crate::ephemeris::SpiceEphemeris;
+    pub use crate::frames::SpiceFrames;
 }
 
 use kete_core::errors::{Error, KeteResult};
@@ -56,8 +57,8 @@ use std::io::Read;
 ///
 /// The type of each file comes from its first bytes: binary SPK, PCK, and CK
 /// files, and text SCLK, frames (FK), PCK, instrument (IK) and meta-kernels.
-/// A text kernel that sets `KERNELS_TO_LOAD` is a meta-kernel (see
-/// [`text::mk`]). The files it lists load right after it, in the order listed.
+/// A text kernel that sets `KERNELS_TO_LOAD` is a meta-kernel. The files it
+/// lists load right after it, in the order listed.
 /// A listed file of an unsupported type, such as a leap seconds kernel or a
 /// DSK, prints a message to stderr and is skipped.
 ///
@@ -74,7 +75,7 @@ use std::io::Read;
 ///   be opened or read.
 /// - [`Error::ValueError`] if a file in `filenames` does not have the header
 ///   of a supported kernel type, if a meta-kernel lists another meta-kernel,
-///   or if its path symbols are malformed (see [`text::mk::kernels_to_load`]).
+///   or if its path symbols are malformed (`PATH_SYMBOLS` and `PATH_VALUES`).
 /// - [`Error::LockFailed`] if a singleton lock cannot be acquired.
 pub fn load_kernels(filenames: &[String]) -> KeteResult<()> {
     let mut files = Vec::with_capacity(filenames.len());

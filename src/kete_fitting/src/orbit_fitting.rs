@@ -14,7 +14,7 @@ use kete_core::prelude::{Error, KeteResult, State, UncertainState};
 use kete_core::propagation::{NBody, compute_state_transition};
 use kete_core::state::equinoctial_covariance_domain;
 use kete_core::time::{TDB, Time};
-use kete_spice::prelude::{LOADED_SPK, SpiceEphemeris};
+use kete_spice::prelude::{LOADED_SPK, SpiceEphemeris, SpiceFrames};
 use nalgebra::{DMatrix, DVector};
 use rayon::prelude::*;
 
@@ -423,9 +423,10 @@ fn propagate_helio(
     ng_values: &[f64],
 ) -> KeteResult<State<Equatorial, SSB>> {
     let eph = SpiceEphemeris::loaded()?;
+    let frames = SpiceFrames::loaded()?;
     let frozen = mask.map(|m| m.fixed_at(ng_values)).transpose()?;
     state.propagate_with(
-        &NBody::with_non_grav(&eph, include_extended, frozen),
+        &NBody::with_non_grav(&eph, &frames, include_extended, frozen),
         jd_final,
     )
 }
@@ -1308,6 +1309,7 @@ fn stm_sweep_inner(
         if (obs_epoch - state_cur.epoch).elapsed.abs() > 1e-12 {
             let (new_state, phi_k) = compute_state_transition(
                 &SpiceEphemeris::loaded()?,
+                &SpiceFrames::loaded()?,
                 &state_cur,
                 obs_epoch,
                 include_asteroids,

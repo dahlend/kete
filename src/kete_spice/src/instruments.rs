@@ -5,28 +5,28 @@
 //!
 //! An instrument kernel gives the field of view in the frame of the instrument
 //! (see [`crate::text::ik`]). [`instrument_fov_at`] rotates it to the
-//! equatorial frame with [`try_frame_at`], and places the observer at the
+//! equatorial frame with [`SpiceFrames`], and places the observer at the
 //! spacecraft with the loaded SPK files. The pointing is geometric: no light
 //! time or aberration correction is applied to it.
 
 use crate::ck::{CkCollection, LOADED_CK};
 use crate::ephemeris::SpiceEphemeris;
-use crate::frames::{FrameDef, MAX_FRAME_CHAIN, try_frame_at};
+use crate::frames::{FrameDef, SpiceFrames};
 use crate::text::ik::FovShape;
 use crate::text::{LOADED_TEXT_KERNELS, TextKernels};
-use kete_core::ephemeris::Ephemeris;
+use kete_core::ephemeris::EphemerisSource;
 use kete_core::errors::{Error, KeteResult};
 use kete_core::fov::{FOV, FovLike, GenericCone, GenericPolygon, GenericRectangle};
-use kete_core::frames::{Equatorial, FrameId, Vector};
+use kete_core::frames::{DynFrameId, Equatorial, FrameSource, MAX_FRAME_CHAIN, Vector};
 use kete_core::time::{TDB, Time};
 
 /// The field of view of instrument `id` at `time`.
 ///
 /// The observer is the spacecraft of the instrument, relative to the Sun. It
 /// is the spacecraft of the first CK frame in the chain of TK frames from the
-/// frame of the field of view (see [`TextKernels::ck_spk_id`]). Without a CK
-/// frame in that chain, it is the instrument ID divided by 1000, the NAIF
-/// convention for instrument IDs.
+/// frame of the field of view: the `CK_<id>_SPK` variable of that frame, or its
+/// class ID divided by 1000. Without a CK frame in that chain, it is the
+/// instrument ID divided by 1000, the NAIF convention for instrument IDs.
 /// A rectangle gives a [`GenericRectangle`], a circle a
 /// [`GenericCone`], and a polygon a [`GenericPolygon`].
 ///
@@ -35,7 +35,7 @@ use kete_core::time::{TDB, Time};
 /// - [`Error::ValueError`] if the field of view definition is missing or
 ///   malformed, if the field of view is an ellipse, if a polygon is not valid
 ///   (see [`GenericPolygon::new`]), or if the instrument gives no spacecraft.
-/// - The errors of [`try_frame_at`] for the frame of the field of view.
+/// - The errors of [`SpiceFrames`] for the frame of the field of view.
 /// - [`Error::Bounds`] if the loaded SPK files have no state of the spacecraft
 ///   at `time`.
 pub fn instrument_fov_at(id: i32, time: Time<TDB>) -> KeteResult<FOV> {
@@ -52,7 +52,9 @@ pub fn instrument_fov_at(id: i32, time: Time<TDB>) -> KeteResult<FOV> {
              support."
         )));
     }
-    let rotation = try_frame_at(fov.frame, time)?.rotation_to_equatorial()?;
+    let rotation = SpiceFrames::loaded()?
+        .try_frame(fov.frame, time)?
+        .rotation_to_equatorial();
     let to_equatorial = |v: &nalgebra::Vector3<f64>| Vector::<Equatorial>::from(rotation * v);
     let observer = SpiceEphemeris::loaded()?.try_get_state_with_center(spacecraft, time, 10)?;
     let bounds: Vec<Vector<Equatorial>> = fov.bounds.iter().map(to_equatorial).collect();
@@ -87,15 +89,15 @@ fn spacecraft_id(
     text: &TextKernels,
     ck: &CkCollection,
     id: i32,
-    frame: FrameId,
+    frame: DynFrameId,
 ) -> KeteResult<i32> {
     let mut frame_id = frame;
     for _ in 0..MAX_FRAME_CHAIN {
         match text.frame_definition(frame_id)? {
-            Some(FrameDef::Tk { relative, .. }) => frame_id = relative,
+            Some(FrameDef::Tk(tk)) => frame_id = tk.reference,
             Some(FrameDef::Ck { class_id, .. }) => return text.ck_spk_id(class_id),
             None if ck.has_instrument(frame_id.0) => return text.ck_spk_id(frame_id.0),
-            Some(FrameDef::Inertial | FrameDef::Pck { .. }) | None => {
+            Some(FrameDef::Pck { .. }) | None => {
                 return match id / 1000 {
                     0 => Err(Error::ValueError(format!(
                         "Instrument {id} gives no spacecraft ID."
@@ -138,7 +140,7 @@ mod tests {
         )
         .unwrap();
         let ck = CkCollection::default();
-        let spacecraft = |id, frame| spacecraft_id(&text, &ck, id, FrameId(frame));
+        let spacecraft = |id, frame| spacecraft_id(&text, &ck, id, DynFrameId(frame));
         assert_eq!(spacecraft(-399_101, -399_100).unwrap(), 399);
         assert_eq!(spacecraft(-1_101, -226_000).unwrap(), -226);
         assert_eq!(spacecraft(-226_111, 1).unwrap(), -226);

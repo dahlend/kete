@@ -8,7 +8,7 @@
 
 use crate::constants::GMS;
 use crate::errors::Error;
-use crate::frames::{InertialFrame, SunCenter};
+use crate::frames::{StaticFrame, SunCenter};
 use crate::prelude::KeteResult;
 use crate::state::State;
 use nalgebra::{Complex, DMatrix, Matrix3x2, Matrix6, Schur, Vector3};
@@ -25,7 +25,7 @@ use std::f64::consts::TAU;
 ///   not finite.
 /// - [`Error::Convergence`] if an eigenvalue solve does not converge, or if no
 ///   critical point is found.
-pub fn moid<T: InertialFrame>(
+pub fn moid<T: StaticFrame>(
     state_a: &State<T, SunCenter>,
     state_b: &State<T, SunCenter>,
 ) -> KeteResult<f64> {
@@ -72,7 +72,7 @@ impl Conic {
     /// # Errors
     ///
     /// [`Error::ValueError`] if the angular momentum is zero or not finite.
-    fn from_state<T: InertialFrame>(state: &State<T, SunCenter>) -> KeteResult<Self> {
+    fn from_state<T: StaticFrame>(state: &State<T, SunCenter>) -> KeteResult<Self> {
         let pos = Vector3::from(state.pos);
         let vel = Vector3::from(state.vel);
         let h = pos.cross(&vel);

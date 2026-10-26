@@ -168,6 +168,7 @@ pub fn propagation_n_body_spk_py(
         let proc_chunk: PyResult<Vec<_>> = py.detach(|| {
             // Acquire the SPK read guard once per chunk; the force borrows it.
             let eph = kete_spice::prelude::SpiceEphemeris::loaded()?;
+            let frames = kete_spice::prelude::SpiceFrames::loaded()?;
             let spk = eph.spk();
 
             chunk_owned
@@ -192,7 +193,7 @@ pub fn propagation_n_body_spk_py(
                         .change_frame(frame));
                     }
                     let ssb_state = spk.try_to_ssb(state)?;
-                    let force = NBody::with_non_grav(&eph, include_asteroids, model);
+                    let force = NBody::with_non_grav(&eph, &frames, include_asteroids, model);
                     let result = ssb_state.propagate_with(&force, jd);
                     match result {
                         Ok(ssb_result) => {
@@ -391,8 +392,10 @@ pub fn closest_approach_py(
     let raw_a = state_a.raw.into_frame();
     let raw_b = state_b.raw.into_frame();
     let eph = kete_spice::prelude::SpiceEphemeris::loaded()?;
+    let frames = kete_spice::prelude::SpiceFrames::loaded()?;
     let (epoch, dist) = kete_core::propagation::closest_approach(
         &eph,
+        &frames,
         &raw_a,
         &raw_b,
         jd_start.into(),

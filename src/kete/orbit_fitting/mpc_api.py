@@ -22,7 +22,6 @@ from .common import (
     _MIN_AXIS_SIGMA,
     _fetch_debias_table,
     _floor_error_ellipse,
-    _ground_observer,
     _over_obs_reweight_factors,
     _time_sigma_for_obs,
     get_observatory_std,
@@ -103,8 +102,8 @@ def fetch_mpc_observations(
     ``VID``).
 
     Ground-station positions use the Earth orientation of the loaded PCK
-    kernels. Before their coverage starts, they use the approximate Earth
-    orientation of :func:`~kete.spice.approx_earth_pos_to_ecliptic`.
+    kernels. Where those do not cover the epoch, they use an approximate Earth
+    orientation, see :func:`~kete.spice.earth_pos_to_ecliptic`.
 
     When ``debias`` is True, the EFCC18 star-catalog bias correction is applied
     to each observation's (RA, Dec) using the ADES ``astCat`` field.
@@ -390,7 +389,9 @@ def _build_observer(stn: str, jd: float, rec: dict):
         lat = float("nan")
     if np.isfinite(lat):
         try:
-            obs = _ground_observer(jd, lat, lon, height, stn)
+            obs = spice.earth_pos_to_ecliptic(
+                jd, lat, lon, height, name=stn, center=0
+            ).as_equatorial
         except ValueError:
             # The loaded ephemeris does not cover the epoch.
             return None

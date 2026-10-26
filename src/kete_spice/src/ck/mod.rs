@@ -24,7 +24,7 @@ pub use type6::CkSegmentType6;
 
 use kete_core::{
     errors::{Error, KeteResult},
-    frames::{FrameId, NonInertialFrame},
+    frames::{DynFrameId, InstantFrame},
     time::{TDB, Time},
 };
 
@@ -35,10 +35,6 @@ use crossbeam::sync::ShardedLock;
 use nalgebra::{Rotation3, Vector3};
 use segments::CkSegment;
 use std::collections::HashMap;
-
-/// Largest difference, in days, between a requested time and the time of the CK
-/// pointing used for it: about 1 ms.
-pub(crate) const POINTING_TOLERANCE_DAYS: f64 = 1e-8;
 
 /// A collection of segments.
 #[derive(Debug, Default)]
@@ -86,54 +82,6 @@ impl CkCollection {
         *self = Self::default();
     }
 
-    /// The pointing of the CK frame `ck_id` at `time`, on the spacecraft clock
-    /// `sclk`.
-    ///
-    /// The function uses the first segment in precedence order that holds
-    /// pointing at `time`. Thus inside a gap of a later segment, an earlier
-    /// segment can supply the pointing. No segment extrapolates across a gap.
-    ///
-    /// The function returns the time of the pointing, and the frame relative
-    /// to the reference frame that the segment stores.
-    /// [`try_frame_at`](crate::frames::try_frame_at) resolves that reference.
-    ///
-    /// # Errors
-    /// - [`Error::Bounds`] if no loaded segment holds pointing for `ck_id` at
-    ///   `time`.
-    /// - [`Error::IOError`] or [`Error::ValueError`] if the selected segment is
-    ///   a type 6 segment with a malformed mini-segment.
-    pub fn try_get_pointing(
-        &self,
-        time: Time<TDB>,
-        ck_id: i32,
-        sclk: &Sclk,
-    ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
-        let tick = sclk.time_to_tick(time)?;
-        // Of the segments that span the tick, the one first in precedence order
-        // that holds pointing there.
-        let mut best: Option<usize> = None;
-        if let Some(spans) = self.index.get(&ck_id) {
-            for_each_spanning(spans, tick, &mut |idx| {
-                if best.is_none_or(|b| idx < b) && self.segments[idx].has_data_at(tick) {
-                    best = Some(idx);
-                }
-            });
-        }
-        let segment = best.map(|idx| &self.segments[idx]).ok_or_else(|| {
-            Error::Bounds(format!(
-                "CK frame {ck_id} has no pointing at JD {}.",
-                time.jd()
-            ))
-        })?;
-        segment.try_get_orientation(ck_id, time, tick, sclk)
-    }
-
-    /// Whether any loaded segment, at any time, holds pointing for `ck_id`.
-    #[must_use]
-    pub fn has_instrument(&self, ck_id: i32) -> bool {
-        self.index.contains_key(&ck_id)
-    }
-
     /// Return a list of all loaded instrument ids.
     #[must_use]
     pub fn loaded_instruments(&self) -> Vec<i32> {
@@ -173,7 +121,69 @@ impl CkCollection {
             })
             .collect()
     }
+
+    /// The pointing of the CK frame `ck_id` at `time`, on the spacecraft clock
+    /// `sclk`.
+    ///
+    /// The function uses the first segment in precedence order that holds
+    /// pointing at `time`. Thus inside a gap of a later segment, an earlier
+    /// segment can supply the pointing. No segment extrapolates across a gap.
+    ///
+    /// The function returns the frame at the time of the pointing, relative to
+    /// the reference frame that the segment stores.
+    /// [`SpiceFrames`](crate::frames::SpiceFrames) resolves that reference.
+    ///
+    /// # Errors
+    /// - [`Error::Bounds`] if no loaded segment holds pointing for `ck_id` at
+    ///   `time`.
+    /// - [`Error::IOError`] or [`Error::ValueError`] if the selected segment is
+    ///   a type 6 segment with a malformed mini-segment.
+    pub(crate) fn try_get_pointing(
+        &self,
+        time: Time<TDB>,
+        ck_id: i32,
+        sclk: &Sclk,
+    ) -> KeteResult<InstantFrame> {
+        let tick = sclk.time_to_tick(time)?;
+        // Of the segments that span the tick, the one first in precedence order
+        // that holds pointing there.
+        let mut best: Option<usize> = None;
+        if let Some(spans) = self.index.get(&ck_id) {
+            for_each_spanning(spans, tick, &mut |idx| {
+                if best.is_none_or(|b| idx < b) && self.segments[idx].has_data_at(tick) {
+                    best = Some(idx);
+                }
+            });
+        }
+        let segment = best.map(|idx| &self.segments[idx]).ok_or_else(|| {
+            Error::Bounds(format!(
+                "CK frame {ck_id} has no pointing at JD {}.",
+                time.jd()
+            ))
+        })?;
+        segment.try_get_orientation(ck_id, time, tick, sclk)
+    }
+
+    /// Whether any loaded segment, at any time, holds pointing for `ck_id`.
+    #[must_use]
+    pub(crate) fn has_instrument(&self, ck_id: i32) -> bool {
+        self.index.contains_key(&ck_id)
+    }
 }
+
+/// CK singleton.
+///
+/// This is a lock protected [`CkCollection`]. Use `.try_read()` for read-only
+/// access.
+pub static LOADED_CK: std::sync::LazyLock<ShardedLock<CkCollection>> =
+    std::sync::LazyLock::new(|| {
+        let singleton = CkCollection::default();
+        ShardedLock::new(singleton)
+    });
+
+/// Largest difference, in days, between a requested time and the time of the CK
+/// pointing used for it: about 1 ms.
+pub(crate) const POINTING_TOLERANCE_DAYS: f64 = 1e-8;
 
 /// The time span of one segment, as a node of an implicit interval tree.
 ///
@@ -244,16 +254,6 @@ fn for_each_spanning(spans: &[Span], tick: f64, f: &mut impl FnMut(usize)) {
     }
 }
 
-/// CK singleton.
-///
-/// This is a lock protected [`CkCollection`]. Use `.try_read()` for read-only
-/// access.
-pub static LOADED_CK: std::sync::LazyLock<ShardedLock<CkCollection>> =
-    std::sync::LazyLock::new(|| {
-        let singleton = CkCollection::default();
-        ShardedLock::new(singleton)
-    });
-
 /// Build an instrument frame from a CK C-matrix and angular velocity.
 ///
 /// `time` is the time of the pointing. `c_matrix` rotates vectors from the
@@ -262,20 +262,25 @@ pub static LOADED_CK: std::sync::LazyLock<ShardedLock<CkCollection>> =
 /// reference frame, in radians per second. CK expresses it in the reference
 /// frame. `reference_frame_id` is the ID of the reference frame.
 ///
-/// The frame rotation is the inverse of the C-matrix. The rotation rate is the
-/// time derivative of that rotation, `[w]x R`, in units of 1/day. The rotation
-/// rate is `None` when `angular_velocity` is `None`.
+/// The segment does not know the SPICE frame ID of the instrument, so the frame
+/// is [`DynFrameId::UNNAMED`]. [`SpiceFrames`](crate::frames::SpiceFrames) names it.
+///
+/// The frame rotation is the inverse of the C-matrix, and its rate follows from
+/// the angular velocity, see [`InstantFrame::from_angular_velocity`]. The
+/// rotation rate is `None` when `angular_velocity` is `None`.
 fn instrument_frame(
     time: Time<TDB>,
     c_matrix: Rotation3<f64>,
     angular_velocity: Option<[f64; 3]>,
     reference_frame_id: i32,
-) -> NonInertialFrame {
-    let reference_frame_id = FrameId(reference_frame_id);
-    let rotation = c_matrix.inverse();
-    let rotation_rate =
-        angular_velocity.map(|av| (Vector3::from(av) * 86400.0).cross_matrix() * rotation.matrix());
-    NonInertialFrame::from_rotations(time, rotation, rotation_rate, reference_frame_id)
+) -> InstantFrame {
+    InstantFrame::from_angular_velocity(
+        time,
+        c_matrix.inverse(),
+        angular_velocity.map(|av| Vector3::from(av) * 86400.0),
+        DynFrameId::UNNAMED,
+        DynFrameId(reference_frame_id),
+    )
 }
 
 #[cfg(test)]
@@ -389,7 +394,7 @@ pub(crate) mod tests {
     }
 
     fn angle_at(cks: &CkCollection, jd: f64) -> f64 {
-        let (_, frame) = cks
+        let frame = cks
             .try_get_pointing(Time::new(jd), -999_000, test_clock())
             .unwrap();
         let rot = Rotation3::from_matrix(frame.rotation.matrix());
@@ -586,7 +591,7 @@ pub(crate) mod tests {
         ];
         for (seconds, c_matrix) in expected {
             let jd = SPIN_JD0 + seconds / 86400.0;
-            let (_, frame) = cks
+            let frame = cks
                 .try_get_pointing(Time::new(jd), -999_000, test_clock())
                 .unwrap();
             let err = (frame.rotation.inverse().matrix() - c_matrix).abs().max();
@@ -595,7 +600,6 @@ pub(crate) mod tests {
             let rotation_at = |jd| {
                 *cks.try_get_pointing(Time::new(jd), -999_000, test_clock())
                     .unwrap()
-                    .1
                     .rotation
                     .matrix()
             };

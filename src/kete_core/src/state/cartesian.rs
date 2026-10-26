@@ -22,7 +22,7 @@
 
 use crate::desigs::Desig;
 use crate::errors::{Error, KeteResult};
-use crate::frames::{CenterBody, DynCenter, EarthCenter, InertialFrame, SSB, SunCenter, Vector};
+use crate::frames::{CenterBody, DynCenter, EarthCenter, SSB, StaticFrame, SunCenter, Vector};
 use crate::time::{TDB, Time};
 
 /// Exact State of an object.
@@ -39,7 +39,7 @@ use crate::time::{TDB, Time};
 #[must_use]
 pub struct State<T, C = DynCenter>
 where
-    T: InertialFrame,
+    T: StaticFrame,
     C: CenterBody,
     DynCenter: From<C>,
 {
@@ -59,7 +59,7 @@ where
     pub center: C,
 }
 
-impl<T: InertialFrame, C: CenterBody> State<T, C>
+impl<T: StaticFrame, C: CenterBody> State<T, C>
 where
     DynCenter: From<C>,
 {
@@ -77,7 +77,7 @@ where
 
     /// Convert the state into a new frame, preserving the center type.
     #[inline(always)]
-    pub fn into_frame<B: InertialFrame>(self) -> State<B, C> {
+    pub fn into_frame<B: StaticFrame>(self) -> State<B, C> {
         let pos = self.pos.into_frame::<B>();
         let vel = self.vel.into_frame::<B>();
         State {
@@ -90,7 +90,7 @@ where
     }
 }
 
-impl<T: InertialFrame, C: CenterBody> State<T, C>
+impl<T: StaticFrame, C: CenterBody> State<T, C>
 where
     DynCenter: From<C>,
 {
@@ -139,7 +139,7 @@ where
     }
 }
 
-impl<T: InertialFrame> State<T, DynCenter> {
+impl<T: StaticFrame> State<T, DynCenter> {
     /// Trade the center ID and ID values, and flip the direction of the position and
     /// velocity vectors.
     #[inline(always)]
@@ -209,7 +209,7 @@ impl<T: InertialFrame> State<T, DynCenter> {
     }
 }
 
-impl<T: InertialFrame> TryFrom<State<T, DynCenter>> for State<T, SSB> {
+impl<T: StaticFrame> TryFrom<State<T, DynCenter>> for State<T, SSB> {
     type Error = Error;
 
     fn try_from(s: State<T, DynCenter>) -> KeteResult<Self> {
@@ -229,7 +229,7 @@ impl<T: InertialFrame> TryFrom<State<T, DynCenter>> for State<T, SSB> {
     }
 }
 
-impl<T: InertialFrame> TryFrom<State<T, DynCenter>> for State<T, SunCenter> {
+impl<T: StaticFrame> TryFrom<State<T, DynCenter>> for State<T, SunCenter> {
     type Error = Error;
 
     fn try_from(s: State<T, DynCenter>) -> KeteResult<Self> {
@@ -249,7 +249,7 @@ impl<T: InertialFrame> TryFrom<State<T, DynCenter>> for State<T, SunCenter> {
     }
 }
 
-impl<T: InertialFrame> TryFrom<State<T, DynCenter>> for State<T, EarthCenter> {
+impl<T: StaticFrame> TryFrom<State<T, DynCenter>> for State<T, EarthCenter> {
     type Error = Error;
 
     fn try_from(s: State<T, DynCenter>) -> KeteResult<Self> {
@@ -269,7 +269,7 @@ impl<T: InertialFrame> TryFrom<State<T, DynCenter>> for State<T, EarthCenter> {
     }
 }
 
-impl<T: InertialFrame> From<State<T, SSB>> for State<T, DynCenter> {
+impl<T: StaticFrame> From<State<T, SSB>> for State<T, DynCenter> {
     fn from(s: State<T, SSB>) -> Self {
         Self {
             desig: s.desig,
@@ -281,7 +281,7 @@ impl<T: InertialFrame> From<State<T, SSB>> for State<T, DynCenter> {
     }
 }
 
-impl<T: InertialFrame> From<State<T, SunCenter>> for State<T, DynCenter> {
+impl<T: StaticFrame> From<State<T, SunCenter>> for State<T, DynCenter> {
     fn from(s: State<T, SunCenter>) -> Self {
         Self {
             desig: s.desig,
@@ -293,7 +293,7 @@ impl<T: InertialFrame> From<State<T, SunCenter>> for State<T, DynCenter> {
     }
 }
 
-impl<T: InertialFrame> From<State<T, EarthCenter>> for State<T, DynCenter> {
+impl<T: StaticFrame> From<State<T, EarthCenter>> for State<T, DynCenter> {
     fn from(s: State<T, EarthCenter>) -> Self {
         Self {
             desig: s.desig,

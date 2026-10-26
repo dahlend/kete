@@ -6,10 +6,11 @@ use std::sync::Arc;
 
 use crate::spice::FrameLike;
 use kete_core::constants::{AU_KM, GMS};
-use kete_core::forces::{GravParams, Orientation, Polyhedron, Shape};
+use kete_core::forces::{GravParams, Polyhedron, Shape};
+use kete_core::frames::{DynFrameId, OffsetFrame};
 use kete_core::geometry::TriMesh;
 use kete_core::prelude::Error;
-use nalgebra::{Matrix3, Vector3};
+use nalgebra::{Matrix3, Rotation3, Vector3};
 use pyo3::{PyResult, pyclass, pyfunction, pymethods};
 
 use crate::spherical_harmonics::PySphericalHarmonics;
@@ -161,15 +162,17 @@ impl PyPolyhedron {
     }
 }
 
-/// The body-frame orientation from exactly one of a frame id and a fixed rotation.
-pub(crate) fn orientation(
+/// The body frame from exactly one of a frame id and a fixed rotation.
+pub(crate) fn body_frame(
     frame_id: Option<FrameLike>,
     rotation: Option<[[f64; 3]; 3]>,
-) -> PyResult<Orientation> {
+) -> PyResult<OffsetFrame> {
     match (frame_id, rotation) {
-        (Some(frame), None) => Ok(Orientation::Frame {
-            frame_id: frame.frame_id()?,
-        }),
+        (Some(frame), None) => Ok(OffsetFrame::new(
+            DynFrameId::UNNAMED,
+            Rotation3::identity(),
+            frame.frame_id()?,
+        )),
         (None, Some(rows)) => {
             let rot = Matrix3::from_fn(|i, j| rows[i][j]);
             if (rot * rot.transpose() - Matrix3::identity()).abs().max() > 1e-9
@@ -179,7 +182,11 @@ pub(crate) fn orientation(
                     "rotation must be a proper rotation matrix.".into(),
                 ))?;
             }
-            Ok(Orientation::Fixed(rot))
+            Ok(OffsetFrame::new(
+                DynFrameId::UNNAMED,
+                Rotation3::from_matrix_unchecked(rot),
+                DynFrameId::J2000,
+            ))
         }
         _ => Err(Error::ValueError(
             "Exactly one of frame_id and rotation must be given.".into(),
@@ -247,7 +254,7 @@ pub fn register_polyhedron(
     frame_id: Option<FrameLike>,
     rotation: Option<[[f64; 3]; 3]>,
 ) -> PyResult<PyPolyhedron> {
-    let orientation = orientation(frame_id, rotation)?;
+    let frame = body_frame(frame_id, rotation)?;
     if !switch_radius.is_finite() || switch_radius <= 0.0 {
         Err(Error::ValueError(
             "switch_radius must be positive and finite.".into(),
@@ -273,7 +280,7 @@ pub fn register_polyhedron(
     let mut params = GravParams::new(naif_id, gm, model.mesh().bounding_radius() as f32);
     params.shape = Shape::Polyhedron {
         model: Arc::clone(&model),
-        orientation,
+        frame,
         switch_radius,
     };
     params.register();

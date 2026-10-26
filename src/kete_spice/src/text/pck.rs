@@ -3,18 +3,9 @@
 
 //! Body orientation from text PCK constants.
 //!
-//! A text PCK gives the right ascension (RA) and declination (DEC) of the pole
-//! of a body, and the angle (W) of its prime meridian, in degrees:
-//!
-//! ```text
-//! RA  = RA0 + RA1 T + RA2 T^2 + sum_i a_i sin(theta_i)
-//! DEC = DEC0 + DEC1 T + DEC2 T^2 + sum_i d_i cos(theta_i)
-//! W   = W0 + W1 d + W2 d^2 + sum_i w_i sin(theta_i)
-//! ```
-//!
-//! `T` is in Julian centuries and `d` in days, from the epoch of the
-//! constants. The rotation from the reference frame to the body frame is
-//! `[W]3 [pi/2 - DEC]1 [pi/2 + RA]3`.
+//! A text PCK gives the [`BodyRotation`] model of a body: the right ascension
+//! and declination of its pole, and the angle of its prime meridian, as
+//! polynomials in time with nutation and precession terms.
 //!
 //! These variables give the model of body `<id>`:
 //!
@@ -33,185 +24,97 @@
 //! ID divided by 10000 for a 5 digit ID, and the body itself for any other ID.
 use super::TextKernelVars;
 use kete_core::errors::{Error, KeteResult};
-use kete_core::frames::{FrameId, NonInertialFrame};
+use kete_core::frames::{BodyRotation, DynFrameId};
 use kete_core::time::{TDB, Time};
 use std::collections::HashMap;
-use std::f64::consts::FRAC_PI_2;
 
-/// Days in a Julian century.
-const DAYS_PER_CENTURY: f64 = 36525.0;
-
-/// The orientation model of one body from text PCK constants.
-#[derive(Debug, Clone, PartialEq)]
-pub struct BodyRotation {
-    /// Pole right ascension polynomial in centuries, degrees.
-    ra: [f64; 3],
-    /// Pole declination polynomial in centuries, degrees.
-    dec: [f64; 3],
-    /// Prime meridian polynomial in days, degrees.
-    pm: [f64; 3],
-    /// Nutation and precession amplitudes of RA, DEC and W, degrees.
-    nut_ra: Vec<f64>,
-    nut_dec: Vec<f64>,
-    nut_pm: Vec<f64>,
-    /// Polynomial coefficients in centuries of each nutation and precession
-    /// angle, degrees.
-    angles: Vec<Vec<f64>>,
-    /// Epoch of the constants.
-    epoch: Time<TDB>,
-    /// Frame the pole is given in.
-    reference: FrameId,
-}
-
-impl BodyRotation {
-    /// The body frame at `time`.
-    ///
-    /// The frame holds the rotation from the body frame to the reference frame
-    /// of the constants, and its rate.
-    pub fn frame(&self, time: Time<TDB>) -> NonInertialFrame {
-        let days = (time - self.epoch).elapsed;
-        let t = days / DAYS_PER_CENTURY;
-
-        // Each angle and its rate in degrees per day.
-        let poly = |c: &[f64], x: f64| c.iter().rev().fold(0.0, |acc, c| acc * x + c);
-        let poly_rate = |c: &[f64], x: f64| {
-            c.iter()
-                .enumerate()
-                .skip(1)
-                .rev()
-                .fold(0.0, |acc, (k, c)| acc * x + c * k as f64)
-        };
-        let mut ra = (poly(&self.ra, t), poly_rate(&self.ra, t) / DAYS_PER_CENTURY);
-        let mut dec = (
-            poly(&self.dec, t),
-            poly_rate(&self.dec, t) / DAYS_PER_CENTURY,
-        );
-        let mut pm = (poly(&self.pm, days), poly_rate(&self.pm, days));
-        for (idx, coefs) in self.angles.iter().enumerate() {
-            let theta = poly(coefs, t).to_radians();
-            let theta_rate = (poly_rate(coefs, t) / DAYS_PER_CENTURY).to_radians();
-            let (sin, cos) = theta.sin_cos();
-            if let Some(a) = self.nut_ra.get(idx) {
-                ra.0 += a * sin;
-                ra.1 += a * cos * theta_rate;
-            }
-            if let Some(d) = self.nut_dec.get(idx) {
-                dec.0 += d * cos;
-                dec.1 -= d * sin * theta_rate;
-            }
-            if let Some(w) = self.nut_pm.get(idx) {
-                pm.0 += w * sin;
-                pm.1 += w * cos * theta_rate;
-            }
+/// The model of body `id` from the variables.
+///
+/// The model is `None` if the variables hold no `BODY<id>_POLE_RA`.
+///
+/// # Errors
+/// [`Error::ValueError`] if a variable of the model is missing or has the
+/// wrong type or size, if the phase degree is not 1, 2 or 3, or if both
+/// spellings of a system constant are set (see [`system_constant`]).
+fn from_vars(vars: &TextKernelVars, id: i32) -> KeteResult<Option<BodyRotation>> {
+    let body = |key: &str| format!("BODY{id}_{key}");
+    let Some(ra) = vars.numbers(&body("POLE_RA"))? else {
+        return Ok(None);
+    };
+    let polynomial = |name: String, values: Option<&[f64]>| -> KeteResult<[f64; 3]> {
+        let values = values.ok_or_else(|| Error::ValueError(format!("{name} is missing.")))?;
+        if values.is_empty() || values.len() > 3 {
+            return Err(Error::ValueError(format!(
+                "{name} must hold 1 to 3 numbers, found {}.",
+                values.len()
+            )));
         }
-        NonInertialFrame::from_euler::<'Z', 'X', 'Z'>(
-            time,
-            [
-                FRAC_PI_2 + ra.0.to_radians(),
-                FRAC_PI_2 - dec.0.to_radians(),
-                pm.0.to_radians(),
-            ],
-            [ra.1.to_radians(), -dec.1.to_radians(), pm.1.to_radians()],
-            self.reference,
-        )
-    }
+        let mut out = [0.0; 3];
+        out[..values.len()].copy_from_slice(values);
+        Ok(out)
+    };
+    let ra = polynomial(body("POLE_RA"), Some(ra))?;
+    let dec = polynomial(body("POLE_DEC"), vars.numbers(&body("POLE_DEC"))?)?;
+    let pm = polynomial(body("PM"), vars.numbers(&body("PM"))?)?;
+    let terms = |key: &str| -> KeteResult<Vec<f64>> {
+        Ok(vars.numbers(&body(key))?.unwrap_or(&[]).to_vec())
+    };
+    let nut_ra = terms("NUT_PREC_RA")?;
+    let nut_dec = terms("NUT_PREC_DEC")?;
+    let nut_pm = terms("NUT_PREC_PM")?;
 
-    /// The model of body `id` from the variables.
-    ///
-    /// The model is `None` if the variables hold no `BODY<id>_POLE_RA`.
-    ///
-    /// # Errors
-    /// [`Error::ValueError`] if a variable of the model is missing or has the
-    /// wrong type or size, if the phase degree is not 1, 2 or 3, or if both
-    /// spellings of a system constant are set (see [`system_constant`]).
-    fn from_vars(vars: &TextKernelVars, id: i32) -> KeteResult<Option<Self>> {
-        let body = |key: &str| format!("BODY{id}_{key}");
-        let Some(ra) = vars.numbers(&body("POLE_RA"))? else {
-            return Ok(None);
-        };
-        let polynomial = |name: String, values: Option<&[f64]>| -> KeteResult<[f64; 3]> {
-            let values = values.ok_or_else(|| Error::ValueError(format!("{name} is missing.")))?;
-            if values.is_empty() || values.len() > 3 {
-                return Err(Error::ValueError(format!(
-                    "{name} must hold 1 to 3 numbers, found {}.",
-                    values.len()
-                )));
-            }
-            let mut out = [0.0; 3];
-            out[..values.len()].copy_from_slice(values);
-            Ok(out)
-        };
-        let ra = polynomial(body("POLE_RA"), Some(ra))?;
-        let dec = polynomial(body("POLE_DEC"), vars.numbers(&body("POLE_DEC"))?)?;
-        let pm = polynomial(body("PM"), vars.numbers(&body("PM"))?)?;
-        let terms = |key: &str| -> KeteResult<Vec<f64>> {
-            Ok(vars.numbers(&body(key))?.unwrap_or(&[]).to_vec())
-        };
-        let nut_ra = terms("NUT_PREC_RA")?;
-        let nut_dec = terms("NUT_PREC_DEC")?;
-        let nut_pm = terms("NUT_PREC_PM")?;
-
-        let sys = system(id);
-        let system_var = |key: &str| format!("BODY{sys}_{key}");
-        let n_terms = nut_ra.len().max(nut_dec.len()).max(nut_pm.len());
-        let angles = if n_terms == 0 {
-            Vec::new()
-        } else {
-            let degree = vars.integer(&system_var("MAX_PHASE_DEGREE"))?.unwrap_or(1);
-            let per_angle = usize::try_from(degree)
-                .ok()
-                .filter(|d| (1..=3).contains(d))
-                .ok_or_else(|| {
-                    Error::ValueError(format!(
-                        "{} must be 1, 2 or 3, found {degree}.",
-                        system_var("MAX_PHASE_DEGREE")
-                    ))
-                })?
-                + 1;
-            let name = system_var("NUT_PREC_ANGLES");
-            let values = vars.numbers(&name)?.ok_or_else(|| {
+    let sys = system(id);
+    let system_var = |key: &str| format!("BODY{sys}_{key}");
+    let n_terms = nut_ra.len().max(nut_dec.len()).max(nut_pm.len());
+    let angles = if n_terms == 0 {
+        Vec::new()
+    } else {
+        let degree = vars.integer(&system_var("MAX_PHASE_DEGREE"))?.unwrap_or(1);
+        let per_angle = usize::try_from(degree)
+            .ok()
+            .filter(|d| (1..=3).contains(d))
+            .ok_or_else(|| {
                 Error::ValueError(format!(
-                    "Body {id} has nutation and precession terms, but {name} is missing."
+                    "{} must be 1, 2 or 3, found {degree}.",
+                    system_var("MAX_PHASE_DEGREE")
                 ))
-            })?;
-            if values.len() % per_angle != 0 || values.len() / per_angle < n_terms {
-                return Err(Error::ValueError(format!(
-                    "{name} must hold {per_angle} numbers for each of at least {n_terms} \
-                     angles, found {} numbers.",
-                    values.len()
-                )));
-            }
-            values.chunks(per_angle).map(<[f64]>::to_vec).collect()
-        };
+            })?
+            + 1;
+        let name = system_var("NUT_PREC_ANGLES");
+        let values = vars.numbers(&name)?.ok_or_else(|| {
+            Error::ValueError(format!(
+                "Body {id} has nutation and precession terms, but {name} is missing."
+            ))
+        })?;
+        if values.len() % per_angle != 0 || values.len() / per_angle < n_terms {
+            return Err(Error::ValueError(format!(
+                "{name} must hold {per_angle} numbers for each of at least {n_terms} \
+                 angles, found {} numbers.",
+                values.len()
+            )));
+        }
+        values.chunks(per_angle).map(<[f64]>::to_vec).collect()
+    };
 
-        let epoch = system_constant(vars, sys, "JED_EPOCH")?
-            .map(|name| match vars.numbers(&name)? {
-                Some(&[jd]) => Ok(Time::<TDB>::new(jd)),
-                _ => Err(Error::ValueError(format!("{name} must hold one number."))),
-            })
-            .transpose()?
-            .unwrap_or_else(Time::j2000);
-        let reference = system_constant(vars, sys, "REF_FRAME")?
-            .map(|name| {
-                vars.integer(&name)?
-                    .map(FrameId)
-                    .ok_or_else(|| Error::ValueError(format!("{name} must hold one integer.")))
-            })
-            .transpose()?
-            .unwrap_or(FrameId::J2000);
+    let epoch = system_constant(vars, sys, "JED_EPOCH")?
+        .map(|name| match vars.numbers(&name)? {
+            Some(&[jd]) => Ok(Time::<TDB>::new(jd)),
+            _ => Err(Error::ValueError(format!("{name} must hold one number."))),
+        })
+        .transpose()?
+        .unwrap_or_else(Time::j2000);
+    let reference = system_constant(vars, sys, "REF_FRAME")?
+        .map(|name| {
+            vars.integer(&name)?
+                .map(DynFrameId)
+                .ok_or_else(|| Error::ValueError(format!("{name} must hold one integer.")))
+        })
+        .transpose()?
+        .unwrap_or(DynFrameId::J2000);
 
-        Ok(Some(Self {
-            ra,
-            dec,
-            pm,
-            nut_ra,
-            nut_dec,
-            nut_pm,
-            angles,
-            epoch,
-            reference,
-        }))
-    }
+    BodyRotation::new(ra, dec, pm, epoch, reference)
+        .with_nutation_precession(nut_ra, nut_dec, nut_pm, angles)
+        .map(Some)
 }
 
 /// The planetary system of body `id`.
@@ -258,11 +161,7 @@ pub(crate) fn body_rotations(vars: &TextKernelVars) -> HashMap<i32, KeteResult<B
                 .parse::<i32>()
                 .ok()
         })
-        .filter_map(|id| {
-            BodyRotation::from_vars(vars, id)
-                .transpose()
-                .map(|m| (id, m))
-        })
+        .filter_map(|id| from_vars(vars, id).transpose().map(|m| (id, m)))
         .collect()
 }
 
@@ -287,7 +186,7 @@ mod tests {
         .unwrap();
         let model = body_rotations(&vars).remove(&401).unwrap().unwrap();
         // Offsets are added to one Time, which keeps them exact; a float JD would not.
-        let time = Time::<TDB>::new(2_451_545.0) + 0.37 * DAYS_PER_CENTURY;
+        let time = Time::<TDB>::new(2_451_545.0) + 0.37 * 36525.0;
         // Five-point stencil.
         let h = 1e-3;
         let at = |dt: f64| *model.frame(time + dt).rotation.matrix();
@@ -335,8 +234,16 @@ mod tests {
         )
         .unwrap();
         let model = body_rotations(&vars).remove(&65_002).unwrap().unwrap();
-        assert_eq!(model.reference, FrameId::ECLIPJ2000);
-        assert_eq!(model.angles, vec![vec![350.0, 75_000.0]]);
+        let expected = BodyRotation::new(
+            [40.0, 0.0, 0.0],
+            [80.0, 0.0, 0.0],
+            [10.0, 100.0, 0.0],
+            Time::j2000(),
+            DynFrameId::ECLIPJ2000,
+        )
+        .with_nutation_precession(vec![0.1], vec![], vec![], vec![vec![350.0, 75_000.0]])
+        .unwrap();
+        assert_eq!(model, expected);
     }
 
     /// Both spellings of a system constant is an error, as in CSPICE `bodeul`.
@@ -369,8 +276,8 @@ mod tests {
                 .contains("CONSTS_REF_FRAME")
         );
         assert_eq!(
-            models[&2_000_007].as_ref().unwrap().reference,
-            FrameId::ECLIPJ2000
+            models[&2_000_007].as_ref().unwrap().reference(),
+            DynFrameId::ECLIPJ2000
         );
     }
 }

@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use kete_core::ephemeris::Ephemeris;
+use kete_core::ephemeris::EphemerisSource;
 use kete_core::frames::{Equatorial, SunCenter, Vector};
 use kete_core::prelude::{Error, KeteResult, State};
 use kete_core::time::{TDB, Time};

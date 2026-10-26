@@ -3,7 +3,7 @@
 
 use super::{CkArray, instrument_frame};
 use kete_core::errors::{Error, KeteResult};
-use kete_core::frames::NonInertialFrame;
+use kete_core::frames::InstantFrame;
 use kete_core::time::{TDB, Time};
 use nalgebra::{Quaternion, Rotation3, Unit, Vector3};
 
@@ -68,7 +68,7 @@ impl CkSegmentType2 {
         &self,
         time: Time<TDB>,
         tick: f64,
-    ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
+    ) -> KeteResult<InstantFrame> {
         // get the time of the last record and its index
         let time_starts = self.time_starts();
         let (record_time, record_idx) = if self.n_records == 1 {
@@ -109,7 +109,7 @@ impl CkSegmentType2 {
             Some(angular_velocity),
             self.array.reference_frame_id,
         );
-        Ok((time, frame))
+        Ok(frame)
     }
 
     /// Build the data of a CK type 2 array.

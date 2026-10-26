@@ -23,7 +23,7 @@ use crate::prepend_by_precedence;
 use crossbeam::sync::ShardedLock;
 use kete_core::cache::cache_path;
 use kete_core::errors::{Error, KeteResult};
-use kete_core::frames::NonInertialFrame;
+use kete_core::frames::InstantFrame;
 use kete_core::time::{TDB, Time};
 use segments::PckSegment;
 
@@ -59,37 +59,6 @@ impl PckCollection {
             arr.frame_id
         });
         Ok(())
-    }
-
-    /// The PCK frame with class ID `class_id` at `jd`, relative to the reference frame
-    /// stored in the segment.
-    ///
-    /// # Errors
-    /// Fails when no loaded segment holds `class_id` at `jd`.
-    pub fn try_get_orientation(
-        &self,
-        class_id: i32,
-        jd: Time<TDB>,
-    ) -> KeteResult<NonInertialFrame> {
-        for segment in &self.segments {
-            let array: &PckArray = segment.into();
-            if (array.frame_id == class_id) & array.contains(jd) {
-                return segment.try_get_orientation(class_id, jd);
-            }
-        }
-
-        Err(Error::Bounds(format!(
-            "No loaded PCK segment holds class ID {class_id} at JD {}.",
-            jd.jd()
-        )))
-    }
-
-    /// Whether any loaded segment, at any time, holds the class ID `class_id`.
-    #[must_use]
-    pub fn has_frame(&self, class_id: i32) -> bool {
-        self.segments
-            .iter()
-            .any(|segment| Into::<&PckArray>::into(segment).frame_id == class_id)
     }
 
     /// Delete all segments in the PCK singleton, equivalent to unloading all files.
@@ -144,6 +113,41 @@ impl PckCollection {
             }
         }
         Ok(())
+    }
+
+    /// The PCK frame with class ID `class_id` at `jd`, relative to the reference frame
+    /// stored in the segment.
+    ///
+    /// The segment holds a class ID, not a frame ID, so the frame is
+    /// [`DynFrameId::UNNAMED`](kete_core::frames::DynFrameId::UNNAMED);
+    /// [`SpiceFrames`](crate::frames::SpiceFrames) names it.
+    ///
+    /// # Errors
+    /// Fails when no loaded segment holds `class_id` at `jd`.
+    pub(crate) fn try_get_orientation(
+        &self,
+        class_id: i32,
+        jd: Time<TDB>,
+    ) -> KeteResult<InstantFrame> {
+        for segment in &self.segments {
+            let array: &PckArray = segment.into();
+            if (array.frame_id == class_id) & array.contains(jd) {
+                return segment.try_get_orientation(class_id, jd);
+            }
+        }
+
+        Err(Error::Bounds(format!(
+            "No loaded PCK segment holds class ID {class_id} at JD {}.",
+            jd.jd()
+        )))
+    }
+
+    /// Whether any loaded segment, at any time, holds the class ID `class_id`.
+    #[must_use]
+    pub(crate) fn has_frame(&self, class_id: i32) -> bool {
+        self.segments
+            .iter()
+            .any(|segment| Into::<&PckArray>::into(segment).frame_id == class_id)
     }
 }
 

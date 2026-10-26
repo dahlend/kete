@@ -8,7 +8,7 @@
 
 use crate::constants::{C_AU_PER_DAY_INV, GMS};
 use crate::errors::Error;
-use crate::frames::{InertialFrame, SunCenter, Vector};
+use crate::frames::{StaticFrame, SunCenter, Vector};
 use crate::prelude::KeteResult;
 use crate::state::State;
 use crate::time::{Duration, TDB, Time};
@@ -22,7 +22,7 @@ use std::f64::consts::TAU;
 /// # Errors
 /// Returns [`Error::Convergence`] if the state is not finite, or if the Kepler
 /// solver fails after ten levels of step halving.
-pub fn propagate_two_body<T: InertialFrame>(
+pub fn propagate_two_body<T: StaticFrame>(
     state: &State<T, SunCenter>,
     time_final: Time<TDB>,
 ) -> KeteResult<State<T, SunCenter>> {
@@ -50,7 +50,7 @@ pub fn propagate_two_body<T: InertialFrame>(
 ///
 /// # Errors
 /// Returns an error if the Kepler solver fails.
-pub fn light_time_correct<T: InertialFrame>(
+pub fn light_time_correct<T: StaticFrame>(
     state: &State<T, SunCenter>,
     observer_pos: &Vector<T>,
 ) -> KeteResult<State<T, SunCenter>> {
@@ -581,7 +581,7 @@ pub(crate) fn universal_g(s: f64, beta: f64) -> [f64; 4] {
 ///
 /// # Errors
 /// Returns [`Error::Convergence`] if the Kepler solve fails.
-pub fn propagate_two_body_with_stm<T: InertialFrame>(
+pub fn propagate_two_body_with_stm<T: StaticFrame>(
     state: &State<T, SunCenter>,
     time_final: Time<TDB>,
 ) -> KeteResult<(State<T, SunCenter>, nalgebra::Matrix6<f64>)> {

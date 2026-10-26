@@ -16,7 +16,7 @@ use super::{CkArray, instrument_frame};
 use crate::interpolation::{hermite_interpolation, lagrange_interpolation_both};
 use crate::text::sclk::Sclk;
 use kete_core::errors::{Error, KeteResult};
-use kete_core::frames::NonInertialFrame;
+use kete_core::frames::InstantFrame;
 use kete_core::time::{TDB, Time};
 use nalgebra::{Quaternion, Unit, UnitQuaternion};
 
@@ -133,7 +133,7 @@ impl CkSegmentType5 {
         time: Time<TDB>,
         tick: f64,
         sclk: &Sclk,
-    ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
+    ) -> KeteResult<InstantFrame> {
         let (time, quaternion, rates) = self.get_quaternion_at_time(time, tick, sclk)?;
 
         let frame = instrument_frame(
@@ -143,7 +143,7 @@ impl CkSegmentType5 {
             self.array.reference_frame_id,
         );
 
-        Ok((time, frame))
+        Ok(frame)
     }
 
     /// Return the interpolated attitude and angular velocity at `time`.

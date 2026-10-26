@@ -25,7 +25,7 @@ use nalgebra::{DMatrix, DVector, Matrix3, Vector3};
 
 use crate::errors::{Error, KeteResult};
 use crate::forces::ParameterizedForce;
-use crate::frames::{CenterBody, DynCenter, InertialFrame, Vector};
+use crate::frames::{CenterBody, DynCenter, StaticFrame, Vector};
 use crate::integrators::RadauDense;
 use crate::prelude::State;
 use crate::time::{TDB, Time};
@@ -233,7 +233,7 @@ pub fn propagate_state<F: ParameterizedForce>(
     Ok((pos_f, vel_f))
 }
 
-impl<F: InertialFrame, C: CenterBody> State<F, C>
+impl<F: StaticFrame, C: CenterBody> State<F, C>
 where
     DynCenter: From<C>,
 {

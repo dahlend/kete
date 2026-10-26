@@ -22,7 +22,7 @@ use super::TextKernelVars;
 use kete_core::errors::{Error, KeteResult};
 
 /// The variables that make a text kernel a meta-kernel.
-pub const META_KERNEL_VARS: [&str; 3] = ["KERNELS_TO_LOAD", "PATH_SYMBOLS", "PATH_VALUES"];
+pub(crate) const META_KERNEL_VARS: [&str; 3] = ["KERNELS_TO_LOAD", "PATH_SYMBOLS", "PATH_VALUES"];
 
 /// The files a meta-kernel lists, in order, or `None` if `vars` does not set
 /// `KERNELS_TO_LOAD`.
@@ -30,7 +30,7 @@ pub const META_KERNEL_VARS: [&str; 3] = ["KERNELS_TO_LOAD", "PATH_SYMBOLS", "PAT
 /// # Errors
 /// [`Error::ValueError`] if one of [`META_KERNEL_VARS`] does not hold strings,
 /// or `PATH_SYMBOLS` and `PATH_VALUES` differ in length.
-pub fn kernels_to_load(vars: &TextKernelVars) -> KeteResult<Option<Vec<String>>> {
+pub(crate) fn kernels_to_load(vars: &TextKernelVars) -> KeteResult<Option<Vec<String>>> {
     let Some(elements) = vars.strings("KERNELS_TO_LOAD")? else {
         return Ok(None);
     };

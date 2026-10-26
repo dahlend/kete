@@ -14,7 +14,6 @@ import numpy as np
 from .._core import Observation
 from .common import (
     _fetch_debias_table,
-    _ground_observer,
     _over_obs_reweight_factors,
     _time_sigma_for_obs,
     get_observatory_std,
@@ -244,8 +243,8 @@ def mpc_obs_to_observations(
     from the MPC observatory code (ground-based), the stored spacecraft
     position, or the stored roving observer location. Ground-station positions
     use the Earth orientation of the loaded PCK kernels. Before their coverage
-    starts, they use the approximate Earth orientation of
-    :func:`~kete.spice.approx_earth_pos_to_ecliptic`. Observations with an
+    starts, they use an approximate Earth orientation, see
+    :func:`~kete.spice.earth_pos_to_ecliptic`. Observations with an
     unknown observatory code, or with an epoch outside the loaded planetary
     ephemeris, are skipped with a logged warning.
 
@@ -352,12 +351,14 @@ def mpc_obs_to_observations(
                     frame=Frames.Ecliptic,
                     center_id=0,
                 ).as_equatorial
-            elif obs.note2 == "V" and obs.geodetic is not None:
-                lat, lon, height_km = obs.geodetic
-                observer = _ground_observer(obs.jd, lat, lon, height_km, obs.obs_code)
             else:
-                lat, lon, height_km, *_ = find_obs_code(obs.obs_code)
-                observer = _ground_observer(obs.jd, lat, lon, height_km, obs.obs_code)
+                if obs.note2 == "V" and obs.geodetic is not None:
+                    lat, lon, height_km = obs.geodetic
+                else:
+                    lat, lon, height_km, *_ = find_obs_code(obs.obs_code)
+                observer = spice.earth_pos_to_ecliptic(
+                    obs.jd, lat, lon, height_km, name=obs.obs_code, center=0
+                ).as_equatorial
         except ValueError:
             # An unknown observatory code, or the loaded ephemeris does not
             # cover the epoch.

@@ -3,8 +3,8 @@
 
 //! The integrated ephemeris of `kete_core` against the loaded DE440 kernels.
 
-use kete_core::ephemeris::Ephemeris;
-use kete_core::frames::{Equatorial, SSB};
+use kete_core::ephemeris::EphemerisSource;
+use kete_core::frames::{Equatorial, FrameTable, SSB};
 use kete_core::propagation::{IntegratedEphemeris, NBody};
 use kete_core::state::State;
 use kete_core::time::{TDB, Time};
@@ -34,7 +34,7 @@ const LIMITS_KM: [(i32, &str, f64); 16] = [
     (20000704, "Interamnia", 200.0),
 ];
 
-fn helio_km(eph: &impl Ephemeris, id: i32, time: Time<TDB>) -> Vector3<f64> {
+fn helio_km(eph: &impl EphemerisSource, id: i32, time: Time<TDB>) -> Vector3<f64> {
     let state = eph.try_get_state_with_center(id, time, 10).unwrap();
     Vector3::from(state.pos) * AU_KM
 }
@@ -82,7 +82,7 @@ fn barycenter_matches_de440() {
     let mut worst = 0.0_f64;
     for years in [-99.0, -50.0, -10.0, 0.0, 10.0, 50.0, 99.0] {
         let t = t0 + years * 365.25;
-        let sun = |eph: &dyn Ephemeris| -> Vector3<f64> {
+        let sun = |eph: &dyn EphemerisSource| -> Vector3<f64> {
             Vector3::from(eph.try_get_state_with_center(10, t, 0).unwrap().pos) * AU_KM
         };
         worst = worst.max((sun(&integrated) - sun(&spice)).norm());
@@ -92,9 +92,15 @@ fn barycenter_matches_de440() {
 }
 
 /// Heliocentric position (km) at `end` of `start` propagated with the planets of `eph`.
-fn propagate(eph: &impl Ephemeris, start: &State<Equatorial>, end: Time<TDB>) -> Vector3<f64> {
+fn propagate(
+    eph: &impl EphemerisSource,
+    start: &State<Equatorial>,
+    end: Time<TDB>,
+) -> Vector3<f64> {
     let ssb: State<Equatorial, SSB> = eph.try_to_ssb(start.clone()).unwrap();
-    let moved = ssb.propagate_with(&NBody::new(eph, false), end).unwrap();
+    let moved = ssb
+        .propagate_with(&NBody::new(eph, &FrameTable::new(), false), end)
+        .unwrap();
     let helio = eph.try_to_sun(moved.into()).unwrap();
     Vector3::from(helio.pos) * AU_KM
 }

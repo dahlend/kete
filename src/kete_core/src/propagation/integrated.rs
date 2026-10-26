@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Dar Dahlen
 // SPDX-License-Identifier: BSD-3-Clause
 
-//! An [`Ephemeris`] that integrates the planets itself, from a saved set of states.
+//! An [`EphemerisSource`] that integrates the planets itself, from a saved set of states.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -11,7 +11,7 @@ use nalgebra::{DVector, Vector3};
 
 use super::batch::integrate_packed;
 use crate::desigs::Desig;
-use crate::ephemeris::Ephemeris;
+use crate::ephemeris::EphemerisSource;
 use crate::errors::{Error, KeteResult};
 use crate::forces::{GravParams, NonGravKind};
 use crate::frames::Equatorial;
@@ -19,7 +19,7 @@ use crate::integrators::RadauDense;
 use crate::state::State;
 use crate::time::{TDB, Time};
 
-/// An [`Ephemeris`] of the Sun, the planets, the Moon, Pluto and the five most massive
+/// An [`EphemerisSource`] of the Sun, the planets, the Moon, Pluto and the five most massive
 /// asteroids, integrated from saved states; it needs no SPICE kernels.
 ///
 /// The integration starts from barycentric states at one epoch, stored in
@@ -157,7 +157,7 @@ impl Default for IntegratedEphemeris {
     }
 }
 
-impl Ephemeris for IntegratedEphemeris {
+impl EphemerisSource for IntegratedEphemeris {
     fn try_get_state_with_center(
         &self,
         id: i32,

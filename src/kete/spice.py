@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextlib
 import glob
 import os
+import warnings
 from collections import namedtuple
 
 import numpy as np
@@ -15,7 +16,6 @@ import requests
 from . import _core
 from ._core import (
     SpkBuilder,
-    approx_earth_pos_to_ecliptic,
     daf_convert_big_to_little_endian,
     get_state,
     instrument_equatorial_to_frame,
@@ -336,6 +336,46 @@ def mpc_code_to_ecliptic(
     )
 
 
+def approx_earth_pos_to_ecliptic(
+    jd: float | Time,
+    geodetic_lat: float,
+    geodetic_lon: float,
+    height: float,
+    name: str | None = None,
+) -> State:
+    """
+    Deprecated: use :func:`earth_pos_to_ecliptic`, which this calls.
+
+    :func:`earth_pos_to_ecliptic` uses the Earth orientation of the loaded PCK
+    kernels, and falls back to the approximate Earth orientation that this function
+    used where they do not cover the date.
+
+    Parameters
+    ----------
+    jd:
+        Julian time (TDB) of the desired state.
+    geodetic_lat:
+        Latitude on Earth's surface in degrees.
+    geodetic_lon:
+        Longitude on Earth's surface in degrees.
+    height:
+        Height of the observer above the surface of the Earth in km.
+    name :
+        Optional name of the position on Earth.
+
+    Returns
+    -------
+    State
+        The Sun centered ecliptic state.
+    """
+    warnings.warn(
+        "approx_earth_pos_to_ecliptic is deprecated; use earth_pos_to_ecliptic.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return earth_pos_to_ecliptic(jd, geodetic_lat, geodetic_lon, height, name=name)
+
+
 def earth_pos_to_ecliptic(
     jd: float | Time,
     geodetic_lat: float,
@@ -353,7 +393,11 @@ def earth_pos_to_ecliptic(
 
     The frame conversion is done using a PCK file from the NAIF/JPL website.
     This is the combined PCK file containing lower accuracy historical data, high
-    accuracy modern data, and the current predictions going forward.
+    accuracy modern data, and the current predictions going forward. Where the
+    loaded PCK files do not cover ``jd``, as before 1962, the conversion falls back
+    to an approximate Earth orientation. It has no polar motion, and its rotation
+    uses UTC in place of UT1 from 1972 and a model of Delta T before, so it is good
+    to about 0.4 km at the surface from 1972.
 
     Parameters
     ----------
@@ -375,9 +419,6 @@ def earth_pos_to_ecliptic(
     State
         Returns the equatorial state of the target in AU and AU/days.
     """
-    if len(_core.pck_loaded()) == 0:
-        kernel_reload()
-
     pos = _core.wgs_lat_lon_to_ecef(geodetic_lat, geodetic_lon, height_above_surface)
     pos = np.array(pos) / AU_KM
     _, center_id = name_lookup(center)

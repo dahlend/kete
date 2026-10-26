@@ -7,7 +7,7 @@
 
 use super::gm_sqrt_for_center;
 use crate::errors::Error;
-use crate::frames::{CenterBody, DynCenter, Ecliptic, InertialFrame};
+use crate::frames::{CenterBody, DynCenter, Ecliptic, StaticFrame};
 use crate::prelude::{Desig, KeteResult, State};
 use crate::time::{TDB, Time};
 
@@ -183,7 +183,7 @@ impl EquinoctialElements {
     /// # Errors
     /// Fails when the elements are outside the physical domain, matching
     /// [`Self::try_to_state`].
-    pub fn state_jacobian<F: InertialFrame>(&self) -> KeteResult<Matrix6<f64>> {
+    pub fn state_jacobian<F: StaticFrame>(&self) -> KeteResult<Matrix6<f64>> {
         let orbit_eq = self.checked_orbit_equation()?;
         let (sin_lon, cos_lon) = self.true_lon.sin_cos();
         let (pole_h, pole_k) = (self.pole_h, self.pole_k);
@@ -265,7 +265,7 @@ impl EquinoctialElements {
     /// Fails when the true longitude is outside the physical domain, or if the forward
     /// Jacobian is singular to working precision, which happens as the seam is
     /// approached.
-    pub fn state_jacobian_inverse<F: InertialFrame>(&self) -> KeteResult<Matrix6<f64>> {
+    pub fn state_jacobian_inverse<F: StaticFrame>(&self) -> KeteResult<Matrix6<f64>> {
         self.state_jacobian::<F>()?.try_inverse().ok_or_else(|| {
             Error::ValueError(
                 "The elements to state Jacobian is singular to working precision and \

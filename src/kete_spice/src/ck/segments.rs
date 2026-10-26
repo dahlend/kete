@@ -8,7 +8,7 @@ use super::type5::CkSegmentType5;
 use super::type6::CkSegmentType6;
 use crate::text::sclk::Sclk;
 use kete_core::errors::{Error, KeteResult};
-use kete_core::frames::NonInertialFrame;
+use kete_core::frames::InstantFrame;
 use kete_core::time::{TDB, Time};
 
 #[derive(Debug)]
@@ -28,7 +28,7 @@ impl CkSegment {
         time: Time<TDB>,
         tick: f64,
         sclk: &Sclk,
-    ) -> KeteResult<(Time<TDB>, NonInertialFrame)> {
+    ) -> KeteResult<InstantFrame> {
         let arr_ref: &CkArray = self.into();
         if arr_ref.instrument_id != instrument_id {
             return Err(Error::Bounds(format!(

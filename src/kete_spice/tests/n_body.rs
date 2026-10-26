@@ -6,17 +6,19 @@
 use kete_core::desigs::Desig;
 use kete_core::errors::Error;
 use kete_core::forces::{GravParams, ParameterizedForce};
-use kete_core::frames::{Equatorial, FrameId, SSB, Vector};
+use kete_core::frames::{DynFrameId, Equatorial, OffsetFrame, SSB, Vector};
 use kete_core::propagation::NBody;
 use kete_core::state::State;
 use kete_core::time::{TDB, Time};
 use kete_spice::ephemeris::SpiceEphemeris;
+use kete_spice::frames::SpiceFrames;
 use kete_spice::spk::SpkCollection;
-use nalgebra::{Matrix3, Vector3};
+use nalgebra::{Matrix3, Rotation3, Vector3};
+use std::sync::Arc;
 
-/// Asteroid 42 (in the test SPK) as a polyhedron body: a 50 km box, oriented as
-/// given, with the polyhedron field used within 0.01 AU.
-fn polyhedron_42(orientation: kete_core::forces::Orientation) -> GravParams {
+/// Asteroid 42 (in the test SPK) as a polyhedron body: a 50 km box in the body
+/// frame `frame`, with the polyhedron field used within 0.01 AU.
+fn polyhedron_42(frame: OffsetFrame) -> GravParams {
     use kete_core::forces::{Polyhedron, Shape};
     use kete_core::geometry::TriMesh;
     let size = 50.0 / 1.495_978_707e8;
@@ -45,10 +47,10 @@ fn polyhedron_42(orientation: kete_core::forces::Orientation) -> GravParams {
     ];
     let gm = 1e-15;
     let model = Polyhedron::new(TriMesh::new(v, f).unwrap(), gm).unwrap();
-    let mut body = GravParams::new(20_000_042, gm, (100.0 / 1.495_978_707e8) as f32);
+    let mut body = GravParams::new(20_000_042, gm, (100.0 / 1.495_978_707e8_f64) as f32);
     body.shape = Shape::Polyhedron {
-        model: std::sync::Arc::new(model),
-        orientation,
+        model: Arc::new(model),
+        frame,
         switch_radius: 0.01,
     };
     body
@@ -58,15 +60,19 @@ fn polyhedron_42(orientation: kete_core::forces::Orientation) -> GravParams {
 /// the other bodies' gravity, through all three evaluation paths.
 #[test]
 fn n_body_polyhedron_body() {
-    use kete_core::forces::Orientation;
     kete_spice::test_data::ensure_test_spk();
     let eph = SpiceEphemeris::loaded().unwrap();
+    let frames = SpiceFrames::loaded().unwrap();
     let spk = eph.spk();
     let time = Time::<TDB>::new(2_451_545.0);
-    let rot = *nalgebra::Rotation3::from_euler_angles(0.4, -0.9, 1.7).matrix();
-    let body = polyhedron_42(Orientation::Fixed(rot));
-    let base = NBody::new(&eph, false);
-    let mut with_body = NBody::new(&eph, false);
+    let rot = *Rotation3::from_euler_angles(0.4, -0.9, 1.7).matrix();
+    let body = polyhedron_42(OffsetFrame::new(
+        DynFrameId::UNNAMED,
+        Rotation3::from_matrix_unchecked(rot),
+        DynFrameId::J2000,
+    ));
+    let base = NBody::new(&eph, &frames, false);
+    let mut with_body = NBody::new(&eph, &frames, false);
     with_body.massive_obj.push(body.clone());
 
     let body_pos = Vector3::from(
@@ -135,15 +141,17 @@ fn n_body_polyhedron_body() {
 /// inside the switch radius, and costs nothing (no CK lookup) outside it.
 #[test]
 fn n_body_polyhedron_ck_without_kernel() {
-    use kete_core::forces::Orientation;
     kete_spice::test_data::ensure_test_spk();
     let eph = SpiceEphemeris::loaded().unwrap();
+    let frames = SpiceFrames::loaded().unwrap();
     let spk = eph.spk();
     let time = Time::<TDB>::new(2_451_545.0);
-    let mut force = NBody::new(&eph, false);
-    force.massive_obj.push(polyhedron_42(Orientation::Frame {
-        frame_id: FrameId(-987_654_000),
-    }));
+    let mut force = NBody::new(&eph, &frames, false);
+    force.massive_obj.push(polyhedron_42(OffsetFrame::new(
+        DynFrameId::UNNAMED,
+        Rotation3::identity(),
+        DynFrameId(-987_654_000),
+    )));
     let body_pos = Vector3::from(
         spk.try_get_state_with_center::<Equatorial>(20_000_042, time, 0)
             .unwrap()
@@ -171,7 +179,8 @@ fn n_body_polyhedron_ck_without_kernel() {
 fn n_body_jacobian_pos_matches_finite_difference() {
     kete_spice::test_data::ensure_test_spk();
     let eph = SpiceEphemeris::loaded().unwrap();
-    let force = NBody::new(&eph, false);
+    let frames = SpiceFrames::loaded().unwrap();
+    let force = NBody::new(&eph, &frames, false);
     let time = Time::<TDB>::new(2_451_545.0);
     let pos = Vector::<Equatorial>::new([1.5, 0.5, 0.1]);
     let vel = Vector::<Equatorial>::new([-0.008, 0.012, 0.001]);
@@ -254,13 +263,14 @@ fn non_grav_is_evaluated_on_sun_relative_state() {
 
     kete_spice::test_data::ensure_test_spk();
     let eph = SpiceEphemeris::loaded().unwrap();
+    let frames = SpiceFrames::loaded().unwrap();
     let spk = eph.spk();
     let time = Time::<TDB>::new(2_451_545.0);
     let beta = 0.001;
     let ((pos, vel), (pos_sun, vel_sun)) = ssb_and_sun_relative(spk, time);
 
-    let gravity = NBody::new(&eph, false);
-    let with_dust = NBody::with_non_grav(&eph, false, Some(DustNonGrav));
+    let gravity = NBody::new(&eph, &frames, false);
+    let with_dust = NBody::with_non_grav(&eph, &frames, false, Some(DustNonGrav));
 
     let a_grav: Vector3<f64> = gravity
         .accel(time, &pos, &vel, &[], &mut Default::default(), false)
@@ -324,12 +334,13 @@ fn accel_and_jacobians_matches_separate_calls() {
 
     kete_spice::test_data::ensure_test_spk();
     let eph = SpiceEphemeris::loaded().unwrap();
+    let frames = SpiceFrames::loaded().unwrap();
     let spk = eph.spk();
     let time = Time::<TDB>::new(2_451_545.0);
     let params = [1.0e-8, 2.0e-9, -3.0e-10];
     let ((pos, vel), _) = ssb_and_sun_relative(spk, time);
 
-    let force = NBody::with_non_grav(&eph, true, Some(JplCometNonGrav::standard_comet()));
+    let force = NBody::with_non_grav(&eph, &frames, true, Some(JplCometNonGrav::standard_comet()));
     let (accel, da_dr, da_dv, da_dp) = force
         .accel_and_jacobians(time, &pos, &vel, &params, &mut Default::default(), false)
         .unwrap();
@@ -352,7 +363,7 @@ fn accel_and_jacobians_matches_separate_calls() {
             .unwrap()
     );
 
-    let gravity = NBody::new(&eph, true);
+    let gravity = NBody::new(&eph, &frames, true);
     let (accel, da_dr, da_dv, da_dp) = gravity
         .accel_and_jacobians(time, &pos, &vel, &[], &mut Default::default(), false)
         .unwrap();
@@ -380,13 +391,14 @@ fn shared_meta_matches_fresh_meta() {
 
     kete_spice::test_data::ensure_test_spk();
     let eph = SpiceEphemeris::loaded().unwrap();
+    let frames = SpiceFrames::loaded().unwrap();
     let spk = eph.spk();
     let time = Time::<TDB>::new(2_451_545.0);
     let later = Time::<TDB>::new(2_451_545.5);
     let params = [1.0e-8, 2.0e-9, -3.0e-10];
     let ((pos, vel), _) = ssb_and_sun_relative(spk, time);
 
-    let force = NBody::with_non_grav(&eph, true, Some(JplCometNonGrav::standard_comet()));
+    let force = NBody::with_non_grav(&eph, &frames, true, Some(JplCometNonGrav::standard_comet()));
     let mut meta = Default::default();
     for t in [time, time, later, time] {
         assert_eq!(
@@ -420,6 +432,7 @@ fn shared_meta_matches_fresh_meta() {
 fn an_impact_is_reported() {
     kete_spice::test_data::ensure_test_spk();
     let eph = SpiceEphemeris::loaded().unwrap();
+    let frames = SpiceFrames::loaded().unwrap();
     let spk = eph.spk();
     let time = Time::<TDB>::new(2_451_545.0);
     let earth = spk
@@ -438,7 +451,7 @@ fn an_impact_is_reported() {
     )
     .try_into()
     .unwrap();
-    let result = aimed.propagate_with(&NBody::new(&eph, false), time + 1.0);
+    let result = aimed.propagate_with(&NBody::new(&eph, &frames, false), time + 1.0);
     assert!(
         matches!(result, Err(Error::Impact(399, _))),
         "expected an Earth impact, got {result:?}"
@@ -455,7 +468,7 @@ fn an_impact_is_reported() {
     .try_into()
     .unwrap();
     assert!(
-        miss.propagate_with(&NBody::new(&eph, false), time + 1.0)
+        miss.propagate_with(&NBody::new(&eph, &frames, false), time + 1.0)
             .is_ok()
     );
 }
@@ -467,11 +480,12 @@ fn free_parameters_are_those_of_the_non_grav() {
 
     kete_spice::test_data::ensure_test_spk();
     let eph = SpiceEphemeris::loaded().unwrap();
-    let gravity = NBody::new(&eph, false);
+    let frames = SpiceFrames::loaded().unwrap();
+    let gravity = NBody::new(&eph, &frames, false);
     assert_eq!(gravity.n_free_params(), 0);
     assert!(gravity.lower_bounds().is_empty());
 
-    let force = NBody::with_non_grav(&eph, false, Some(DustNonGrav));
+    let force = NBody::with_non_grav(&eph, &frames, false, Some(DustNonGrav));
     assert_eq!(force.n_free_params(), 1);
     assert_eq!(force.free_param_names(), vec!["beta"]);
     assert_eq!(force.lower_bounds(), vec![Some(0.0)]);
@@ -485,11 +499,12 @@ fn non_grav_without_the_sun_is_an_error() {
 
     kete_spice::test_data::ensure_test_spk();
     let eph = SpiceEphemeris::loaded().unwrap();
+    let frames = SpiceFrames::loaded().unwrap();
     let spk = eph.spk();
     let time = Time::<TDB>::new(2_451_545.0);
     let ((pos, vel), _) = ssb_and_sun_relative(spk, time);
 
-    let mut force = NBody::with_non_grav(&eph, false, Some(DustNonGrav));
+    let mut force = NBody::with_non_grav(&eph, &frames, false, Some(DustNonGrav));
     force.massive_obj.retain(|body| body.naif_id != 10);
     assert!(
         force
@@ -516,7 +531,13 @@ fn jpl_comet_non_grav_propagates_with_sensitivities() {
 
     kete_spice::test_data::ensure_test_spk();
     let eph = SpiceEphemeris::loaded().unwrap();
-    let force = NBody::with_non_grav(&eph, false, Some(JplCometNonGrav::standard_comet()));
+    let frames = SpiceFrames::loaded().unwrap();
+    let force = NBody::with_non_grav(
+        &eph,
+        &frames,
+        false,
+        Some(JplCometNonGrav::standard_comet()),
+    );
     let (pos_f, vel_f, sens_f) = propagate_with_stm(
         &force,
         Vector3::new(0.5, 1.0, 0.1),

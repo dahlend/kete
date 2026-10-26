@@ -4,7 +4,7 @@
 //! The boundary with the rest of kete: sights from observations, and
 //! candidates confirmed by an orbit fit, with the rules of [`ConfirmRules`].
 
-use kete_core::ephemeris::Ephemeris;
+use kete_core::ephemeris::EphemerisSource;
 use kete_core::forces::GravParams;
 use kete_core::frames::{Equatorial, SSB, SunCenter, Vector};
 use kete_core::prelude::{Error, KeteResult, State};
