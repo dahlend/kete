@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `Data.quantile` raises a `ValueError` for a NaN quantile rather than panicking.
+- Rust: `euler_rotation` gave a wrong rotation rate for angles about the Y axis, and
+  `quaternion_to_euler` gave wrong angles for a middle angle of 0 (Tait-Bryan) or
+  pi/2 (proper Euler).
 
 ## [v3.3.0]
 

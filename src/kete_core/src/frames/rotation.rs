@@ -20,9 +20,10 @@ use nalgebra::{Matrix3, Quaternion, Rotation3, Unit, Vector3};
 ///
 /// ```rust
 ///     use nalgebra::UnitQuaternion;
-///     use kete_core::frames::quaternion_to_euler;
-///     let quat = UnitQuaternion::from_euler_angles(0.1, 0.2, 0.3).into_inner();
-///     let euler = quaternion_to_euler::<'X', 'Y', 'Z'>(quat);
+///     use kete_core::frames::{euler_rotation, quaternion_to_euler};
+///     let (rot, _) = euler_rotation::<'Z', 'X', 'Z'>(&[0.1, 0.2, 0.3], &[0.0; 3]);
+///     let quat = UnitQuaternion::from_rotation_matrix(&rot).into_inner();
+///     let euler = quaternion_to_euler::<'Z', 'X', 'Z'>(quat);
 ///     assert!((euler[0] - 0.1).abs() < 1e-12);
 ///     assert!((euler[1] - 0.2).abs() < 1e-12);
 ///     assert!((euler[2] - 0.3).abs() < 1e-12);
@@ -42,14 +43,17 @@ pub fn quaternion_to_euler<const E1: char, const E2: char, const E3: char>(
         assert!(E1 != E2 && E2 != E3, "Middle axis must not match outer.");
     }
 
-    let idi = const { char_to_index::<E1>() };
+    // The paper rotates about fixed axes, R_k(t3) R_j(t2) R_i(t1). That is the
+    // rotation of `euler_rotation` with the axes i, j, k = E3, E2, E1 and the angles
+    // reversed.
+    let idi = const { char_to_index::<E3>() };
     let idj = const { char_to_index::<E2>() };
     let idk = const {
         if E1 == E3 {
             // 1 + 2 + 3 = 6, so the remaining axis is 6 - i - j
-            6 - char_to_index::<E1>() - char_to_index::<E2>()
+            6 - char_to_index::<E3>() - char_to_index::<E2>()
         } else {
-            char_to_index::<E3>()
+            char_to_index::<E1>()
         }
     };
 
@@ -82,7 +86,7 @@ pub fn quaternion_to_euler<const E1: char, const E2: char, const E3: char>(
 
     let (theta_1, mut theta_3) = match theta_2 {
         tmp if tmp.abs() < 1e-10 => (0.0, 2.0 * theta_plus),
-        tmp if (tmp - PI / 2.0).abs() < 1e-10 => (0.0, 2.0 * theta_minus),
+        tmp if (tmp - PI).abs() < 1e-10 => (0.0, 2.0 * theta_minus),
         _ => (theta_plus - theta_minus, theta_plus + theta_minus),
     };
 
@@ -92,17 +96,19 @@ pub fn quaternion_to_euler<const E1: char, const E2: char, const E3: char>(
     }
 
     [
-        theta_1.rem_euclid(2.0 * PI),
-        theta_2,
         theta_3.rem_euclid(2.0 * PI),
+        theta_2,
+        theta_1.rem_euclid(2.0 * PI),
     ]
 }
 
 /// Rotation from a target inertial frame to the frame defined by the Euler angles
 /// `angles`, along with its time derivative given the angle `rates`.
 ///
-/// The rotation transforms positions between the frames, and together with its
-/// derivative it also transforms velocities.
+/// The rotation is `R_E1(angles[0]) R_E2(angles[1]) R_E3(angles[2])`, where `R_E`
+/// rotates vectors about the axis `E`. [`quaternion_to_euler`] gives the angles
+/// back from a rotation. The rotation transforms positions between the frames, and
+/// together with its derivative it also transforms velocities.
 #[must_use]
 pub fn euler_rotation<const E1: char, const E2: char, const E3: char>(
     angles: &[f64; 3],
@@ -115,12 +121,8 @@ pub fn euler_rotation<const E1: char, const E2: char, const E3: char>(
     let dr_e2 = rotation_derivative::<E2>(angles[1]);
     let dr_e3 = rotation_derivative::<E3>(angles[2]);
 
-    // math for computing the derivative:
-    // r = rot_z(z1) * rot_x(x) * rot_z(z0)
-    // dr / dt =
-    //  (d rot_z(z1) / d z1 * d z1 / dt) * rot_x(x) * rot_z(z0) +
-    //  rot_z(z1) * (d rot_x(x) / d x * d x / dt) * rot_z(z0) +
-    //  rot_z(z0) * rot_x(x) * (d rot_z(z1) / d z1 * d z1 / dt)
+    // d(R1 R2 R3) / dt = dR1 R2 R3 + R1 dR2 R3 + R1 R2 dR3, with each dRi the
+    // derivative with respect to its angle times the angle rate.
     let mut dr_dt = dr_e1 * r_e2 * r_e3 * rates[0];
     dr_dt += r_e1 * dr_e2 * r_e3 * rates[1];
     dr_dt += r_e1 * r_e2 * dr_e3 * rates[2];
@@ -162,7 +164,7 @@ fn rotation_derivative<const E: char>(angle: f64) -> Matrix3<f64> {
     let (sin_a, cos_a) = angle.sin_cos();
     match E {
         'X' => Matrix3::<f64>::from([[0.0, 0.0, 0.0], [0.0, -sin_a, cos_a], [0.0, -cos_a, -sin_a]]),
-        'Y' => Matrix3::<f64>::from([[-sin_a, 0.0, cos_a], [0.0, 0.0, 0.0], [-cos_a, 0.0, -sin_a]]),
+        'Y' => Matrix3::<f64>::from([[-sin_a, 0.0, -cos_a], [0.0, 0.0, 0.0], [cos_a, 0.0, -sin_a]]),
         'Z' => Matrix3::<f64>::from([[-sin_a, cos_a, 0.0], [-cos_a, -sin_a, 0.0], [0.0, 0.0, 0.0]]),
         _ => unreachable!(),
     }
@@ -183,16 +185,93 @@ mod tests {
 
     #[test]
     fn test_quaternion_to_euler() {
+        // Rz(0.3) Ry(0.2) Rx(0.1), and not normalized.
         let quat = UnitQuaternion::from_euler_angles(0.1, 0.2, 0.3);
-        let euler = quaternion_to_euler::<'X', 'Y', 'Z'>(quat.into_inner() * 5.0);
-        assert!((euler[0] - 0.1).abs() < 1e-12);
+        let euler = quaternion_to_euler::<'Z', 'Y', 'X'>(quat.into_inner() * 5.0);
+        assert!((euler[0] - 0.3).abs() < 1e-12);
         assert!((euler[1] - 0.2).abs() < 1e-12);
-        assert!((euler[2] - 0.3).abs() < 1e-12);
+        assert!((euler[2] - 0.1).abs() < 1e-12);
 
+        // Gimbal lock puts all of the turn in the first angle.
         let quat = UnitQuaternion::from_euler_angles(0.0, 0.0, 0.8);
         let euler = quaternion_to_euler::<'Z', 'X', 'Z'>(quat.into_inner());
-        assert!((euler[0] - 0.0).abs() < 1e-12);
+        assert!((euler[0] - 0.8).abs() < 1e-12);
         assert!((euler[1] - 0.0).abs() < 1e-12);
-        assert!((euler[2] - 0.8).abs() < 1e-12);
+        assert!((euler[2] - 0.0).abs() < 1e-12);
+    }
+
+    /// Angles of [`euler_rotation`] survive a round trip through a quaternion, including a Tait-Bryan middle angle of zero and a proper middle
+    /// angle of pi/2. At gimbal lock only the rotation is unique, so only it is
+    /// checked.
+    fn check_quaternion_round_trip<const E1: char, const E2: char, const E3: char>() {
+        let proper = E1 == E3;
+        let (middles, locks) = if proper {
+            ([0.3, PI / 2.0, 2.5], [0.0, PI])
+        } else {
+            ([-1.2, 0.0, 0.4], [-PI / 2.0, PI / 2.0])
+        };
+        let rotation = |angles: [f64; 3]| euler_rotation::<E1, E2, E3>(&angles, &[0.0; 3]).0;
+        let to_euler = |rot: Rotation3<f64>| {
+            quaternion_to_euler::<E1, E2, E3>(
+                UnitQuaternion::from_rotation_matrix(&rot).into_inner(),
+            )
+        };
+        let wrapped = |a: f64, b: f64| (a - b + PI).rem_euclid(2.0 * PI) - PI;
+
+        for middle in middles {
+            let angles = [0.2, middle, 5.0];
+            let euler = to_euler(rotation(angles));
+            for (found, expected) in euler.iter().zip(angles) {
+                let err = wrapped(*found, expected).abs();
+                assert!(err < 1e-10, "{E1}{E2}{E3} {angles:?}: {euler:?}");
+            }
+        }
+        for middle in locks {
+            let rot = rotation([0.2, middle, 5.0]);
+            let err = (rotation(to_euler(rot)).matrix() - rot.matrix())
+                .abs()
+                .max();
+            assert!(err < 1e-10, "{E1}{E2}{E3} lock at {middle}: {err:e}");
+        }
+    }
+
+    #[test]
+    fn quaternion_to_euler_round_trip() {
+        check_quaternion_round_trip::<'X', 'Y', 'Z'>();
+        check_quaternion_round_trip::<'X', 'Z', 'Y'>();
+        check_quaternion_round_trip::<'Y', 'X', 'Z'>();
+        check_quaternion_round_trip::<'Y', 'Z', 'X'>();
+        check_quaternion_round_trip::<'Z', 'X', 'Y'>();
+        check_quaternion_round_trip::<'Z', 'Y', 'X'>();
+        check_quaternion_round_trip::<'X', 'Y', 'X'>();
+        check_quaternion_round_trip::<'X', 'Z', 'X'>();
+        check_quaternion_round_trip::<'Y', 'X', 'Y'>();
+        check_quaternion_round_trip::<'Y', 'Z', 'Y'>();
+        check_quaternion_round_trip::<'Z', 'X', 'Z'>();
+        check_quaternion_round_trip::<'Z', 'Y', 'Z'>();
+    }
+
+    /// The rate of an Euler rotation is the derivative of its rotation.
+    fn check_euler_rate<const E1: char, const E2: char, const E3: char>() {
+        let angles = [0.3, 0.4, 0.5];
+        let rates = [0.7, -0.4, 1.3];
+        let at = |dt: f64| {
+            let angles = [0, 1, 2].map(|i| angles[i] + rates[i] * dt);
+            *euler_rotation::<E1, E2, E3>(&angles, &rates).0.matrix()
+        };
+        let h = 1e-6;
+        let numeric = (at(h) - at(-h)) / (2.0 * h);
+        let (_, rate) = euler_rotation::<E1, E2, E3>(&angles, &rates);
+        let err = (rate - numeric).abs().max();
+        assert!(err < 1e-8, "{E1}{E2}{E3}: {err:e}");
+    }
+
+    #[test]
+    fn euler_rate_is_the_derivative() {
+        check_euler_rate::<'X', 'Y', 'Z'>();
+        check_euler_rate::<'Y', 'Z', 'X'>();
+        check_euler_rate::<'Z', 'X', 'Z'>();
+        check_euler_rate::<'Z', 'Y', 'Z'>();
+        check_euler_rate::<'Y', 'X', 'Y'>();
     }
 }
