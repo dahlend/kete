@@ -4,6 +4,7 @@
 //! Python wrapper for [`kete_stats::prelude::Data`].
 
 use kete_stats::prelude::Data;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 /// Dataset with summary statistics.
@@ -38,11 +39,8 @@ pub struct PyData(pub Data<f64>);
 impl PyData {
     #[new]
     fn new(values: Vec<f64>) -> PyResult<Self> {
-        let data = Data::try_from(values).map_err(|_| {
-            pyo3::exceptions::PyValueError::new_err(
-                "No finite values provided; cannot create Data.",
-            )
-        })?;
+        let data = Data::try_from(values)
+            .map_err(|_| PyValueError::new_err("No finite values provided; cannot create Data."))?;
         Ok(Self(data))
     }
 
@@ -66,14 +64,14 @@ impl PyData {
 
     /// Lower bound of the 95% credible interval (2.5th percentile).
     #[getter]
-    fn ci_low(&self) -> f64 {
-        self.0.clone().quantile(0.025)
+    fn ci_low(&self) -> PyResult<f64> {
+        self.quantile(0.025)
     }
 
     /// Upper bound of the 95% credible interval (97.5th percentile).
     #[getter]
-    fn ci_high(&self) -> f64 {
-        self.0.clone().quantile(0.975)
+    fn ci_high(&self) -> PyResult<f64> {
+        self.quantile(0.975)
     }
 
     /// Minimum value.
@@ -113,8 +111,18 @@ impl PyData {
     }
 
     /// Return the value at a given quantile (0.0 to 1.0).
-    fn quantile(&self, q: f64) -> f64 {
-        self.0.clone().quantile(q)
+    ///
+    /// Quantiles outside of 0 to 1 are clamped to that range.
+    ///
+    /// Raises
+    /// ------
+    /// ValueError
+    ///     If ``q`` is NaN.
+    fn quantile(&self, q: f64) -> PyResult<f64> {
+        self.0
+            .clone()
+            .quantile(q)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
     /// Return a new Data object with outliers removed using sigma clipping.
@@ -141,8 +149,8 @@ impl std::fmt::Display for PyData {
             "Data(median={:.4}, std={:.4}, ci=[{:.4}, {:.4}], n={})",
             clone.median(),
             self.0.std(),
-            clone.quantile(0.025),
-            clone.quantile(0.975),
+            clone.quantile(0.025).map_err(|_| std::fmt::Error)?,
+            clone.quantile(0.975).map_err(|_| std::fmt::Error)?,
             self.0.len()
         )
     }

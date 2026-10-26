@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which falls back to the approximate Earth orientation where the PCK kernels do not
   cover the date.
 
+### Fixed
+
+- `Data.quantile` raises a `ValueError` for a NaN quantile rather than panicking.
+
 ## [v3.3.0]
 
 ### Added

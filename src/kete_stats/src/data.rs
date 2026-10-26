@@ -22,6 +22,10 @@ pub enum DataError {
     /// Data and uncertainties have different lengths.
     #[error("Data and uncertainties have different lengths.")]
     UnequalLengths,
+
+    /// An argument was not valid, with a description of why.
+    #[error("Invalid input: {0}.")]
+    InvalidInput(&'static str),
 }
 
 /// Result type for statistics calculations.
@@ -110,9 +114,10 @@ where
     ///
     /// This mutates the internal data order but is O(n) average case.
     #[must_use]
+    #[allow(clippy::missing_panics_doc, reason = "One half is not NaN.")]
     pub fn median(&mut self) -> T {
         let half = T::one() / (T::one() + T::one());
-        self.quantile(half)
+        self.quantile(half).expect("one half is not NaN")
     }
 
     /// Compute the mean and standard deviation of the data.
@@ -164,12 +169,19 @@ where
     /// Quantiles are linearly interpolated between the two closest ranked values.
     ///
     /// If only one valid data point is provided, all quantiles evaluate to that value.
+    /// Quantiles outside of 0 to 1 are clamped to that range.
+    ///
+    /// # Errors
+    ///
+    /// [`DataError::InvalidInput`] if `quant` is NaN.
     #[allow(
         clippy::missing_panics_doc,
-        reason = "By construction this cannot panic."
+        reason = "The data is not empty and the quantile is not NaN."
     )]
-    #[must_use]
-    pub fn quantile(&mut self, quant: T) -> T {
+    pub fn quantile(&mut self, quant: T) -> StatsResult<T> {
+        if quant.is_nan() {
+            return Err(DataError::InvalidInput("quantile must not be NaN"));
+        }
         let quant = quant.clamp(T::zero(), T::one());
         let n_data = self.len();
 
@@ -178,13 +190,13 @@ where
 
         if T::from(idx).unwrap() == frac_idx {
             // exactly on a data point
-            quickselect(&mut self.0, idx)
+            Ok(quickselect(&mut self.0, idx))
         } else {
             // need two adjacent values for linear interpolation
             let lower = quickselect(&mut self.0, idx);
             let upper = quickselect(&mut self.0[idx..], 1);
             let diff = frac_idx - T::from(idx).unwrap();
-            lower * (T::one() - diff) + upper * diff
+            Ok(lower * (T::one() - diff) + upper * diff)
         }
     }
 
@@ -479,9 +491,10 @@ where
     ///
     /// This is O(1) since the data is already sorted.
     #[must_use]
+    #[allow(clippy::missing_panics_doc, reason = "One half is not NaN.")]
     pub fn median(&self) -> T {
         let half = T::one() / (T::one() + T::one());
-        self.quantile(half)
+        self.quantile(half).expect("one half is not NaN")
     }
 
     /// Compute the mean value of the sorted data.
@@ -626,12 +639,19 @@ where
     /// Quantiles are linearly interpolated between the two closest ranked values.
     ///
     /// If only one valid data point is provided, all quantiles evaluate to that value.
+    /// Quantiles outside of 0 to 1 are clamped to that range.
+    ///
+    /// # Errors
+    ///
+    /// [`DataError::InvalidInput`] if `quant` is NaN.
     #[allow(
         clippy::missing_panics_doc,
-        reason = "By construction this cannot panic."
+        reason = "The data is not empty and the quantile is not NaN."
     )]
-    #[must_use]
-    pub fn quantile(&self, quant: T) -> T {
+    pub fn quantile(&self, quant: T) -> StatsResult<T> {
+        if quant.is_nan() {
+            return Err(DataError::InvalidInput("quantile must not be NaN"));
+        }
         let quant = quant.clamp(T::zero(), T::one());
         let data = self.0.as_slice();
         let n_data = self.0.len();
@@ -641,13 +661,13 @@ where
 
         if T::from(idx).unwrap() == frac_idx {
             // exactly on a data point
-            unsafe { *data.get_unchecked(idx) }
+            Ok(unsafe { *data.get_unchecked(idx) })
         } else {
             // linear interpolation between two points
             let diff = frac_idx - T::from(idx).unwrap();
-            unsafe {
+            Ok(unsafe {
                 *data.get_unchecked(idx) * (T::one() - diff) + *data.get_unchecked(idx + 1) * diff
-            }
+            })
         }
     }
 }
@@ -836,7 +856,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{Data, StatsResult};
+    use super::{Data, DataError, StatsResult};
 
     #[test]
     fn test_median() {
@@ -858,13 +878,13 @@ mod tests {
         assert!((data.std() - 2_f64.sqrt()).abs() < 1e-13);
         assert_eq!(data.median(), 3.0);
         assert_eq!(data.mean(), 3.0);
-        assert_eq!(data.quantile(0.0), 1.0);
-        assert_eq!(data.quantile(0.25), 2.0);
-        assert_eq!(data.quantile(0.5), 3.0);
-        assert_eq!(data.quantile(0.75), 4.0);
-        assert_eq!(data.quantile(1.0), 5.0);
-        assert_eq!(data.quantile(1.0 / 8.0), 1.5);
-        assert_eq!(data.quantile(1.0 / 8.0 + 0.75), 4.5);
+        assert_eq!(data.quantile(0.0).unwrap(), 1.0);
+        assert_eq!(data.quantile(0.25).unwrap(), 2.0);
+        assert_eq!(data.quantile(0.5).unwrap(), 3.0);
+        assert_eq!(data.quantile(0.75).unwrap(), 4.0);
+        assert_eq!(data.quantile(1.0).unwrap(), 5.0);
+        assert_eq!(data.quantile(1.0 / 8.0).unwrap(), 1.5);
+        assert_eq!(data.quantile(1.0 / 8.0 + 0.75).unwrap(), 4.5);
 
         let data = vec![1.0, 2.0, 3.0, 4.0];
         let data: Data<_> = data.try_into().unwrap();
@@ -1070,22 +1090,36 @@ mod tests {
 
         // Test clamping
         // Should clamp to 0
-        assert_eq!(data.quantile(-0.5), 1.0);
+        assert_eq!(data.quantile(-0.5).unwrap(), 1.0);
         // Should clamp to 1
-        assert_eq!(data.quantile(1.5), 5.0);
+        assert_eq!(data.quantile(1.5).unwrap(), 5.0);
+    }
+
+    #[test]
+    fn test_quantile_nan() {
+        let mut data: Data<_> = vec![1.0, 2.0, 3.0].try_into().unwrap();
+        assert!(matches!(
+            data.quantile(f64::NAN),
+            Err(DataError::InvalidInput(_))
+        ));
+        let sorted = data.into_sorted();
+        assert!(matches!(
+            sorted.quantile(f64::NAN),
+            Err(DataError::InvalidInput(_))
+        ));
     }
 
     #[test]
     fn test_quantile_single_value() {
         let mut data: Data<_> = vec![42.0].try_into().unwrap();
-        assert_eq!(data.quantile(0.0), 42.0);
-        assert_eq!(data.quantile(0.5), 42.0);
-        assert_eq!(data.quantile(1.0), 42.0);
+        assert_eq!(data.quantile(0.0).unwrap(), 42.0);
+        assert_eq!(data.quantile(0.5).unwrap(), 42.0);
+        assert_eq!(data.quantile(1.0).unwrap(), 42.0);
 
         let data = data.into_sorted();
-        assert_eq!(data.quantile(0.0), 42.0);
-        assert_eq!(data.quantile(0.5), 42.0);
-        assert_eq!(data.quantile(1.0), 42.0);
+        assert_eq!(data.quantile(0.0).unwrap(), 42.0);
+        assert_eq!(data.quantile(0.5).unwrap(), 42.0);
+        assert_eq!(data.quantile(1.0).unwrap(), 42.0);
     }
 
     #[test]
