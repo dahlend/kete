@@ -85,4 +85,4 @@ Plotting the frame with the most objects in it.
     plt.close()
 
 .. image:: ../data/spherex.png
-   :alt: SPHEREx labelling of all objects.
+   :alt: SPHEREx labeling of all objects.

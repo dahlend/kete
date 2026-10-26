@@ -178,4 +178,4 @@ Note again this is only showing the first 20.
     plt.close()
 
 .. image:: ../data/kona.png
-   :alt: KONA labelling of all objects.
+   :alt: KONA labeling of all objects.

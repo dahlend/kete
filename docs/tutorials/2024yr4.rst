@@ -250,7 +250,7 @@ First locate the Earth close approach:
 
 The two clouds overlapping with similar extent indicates the kete fit is
 consistent with JPL's in both position and uncertainty.  A systematic offset
-between the cloud centres would point to a difference in the best-fit orbit;
+between the cloud centers would point to a difference in the best-fit orbit;
 a large size mismatch would suggest different observation weighting.
 
 
