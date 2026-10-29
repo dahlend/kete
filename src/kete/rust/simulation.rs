@@ -6,7 +6,7 @@ use kete_core::constants::GMS;
 use kete_core::errors::Error;
 use kete_core::forces::{GravParams, NonGravMask};
 use kete_core::frames::{Equatorial, SSB};
-use kete_core::integrators::{LostReason, WisdomHolman};
+use kete_core::integrators::{CloseApproach, LostReason, WisdomHolman};
 use kete_core::state::State;
 use kete_spice::prelude::LOADED_SPK;
 use pyo3::prelude::*;
@@ -28,6 +28,18 @@ fn freeze_non_gravs(non_gravs: Option<Vec<Option<PyNonGravModel>>>) -> Vec<Optio
         .into_iter()
         .map(|model| model.map(|model| model.to_fixed()))
         .collect()
+}
+
+/// A close approach as the ``(designation, body, jd, distance, speed)`` tuple
+/// Python sees.
+fn close_approach_tuple(pass: &CloseApproach) -> (String, String, f64, f64, f64) {
+    (
+        pass.desig.clone().try_naif_id_to_name().to_string(),
+        pass.body.clone().try_naif_id_to_name().to_string(),
+        pass.epoch.jd(),
+        pass.distance,
+        pass.speed,
+    )
 }
 
 /// A long-term symplectic N-body simulation of the solar system.
@@ -94,7 +106,12 @@ fn freeze_non_gravs(non_gravs: Option<Vec<Option<PyNonGravModel>>>) -> Vec<Optio
 ///     rather than the separate Earth and Moon.
 /// masses:
 ///     Mass of each massive body as a fraction of the Sun's mass, in the same
-///     order as ``massive_states`` (the Sun itself is ``1.0``).
+///     order as ``massive_states``. The first, the Sun's, is normally ``1.0``,
+///     but may be up to 1% larger to merge inner planets into the Sun, which
+///     allows a much larger ``dt`` for distant objects: give the Sun the
+///     summed mass and the state of the merged barycenter, and leave those
+///     planets out. The Sun's J2 and the radiation forces of ``non_gravs``
+///     still use the Sun's own mass.
 /// test_particles:
 ///     States of massless test particles. They feel every massive body but
 ///     affect nothing.
@@ -116,12 +133,14 @@ fn freeze_non_gravs(non_gravs: Option<Vec<Option<PyNonGravModel>>>) -> Vec<Optio
 ///     symplectic; it drives the small secular nodal regression and apsidal
 ///     precession of low semi-major axis orbits.
 /// use_correctors:
-///     Wrap each integration call in the order-17 symplectic corrector of
-///     Wisdom (2006), which removes the dominant oscillating error of the
-///     map (roughly a factor of 100 in the energy band). The overhead is a
-///     fixed ~30 steps worth of work per :meth:`integrate_n_steps` or
-///     :meth:`integrate_to` call, so batch many steps per call rather than
-///     looping over :meth:`step`.
+///     Apply the order-17 symplectic corrector of Wisdom (2006), which
+///     removes the dominant oscillating error of the map (roughly a factor of
+///     100 in the energy band). Each application costs about 35 steps of
+///     work. The simulation keeps its state in the corrector's coordinates
+///     between integration calls, so looping over :meth:`step` costs about
+///     the same as one :meth:`integrate_n_steps` call. The corrector is paid
+///     again only on the first read of the state after a step (the result is
+///     kept until the next step), and when the state is changed.
 /// non_gravs:
 ///     Optional list of :class:`~kete.propagation.NonGravModel`, one per test particle,
 ///     with ``None`` entries for particles which feel gravity alone. A
@@ -140,7 +159,15 @@ fn freeze_non_gravs(non_gravs: Option<Vec<Option<PyNonGravModel>>>) -> Vec<Optio
 ///     be hit. The resolved steps are not symplectic. With ``use_correctors``, a
 ///     particle in an encounter at the start or end of an integration call is
 ///     left out of the corrector and moved with the body it is near.
-///     :attr:`close_encounter_steps` counts the steps resolved.
+///     :attr:`close_approaches` records each passage of a body inside
+///     ``close_approach_radius``: which particle, which body, when, and how
+///     close.
+/// close_approach_radius:
+///     Radius in Hill radii inside which passages found in resolved close
+///     encounters are recorded in :attr:`close_approaches`, 1 by default.
+///     This is separate from ``close_encounters``, which must stay large for
+///     accuracy (3 Hill radii is over 1 AU for Jupiter); passages are only
+///     found inside that radius, so a larger value records nothing more.
 #[pyclass(module = "kete", name = "SymplecticSim")]
 #[derive(Debug)]
 pub struct PySymplecticSim {
@@ -169,7 +196,8 @@ impl PySymplecticSim {
     /// Construct the simulation from explicit states and masses.
     #[new]
     #[pyo3(signature = (massive_states, masses, test_particles=vec![], dt=4.0, include_gr=true,
-        include_j2=true, use_correctors=true, non_gravs=None, close_encounters=None))]
+        include_j2=true, use_correctors=true, non_gravs=None, close_encounters=None,
+        close_approach_radius=1.0))]
     #[allow(
         clippy::too_many_arguments,
         reason = "keyword arguments with defaults on a Python constructor"
@@ -184,6 +212,7 @@ impl PySymplecticSim {
         use_correctors: bool,
         non_gravs: Option<Vec<Option<PyNonGravModel>>>,
         close_encounters: Option<f64>,
+        close_approach_radius: f64,
     ) -> PyResult<Self> {
         if massive_states.len() != masses.len() {
             Err(Error::ValueError(
@@ -214,6 +243,7 @@ impl PySymplecticSim {
         if let Some(radius) = close_encounters {
             sim = sim.with_close_encounters(radius)?;
         }
+        let sim = sim.with_close_approach_radius(close_approach_radius)?;
         Ok(Self { sim })
     }
 
@@ -243,8 +273,8 @@ impl PySymplecticSim {
     /// include_j2:
     ///     Apply the solar J2 oblateness term; see the class documentation.
     /// use_correctors:
-    ///     Wrap each integration call in the order-17 symplectic corrector,
-    ///     see the class documentation.
+    ///     Apply the order-17 symplectic corrector; see the class
+    ///     documentation.
     /// non_gravs:
     ///     Optional list of :class:`~kete.propagation.NonGravModel`, one per test
     ///     particle, with ``None`` entries for particles which feel gravity
@@ -252,9 +282,13 @@ impl PySymplecticSim {
     /// close_encounters:
     ///     Optional encounter radius in Hill radii inside which test particle
     ///     steps are integrated with Radau; see the class documentation.
+    /// close_approach_radius:
+    ///     Radius in Hill radii inside which passages are recorded in
+    ///     :attr:`close_approaches`; see the class documentation.
     #[staticmethod]
     #[pyo3(signature = (jd, dt=4.0, include_registered=true, test_particles=vec![], include_gr=true,
-        include_j2=true, use_correctors=true, non_gravs=None, close_encounters=None))]
+        include_j2=true, use_correctors=true, non_gravs=None, close_encounters=None,
+        close_approach_radius=1.0))]
     #[allow(
         clippy::too_many_arguments,
         reason = "keyword arguments with defaults on a Python constructor"
@@ -269,6 +303,7 @@ impl PySymplecticSim {
         use_correctors: bool,
         non_gravs: Option<Vec<Option<PyNonGravModel>>>,
         close_encounters: Option<f64>,
+        close_approach_radius: f64,
     ) -> PyResult<Self> {
         let epoch = jd.0;
         let mut params: Vec<GravParams> = GravParams::simplified_planets().to_vec();
@@ -314,14 +349,16 @@ impl PySymplecticSim {
         if let Some(radius) = close_encounters {
             sim = sim.with_close_encounters(radius)?;
         }
+        let sim = sim.with_close_approach_radius(close_approach_radius)?;
         Ok(Self { sim })
     }
 
     /// Advance the simulation by a single step of ``dt``.
     ///
-    /// With correctors enabled every call pays the fixed corrector overhead;
-    /// prefer :meth:`integrate_n_steps` or :meth:`integrate_to` for more
-    /// than a handful of steps.
+    /// Repeated calls cost about the same as one :meth:`integrate_n_steps`
+    /// call. With correctors enabled, the first read of the state after a
+    /// step costs about 35 steps of work; :meth:`integrate_n_steps` avoids it
+    /// when only the end state is needed.
     pub fn step(&mut self, py: Python<'_>) -> PyResult<()> {
         py.detach(|| self.sim.step()).map_err(Into::into)
     }
@@ -390,11 +427,11 @@ impl PySymplecticSim {
         self.sim.close_encounter_radius()
     }
 
-    /// Number of test particle steps resolved as close encounters so far,
-    /// including those ending in a removal.
+    /// Radius in Hill radii inside which passages are recorded in
+    /// :attr:`close_approaches`.
     #[getter]
-    pub fn close_encounter_steps(&self) -> u64 {
-        self.sim.close_encounter_steps()
+    pub fn close_approach_radius(&self) -> f64 {
+        self.sim.close_approach_radius()
     }
 
     /// Whether the order-17 symplectic corrector is enabled.
@@ -580,6 +617,35 @@ impl PySymplecticSim {
                     reason.into(),
                 )
             })
+            .collect()
+    }
+
+    /// Passages of massive bodies by test particles found in resolved close
+    /// encounters (see ``close_encounters``), as a list of
+    /// ``(designation, body, jd, distance, speed)`` tuples: the particle, the
+    /// body it passed, the time of closest approach, the distance between
+    /// their centers in AU, and the relative speed in AU/day.
+    ///
+    /// Each minimum of a particle's distance to a body inside
+    /// ``close_approach_radius`` is recorded once, in the order found. Impacts
+    /// appear in :attr:`lost_particles` instead. See
+    /// :meth:`take_close_approaches` to drain the record in long runs.
+    #[getter]
+    pub fn close_approaches(&self) -> Vec<(String, String, f64, f64, f64)> {
+        self.sim
+            .close_approaches()
+            .iter()
+            .map(close_approach_tuple)
+            .collect()
+    }
+
+    /// Return the passages recorded so far, as for :attr:`close_approaches`,
+    /// and clear the record.
+    pub fn take_close_approaches(&mut self) -> Vec<(String, String, f64, f64, f64)> {
+        self.sim
+            .take_close_approaches()
+            .iter()
+            .map(close_approach_tuple)
             .collect()
     }
 

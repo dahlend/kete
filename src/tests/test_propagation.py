@@ -92,6 +92,18 @@ class TestTwoBodyPropagation:
             assert np.allclose(vec_state.vel, jpl_state.vel)
             assert np.allclose(vec_state.pos, jpl_state.pos)
 
+    def test_propagation_epoch_per_state(self):
+        state = spice.get_state("Venus", 2461161.5)
+        offsets = [-3.0, 0.0, 0.25, 4.0]
+        got = propagate_two_body([state] * 4, [state.jd + dt for dt in offsets])
+        for dt, each in zip(offsets, got, strict=True):
+            want = propagate_two_body(state, state.jd + dt)
+            assert each.jd == want.jd
+            assert np.allclose(each.pos, want.pos, rtol=0, atol=1e-14)
+            assert np.allclose(each.vel, want.vel, rtol=0, atol=1e-16)
+        with pytest.raises(ValueError, match="as long as"):
+            propagate_two_body([state] * 3, [state.jd, state.jd])
+
     def test_propagation_light_delay(self):
         """
         Propagate Venus using StateVector and compare the result to using spice.

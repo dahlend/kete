@@ -42,7 +42,7 @@ pub use picard::{
 };
 pub use radau::{RadauDense, RadauFirstOrder, RadauIntegrator};
 pub use runge_kutta::RK45Integrator;
-pub use wisdom_holman::{Encounter, LostParticle, LostReason, WisdomHolman};
+pub use wisdom_holman::{CloseApproach, Encounter, LostParticle, LostReason, WisdomHolman};
 
 #[cfg(test)]
 mod stress_tests;

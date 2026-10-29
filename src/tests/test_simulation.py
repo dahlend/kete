@@ -556,10 +556,46 @@ def test_close_encounters(jd0):
     assert plain.close_encounters is None
     sim.integrate_n_steps(5)
     plain.integrate_n_steps(5)
-    assert sim.close_encounter_steps > 0
-    assert plain.close_encounter_steps == 0
+    # an impact is not a passage
+    assert sim.close_approaches == []
     assert [r[2] for r in sim.lost_particles] == ["planet_impact"]
     assert sim.test_particle_desigs == ["far"]
     assert plain.lost_particles == []
     with pytest.raises(ValueError):
         SymplecticSim(*args, dt=20.0, close_encounters=0.0)
+
+
+def test_merged_central_mass(jd0):
+    sun = State("Sun", jd0, [0, 0, 0], [0, 0, 0], center_id=0)
+    v_jup = (2.959122e-4 / 5.2) ** 0.5
+    jup = State("Jupiter", jd0, [5.2, 0, 0], [0, v_jup, 0], center_id=0)
+    far = State("far", jd0, [40, 0, 0], [0, (2.959122e-4 / 40) ** 0.5, 0], center_id=0)
+    masses = [1.0 + 6e-6, 0.0009547919]
+    sim = SymplecticSim([sun, jup], masses, [far], dt=100.0)
+    sim.integrate_n_steps(10)
+    assert sim.test_particle_desigs == ["far"]
+    with pytest.raises(ValueError):
+        SymplecticSim([sun, jup], [1.02, 0.0009547919])
+
+
+def test_close_approaches(jd0):
+    sun = State("Sun", jd0, [0, 0, 0], [0, 0, 0], center_id=0)
+    v_jup = (2.959122e-4 / 5.2) ** 0.5
+    jup = State("Jupiter", jd0, [5.2, 0, 0], [0, v_jup, 0], center_id=0)
+    # heads for Jupiter from 1.6 AU outside it at 0.008 AU/day, 0.03 AU off axis
+    flyby = State("flyby", jd0, [6.8, 0, 0.03], [-0.008, v_jup, 0], center_id=0)
+    sim = SymplecticSim(
+        [sun, jup], [1.0, 0.0009547919], [flyby], dt=10.0, close_encounters=3.0
+    )
+    sim.integrate_n_steps(40)
+    assert sim.closest_encounter is None
+    [(desig, body, jd, distance, speed)] = sim.close_approaches
+    assert (desig, body) == ("flyby", "Jupiter")
+    assert jd0 + 150 < jd < jd0 + 250
+    assert 0.0 < distance < 0.03
+    assert speed > 0.008
+    assert len(sim.take_close_approaches()) == 1
+    assert sim.close_approaches == []
+    assert sim.close_approach_radius == 1.0
+    with pytest.raises(ValueError):
+        SymplecticSim([sun, jup], [1.0, 0.0009547919], close_approach_radius=0.0)

@@ -491,6 +491,202 @@ fn corrector_improvement() {
     assert!(ratio > 20.0, "improvement ratio only {ratio}");
 }
 
+/// Largest position difference, in AU, between two runs' massive bodies and
+/// test particles.
+fn max_state_diff(a: &WisdomHolman<Ecliptic>, b: &WisdomHolman<Ecliptic>) -> f64 {
+    let diff = |x: &[State<Ecliptic, SSB>], y: &[State<Ecliptic, SSB>]| {
+        x.iter()
+            .zip(y)
+            .map(|(p, q)| (Vector3::from(p.pos) - Vector3::from(q.pos)).norm())
+            .fold(0.0_f64, f64::max)
+    };
+    diff(&a.massive_states(), &b.massive_states())
+        .max(diff(&a.test_particle_states(), &b.test_particle_states()))
+}
+
+/// Jupiter, Saturn and a test particle, with correctors, for the tests of
+/// when the corrector is applied.
+fn corrected_sim() -> WisdomHolman<Ecliptic> {
+    let gms = [GMS, gm(5), gm(6)];
+    let bodies = [
+        sun(),
+        planet(5, 5.20260, 0.04849, 1.303, 3.3),
+        planet(6, 9.55491, 0.05551, 2.489, 5.7),
+    ];
+    let (pos, vel) = peri_pos_vel(2.5, 0.1, 5.0, 1.0);
+    WisdomHolman::new(
+        &bodies,
+        &gms,
+        &[make_state(1000, pos, vel)],
+        &[],
+        8.0,
+        false,
+        false,
+        true,
+    )
+    .unwrap()
+}
+
+/// With correctors, the corrector is applied once for a run however it is
+/// split into calls: single steps match one batched call to the roundoff of
+/// the unfused half drifts, and reading the state between steps, which works
+/// on a synchronized copy, leaves the run bit for bit unchanged.
+#[test]
+fn corrector_applied_once_per_run() {
+    let n = 500;
+    let mut batched = corrected_sim();
+    batched.integrate_n_steps(n).unwrap();
+    let mut stepped = corrected_sim();
+    let mut read = corrected_sim();
+    for _ in 0..n {
+        stepped.step().unwrap();
+        read.step().unwrap();
+        let _ = (
+            read.energy(),
+            read.massive_states(),
+            read.test_particle_states(),
+        );
+    }
+    let split = max_state_diff(&batched, &stepped);
+    println!("corrector_applied_once_per_run: batched vs single steps {split:.3e} AU");
+    assert!(split < 1e-12, "{split:e}");
+    stepped.synchronize().unwrap();
+    read.synchronize().unwrap();
+    for (a, b) in stepped.massive_states().iter().zip(&read.massive_states()) {
+        assert_eq!(a.pos, b.pos);
+        assert_eq!(a.vel, b.vel);
+    }
+    assert_eq!(
+        stepped.test_particle_states()[0].pos,
+        read.test_particle_states()[0].pos
+    );
+}
+
+/// A change to the state synchronizes it first, so it acts on the physical
+/// state the accessors showed; synchronizing twice is a no-op.
+#[test]
+fn corrector_synchronizes_before_changes() {
+    let mut sim = corrected_sim();
+    sim.integrate_n_steps(100).unwrap();
+    let shown = sim.test_particle_states();
+    let massive = sim.massive_states();
+    sim.kick_test_particles(&[Vector3::zeros()]).unwrap();
+    assert_eq!(sim.test_particle_states()[0].pos, shown[0].pos);
+    assert_eq!(sim.test_particle_states()[0].vel, shown[0].vel);
+    sim.synchronize().unwrap();
+    for (a, b) in sim.massive_states().iter().zip(&massive) {
+        assert_eq!(a.pos, b.pos);
+    }
+    let removed = sim.remove_test_particles(&[0]).unwrap();
+    assert_eq!(removed[0].pos, shown[0].pos);
+}
+
+/// The corrector with its adjacent drifts fused matches the plain sequence
+/// of elementary operators `Z(a, b) = X(a) Y(-b) X(-2a) Y(b) X(a)`, forward
+/// and inverse, to roundoff.
+#[test]
+fn corrector_fused_drifts_match_operators() {
+    let plain = |sim: &mut WisdomHolman<Ecliptic>, inv: f64| {
+        let alpha = super::CORRECTOR_A_BASE.sqrt() * sim.dt;
+        let dt = sim.dt;
+        let mut z = |a: f64, b: f64| {
+            sim.kepler(a, None).unwrap();
+            sim.perturbation(-b).unwrap();
+            sim.kepler(-2.0 * a, None).unwrap();
+            sim.perturbation(b).unwrap();
+            sim.kepler(a, None).unwrap();
+        };
+        for (j, b) in super::CORRECTOR_B17.iter().enumerate() {
+            z(-((8 - j) as f64) * alpha, -inv * b * dt);
+        }
+        for (j, b) in super::CORRECTOR_B17.iter().rev().enumerate() {
+            z(((j + 1) as f64) * alpha, inv * b * dt);
+        }
+    };
+    for inv in [1.0, -1.0] {
+        let mut fused = corrected_sim();
+        let mut reference = corrected_sim();
+        fused.apply_corrector(inv).unwrap();
+        plain(&mut reference, inv);
+        let diff = max_state_diff(&fused, &reference);
+        println!("corrector_fused_drifts_match_operators: inv = {inv}: {diff:.3e} AU");
+        assert!(diff < 1e-13, "{diff:e}");
+    }
+}
+
+/// Merging the inner planets into the Sun, with the summed GM at their
+/// barycenter, follows a distant particle far better than dropping them. The
+/// reference keeps all eight planets at a 4 day step. At that step the merge
+/// alone is about a thousand times closer than dropping them; at a 100 day
+/// step, which the inner planets would not allow, the step's own error
+/// dominates and it is still far closer.
+#[test]
+fn merged_central_mass() {
+    let (states, gms) = solar_system();
+    let (pos, vel) = peri_pos_vel(40.0, 0.1, 10.0, 2.0);
+    let tp = make_state(4000, pos, vel);
+    let span = 20_000.0;
+    let run = |states: &[State<Ecliptic, SSB>], gms: &[f64], dt: f64| {
+        let mut sim = WisdomHolman::new(
+            states,
+            gms,
+            std::slice::from_ref(&tp),
+            &[],
+            dt,
+            false,
+            false,
+            false,
+        )
+        .unwrap();
+        sim.integrate_to(Time::new(J2000 + span)).unwrap();
+        Vector3::from(sim.test_particle_states()[0].pos)
+    };
+    let reference = run(&states, &gms, 4.0);
+
+    // Sun, Mercury, Venus, EMB and Mars become one body.
+    let inner = 0..5;
+    let gm_sum: f64 = gms[inner.clone()].iter().sum();
+    let weighted = |f: fn(&State<Ecliptic, SSB>) -> Vector3<f64>| {
+        inner
+            .clone()
+            .map(|i| f(&states[i]) * gms[i])
+            .sum::<Vector3<f64>>()
+            / gm_sum
+    };
+    let merged_sun = State::new(
+        states[0].desig.clone(),
+        states[0].epoch,
+        weighted(|s| Vector3::from(s.pos)),
+        weighted(|s| Vector3::from(s.vel)),
+        SSB,
+    );
+    let mut merged_states = vec![merged_sun];
+    merged_states.extend_from_slice(&states[5..]);
+    let mut merged_gms = vec![gm_sum];
+    merged_gms.extend_from_slice(&gms[5..]);
+    let merged = (run(&merged_states, &merged_gms, 100.0) - reference).norm();
+    let merged_fine = (run(&merged_states, &merged_gms, 4.0) - reference).norm();
+
+    let mut dropped_states = vec![states[0].clone()];
+    dropped_states.extend_from_slice(&states[5..]);
+    let mut dropped_gms = vec![GMS];
+    dropped_gms.extend_from_slice(&gms[5..]);
+    let dropped = (run(&dropped_states, &dropped_gms, 100.0) - reference).norm();
+
+    println!(
+        "merged_central_mass: merged {merged_fine:.3e} AU at 4 d, {merged:.3e} AU at 100 d; \
+         dropped {dropped:.3e} AU"
+    );
+    assert!(
+        merged_fine < 1e-2 * dropped,
+        "merged {merged_fine:e}, dropped {dropped:e}"
+    );
+    assert!(
+        merged < 0.1 * dropped,
+        "merged {merged:e}, dropped {dropped:e}"
+    );
+}
+
 /// The corrector on a pure Kepler system is the identity up to solver
 /// roundoff: the kepler-limit budgets must hold unchanged.
 #[test]
@@ -1887,6 +2083,29 @@ fn constructor_validation() {
         )
         .is_err()
     );
+    // The Sun's GM may grow by merged planets, within 1%.
+    for (factor, ok) in [
+        (1.005, true),
+        (0.995, true),
+        (1.02, false),
+        (f64::NAN, false),
+    ] {
+        assert_eq!(
+            WisdomHolman::new(
+                &[sun()],
+                &[GMS * factor],
+                &[],
+                &[],
+                1.0,
+                false,
+                false,
+                false
+            )
+            .is_ok(),
+            ok,
+            "{factor}"
+        );
+    }
     // Empty body list.
     assert!(WisdomHolman::<Ecliptic>::new(&[], &[], &[], &[], 1.0, false, false, false).is_err());
     // dt of zero.
@@ -2569,14 +2788,11 @@ fn close_encounter_matches_radau() {
         let (_, plain) = wh_flyby(&start, &gms, dt, span, None);
         let err = (resolved - reference).norm();
         let plain_err = (plain - reference).norm();
-        println!(
-            "  dt = {dt:4.1} d: resolved {err:.3e} AU over {} encounter steps; plain map {plain_err:.3e} AU",
-            sim.close_encounter_steps()
-        );
+        println!("  dt = {dt:4.1} d: resolved {err:.3e} AU; plain map {plain_err:.3e} AU");
         // Every approach within 3 Hill radii was resolved, so none is
         // recorded as unresolved.
         assert!(sim.closest_encounter().is_none());
-        assert!(sim.close_encounter_steps() > 0);
+        assert_eq!(sim.close_approaches().len(), 1);
         assert!(
             err < 1e-2 * plain_err,
             "resolved encounter is not far better than the plain map"
@@ -2625,13 +2841,13 @@ fn close_encounter_inactive_is_identical() {
         }
         sim.integrate_n_steps(500).unwrap();
         (
-            sim.close_encounter_steps(),
+            sim.close_approaches().len(),
             sim.test_particle_heliocentric(),
         )
     };
-    let (steps, with) = run(Some(3.0));
+    let (passages, with) = run(Some(3.0));
     let (_, without) = run(None);
-    assert_eq!(steps, 0);
+    assert_eq!(passages, 0);
     for (a, b) in with.iter().zip(&without) {
         assert_eq!(a.0, b.0);
         assert_eq!(a.1, b.1);
@@ -2733,10 +2949,6 @@ fn close_encounter_physics_matches_map() {
             sim = sim.with_close_encounters(1e6).unwrap();
         }
         sim.integrate_to(Time::new(J2000 + span)).unwrap();
-        assert_eq!(
-            sim.close_encounter_steps(),
-            if encounters { 4 * 50 } else { 0 }
-        );
         let sun_end = sim.massive_states()[0].clone();
         sim.test_particle_states()
             .iter()
@@ -2771,12 +2983,82 @@ fn close_encounter_backward() {
         let (sim, back) = wh_flyby(&end, &gms, dt, -span, Some(3.0));
         let err = (back - reference).norm();
         println!("close_encounter_backward: dt = {dt}: {err:.3e} AU");
-        assert!(sim.close_encounter_steps() > 0);
+        assert_eq!(sim.close_approaches().len(), 1);
         errors.push(err);
     }
     for pair in errors.windows(2) {
         let order = (pair[0] / pair[1]).log2();
         assert!((1.7..=2.3).contains(&order), "not second order: {order}");
+    }
+}
+
+/// The flyby's passage of Jupiter is recorded once, forward and backward,
+/// with the fixture's periapsis: 0.02 AU at 0.008 AU/day relative, at J2000.
+/// What remains is the map's own error on the approach, which falls with
+/// the step. Taking the record empties it, and a run without resolved
+/// encounters records nothing.
+#[test]
+fn close_encounter_records_passage() {
+    let (start, gms) = jupiter_flyby(0.02, 0.008, 400.0);
+    let span = 800.0;
+    let end = radau_states(&start, &gms, span);
+    for (from, dt) in [(&start, 20.0), (&start, 10.0), (&end, -10.0)] {
+        let (mut sim, _) = wh_flyby(from, &gms, dt, span * dt.signum(), Some(3.0));
+        let passages = sim.close_approaches();
+        assert_eq!(passages.len(), 1, "dt = {dt}: {passages:?}");
+        let pass = &passages[0];
+        let t_err = (pass.epoch - Time::<TDB>::new(J2000)).elapsed;
+        println!(
+            "close_encounter_records_passage: dt = {dt}: distance {:.9} AU, speed {:.9} AU/day, epoch {t_err:+.2e} d",
+            pass.distance, pass.speed
+        );
+        assert_eq!(pass.desig, Desig::Perm(7000));
+        assert_eq!(pass.body, Desig::Naif(5));
+        assert!((pass.distance - 0.02).abs() < 1e-6, "{}", pass.distance);
+        assert!((pass.speed - 0.008).abs() < 1e-7, "{}", pass.speed);
+        assert!(t_err.abs() < 1e-3, "{t_err}");
+        assert_eq!(sim.take_close_approaches().len(), 1);
+        assert!(sim.close_approaches().is_empty());
+    }
+    let (sim, _) = wh_flyby(&start, &gms, 10.0, span, None);
+    assert!(sim.close_approaches().is_empty());
+}
+
+/// A passage at 0.6 AU, about 1.7 of Jupiter's Hill radii, is inside the
+/// 3 Hill radius encounter radius but is only recorded once the close
+/// approach radius is widened past it from its default of 1 Hill radius.
+#[test]
+fn close_approach_radius_filters_passages() {
+    let (start, gms) = jupiter_flyby(0.6, 0.008, 400.0);
+    let run = |approach: Option<f64>| {
+        let mut sim = WisdomHolman::new(
+            &start[..2],
+            &gms[..2],
+            &start[2..],
+            &[],
+            10.0,
+            false,
+            false,
+            false,
+        )
+        .unwrap()
+        .with_close_encounters(3.0)
+        .unwrap();
+        if let Some(k) = approach {
+            sim = sim.with_close_approach_radius(k).unwrap();
+        }
+        sim.integrate_to(start[0].epoch + 800.0).unwrap();
+        sim.take_close_approaches()
+    };
+    assert!(run(None).is_empty());
+    let passages = run(Some(2.0));
+    assert_eq!(passages.len(), 1, "{passages:?}");
+    assert!((passages[0].distance - 0.6).abs() < 1e-2, "{passages:?}");
+
+    let sim = wh_flyby(&start, &gms, 10.0, 0.0, None).0;
+    assert_eq!(sim.close_approach_radius(), 1.0);
+    for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        assert!(sim.clone().with_close_approach_radius(bad).is_err());
     }
 }
 
@@ -2885,7 +3167,7 @@ fn close_encounter_flyby_is_not_a_perihelion() {
     .unwrap();
     sim.set_removal_bounds(Some(4.6), None).unwrap();
     sim.integrate_n_steps(4).unwrap();
-    assert!(sim.close_encounter_steps() > 0);
+    assert_eq!(sim.close_approaches().len(), 1);
     assert!(
         sim.lost_particles().is_empty(),
         "the flyby was taken for a perihelion: {:?}",
@@ -2921,7 +3203,7 @@ fn corrector_records_no_encounters() {
         for _ in 0..(40 / per_call) {
             sim.integrate_n_steps(per_call).unwrap();
         }
-        assert!(sim.close_encounter_steps() > 0);
+        assert_eq!(sim.close_approaches().len(), 1);
         assert!(
             sim.closest_encounter().is_none(),
             "correctors {use_correctors}, {per_call} steps per call: {:?}",
