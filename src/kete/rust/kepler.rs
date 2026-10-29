@@ -55,8 +55,9 @@ pub fn compute_eccentric_anomaly_py(ecc: Vec<f64>, mean_anom: Vec<f64>) -> PyRes
 /// ----------
 /// states : State or list of State
 ///   States to propagate, in AU and AU/Day.
-/// epoch : float or Time
-///   Time to propagate to, in JD with TDB scaling.
+/// epoch : float, Time, or list of float or Time
+///   Time to propagate to, in JD with TDB scaling. A list gives each state its
+///   own epoch and must be as long as ``states``.
 /// observer_pos : Vector, optional
 ///   Sun-centered position of an observer. If it is given, the states are
 ///   corrected for light travel time to the observer. The delay is iterated
@@ -72,15 +73,23 @@ pub fn compute_eccentric_anomaly_py(ecc: Vec<f64>, mean_anom: Vec<f64>) -> PyRes
 pub fn propagation_kepler_py(
     py: Python<'_>,
     states: MaybeVec<PyState>,
-    epoch: PyTime,
+    epoch: MaybeVec<PyTime>,
     observer_pos: Option<PyVector>,
 ) -> PyResult<Py<PyAny>> {
     let (states, was_vec): (Vec<_>, bool) = states.into();
-    let epoch = epoch.into();
+    let (epochs, epochs_vec): (Vec<_>, bool) = epoch.into();
+    let epochs: Vec<_> = epochs.into_iter().map(Into::into).collect();
+    if epochs_vec && epochs.len() != states.len() {
+        return Err(PyErr::new::<exceptions::PyValueError, _>(
+            "A list of epochs must be as long as the list of states.",
+        ));
+    }
     let states = states
         .par_iter()
+        .enumerate()
         .with_min_len(10)
-        .map(|state| {
+        .map(|(idx, state)| {
+            let epoch = if epochs_vec { epochs[idx] } else { epochs[0] };
             let center = state.center_id();
             let frame = state.frame();
 
